@@ -1,44 +1,32 @@
 # Antilogicalism Reading Companion
 
-An experimental, locally run AI reading companion for exploring books in the Antilogicalism library. Ask a question about a book and the app retrieves relevant passages, generates an answer with a local language model, and links its citations to the source PDF pages. The aim is to make a large collection of texts easier to explore while keeping the books themselves close at hand.
+The Antilogicalism Reading Companion is an experiment in making the ideas in books easier to explore. It lets readers ask questions in ordinary language, get an answer grounded in passages from a book, and follow citations back to the relevant PDF pages.
 
-## Why this project
+## Part of the Antilogicalism project
 
-The Antilogicalism library brings together books that readers may want to compare, revisit, and think through across chapters. A conversational interface offers another way into that collection: readers can ask about an idea, request an explanation of an argument, or follow a concept through the text. Answers are meant to guide readers back to the books, not replace reading them.
+[Antilogicalism](https://jsynon.github.io/antilogicalism/) brings together essays, reading resources, and a growing library of books for exploring philosophy and related subjects. The Reading Companion adds a conversational way to enter that library: readers can ask about a concept, trace an argument through a text, or use citations to return to the original passage. Its purpose is to support close reading and further thought, not to replace the books or the broader site.
 
-## Current stage
+Book text is maintained separately in the [`antilogicalism-library-data`](https://github.com/jsynon/antilogicalism-library-data) repository. Keeping the corpus there gives the library one shared source of truth as it grows. The companion is a separate application that can use those texts to find passages and build answers.
 
-This is an early prototype using Aristotle's *Nicomachean Ethics*. It currently answers from that one book; it is not yet connected to the full library. The project is testing whether a small local model can answer varied questions with useful, verifiable citations before expanding the same approach to more books.
+## Current prototype
 
-AI answers can misread or oversimplify a passage. Follow the source links to check the context, especially for questions that ask the chatbot to connect ideas or explain an argument.
+The current pilot works with Aristotle's *Nicomachean Ethics*. It is a step toward the larger goal of making the same reading experience work across the Antilogicalism book collection; it is not yet connected to the full library. The project is testing whether a locally run language model can answer a range of questions while keeping its claims connected to passages readers can inspect.
 
-## How it works
+The app searches the book text, drafts a response from relevant passages, and checks the response's claims and quotations before displaying citations. These checks can catch some unsupported claims, but they cannot guarantee that every interpretation is correct. Readers should use the source links to check context, especially when an answer explains a complicated argument or connects ideas across passages.
 
-The Python app searches extracted page text and ranks relevant passages with BM25, a term-based relevance method. When the initial results seem like a weak match, the selected local model can suggest additional search terms; those terms help find passages but are not treated as evidence. The model drafts an answer from the retrieved text, and a second pass checks its claims and citations against those passages. The interface links only to sources cited in the answer.
+## Run locally
 
-The prototype uses general retrieval and evidence-checking rather than prewritten answers or question-specific page rules. This makes the current book a test case for a system intended to grow with the library.
+1. Install [Ollama](https://ollama.com/) and download a model, for example with `ollama pull qwen3:4b`.
+2. Extract this project. To use a separate `antilogicalism-library-data` checkout, place it beside the project folder or configure the data path as described in [`data/README.md`](data/README.md).
+3. Start Ollama, then double-click `start.bat`.
+4. Open `http://127.0.0.1:8765` in your browser and choose an installed model.
 
-## Run locally on Windows
-
-1. Install [Ollama](https://ollama.com/) and download a model, such as `qwen3:4b`, with `ollama pull qwen3:4b`.
-2. Extract the project ZIP. For development with the shared corpus, place this folder beside your `antilogicalism-library-data` checkout.
-3. Make sure Ollama is running, then double-click `start.bat`.
-4. Open `http://127.0.0.1:8765` in your browser. The model menu lists the models available in your local Ollama installation.
-
-The app uses Python's standard library, so it needs no `pip` installation or hosted AI API key. Close the command window to stop the local server.
-
-## Book data and privacy
-
-Extracted text is maintained in the separate [`antilogicalism-library-data`](https://github.com/jsynon/antilogicalism-library-data) repository, which remains the source of truth. The app looks for the Aristotle pilot shard in a sibling data checkout and includes a small convenience copy for running the standalone prototype. Instructions for selecting another local checkout or dataset version are in [`data/README.md`](data/README.md).
-
-The server listens only on this computer (`127.0.0.1`) and sends questions and retrieved passages to Ollama running locally. The chatbot does not call a hosted AI service and is not currently deployed online. It is a research prototype and currently includes only one book.
+The app uses Python's standard library and does not require a hosted AI API key. Its model selector discovers the models installed in Ollama and passes the selected model to the shared retrieval, answer, and evidence-checking flow; the project is not hardwired to Qwen. The current model connection is Ollama-specific, so another inference provider would need its own adapter. Models may differ in how well they follow the prompts and return structured evidence, so the same regression questions should be tested with each candidate model. The app listens only on the local computer and sends questions and retrieved passages to Ollama running there. It is a local research prototype, not an online chatbot.
 
 ## Development
 
-To run the retrieval and citation checks, open a command prompt in the project folder and run:
+Run the retrieval and citation checks from the project folder:
 
 ```bat
 py -3 -m unittest discover -s tests -v
 ```
-
-The build identifier appears in the app footer and at `/api/health`, which helps confirm which local server version is running.

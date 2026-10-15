@@ -140,6 +140,73 @@ class RetrievalTests(unittest.TestCase):
         merged = app.merge_retrieval_sources(initial, expanded)
         self.assertIn(6, [source["page"] for source in merged])
 
+    def test_single_weak_match_does_not_hide_a_missing_argument_facet(self):
+        """Expand when one incidental word is the only match for a requested part."""
+        question = "What is the highest human good, and how does Aristotle argue for it?"
+        initial = app.retrieve(question, [])
+
+        # Page 115 contains the word "argue" in a discussion of Plato and
+        # pleasure, but does not supply Aristotle's argument for the human
+        # good. A single lexical match on that second facet is insufficient.
+        self.assertTrue(app.query_needs_expansion(question, initial))
+
+        # These are general conceptual search terms that link the question to
+        # Aristotle's opening account of political science's end and the
+        # human-function argument. The query expander supplies such terms at
+        # runtime; fixed terms here keep the retrieval regression test offline.
+        expanded = app.retrieve(
+            question,
+            [],
+            search_terms=[
+                "highest good achievable by action",
+                "political science aims at",
+                "happiness",
+                "human function",
+                "rational activity",
+            ],
+        )
+        merged = app.merge_retrieval_sources(initial, expanded)
+        page_two = next(source for source in merged if source["page"] == 2)
+        self.assertIn("highest of all goods achievable by action", page_two["text"].lower())
+        self.assertIn("happiness", page_two["text"].lower())
+
+    def test_argument_question_reranks_reasoning_passages_ahead_of_topic_definitions(self):
+        """Place a passage with premises and inference before a definition-only match."""
+        sources = [
+            {
+                "source_id": "S1",
+                "page": 2,
+                "score": 12.0,
+                "text": (
+                    "The highest of all goods achievable by action is happiness. "
+                    "People identify living well and doing well with being happy."
+                ),
+            },
+            {
+                "source_id": "S2",
+                "page": 6,
+                "score": 0.2,
+                "text": (
+                    "The function of man is activity of soul implying a rational principle. "
+                    "If any action is well performed in accordance with appropriate excellence, "
+                    "human good turns out to be activity of soul in accordance with virtue."
+                ),
+            },
+        ]
+
+        ranked = app.prioritize_argument_sources(
+            "What does he identify as the highest human good, and how does he argue for it?",
+            sources,
+        )
+
+        self.assertEqual([source["page"] for source in ranked], [6, 2])
+        self.assertEqual([source["source_id"] for source in ranked], ["S1", "S2"])
+        # Plain identification questions retain the retrieval order unchanged.
+        self.assertIs(
+            app.prioritize_argument_sources("What is the highest human good?", sources),
+            sources,
+        )
+
     def test_open_topic_questions_expand_when_only_one_aspect_was_retrieved(self):
         """Broaden vocabulary for open-ended topics such as Aristotle's account of soul."""
         question = "What did Aristotle say about the soul?"
@@ -213,10 +280,7 @@ class GroundingTests(unittest.TestCase):
             "Happiness is a good activity of the soul", self.sources[1]["text"]
         ))
         self.assertFalse(app.evidence_quote_matches("perfect virtue", self.sources[1]["text"]))
-        long_quote = (
-            "Human contemplation needs external prosperity, a healthy body, food, and other care, "
-            "and a solitary person without friends is not likely to be happy."
-        )
+        long_quote = " ".join(f"long{index}" for index in range(41))
         self.assertFalse(app.evidence_quote_matches(long_quote, long_quote))
 
     def test_claim_clause_cannot_add_terms_missing_from_its_cited_passage(self):
@@ -274,7 +338,9 @@ class GroundingTests(unittest.TestCase):
             "urlopen",
             side_effect=[FakeResponse(unsupported), FakeResponse(corrected)],
         ) as mocked_urlopen:
-            result = app.verify_answer("What is happiness?", source, "draft", "qwen3:4b", diagnostics)
+            result = app.verify_answer(
+                "What is happiness?", source, "UNSUPPORTED_DRAFT_SENTINEL", "qwen3:4b", diagnostics
+            )
 
         self.assertEqual(result, "Happiness is activity of the soul in accordance with virtue [S1].")
         self.assertEqual(diagnostics["attempts"][0]["status"], "rejected")
@@ -283,13 +349,64 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("practical", diagnostics["attempts"][0]["reason"])
         self.assertIn("wisdom", diagnostics["attempts"][0]["reason"])
         # The retry should see the actual gap so it can remove the unsupported
-        # add-on instead of making another generic attempt at the same claim.
+        # add-on, while rebuilding from passages instead of copying the draft.
         retry_payload = json.loads(mocked_urlopen.call_args_list[1].args[0].data.decode("utf-8"))
         retry_instruction = retry_payload["messages"][-1]["content"]
-        self.assertIn("missing wording includes", retry_instruction)
+        self.assertIn("selected excerpt", retry_instruction)
         self.assertIn("practical", retry_instruction)
         self.assertIn("wisdom", retry_instruction)
+        self.assertIn("Do not reuse or repeat their wording", retry_instruction)
+        self.assertIn("Available passages and citation IDs", retry_instruction)
+        self.assertNotIn("UNSUPPORTED_DRAFT_SENTINEL", retry_instruction)
+        self.assertNotIn("Draft answer to check", retry_instruction)
         self.assertEqual(diagnostics["attempts"][1]["status"], "accepted")
+
+    def test_retry_receives_all_uncovered_sentences_not_only_the_first(self):
+        """A first gap must not hide another unsupported claim from the retry."""
+        source = [{
+            "source_id": "S1",
+            "page": 6,
+            "text": "Human good turns out to be activity of soul in accordance with virtue.",
+        }]
+        first_check = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "The good depends on practical wisdom.",
+                    "evidence": self.evidence("S1", "human good turns out to be activity of soul"),
+                },
+                {
+                    "text": "This requires moral excellence.",
+                    "evidence": self.evidence("S1", "activity of soul in accordance with virtue"),
+                },
+            ],
+        })}}
+        empty_retry = {"message": {"content": json.dumps({"sentences": []})}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(first_check), FakeResponse(empty_retry)],
+        ) as mocked_urlopen:
+            result = app.verify_answer(
+                "How is human good defined?", source, "draft", "qwen3:4b", diagnostics
+            )
+
+        self.assertTrue(result.startswith("I couldn't verify"))
+        findings = diagnostics["attempts"][0]["issues"]
+        self.assertEqual(len(findings), 2)
+        self.assertIn("answer item 1", findings[0])
+        self.assertIn("answer item 2", findings[1])
+        self.assertIn("practical", findings[0])
+        self.assertIn("excellence", findings[1])
+        # Both failed claims reach the retry, so it can repair the whole answer
+        # instead of fixing only whichever sentence was checked first.
+        retry_payload = json.loads(mocked_urlopen.call_args_list[1].args[0].data.decode("utf-8"))
+        retry_instruction = retry_payload["messages"][-1]["content"]
+        self.assertIn("Address every numbered validation finding", retry_instruction)
+        self.assertIn("answer item 1", retry_instruction)
+        self.assertIn("answer item 2", retry_instruction)
+        self.assertNotIn("The good depends on practical wisdom", retry_instruction)
+        self.assertNotIn("This requires moral excellence", retry_instruction)
 
     def test_checker_rejects_ambiguous_reversed_roles_then_accepts_explicit_evidence(self):
         """Resolve end/means claims from named evidence, despite OCR punctuation."""
@@ -415,9 +532,10 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("do not swap which concept", system_prompt)
         self.assertIn("says only 'the one' and 'the other'", system_prompt)
         self.assertIn("addresses every part of the question", system_prompt)
+        self.assertIn("explain the connection the author makes", system_prompt)
         self.assertIn("the passage that explicitly establishes those roles", system_prompt)
         self.assertIn("short, exact, continuous quotation", system_prompt)
-        self.assertIn("3 to 18 words", system_prompt)
+        self.assertIn("3 to 40 words", system_prompt)
         self.assertIn("Split a sentence that combines separate factual claims", system_prompt)
         self.assertIn("direction of any relationship", system_prompt)
         self.assertIn("Keep that inference modest", system_prompt)
@@ -440,14 +558,19 @@ class GroundingTests(unittest.TestCase):
             result = app.verify_answer("What is happiness?", self.sources, "draft", "qwen3:4b", diagnostics)
         self.assertTrue(result.startswith("I couldn't verify"))
         self.assertEqual(diagnostics["status"], "fallback")
-        self.assertEqual(diagnostics["attempts"][0]["reason"], "the quoted excerpt for S2 was too short or not an exact passage match")
+        self.assertEqual(
+            diagnostics["attempts"][0]["reason"],
+            "answer item 1, evidence 1: the quoted excerpt for S2 was too short or not an exact passage match",
+        )
         self.assertIn("checker_sentences", diagnostics["attempts"][0])
 
-    def test_evidence_check_rejects_a_long_quote_even_when_it_matches(self):
-        """A long passage cannot obscure which short phrase supports a claim."""
+    def test_evidence_check_rejects_a_long_quote_without_claim_matching_windows(self):
+        """Do not accept a long quote when it cannot be shortened precisely."""
         quote = (
             "Human contemplation needs external prosperity, a healthy body, food, and other care, "
-            "and a solitary person without friends is not likely to be happy."
+            "and a solitary person without friends is not likely to be happy. These conditions and "
+            "resources can support noble activities and the full course of a person's life, although "
+            "their value depends on the uses people make of them in particular circumstances."
         )
         source = {"source_id": "S1", "page": 123, "text": quote}
         payload = {"message": {"content": json.dumps({
@@ -457,7 +580,837 @@ class GroundingTests(unittest.TestCase):
         with patch.object(app.urllib.request, "urlopen", return_value=FakeResponse(payload)):
             result = app.verify_answer("What does happiness need?", [source], "draft", "qwen3:4b", diagnostics)
         self.assertTrue(result.startswith("I couldn't verify"))
-        self.assertIn("maximum 18", diagnostics["attempts"][0]["reason"])
+        self.assertIn("maximum 40", diagnostics["attempts"][0]["reason"])
+        self.assertIn("could not be safely shortened", diagnostics["attempts"][0]["reason"])
+
+    def test_oversized_argument_quote_becomes_two_exact_claim_matching_excerpts(self):
+        """Recover a supported argument when a model quotes a whole paragraph."""
+        first_claim_part = (
+            "The function of man is an activity of soul which follows or implies a rational principle"
+        )
+        filler = (
+            "A person may consider many examples before reaching the point of the discussion. "
+            "The passage compares skilled work with excellence and describes how actions are performed. "
+            "These details explain why the argument moves from a function to a good performance."
+        )
+        conclusion = "Human good turns out to be activity of soul in accordance with virtue."
+        quote = f"{first_claim_part}. {filler} {conclusion}"
+        source = [{"source_id": "S1", "page": 6, "text": quote}]
+        answer_item = {
+            "text": (
+                "Because the function of man is an activity of soul with a rational principle, "
+                "human good is activity of soul in accordance with virtue."
+            ),
+            "evidence": self.evidence("S1", quote),
+        }
+
+        answer = app.format_cited_sentences([answer_item], source)
+
+        self.assertIsNotNone(answer)
+        self.assertIn("Because the function of man", answer)
+        self.assertEqual(len(answer_item["evidence"]), 2)
+        for excerpt in answer_item["evidence"]:
+            quote_text = excerpt["quote"]
+            self.assertLessEqual(len(app.TOKEN_RE.findall(quote_text)), app.MAX_EVIDENCE_QUOTE_WORDS)
+            self.assertTrue(app.evidence_quote_matches(quote_text, source[0]["text"]))
+
+    def test_exact_quote_under_model_tolerant_cap_can_be_displayed(self):
+        """A real model-sized excerpt should not trigger the old short-quote fallback."""
+        words = [
+            "Happiness", "is", "an", "activity", "of", "soul", "in", "accordance", "with", "virtue",
+            "and", "it", "requires", "the", "proper", "equipment", "for", "noble", "acts", "including",
+            "friends", "riches", "and", "political", "power", "in", "many", "actions", "and", "some",
+            "things", "that", "lack", "their", "luster", "from", "happiness",
+        ]
+        quote = " ".join(words)
+        source = [{"source_id": "S1", "page": 8, "text": quote}]
+        result = app.format_cited_sentences(
+            [{"text": "Happiness is an activity of soul in accordance with virtue.",
+              "evidence": self.evidence("S1", quote)}],
+            source,
+        )
+
+        self.assertEqual(result, "Happiness is an activity of soul in accordance with virtue [S1].")
+
+    def test_validator_collects_quote_errors_from_all_answer_items(self):
+        """A first oversized quote must not hide a later item's failure."""
+        sources = [
+            {
+                "source_id": "S1",
+                "page": 1,
+                "text": " ".join(f"alpha{index}" for index in range(45)),
+            },
+            {
+                "source_id": "S2",
+                "page": 2,
+                "text": " ".join(f"beta{index}" for index in range(45)),
+            },
+        ]
+        items = [
+            {"text": "Alpha0 and alpha1 are discussed.", "evidence": self.evidence("S1", sources[0]["text"])},
+            {"text": "Beta0 and beta1 are discussed.", "evidence": self.evidence("S2", sources[1]["text"])},
+        ]
+        issues = []
+
+        self.assertIsNone(app.format_cited_sentences(items, sources, validation_issues=issues))
+        self.assertEqual(len(issues), 2)
+        self.assertIn("answer item 1, evidence 1", issues[0])
+        self.assertIn("answer item 2, evidence 1", issues[1])
+        self.assertTrue(all("maximum 40" in issue for issue in issues))
+
+    def test_final_repair_receives_structural_findings_and_fresh_candidate(self):
+        """Repair a fresh answer's bad quote without replaying the original draft."""
+        source = [{
+            "source_id": "S1",
+            "page": 8,
+            "text": (
+                "Human contemplation needs external prosperity, a healthy body, food, and other care, "
+                "and a solitary person without friends is not likely to be happy. These conditions and "
+                "resources can support noble activities and the full course of a person's life, although "
+                "their value depends on the uses people make of them in particular circumstances."
+            ),
+        }]
+        paraphrase = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "Human contemplation requires prosperity.",
+                "evidence": self.evidence("S1", "Human contemplation requires prosperity"),
+            }],
+        })}}
+        oversized = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "Contemplation requires practical wisdom.",
+                    "evidence": self.evidence("S1", source[0]["text"]),
+                },
+                {
+                    # Deliberately unsupported wording keeps this item invalid
+                    # even after the formatter can compact oversized quotes.
+                    "text": "Courage depends on practical wisdom.",
+                    "evidence": self.evidence("S1", source[0]["text"]),
+                },
+            ],
+        })}}
+        repaired = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "Human contemplation needs external prosperity.",
+                "evidence": self.evidence("S1", "contemplation needs external prosperity"),
+            }],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(paraphrase), FakeResponse(oversized), FakeResponse(repaired)],
+        ) as mocked_urlopen:
+            result = app.verify_answer(
+                "What does contemplation need?", source, "ORIGINAL_DRAFT_SENTINEL", "qwen3:4b", diagnostics
+            )
+
+        self.assertEqual(result, "Human contemplation needs external prosperity [S1].")
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertEqual(
+            [entry["status"] for entry in diagnostics["attempts"]],
+            ["rejected", "rejected", "accepted"],
+        )
+        repair_payload = json.loads(mocked_urlopen.call_args_list[2].args[0].data.decode("utf-8"))
+        repair_prompt = repair_payload["messages"][-1]["content"]
+        self.assertIn("Fresh candidate to repair", repair_prompt)
+        self.assertIn("answer item 1, evidence 1", repair_prompt)
+        self.assertIn("answer item 2, evidence 1", repair_prompt)
+        self.assertIn("maximum 40", repair_prompt)
+        self.assertIn("Contemplation requires practical wisdom", repair_prompt)
+        self.assertNotIn("ORIGINAL_DRAFT_SENTINEL", repair_prompt)
+
+    def test_final_repair_can_add_a_second_excerpt_for_a_supported_paraphrase(self):
+        """A valid cross-passage explanation should survive a too-narrow first quote.
+
+        This reproduces the build 30 failure pattern: the semantic checker has a
+        sound claim, but its first short excerpt omits vocabulary stated in a
+        second passage. The repair prompt must ask it to find that second piece
+        of evidence, while the formatter still validates every quote exactly.
+        """
+        highest_good_passage = (
+            "Let us resume our inquiry and state what is the highest of all goods achievable by action. "
+            "Verbally there is very general agreement; both the general run of men and people of superior "
+            "refinement say that it is happiness."
+        )
+        function_passage = (
+            "If we state the function of man to be a certain kind of life, and this to be an activity or "
+            "actions of the soul implying a rational principle; if any action is well performed when it is "
+            "performed in accordance with the appropriate excellence: if this is the case, human good turns "
+            "out to be activity of soul in accordance with virtue."
+        )
+        sources = [
+            {"source_id": "S1", "page": 2, "text": highest_good_passage},
+            {"source_id": "S7", "page": 6, "text": function_passage},
+        ]
+        unsupported_by_excerpt = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "He argues that happiness is achieved through a life of virtue.",
+                "evidence": self.evidence("S7", "human good turns out to be activity of soul in accordance with virtue"),
+            }],
+        })}}
+        still_narrow = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "He argues that happiness is achieved through a life of virtue.",
+                "evidence": self.evidence("S7", "human good turns out to be activity of soul in accordance with virtue"),
+            }],
+        })}}
+        repaired = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "Aristotle identifies happiness as the highest good achievable by action.",
+                    "evidence": self.evidence(
+                        "S1",
+                        "what is the highest of all goods achievable by action. Verbally there is very general "
+                        "agreement; both the general run of men and people of superior refinement say that it is happiness",
+                    ),
+                },
+                {
+                    "text": (
+                        "His argument begins from the human function, an activity of soul implying a rational "
+                        "principle; a function is performed well in accordance with appropriate excellence, "
+                        "so human good is activity of soul in accordance with virtue."
+                    ),
+                    "evidence": [
+                        {
+                            "source_id": "S7",
+                            "quote": "function of man to be a certain kind of life, and this to be an activity or actions of the soul implying a rational principle",
+                        },
+                        {
+                            "source_id": "S7",
+                            "quote": "if any action is well performed when it is performed in accordance with the appropriate excellence: if this is the case, human good turns out to be activity of soul in accordance with virtue",
+                        },
+                    ],
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[
+                FakeResponse(unsupported_by_excerpt),
+                FakeResponse(still_narrow),
+                FakeResponse(repaired),
+            ],
+        ) as mocked_urlopen:
+            result = app.verify_answer(
+                "What does he identify as the highest human good?",
+                sources,
+                "ORIGINAL_DRAFT_SENTINEL",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertEqual(
+            result,
+            "Aristotle identifies happiness as the highest good achievable by action [S1]. "
+            "His argument begins from the human function, an activity of soul implying a rational principle; "
+            "a function is performed well in accordance with appropriate excellence, so human good is activity "
+            "of soul in accordance with virtue [S7].",
+        )
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertEqual(
+            [entry["status"] for entry in diagnostics["attempts"]],
+            ["rejected", "rejected", "accepted"],
+        )
+        repair_payload = json.loads(mocked_urlopen.call_args_list[2].args[0].data.decode("utf-8"))
+        repair_prompt = repair_payload["messages"][-1]["content"]
+        self.assertIn("another passage directly supports the missing part", repair_prompt)
+        self.assertIn("second short exact excerpt", repair_prompt)
+        # The original draft remains excluded from the bounded repair context.
+        self.assertNotIn("ORIGINAL_DRAFT_SENTINEL", repair_prompt)
+
+    def test_argument_question_retries_a_cited_answer_that_only_states_the_result(self):
+        """Do not accept a supported definition as a substitute for requested reasoning."""
+        source = [
+            {
+                "source_id": "S1",
+                "page": 2,
+                "text": "The highest of all goods achievable by action is happiness.",
+            },
+            {
+                "source_id": "S7",
+                "page": 6,
+                "text": (
+                    "The function of man is activity of soul implying a rational principle. "
+                    "If an action is well performed in accordance with appropriate excellence, "
+                    "human good turns out to be activity of soul in accordance with virtue."
+                ),
+            },
+        ]
+        conclusion_only = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "role": "conclusion",
+                    "text": "Aristotle identifies happiness as the highest good achievable by action.",
+                    "evidence": self.evidence("S1", "highest of all goods achievable by action is happiness"),
+                },
+                {
+                    "role": "premise",
+                    "text": "The human function is activity of soul implying a rational principle.",
+                    "evidence": self.evidence(
+                        "S7", "function of man is activity of soul implying a rational principle"
+                    ),
+                },
+                {
+                    "role": "reasoning",
+                    "text": "Human good is activity of soul in accordance with virtue.",
+                    "evidence": self.evidence("S7", "human good turns out to be activity of soul in accordance with virtue"),
+                },
+            ],
+        })}}
+        reasoned_answer = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "role": "conclusion",
+                    "text": "Aristotle identifies happiness as the highest good achievable by action.",
+                    "evidence": self.evidence("S1", "highest of all goods achievable by action is happiness"),
+                },
+                {
+                    "role": "premise",
+                    "text": "The human function is activity of soul implying a rational principle.",
+                    "evidence": self.evidence(
+                        "S7", "function of man is activity of soul implying a rational principle"
+                    ),
+                },
+                {
+                    "role": "reasoning",
+                    "text": (
+                        "Since a function is well performed in accordance with appropriate excellence, "
+                        "human good is activity of soul in accordance with virtue."
+                    ),
+                    "evidence": self.evidence(
+                        "S7",
+                        "If an action is well performed in accordance with appropriate excellence, human good "
+                        "turns out to be activity of soul in accordance with virtue",
+                    ),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[
+                FakeResponse(conclusion_only),
+                FakeResponse(conclusion_only),
+                FakeResponse(reasoned_answer),
+            ],
+        ) as mocked_urlopen:
+            result = app.verify_answer(
+                "What is the highest good, and how does Aristotle argue for it?",
+                source,
+                "draft",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertEqual(diagnostics["attempts"][0]["status"], "rejected")
+        self.assertIn("reasoning component", diagnostics["attempts"][0]["reason"])
+        self.assertEqual(diagnostics["attempts"][1]["status"], "rejected")
+        self.assertEqual(diagnostics["attempts"][2]["status"], "accepted")
+        self.assertIn("human function", result)
+        self.assertIn("Since", result)
+        repair_payload = json.loads(mocked_urlopen.call_args_list[2].args[0].data.decode("utf-8"))
+        repair_prompt = repair_payload["messages"][-1]["content"]
+        initial_payload = json.loads(mocked_urlopen.call_args_list[0].args[0].data.decode("utf-8"))
+        self.assertEqual(initial_payload["format"]["properties"]["sentences"]["minItems"], 3)
+        self.assertEqual(initial_payload["format"]["properties"]["sentences"]["maxItems"], 3)
+        self.assertIn("exactly three separate answer items", repair_prompt)
+        self.assertIn("Start over from the passages below", repair_prompt)
+        self.assertIn("premise item states a starting point", repair_prompt)
+        self.assertNotIn("Fresh candidate to repair", repair_prompt)
+        self.assertNotIn("Aristotle identifies happiness as the highest good achievable by action", repair_prompt)
+
+    def test_argument_premise_and_reasoning_need_shared_evidence_and_concepts(self):
+        """A causal word cannot join unrelated cited passages into an argument."""
+        question = "What is the highest good, and how does Aristotle argue for it?"
+        answer = (
+            "The highest human good is happiness. The general run of men identifies living well with being happy. "
+            "The author argues that happiness is the highest good because it is the end of human action."
+        )
+        items = [
+            {"role": "conclusion", "text": "The highest human good is happiness.", "evidence": self.evidence("S1", "highest good")},
+            {"role": "premise", "text": "The general run of men identifies living well with being happy.", "evidence": self.evidence("S1", "general run of men identify living well and doing well with being happy")},
+            {"role": "reasoning", "text": "The author argues that happiness is the highest good because it is the end of human action.", "evidence": self.evidence("S6", "happiness as a sort of good life and good action")},
+        ]
+
+        issue = app.argument_coverage_issue(question, answer, items)
+        self.assertIn("common passage", issue)
+
+        # Even when both components cite the same passage, unrelated wording
+        # should not qualify as a textual connection between premise and step.
+        items[2]["evidence"] = self.evidence(
+            "S1", "general agreement say that it is happiness and identify living well and doing well"
+        )
+        items[2]["text"] = "Since the many people agree, Aristotle describes a different argument about virtue."
+        answer = answer.rsplit(" ", 1)[0] + " virtue."
+        issue = app.argument_coverage_issue(question, answer, items)
+        self.assertIn("reuse at least two key concepts", issue)
+
+    def test_argument_claim_with_missing_evidence_is_rebuilt_without_candidate(self):
+        """Rebuild an unsupported argument claim instead of anchoring final repair to it."""
+        sources = [
+            {
+                "source_id": "S1",
+                "page": 2,
+                "text": "The highest of all goods achievable by action is happiness.",
+            },
+            {
+                "source_id": "S7",
+                "page": 6,
+                "text": (
+                    "The function of man is activity of soul implying a rational principle. "
+                    "A good function is performed in accordance with appropriate excellence. "
+                    "Therefore human good is activity of soul in accordance with virtue."
+                ),
+            },
+        ]
+        unsupported = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "role": "conclusion",
+                    "text": "Aristotle identifies happiness as the highest good achievable by action.",
+                    "evidence": self.evidence("S1", "highest of all goods achievable by action is happiness"),
+                },
+                {
+                    "role": "premise",
+                    "text": "The human function is activity of soul implying a rational principle.",
+                    "evidence": self.evidence(
+                        "S7", "function of man is activity of soul implying a rational principle"
+                    ),
+                },
+                {
+                    "role": "reasoning",
+                    "text": (
+                        "He argues that happiness is achieved through a life of virtue, which requires both "
+                        "moral excellence and practical wisdom."
+                    ),
+                    "evidence": self.evidence(
+                        "S7", "Therefore human good is activity of soul in accordance with virtue"
+                    ),
+                },
+            ],
+        })}}
+        supported = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "role": "conclusion",
+                    "text": "Aristotle identifies happiness as the highest good achievable by action.",
+                    "evidence": self.evidence("S1", "highest of all goods achievable by action is happiness"),
+                },
+                {
+                    "role": "premise",
+                    "text": "The human function is activity of soul implying a rational principle.",
+                    "evidence": self.evidence(
+                        "S7", "function of man is activity of soul implying a rational principle"
+                    ),
+                },
+                {
+                    "role": "reasoning",
+                    "text": (
+                        "Since a good function is performed in accordance with appropriate excellence, "
+                        "human good is activity of soul in accordance with virtue."
+                    ),
+                    "evidence": self.evidence(
+                        "S7",
+                        "A good function is performed in accordance with appropriate excellence. Therefore "
+                        "human good is activity of soul in accordance with virtue",
+                    ),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(unsupported), FakeResponse(unsupported), FakeResponse(supported)],
+        ) as mocked_urlopen:
+            result = app.verify_answer(
+                "What is the highest good, and how does Aristotle argue for it?",
+                sources,
+                "draft",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertEqual(diagnostics["attempts"][2]["status"], "accepted")
+        self.assertIn("human function", result)
+        self.assertIn("Since", result)
+        repair_payload = json.loads(mocked_urlopen.call_args_list[2].args[0].data.decode("utf-8"))
+        repair_prompt = repair_payload["messages"][-1]["content"]
+        self.assertIn("Start over from the passages below", repair_prompt)
+        self.assertIn("Prefer the author's terms", repair_prompt)
+        self.assertNotIn("Fresh candidate to repair", repair_prompt)
+        self.assertNotIn("practical wisdom", repair_prompt)
+
+    def test_multipart_answer_rebuilds_when_one_part_is_repeated(self):
+        """Require distinct answer items for each clause of a compound question."""
+        question = (
+            "What does Aristotle mean by practical wisdom, and how does it relate to moral virtue?"
+        )
+        sources = [
+            {
+                "source_id": "S1",
+                "page": 71,
+                "text": (
+                    "Practical wisdom is the quality of mind concerned with things just and noble "
+                    "and good for man."
+                ),
+            },
+            {
+                "source_id": "S2",
+                "page": 72,
+                "text": (
+                    "Again, the work of man is achieved only in accordance with practical wisdom as well as "
+                    "with moral virtue; for virtue makes us aim at the right mark, and practical wisdom makes "
+                    "us take the right means."
+                ),
+            },
+        ]
+        repeated_part = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "question_part": 1,
+                    "text": "Practical wisdom is the quality of mind concerned with things just and noble and good for man.",
+                    "evidence": self.evidence(
+                        "S1",
+                        "Practical wisdom is the quality of mind concerned with things just and noble and good for man",
+                    ),
+                },
+                {
+                    "question_part": 1,
+                    "text": "Practical wisdom helps people act well with moral virtue.",
+                    "evidence": self.evidence(
+                        "S2",
+                        "in accordance with practical wisdom as well as with moral virtue",
+                    ),
+                },
+            ],
+        })}}
+        corrected = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "question_part": 1,
+                    "text": "Practical wisdom is the quality of mind concerned with things just and noble and good for man.",
+                    "evidence": self.evidence(
+                        "S1",
+                        "Practical wisdom is the quality of mind concerned with things just and noble and good for man",
+                    ),
+                },
+                {
+                    "question_part": 2,
+                    "text": "Moral virtue makes us aim at the right mark, while practical wisdom makes us take the right means.",
+                    "evidence": self.evidence(
+                        "S2",
+                        "with moral virtue; for virtue makes us aim at the right mark, and practical wisdom makes us take the right means",
+                    ),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(repeated_part), FakeResponse(corrected)],
+        ) as mocked_urlopen:
+            result = app.verify_answer(question, sources, "draft", "qwen3:4b", diagnostics)
+
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        self.assertEqual([item["status"] for item in diagnostics["attempts"]], ["rejected", "accepted"])
+        self.assertIn("Practical wisdom is the quality of mind", result)
+        self.assertIn("right mark", result)
+        self.assertIn("right means", result)
+        retry_payload = json.loads(mocked_urlopen.call_args_list[1].args[0].data.decode("utf-8"))
+        self.assertIn("Return exactly one distinct answer item for each numbered question part", retry_payload["messages"][-1]["content"])
+        self.assertNotIn("Fresh candidate to repair", retry_payload["messages"][-1]["content"])
+
+    def test_multipart_fallback_keeps_an_individually_verified_part(self):
+        """Show a supported answer part when another part cannot be verified."""
+        question = (
+            "What does Aristotle mean by practical wisdom, and how does it relate to moral virtue?"
+        )
+        sources = [
+            {
+                "source_id": "S1",
+                "page": 71,
+                "text": "Practical wisdom is the quality of mind concerned with things just and noble and good for man.",
+            },
+            {
+                "source_id": "S2",
+                "page": 72,
+                "text": "Moral virtue and practical wisdom work together to guide action.",
+            },
+        ]
+        partly_supported = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "question_part": 1,
+                    "text": "Practical wisdom is the quality of mind concerned with things just and noble and good for man.",
+                    "evidence": self.evidence(
+                        "S1",
+                        "Practical wisdom is the quality of mind concerned with things just and noble and good for man",
+                    ),
+                },
+                {
+                    "question_part": 2,
+                    "text": "Practical wisdom sets the end and moral virtue supplies the means.",
+                    "evidence": self.evidence("S2", "Practical wisdom determines the end and moral virtue directs means"),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(partly_supported)] * 3,
+        ):
+            result = app.verify_answer(question, sources, "draft", "qwen3:4b", diagnostics)
+
+        self.assertIn("Practical wisdom is the quality of mind", result)
+        self.assertIn("[S1]", result)
+        self.assertIn("couldn't verify the remaining part", result)
+        self.assertEqual(diagnostics["status"], "partial")
+
+    def test_single_question_fallback_recovers_a_supported_sentence_and_excerpt(self):
+        """Keep one grounded statement when a sibling claim or quote fails."""
+        source_text = (
+            "Practical wisdom is the reasoned capacity to act with regard to things good or bad for man."
+        )
+        sources = [{"source_id": "S1", "page": 66, "text": source_text}]
+        partly_supported = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "Practical wisdom is the reasoned capacity to act with regard to things good or bad for man.",
+                    # The first excerpt supports the sentence. A second bad
+                    # excerpt makes the full item fail but should not erase the
+                    # independently verifiable part during final recovery.
+                    "evidence": [
+                        *self.evidence("S1", "Practical wisdom is the reasoned capacity to act with regard to things good or bad for man"),
+                        *self.evidence("S1", "this wording does not occur in the passage"),
+                    ],
+                },
+                {
+                    "text": (
+                        "Practical wisdom is a reasoned capacity to act, because it guarantees "
+                        "immortality through divine revelation."
+                    ),
+                    "evidence": self.evidence(
+                        "S1",
+                        "Practical wisdom is the reasoned capacity to act",
+                    ),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(partly_supported)] * 3,
+        ):
+            result = app.verify_answer(
+                "What does Aristotle mean by practical wisdom?",
+                sources,
+                "draft",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertIn("Practical wisdom is the reasoned capacity", result)
+        self.assertIn("[S1]", result)
+        self.assertIn("couldn't verify the full answer", result)
+        self.assertNotIn("immortality", result)
+        self.assertEqual(diagnostics["status"], "partial")
+
+    def test_argument_fallback_labels_a_verified_fragment_as_incomplete(self):
+        """A sourced premise may help without masquerading as a full argument."""
+        sources = [{
+            "source_id": "S1",
+            "page": 12,
+            "text": "Happiness is an activity of the soul in accordance with perfect virtue.",
+        }]
+        failed_argument = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "role": "conclusion",
+                    "text": "The highest human good is happiness.",
+                    "evidence": self.evidence("S1", "Happiness is an activity of the soul"),
+                },
+                {
+                    "role": "premise",
+                    "text": "Happiness is an activity of the soul in accordance with perfect virtue.",
+                    "evidence": self.evidence(
+                        "S1",
+                        "Happiness is an activity of the soul in accordance with perfect virtue",
+                    ),
+                },
+                {
+                    "role": "reasoning",
+                    "text": "Therefore this proves the highest human good.",
+                    "evidence": self.evidence("S1", "Happiness is an activity of the soul"),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(failed_argument)] * 3,
+        ):
+            result = app.verify_answer(
+                "What is the highest good, and how does Aristotle argue for it?",
+                sources,
+                "draft",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertIn("Happiness is an activity of the soul", result)
+        self.assertIn("not the complete argument", result)
+        self.assertNotIn("highest human good is happiness", result)
+        self.assertEqual(diagnostics["status"], "partial")
+
+    def test_comparison_recovery_still_requires_both_sides_in_evidence(self):
+        """Do not return a one-sided fact as a partial comparison answer."""
+        sources = [{
+            "source_id": "S1",
+            "page": 66,
+            "text": "Practical wisdom is a reasoned and true state of capacity to act with regard to human goods.",
+        }]
+        one_sided = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "Practical wisdom is a reasoned and true state of capacity to act with regard to human goods.",
+                "evidence": self.evidence(
+                    "S1",
+                    "Practical wisdom is a reasoned and true state of capacity to act with regard to human goods",
+                ),
+            }],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(one_sided)] * 3,
+        ):
+            result = app.verify_answer(
+                "How does Aristotle distinguish practical wisdom from philosophic wisdom?",
+                sources,
+                "draft",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertIn("couldn't verify a reliable answer", result)
+        self.assertEqual(diagnostics["status"], "fallback")
+
+    def test_comparison_claim_failure_rebuilds_without_rejected_candidate(self):
+        """A failed comparison should receive a source-only final repair."""
+        sources = [
+            {
+                "source_id": "S1",
+                "page": 66,
+                "text": (
+                    "For while making has an end other than itself, action cannot; for good action itself "
+                    "is its end. Practical wisdom, then, "
+                    "must be a reasoned and true state of capacity to act with regard to human goods."
+                ),
+            },
+            {
+                "source_id": "S3",
+                "page": 68,
+                "text": (
+                    "Now practical wisdom is concerned with action; therefore one should have both forms "
+                    "of it, or the latter in preference to the former."
+                ),
+            },
+            {
+                "source_id": "S2",
+                "page": 71,
+                "text": (
+                    "For philosophic wisdom will contemplate none of the things that will make a man happy "
+                    "(for it is not concerned with any coming into being), and though practical wisdom has "
+                    "this merit, practical wisdom is concerned with things just and noble and good for man."
+                ),
+            },
+            {
+                "source_id": "S4",
+                "page": 73,
+                "text": (
+                    "Virtues are forms of practical wisdom, and why Socrates in one respect was on the right "
+                    "track while in another he went astray."
+                ),
+            },
+        ]
+        rejected = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": (
+                    "Practical wisdom is concerned with action, while philosophical wisdom is discussed "
+                    "alongside virtue."
+                ),
+                "evidence": [
+                    {
+                        "source_id": "S3",
+                        "quote": "practical wisdom is concerned with action",
+                    },
+                    {
+                        "source_id": "S4",
+                        "quote": "virtues are forms of practical wisdom, and why Socrates in one respect "
+                        "was on the right track while in another he went astray",
+                    },
+                ],
+            }],
+        })}}
+        corrected = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "Practical wisdom is a reasoned capacity to act for human goods.",
+                    "evidence": self.evidence(
+                        "S1",
+                        "Practical wisdom, then, must be a reasoned and true state of capacity to act with regard to human goods",
+                    ),
+                },
+                {
+                    "text": "Philosophic wisdom is not concerned with any coming into being.",
+                    "evidence": self.evidence(
+                        "S2",
+                        "philosophic wisdom will contemplate none of the things that will make a man happy "
+                        "(for it is not concerned with any coming into being)",
+                    ),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(rejected), FakeResponse(rejected), FakeResponse(corrected)],
+        ) as mocked_urlopen:
+            result = app.verify_answer(
+                "How does Aristotle distinguish practical wisdom from philosophic wisdom?",
+                sources,
+                "draft",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertEqual(
+            result,
+            "Practical wisdom is a reasoned capacity to act for human goods [S1]. "
+            "Philosophic wisdom is not concerned with any coming into being [S2].",
+        )
+        self.assertEqual([entry["status"] for entry in diagnostics["attempts"]], [
+            "rejected", "rejected", "accepted",
+        ])
+        repair_payload = json.loads(mocked_urlopen.call_args_list[2].args[0].data.decode("utf-8"))
+        repair_prompt = repair_payload["messages"][-1]["content"]
+        self.assertIn("Prefer the author's terms", repair_prompt)
+        self.assertIn("abstract", repair_prompt)
+        self.assertNotIn("Fresh candidate to repair", repair_prompt)
+        self.assertNotIn("theoretical knowledge", repair_prompt)
 
     def test_evidence_check_retries_once_after_an_invalid_excerpt(self):
         """A first bad quote gets one repair attempt before the safe fallback."""
@@ -525,6 +1478,8 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("summarize the distinct aspects the passages support", system_prompt)
         self.assertIn("keep each view attached to the person who advances it", system_prompt)
         self.assertIn("Never transfer an argument from one thinker to another", system_prompt)
+        self.assertIn("explain the reasoning chain", system_prompt)
+        self.assertIn("relevant starting point or premises", system_prompt)
         self.assertEqual(captured["payload"]["options"]["temperature"], 0)
 
     def test_evidence_check_rejects_missing_citations(self):
@@ -564,6 +1519,43 @@ class GroundingTests(unittest.TestCase):
         with patch.object(app.urllib.request, "urlopen", return_value=FakeResponse(payload)):
             result = app.verify_answer("What is happiness?", self.sources, "draft", "qwen3:4b")
         self.assertEqual(result, "Happiness is activity of the soul [S2].")
+
+    def test_evidence_check_rejects_a_question_echo_and_retries(self):
+        """A cited copy of the prompt is still not a user-facing answer."""
+        echoed_question = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "What is happiness?",
+                "evidence": self.evidence(
+                    "S2", "Happiness is an activity of soul in accordance with perfect virtue"
+                ),
+            }],
+        })}}
+        answer = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "Happiness is activity of soul.",
+                "evidence": self.evidence(
+                    "S2", "Happiness is an activity of soul in accordance with perfect virtue"
+                ),
+            }],
+        })}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(echoed_question), FakeResponse(answer)],
+        ) as mock_urlopen:
+            result = app.verify_answer(
+                "What is happiness?", self.sources, "draft", "llama3.2:3b", diagnostics
+            )
+
+        self.assertEqual(result, "Happiness is activity of soul [S2].")
+        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertEqual(
+            [attempt["status"] for attempt in diagnostics["attempts"]],
+            ["rejected", "accepted"],
+        )
+        self.assertIn("repeated a question", diagnostics["attempts"][0]["reason"])
 
     def test_one_source_can_support_a_claim_with_two_distinct_excerpts(self):
         """A short quote need not omit one side of a linked definition."""
@@ -634,6 +1626,25 @@ class GroundingTests(unittest.TestCase):
             ),
             "Moral virtue comes from habit [S1].",
         )
+
+    def test_inline_citation_attribution_does_not_leave_broken_prose(self):
+        """Remove an attribution wrapper before the app adds its own citation."""
+        source = [{
+            "source_id": "S1",
+            "page": 8,
+            "text": "Virtue is a state of character.",
+        }]
+        result = app.format_cited_sentences(
+            [{
+                "text": "According to [S1], virtue is a state of character.",
+                "evidence": self.evidence("S1", "Virtue is a state of character"),
+            }],
+            source,
+        )
+
+        # Without the cleanup, removing [S1] leaves "According to ," in the
+        # browser. The citation is then reattached in the app-controlled spot.
+        self.assertEqual(result, "Virtue is a state of character [S1].")
 
     def test_simple_answer_is_limited_to_two_unique_sentences(self):
         """Enforce the concise-answer cap and remove exact repeated sentences."""

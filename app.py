@@ -3,9 +3,12 @@
 Each question follows a small, inspectable pipeline: retrieve relevant passages
 from the bundled text, optionally expand the search vocabulary with a local
 Ollama model, draft an answer, then check its claims and source IDs in a second
-model call. The browser receives only the checked answer and links to the cited
-PDF pages. This module uses Python's standard library and serves the app on
-localhost; it does not call a hosted AI service.
+model call. If checking fails, a fresh retry rebuilds from the question and
+passages without replaying the rejected draft; a final, bounded repair can fix
+the fresh answer's reported evidence-format problems. The browser receives only
+the checked answer and links to the cited PDF pages. This module uses Python's
+standard library and serves the app on localhost; it does not call a hosted AI
+service.
 """
 
 from __future__ import annotations
@@ -72,7 +75,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "claim-gap-feedback-2026-10-15-26"
+BUILD_ID = "question-echo-rejection-2026-10-15-48"
 PDF_URL = "https://drive.google.com/file/d/1XVInAFS2zutV8PDp8A3DirUrW6nLLfvY/view"
 BOOK_TITLE = "Nicomachean Ethics — Aristotle"
 
@@ -87,10 +90,12 @@ very was we were what when where which while who whom why will with would you yo
 yours yourself yourselves
 """.split())
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.I)
-# Keep verifier excerpts compact enough to inspect beside a claim. A very long
-# quote can contain matching words without making clear which phrase supports it.
+# Keep verifier excerpts much shorter than a retrieved passage while allowing
+# the full, exact phrase a small local model often selects. Build 29's real
+# trace showed Qwen3:4b repeatedly returning exact 30–37-word excerpts; the old
+# 18-word ceiling caused otherwise-checkable answers to fall back.
 MIN_EVIDENCE_QUOTE_WORDS = 3
-MAX_EVIDENCE_QUOTE_WORDS = 18
+MAX_EVIDENCE_QUOTE_WORDS = 40
 
 def tokenize(text: str) -> list[str]:
     """Normalize text for lexical search without requiring an NLP library.
@@ -384,6 +389,53 @@ def merge_retrieval_sources(
     ]
 
 
+def prioritize_argument_sources(question: str, sources: list[dict]) -> list[dict]:
+    """Move passages with explicit reasoning structure nearer the model prompt.
+
+    The normal search can rank a clear definition or mention of a topic above
+    the passage that actually reasons toward it. For questions asking how an
+    author argues, this small reranker combines question-term overlap with
+    general argument signals such as conditionals, reasons, conclusions, and
+    inferential transitions. It preserves the same retrieved passages and
+    gives them fresh citation IDs in their new order.
+    """
+    if not asks_for_argument_explanation(question) or len(sources) < 2:
+        return sources
+
+    argument_signal_pattern = re.compile(
+        r"\b(?:if|because|since|therefore|thus|hence|so|conclude\w*|argue\w*|"
+        r"reason\w*|premise\w*|infer\w*|suppose\w*|assuming|consequently)\b|"
+        r"\b(?:turns out|follows from|as a result|for this reason|on this basis|"
+        r"if this is the case)\b",
+        re.I,
+    )
+    question_terms = set(tokenize(question))
+    facets = question_facets(question)
+    # The first facet normally names the topic whose argument is being asked
+    # about. Give its overlap extra weight so a generic argument elsewhere in
+    # the book does not outrank a passage that reasons about the requested topic.
+    topic_anchor_terms = set(tokenize(facets[0])) if facets else question_terms
+
+    def relevance(source: dict) -> tuple[float, float, int]:
+        passage_terms = set(tokenize(source.get("text", "")))
+        topic_overlap = len(question_terms.intersection(passage_terms))
+        topic_anchor_overlap = min(2, len(topic_anchor_terms.intersection(passage_terms)))
+        # Cap the marker bonus so a page full of conditionals cannot outrank
+        # topical evidence solely because it contains repeated logical words.
+        reasoning_signals = min(6, len(argument_signal_pattern.findall(source.get("text", ""))))
+        adjusted = topic_overlap + (0.9 * reasoning_signals) + (1.25 * topic_anchor_overlap)
+        return (-adjusted, -float(source.get("score", 0)), int(source["page"]))
+
+    ordered = sorted(sources, key=relevance)
+    return [
+        {
+            **source,
+            "source_id": f"S{index + 1}",
+        }
+        for index, source in enumerate(ordered)
+    ]
+
+
 def diagnostic_source_list(sources: list[dict]) -> list[dict]:
     """Describe the exact ranked passages passed to drafting or checking.
 
@@ -428,7 +480,14 @@ def query_needs_expansion(question: str, sources: list[dict]) -> bool:
                 len(facet_terms.intersection(tokenize(source["text"])))
                 for source in sources[:3]
             )
-            facet_required = min(3, max(1, math.ceil(len(facet_terms) * 0.4)))
+            # A single shared word is weak evidence that a whole question part
+            # is covered. For example, an unrelated passage mentioning an
+            # "argument" should not suppress expansion for a request asking
+            # how Aristotle argues for the highest good. Keep a one-term floor
+            # for genuinely short facets, but require two distinct matches
+            # whenever the facet contains at least two meaningful terms.
+            facet_floor = 2 if len(facet_terms) > 1 else 1
+            facet_required = min(3, max(facet_floor, math.ceil(len(facet_terms) * 0.4)))
             if facet_overlap < facet_required:
                 return True
     broad_topic_question = bool(re.search(
@@ -508,6 +567,10 @@ def call_ollama(question: str, sources: list[dict], history: list[dict], model: 
         "which other concept; do not swap roles such as end and means, cause and effect, or condition "
         "and result. Prefer the passage that states that relation explicitly. Answer every part of a "
         "multi-part question; if the passages support only part of it, say what remains unanswered. "
+        "When asked how or why the author argues for a conclusion, explain the reasoning chain: state "
+        "the relevant starting point or premises, how the author connects them, and the conclusion they "
+        "support. Do not substitute a related definition or list of conditions for the argument itself. "
+        "If the supplied passages show only the conclusion and not its reasoning, say what part is missing. "
         # Open-topic prompts can cover several connected parts of a concept.
         # Map only the aspects represented in evidence instead of pretending
         # that one retrieved paragraph is a complete definition.
@@ -692,8 +755,233 @@ def asks_for_author_inference(question: str) -> bool:
     ))
 
 
-def evidence_quote_matches(quote: str, source_text: str) -> bool:
-    """Require the verifier's evidence excerpt to occur in its cited passage.
+def asks_for_argument_explanation(question: str) -> bool:
+    """Recognize explicit requests to explain an author's argument or reason."""
+    return any(
+        re.search(r"\b(?:how|why)\b", facet, re.I)
+        and re.search(r"\b(?:argue|reason|support|justify|conclude|show|prove|derive)\w*\b", facet, re.I)
+        for facet in question_facets(question)
+    )
+
+
+def argument_coverage_issue(
+    question: str,
+    answer: str,
+    answer_items: object = None,
+) -> str | None:
+    """Flag argument answers missing one of three grounded reasoning parts.
+
+    The language model is asked to cover every question facet, but a plausible
+    definition or related claim can still slip through when the user explicitly
+    asks how or why an author argues for a conclusion. This structural check
+    does not judge whether the reasoning is philosophically correct; the model's
+    evidence review and the app's source and quote checks do that. It requires
+    separate conclusion, premise, and reasoning items. The premise and
+    reasoning must cite at least one common passage, the reasoning must reuse
+    the premise's key concepts, and it must include an explicit link.
+    """
+    if not asks_for_argument_explanation(question):
+        return None
+
+    # A conclusion, a premise, and the author's reasoning connection are
+    # distinct jobs. Requiring three separate, role-tagged items makes these
+    # visible to the structured-output model and to the app's validator,
+    # instead of accepting a conclusion plus a related definition as an
+    # explanation of the argument.
+    answer_sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+", answer.strip())
+        if part.strip()
+    ]
+    if len(answer_sentences) < 3:
+        return (
+            "the question asks how or why an author argues for a conclusion; provide three separate parts: "
+            "the conclusion, a premise stated in the passages, and the reasoning connection"
+        )
+
+    # The structured role labels are not shown in the UI; they are a contract
+    # between the model and this check. Each role must be present, and the
+    # reasoning item itself must contain an inferential link rather than
+    # borrowing one from another sentence.
+    if not isinstance(answer_items, list):
+        return "the answer did not label separate conclusion, premise, and reasoning components"
+    if len(answer_items) != 3:
+        return "the answer must contain exactly one conclusion, one premise, and one reasoning item"
+    role_items: dict[str, list[dict]] = {}
+    for item in answer_items:
+        if isinstance(item, dict) and isinstance(item.get("role"), str):
+            role_items.setdefault(item["role"], []).append(item)
+    required_roles = {"conclusion", "premise", "reasoning"}
+    if set(role_items) != required_roles or any(len(role_items.get(role, [])) != 1 for role in required_roles):
+        missing_roles = ", ".join(sorted(required_roles - set(role_items)))
+        return f"the answer must separately identify its conclusion, premise, and reasoning; missing: {missing_roles}"
+    premise_item = role_items["premise"][0]
+    reasoning_item = role_items["reasoning"][0]
+    premise_text = str(premise_item.get("text", ""))
+    reasoning_text = str(reasoning_item.get("text", ""))
+    reasoning_link = re.search(
+        r"\b(?:because|since|therefore|thus|hence|so|for this reason|as a result|"
+        r"on this basis|follows? from|leads? to|results? in|depends? on|given that|"
+        r"premise|reasoning|argument begins|argument proceeds|argues? from|starts? from)\b",
+        reasoning_text,
+        re.I,
+    )
+    if not reasoning_link:
+        return "the reasoning component must explicitly connect a premise to the author's conclusion"
+
+    # Require the premise and reasoning step to share at least one cited
+    # passage. This prevents a general fact from one source being paired with a
+    # separate conclusion from another and presented as the author's argument.
+    # Both items can still cite a second passage when the book develops a link
+    # across more than one passage.
+    premise_evidence = premise_item.get("evidence", [])
+    reasoning_evidence = reasoning_item.get("evidence", [])
+    premise_sources = {
+        entry.get("source_id") for entry in premise_evidence if isinstance(entry, dict)
+    } if isinstance(premise_evidence, list) else set()
+    reasoning_sources = {
+        entry.get("source_id") for entry in reasoning_evidence if isinstance(entry, dict)
+    } if isinstance(reasoning_evidence, list) else set()
+    if not premise_sources.intersection(reasoning_sources):
+        return (
+            "the premise and reasoning items must cite at least one common passage that establishes "
+            "their connection"
+        )
+
+    # Also check that the reasoning item carries forward the premise's key
+    # concepts. A causal word alone can make unrelated evidence look like an
+    # argument, so require lexical continuity between these adjacent steps.
+    premise_terms = set(tokenize(premise_text))
+    reasoning_terms = set(tokenize(reasoning_text))
+    if len(premise_terms.intersection(reasoning_terms)) < 2:
+        return (
+            "the reasoning item must reuse at least two key concepts from the premise so their textual "
+            "connection is visible"
+        )
+    return None
+
+
+def comparison_evidence_issue(question: str, answer_items: object) -> str | None:
+    """Require direct evidence for both named sides of a comparison question.
+
+    A sentence can pass the ordinary vocabulary check while citing only a
+    passage about one side of a comparison. This small structural check handles
+    common forms such as "distinguish X from Y" and "the difference between X
+    and Y." It does not judge the substance of the comparison; it requires the
+    answer to name both requested concepts and the exact cited excerpts to name
+    both concepts somewhere in the answer.
+    """
+    question_text = question.strip().rstrip("?.!;:")
+    patterns = [
+        re.compile(
+            r"\b(?:distinguish|differentiate)\s+(?:between\s+)?(.+?)\s+from\s+(.+)$",
+            re.I,
+        ),
+        re.compile(r"\bdifference\s+between\s+(.+?)\s+and\s+(.+)$", re.I),
+        re.compile(r"\bcompare\s+(.+?)\s+(?:with|to|and)\s+(.+)$", re.I),
+        re.compile(r"\bcontrast\s+(.+?)\s+with\s+(.+)$", re.I),
+    ]
+    concept_pair = None
+    for pattern in patterns:
+        match = pattern.search(question_text)
+        if match:
+            concept_pair = (match.group(1).strip(), match.group(2).strip())
+            break
+    if concept_pair is None:
+        return None
+
+    def comparison_terms(text: str) -> set[str]:
+        """Normalize a common adjective ending for question/source variants."""
+        terms = set(tokenize(text))
+        # English often alternates forms like "philosophical" and
+        # "philosophic" for the same subject. Normalize that spelling only
+        # inside this comparison-topic check; keep the main evidence matcher
+        # strict and unchanged.
+        return {term[:-2] if term.endswith("ical") else term for term in terms}
+
+    concepts = [
+        (original, comparison_terms(original))
+        for original in concept_pair
+    ]
+    concepts = [(label, terms) for label, terms in concepts if terms]
+    if len(concepts) != 2 or any(len(terms) < 2 for _, terms in concepts):
+        # Short or grammatically elliptical labels are ambiguous to check
+        # mechanically; leave those to the model and ordinary quote validator.
+        return None
+    if not isinstance(answer_items, list):
+        return "the comparison answer did not identify both requested concepts"
+
+    answer_terms = set()
+    quoted_terms = set()
+    for item in answer_items:
+        if not isinstance(item, dict):
+            continue
+        answer_terms.update(comparison_terms(str(item.get("text", ""))))
+        evidence = item.get("evidence", [])
+        if isinstance(evidence, list):
+            for entry in evidence:
+                if isinstance(entry, dict) and isinstance(entry.get("quote"), str):
+                    quoted_terms.update(comparison_terms(entry["quote"]))
+
+    missing_from_answer = [label for label, terms in concepts if not terms.issubset(answer_terms)]
+    if missing_from_answer:
+        return (
+            "the comparison answer did not discuss both requested concepts: "
+            + " and ".join(missing_from_answer)
+        )
+    missing_from_evidence = [label for label, terms in concepts if not terms.issubset(quoted_terms)]
+    if missing_from_evidence:
+        return (
+            "the comparison answer lacks an exact cited excerpt naming both sides; find direct text for: "
+            + "; ".join(missing_from_evidence)
+        )
+    return None
+
+
+def multipart_coverage_issue(question_parts: list[str], answer_items: object) -> str | None:
+    """Require one explicitly assigned answer item for every question part.
+
+    A fluent answer can repeat one well-supported point while leaving another
+    part of a compound question unanswered. The model labels each structured
+    answer item with its question-part number, and this check makes sure every
+    part has its own item. The ordinary quote and claim checks still determine
+    whether that item's cited evidence supports its wording.
+    """
+    if len(question_parts) < 2:
+        return None
+    if not isinstance(answer_items, list):
+        return "the answer did not identify separate items for every question part"
+
+    assigned_parts = []
+    for item in answer_items:
+        if isinstance(item, dict):
+            part_number = item.get("question_part")
+            # bool is a subclass of int in Python, so accept only actual
+            # integers from the constrained JSON schema, not true/false.
+            if isinstance(part_number, int) and not isinstance(part_number, bool):
+                assigned_parts.append(part_number)
+
+    expected_parts = set(range(1, len(question_parts) + 1))
+    present_parts = set(assigned_parts)
+    missing_parts = sorted(expected_parts - present_parts)
+    duplicated_parts = sorted(
+        part for part in present_parts if assigned_parts.count(part) > 1
+    )
+    if missing_parts or duplicated_parts:
+        problems = []
+        if missing_parts:
+            problems.append("missing part(s) " + ", ".join(map(str, missing_parts)))
+        if duplicated_parts:
+            problems.append("repeated part(s) " + ", ".join(map(str, duplicated_parts)))
+        return (
+            "the answer must provide one distinct evidence-backed item for each question part; "
+            + "; ".join(problems)
+        )
+    return None
+
+
+def _evidence_quote_is_contiguous(quote: str, source_text: str) -> bool:
+    """Check exact word order without applying the UI excerpt length limit.
 
     OCR/PDF extraction can vary in whitespace and punctuation, so compare
     contiguous word sequences after case-folding and removing punctuation.
@@ -702,9 +990,7 @@ def evidence_quote_matches(quote: str, source_text: str) -> bool:
     quote_words = TOKEN_RE.findall(quote.casefold())
     source_matches = list(TOKEN_RE.finditer(source_text.casefold()))
     source_words = [match.group(0) for match in source_matches]
-    # A tiny generic phrase is not useful evidence, and a long quote can hide
-    # a mismatch between the cited words and the particular claim being checked.
-    if not MIN_EVIDENCE_QUOTE_WORDS <= len(quote_words) <= MAX_EVIDENCE_QUOTE_WORDS:
+    if not quote_words:
         return False
     # Match consecutive words, rather than a bag of words. OCR sometimes
     # inserts punctuation inside a word (the book shard contains "deter, mines"
@@ -746,6 +1032,17 @@ def evidence_quote_matches(quote: str, source_text: str) -> bool:
         if quote_index == len(quote_words):
             return True
     return False
+
+
+def evidence_quote_matches(quote: str, source_text: str) -> bool:
+    """Require a bounded excerpt to occur exactly in its cited passage."""
+    quote_word_count = len(TOKEN_RE.findall(quote.casefold()))
+    # A tiny generic phrase is not useful evidence, and a long quote can hide
+    # a mismatch between the cited words and the particular claim being checked.
+    return (
+        MIN_EVIDENCE_QUOTE_WORDS <= quote_word_count <= MAX_EVIDENCE_QUOTE_WORDS
+        and _evidence_quote_is_contiguous(quote, source_text)
+    )
 
 
 def split_evidence_clauses(text: str) -> list[str]:
@@ -824,6 +1121,103 @@ def evidence_covers_claim_vocabulary(
     return not claim_vocabulary_gaps(text, evidence_texts)
 
 
+def compact_exact_evidence_quotes(
+    oversized_quote: str,
+    source_text: str,
+    claim_text: str,
+) -> list[str] | None:
+    """Shorten one oversized quote into at most two checked excerpts.
+
+    Some local models select a whole argument paragraph even when only two
+    small parts support the sentence. This helper searches only the overlong
+    excerpt the model supplied, and each chosen contiguous word window must
+    independently occur exactly in the cited passage. The chosen window or pair
+    must cover every claim clause under the same lexical check used by the
+    answer formatter. Even if a model stitched separate phrases into its long
+    excerpt, the app cannot accept a stitched quotation: every displayed
+    excerpt is matched independently against the passage.
+    """
+    quote_tokens = list(TOKEN_RE.finditer(oversized_quote))
+    if len(quote_tokens) <= MAX_EVIDENCE_QUOTE_WORDS:
+        return None
+
+    # The general claim checker intentionally uses a small list of pivots.
+    # For excerpt selection, split at commas as well so two claims joined in
+    # one sentence cannot be covered by vocabulary found only in the first.
+    clauses = [
+        clause.strip()
+        for clause in re.split(
+            r"[,;:—–]|\b(?:because|since|although|though|whereas|while|but|however|therefore|thereby)\b",
+            claim_text,
+            flags=re.I,
+        )
+        if tokenize(clause)
+    ]
+    if not clauses:
+        return None
+    all_clause_bits = (1 << len(clauses)) - 1
+
+    def excerpt_covers_clause(clause: str, excerpt: str) -> bool:
+        """Demand stronger overlap while choosing compact excerpts.
+
+        The ordinary answer guard requires two shared content words. Selection
+        is stricter: a snippet must contain roughly two thirds of a clause's
+        key terms, with a floor of three, reducing the chance that a vague pair
+        such as "activity of soul" is used to stand in for two distinct parts
+        of an argument.
+        """
+        clause_terms = set(tokenize(clause))
+        shared_terms = clause_terms.intersection(tokenize(excerpt))
+        required_overlap = min(len(clause_terms), max(3, (2 * len(clause_terms) + 2) // 3))
+        return bool(clause_terms) and len(shared_terms) >= required_overlap
+
+    # Keep only a few shortest windows for each coverage pattern. This bounds
+    # the pair search while preferring precise evidence over longer excerpts.
+    best_by_coverage: dict[int, list[tuple[int, str]]] = {}
+    for start in range(len(quote_tokens)):
+        final_end = min(len(quote_tokens), start + MAX_EVIDENCE_QUOTE_WORDS)
+        for end in range(start + MIN_EVIDENCE_QUOTE_WORDS, final_end + 1):
+            excerpt = oversized_quote[quote_tokens[start].start():quote_tokens[end - 1].end()]
+            if not evidence_quote_matches(excerpt, source_text):
+                continue
+            coverage = 0
+            for clause_index, clause in enumerate(clauses):
+                if excerpt_covers_clause(clause, excerpt):
+                    coverage |= 1 << clause_index
+            if not coverage:
+                continue
+            excerpt_words = end - start
+            choices = best_by_coverage.setdefault(coverage, [])
+            if all(existing != excerpt for _, existing in choices):
+                choices.append((excerpt_words, excerpt))
+                choices.sort(key=lambda choice: (choice[0], choice[1]))
+                del choices[6:]
+
+    if all_clause_bits in best_by_coverage:
+        return [best_by_coverage[all_clause_bits][0][1]]
+
+    # One short excerpt may cover one claim clause and a second may cover the
+    # other. Both remain exact, contiguous quotations from the model's original
+    # excerpt, and the formatter will recheck the combined evidence afterward.
+    candidates = [choice for choices in best_by_coverage.values() for choice in choices]
+    best_pair: tuple[int, str, str] | None = None
+    for left_index, (left_length, left_quote) in enumerate(candidates):
+        for right_length, right_quote in candidates[left_index + 1:]:
+            if left_quote == right_quote:
+                continue
+            if not all(
+                excerpt_covers_clause(clause, " ".join([left_quote, right_quote]))
+                for clause in clauses
+            ):
+                continue
+            pair = (left_length + right_length, left_quote, right_quote)
+            if best_pair is None or pair < best_pair:
+                best_pair = pair
+    if best_pair is None:
+        return None
+    return [best_pair[1], best_pair[2]]
+
+
 def format_cited_sentences(
     items: object,
     sources: list[dict],
@@ -846,9 +1240,13 @@ def format_cited_sentences(
     valid_sources = {source["source_id"]: source for source in sources}
     marker_pattern = re.compile(r"\[((?:S\d+)(?:\s*,\s*S\d+)*)\]")
 
+    validation_error_found = False
+
     def invalid(reason: str) -> None:
-        """Keep a plain explanation for the opt-in trace, not for normal users."""
-        if validation_issues is not None and not validation_issues:
+        """Collect validation findings for an opt-in trace, not normal users."""
+        nonlocal validation_error_found
+        validation_error_found = True
+        if validation_issues is not None and reason not in validation_issues:
             validation_issues.append(reason)
 
     if not isinstance(items, list) or not items:
@@ -856,47 +1254,102 @@ def format_cited_sentences(
         return None
     rendered = []
     seen = set()
-    for item in items:
+    for item_number, item in enumerate(items, start=1):
+        # Keep validating sibling items after one fails. A model-generated
+        # answer can contain several independent quote or citation problems;
+        # reporting all of them gives the repair pass one useful diagnosis
+        # instead of making it discover each problem through repeated retries.
         if not isinstance(item, dict) or not isinstance(item.get("text"), str):
-            invalid("an answer sentence was missing valid text")
-            return None
+            invalid(f"answer item {item_number}: an answer sentence was missing valid text")
+            continue
         evidence = item.get("evidence")
         if not isinstance(evidence, list) or not evidence:
-            invalid("an answer sentence had no evidence entries")
-            return None
+            invalid(f"answer item {item_number}: an answer sentence had no evidence entries")
+            continue
         if len(evidence) > 2:
-            invalid("an answer sentence cited more than two passages")
-            return None
+            invalid(f"answer item {item_number}: an answer sentence cited more than two passages")
+            continue
         ids = []
         evidence_excerpts = []
         evidence_pairs = set()
-        for item_evidence in evidence:
+        item_has_invalid_evidence = False
+        for evidence_number, item_evidence in enumerate(evidence, start=1):
             if not isinstance(item_evidence, dict):
-                invalid("an evidence entry was not an object")
-                return None
+                invalid(f"answer item {item_number}, evidence {evidence_number}: an evidence entry was not an object")
+                item_has_invalid_evidence = True
+                continue
             source_id = str(item_evidence.get("source_id", "")).strip()
             quote = item_evidence.get("quote")
             source = valid_sources.get(source_id)
             if source is None:
-                invalid(f"evidence referenced unavailable source {source_id or '(empty ID)'}")
-                return None
+                invalid(
+                    f"answer item {item_number}, evidence {evidence_number}: evidence referenced unavailable "
+                    f"source {source_id or '(empty ID)'}"
+                )
+                item_has_invalid_evidence = True
+                continue
             if not isinstance(quote, str):
-                invalid(f"evidence for {source_id} did not include a text excerpt")
-                return None
+                invalid(
+                    f"answer item {item_number}, evidence {evidence_number}: "
+                    f"evidence for {source_id} did not include a text excerpt"
+                )
+                item_has_invalid_evidence = True
+                continue
             quote_length = len(TOKEN_RE.findall(quote.casefold()))
             if quote_length > MAX_EVIDENCE_QUOTE_WORDS:
-                invalid(
-                    f"the quoted excerpt for {source_id} was too long "
-                    f"({quote_length} words; maximum {MAX_EVIDENCE_QUOTE_WORDS})"
+                compacted_quotes = compact_exact_evidence_quotes(
+                    quote, source["text"], item["text"]
                 )
-                return None
-            if not evidence_quote_matches(quote, source["text"]):
-                invalid(f"the quoted excerpt for {source_id} was too short or not an exact passage match")
-                return None
+                if compacted_quotes is None:
+                    invalid(
+                        f"answer item {item_number}, evidence {evidence_number}: "
+                        f"the quoted excerpt for {source_id} was too long "
+                        f"({quote_length} words; maximum {MAX_EVIDENCE_QUOTE_WORDS}) and "
+                        "could not be safely shortened to exact claim-matching excerpts"
+                    )
+                    item_has_invalid_evidence = True
+                    continue
+                # Replace the oversized model excerpt with one or two exact,
+                # claim-matching windows. The same checks below validate them
+                # again before the source citation can reach the UI.
+                item_evidence = [
+                    {"source_id": source_id, "quote": compact_quote}
+                    for compact_quote in compacted_quotes
+                ]
+                # Process the generated short excerpts through the ordinary
+                # validation path instead of trusting the helper's result.
+                evidence = list(evidence)
+                evidence[evidence_number - 1:evidence_number] = item_evidence
+                item["evidence"] = evidence
+                return format_cited_sentences(
+                    items,
+                    sources,
+                    max_sentences=max_sentences,
+                    mark_as_inference=mark_as_inference,
+                    validation_issues=validation_issues,
+                )
+            # An overlong quote already has a precise validation finding. The
+            # exact-match helper enforces the same word cap, so calling it here
+            # would add a misleading second complaint about an otherwise exact
+            # excerpt and make the repair feedback noisier.
+            if (
+                quote_length <= MAX_EVIDENCE_QUOTE_WORDS
+                and not evidence_quote_matches(quote, source["text"])
+            ):
+                invalid(
+                    f"answer item {item_number}, evidence {evidence_number}: "
+                    f"the quoted excerpt for {source_id} was too short or not an exact passage match"
+                )
+                item_has_invalid_evidence = True
+                continue
             evidence_pair = (source_id, quote)
             if evidence_pair in evidence_pairs:
-                invalid(f"evidence repeated the same excerpt from {source_id}")
-                return None
+                invalid(
+                    f"answer item {item_number}, evidence {evidence_number}: "
+                    f"evidence repeated the same excerpt from {source_id}"
+                )
+                item_has_invalid_evidence = True
+                continue
             evidence_pairs.add(evidence_pair)
             # One passage can support a linked claim through two distinct short
             # excerpts. Keep both excerpts for validation but emit the source
@@ -904,13 +1357,41 @@ def format_cited_sentences(
             if source_id not in ids:
                 ids.append(source_id)
             evidence_excerpts.append(quote)
-        text = marker_pattern.sub("", item["text"])
+        # Do not assess claim wording against an incomplete evidence set. The
+        # structural problems above explain why this item cannot be accepted;
+        # the repair model should first correct those exact quote/citation
+        # entries, then the next validation pass can check claim coverage.
+        if item_has_invalid_evidence or not evidence_excerpts:
+            continue
+        # The model is asked not to put source IDs in prose because this
+        # formatter adds the authoritative citations after validation. Small
+        # models sometimes write phrases such as "According to [S1], ...";
+        # simply deleting the marker would leave broken text like
+        # "According to , ...". Remove that redundant attribution wrapper
+        # before stripping any remaining inline markers.
+        text = re.sub(
+            r"\baccording\s+to\s+" + marker_pattern.pattern + r"\s*,?",
+            "",
+            item["text"],
+            flags=re.I,
+        )
+        text = marker_pattern.sub("", text)
         text = re.sub(r"\s{2,}", " ", text).strip()
         sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
         if not sentences:
-            invalid("an answer sentence became empty after citation cleanup")
-            return None
-        for sentence in sentences:
+            invalid(f"answer item {item_number}: an answer sentence became empty after citation cleanup")
+            continue
+        for sentence_number, sentence in enumerate(sentences, start=1):
+            # A malformed checker response can repeat the user's question as
+            # if it were an answer. Exact citations alone do not make a
+            # question responsive, so reject question-shaped sentences before
+            # the evidence-word check can accidentally approve that echo.
+            if sentence.endswith("?"):
+                invalid(
+                    f"answer item {item_number}, sentence {sentence_number}: "
+                    "the response repeated a question instead of answering it"
+                )
+                continue
             # A short quote can be real but unrelated to an added clause. Check
             # each common claim clause against the exact excerpt(s) cited for
             # this sentence before allowing the model's semantic approval.
@@ -923,10 +1404,15 @@ def format_cited_sentences(
                 })[:12]
                 detail = ", ".join(missing_terms) if missing_terms else "not enough shared content terms"
                 invalid(
-                    "a claim clause introduced key terms absent from its cited excerpt; "
+                    f"answer item {item_number}, sentence {sentence_number}, could not tie every "
+                    f"claim clause to its quoted excerpt: key terms absent from the cited excerpt "
+                    f"for {sentence[:240]!r}; "
                     f"missing wording includes: {detail}"
                 )
-                return None
+                # Keep checking the remaining sentences. A retry needs the full
+                # set of gaps; stopping at the first one can leave later claims
+                # unaudited and cause the model to repeat them unchanged.
+                continue
             normalized = re.sub(r"\W+", " ", sentence.lower()).strip()
             if not normalized or normalized in seen:
                 continue
@@ -951,7 +1437,11 @@ def format_cited_sentences(
                 f"{sentence} {' '.join(f'[{source_id}]' for source_id in ids)}{punctuation}"
             )
             if max_sentences is not None and len(rendered) >= max_sentences:
+                if validation_error_found:
+                    return None
                 return " ".join(rendered)
+    if validation_error_found:
+        return None
     return " ".join(rendered) if rendered else None
 
 
@@ -967,6 +1457,39 @@ def sources_cited_by_answer(answer: str, sources: list[dict]) -> list[dict]:
     return [source for source in sources if source["source_id"] in cited_ids]
 
 
+def summarize_retry_feedback(issues: list[str], fallback: str) -> str:
+    """Turn validator details into short hints without replaying bad claims.
+
+    The full rejected sentences belong in opt-in diagnostics. Repeating those
+    sentences in the retry prompt can anchor a small model to the exact wording
+    it just failed to validate, so the retry receives only item numbers and the
+    missing vocabulary needed to locate and repair the problem.
+    """
+    if not issues:
+        return fallback
+
+    summaries = []
+    for issue in issues:
+        item_match = re.match(r"(answer item \d+(?:, sentence \d+)?),", issue)
+        missing_match = re.search(r"missing wording includes: (.+)$", issue)
+        item_label = item_match.group(1) if item_match else "the previous answer"
+        if missing_match:
+            missing_terms = missing_match.group(1)
+            summaries.append(
+                f"{item_label} used wording not represented in its selected excerpt(s) "
+                f"({missing_terms}); find direct support elsewhere in the passages or omit/narrow it"
+            )
+        else:
+            # Structural failures do not include the generated claim text, so
+            # the short validation reason is useful without anchoring content.
+            summaries.append(issue[:240])
+    # Include every collected problem whenever possible: a repair prompt that
+    # mentions only the first few can leave later sentences with the same bad
+    # evidence. Cap total prompt size so a malformed model response cannot
+    # overwhelm the bounded retry with an arbitrarily long diagnostic string.
+    return "; ".join(summaries)[:4000]
+
+
 def verify_answer(
     question: str,
     sources: list[dict],
@@ -979,8 +1502,9 @@ def verify_answer(
     The second model pass can revise or remove unsupported details. Its structured
     result must provide a verbatim excerpt from each cited passage for every
     answer sentence. The app checks that the excerpts occur in those passages;
-    missing, invalid, or uncited results become a safe retry message instead of
-    being presented as verified.
+    missing, invalid, or uncited results trigger a fresh reconstruction from the
+    source passages. If that also fails, a final repair pass receives the latest
+    failed candidate and all collected validation findings before a safe fallback.
     """
     failure = (
         "I couldn't verify a reliable answer in the passages I found. "
@@ -998,39 +1522,69 @@ def verify_answer(
         f"[{source['source_id']}] {BOOK_TITLE}, PDF page {source['page']}\n{source['text']}"
         for source in sources
     )
+    argument_question = asks_for_argument_explanation(question)
+    # Explicit argument questions use their conclusion/premise/reasoning
+    # structure. Other compound questions get a numbered item for each clause.
+    question_parts = question_facets(question) if not argument_question else []
+    multipart_question = len(question_parts) > 1
+    # Ordinary answers use a small sentence schema. Argument questions add a
+    # hidden role label to each item, letting the model and validator separate
+    # the conclusion, the text's premise, and the connection between them.
+    answer_item_schema = {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source_id": {
+                            "type": "string",
+                            "enum": sorted(source["source_id"] for source in sources),
+                        },
+                        "quote": {"type": "string"},
+                    },
+                    "required": ["source_id", "quote"],
+                    "additionalProperties": False,
+                },
+                "minItems": 1,
+                # At most two exact excerpts can support one focused answer item.
+                "maxItems": 2,
+            },
+        },
+        "required": ["text", "evidence"],
+        "additionalProperties": False,
+    }
+    if argument_question:
+        answer_item_schema["properties"]["role"] = {
+            "type": "string",
+            "enum": ["conclusion", "premise", "reasoning"],
+        }
+        answer_item_schema["required"].append("role")
+    elif multipart_question:
+        answer_item_schema["properties"]["question_part"] = {
+            "type": "integer",
+            "enum": list(range(1, len(question_parts) + 1)),
+        }
+        answer_item_schema["required"].append("question_part")
+
     schema = {
         "type": "object",
         "properties": {
             "sentences": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"},
-                        "evidence": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "source_id": {
-                                        "type": "string",
-                                        "enum": sorted(source["source_id"] for source in sources),
-                                    },
-                                    "quote": {"type": "string"},
-                                },
-                                "required": ["source_id", "quote"],
-                                "additionalProperties": False,
-                            },
-                            "minItems": 1,
-                            # Keep evidence selective: at most two short excerpts;
-                            # both may refer to one passage when a relation or
-                            # definition needs two distinct pieces of that text.
-                            "maxItems": 2,
-                        },
-                    },
-                    "required": ["text", "evidence"],
-                    "additionalProperties": False,
-                },
+                # Explicit argument requests need exactly three checkable
+                # components; constrained decoding can enforce that structure.
+                **({"minItems": 3, "maxItems": 3} if argument_question else {}),
+                # For an ordinary compound question, one item per part keeps
+                # the answer's coverage visible to the shared validator.
+                **(
+                    {"minItems": len(question_parts), "maxItems": len(question_parts)}
+                    if multipart_question
+                    else {}
+                ),
+                "items": answer_item_schema,
             },
         },
         "required": ["sentences"],
@@ -1063,7 +1617,28 @@ def verify_answer(
                 "Prefer an excerpt that names both concepts and states the relation explicitly. "
                 "Check that the answer addresses every part of the question, especially when it asks "
                 "both for a conclusion and for the argument supporting it; if the evidence answers "
-                "only part, clearly identify the gap. For a simple question, use no more than two "
+                "only part, clearly identify the gap. When asked how or why the author argues for a "
+                "conclusion, state the relevant premises or starting point, explain the connection the "
+                "author makes, and give the conclusion; do not replace that reasoning chain with a related "
+                "definition or list of conditions. If the passages do not supply the reasoning, identify "
+                "that gap instead of inventing it. "
+                + (
+                    "For this question, return exactly three separate answer items, with roles conclusion, "
+                    "premise, and reasoning. The conclusion item identifies the result; the premise item "
+                    "states a starting point found in the passages; the reasoning item explains how the author "
+                    "connects that premise to the result, using an explicit link such as because, since, or so. "
+                    "The premise and reasoning items must cite at least one common passage, and the reasoning "
+                    "item must reuse the premise's key concepts. "
+                    "Give each item its own exact supporting excerpt. Do not compress the argument into a definition. "
+                    if argument_question else ""
+                )
+                + (
+                    "This question has multiple parts. Return exactly one separate answer item for each part, "
+                    "set question_part to the corresponding number, and give each item evidence for that part. "
+                    "Do not answer one part by repeating another part's claim. "
+                    if multipart_question else ""
+                )
+                + "For a simple question, use no more than two "
                 "sentences and prefer one when the passages establish one point. If the draft or passages "
                 "state the same claim in different words, as a negation, or as a restatement, merge it "
                 "into one sentence. Keep a second sentence only when it adds a distinct, useful "
@@ -1073,16 +1648,25 @@ def verify_answer(
                 "normally one source, and at most two short excerpts when it combines distinct evidence. The same "
                 "source_id may appear twice when two separate excerpts from that passage are needed to establish "
                 "one claim. For each excerpt, include "
-                "a short, exact, continuous quotation of 3 to 18 words copied from that passage; do not paraphrase or "
+                f"a short, exact, continuous quotation of {MIN_EVIDENCE_QUOTE_WORDS} to "
+                f"{MAX_EVIDENCE_QUOTE_WORDS} words copied from that passage; do not paraphrase or "
                 "use ellipses in the quotation. The quotation must directly support the sentence, "
                 "including the direction of any relationship. The app checks that each quotation "
                 "appears in the cited passage and that each claim clause shares key vocabulary with its "
-                "quoted excerpt. Do not cite every passage "
-                "for every sentence. Split a sentence that combines separate factual claims into "
+                "quoted excerpt. Do not cite every passage for every sentence. The vocabulary check "
+                "compares the sentence with the union of its exact quoted excerpts. "
+                "When a concise sentence combines two connected points, use a second short exact excerpt "
+                "if the first excerpt supports only one point and another passage supports the other. "
+                "Do not make one long quote cover unrelated material, and do not treat a paraphrase as a quote. "
+                "Split a sentence that combines separate factual claims into "
                 "separate answer sentences, each with evidence for all of its claims. In particular, "
                 "check relative clauses beginning with words such as 'which' and 'because' separately; "
                 "a quote for the main clause does not support an added clause. Remove or narrow "
                 "any clause that the quoted words do not directly support. "
+                "For a question asking how two ideas differ, identify the basis of comparison and use "
+                "the passages that directly describe each idea. Prefer the author's own terms over "
+                "abstract labels such as 'theoretical' or 'practical' unless the cited passage supports "
+                "those labels. If the evidence does not establish one side of the comparison, say so. "
                 "Track who holds each view: when a passage reports another "
                 "thinker's position and the author responds to it, distinguish that reported view from "
                 "the author's own conclusion and preserve any objection or qualification. When several "
@@ -1096,41 +1680,176 @@ def verify_answer(
         {
             "role": "user",
             "content": (
-                f"Question: {question}\n\nDraft answer to check (do not assume it is correct):\n{draft}\n\n"
+                f"Question: {question}\n\n"
+                + (
+                    "Question parts to answer separately (use the matching question_part number):\n"
+                    + "\n".join(
+                        f"{part_number}. {part}"
+                        for part_number, part in enumerate(question_parts, start=1)
+                    )
+                    + "\n\n"
+                    if multipart_question
+                    else ""
+                )
+                + f"Draft answer to check (do not assume it is correct):\n{draft}\n\n"
                 f"Available passages and citation IDs:\n{source_text}"
             ),
         },
     ]
     last_failure = "model returned no supported sentences or invalid evidence excerpts"
-    # Small local models sometimes produce a malformed quote on the first try.
-    # Retry once with a narrower instruction before showing the safe fallback.
-    # This keeps the pipeline shared and content-driven while avoiding a
-    # question-specific exception path.
-    for attempt in range(2):
+    retry_feedback = last_failure
+    # The first call checks the draft. A second call rebuilds from sources
+    # without that draft, avoiding an anchoring effect. Only if that fresh
+    # reconstruction still fails do we spend one final call repairing its
+    # structured evidence using the concrete validation findings. This bounded
+    # sequence gives format errors one more chance without creating an
+    # open-ended retry loop or a question-specific rule.
+    latest_failed_sentences = None
+    latest_validation_issues: list[str] = []
+    # Remember whether any attempt omitted an explicitly requested reasoning
+    # chain or made claims the selected excerpts do not support. A final repair
+    # that replays rejected wording can anchor a small model to the same failure,
+    # so those cases rebuild from sources alone instead of receiving a candidate.
+    argument_coverage_failed = False
+    claim_evidence_failed = False
+    comparison_evidence_failed = False
+    multipart_coverage_failed = False
+    for attempt in range(3):
+        # The third call is a repair of the fresh reconstruction, not another
+        # generic retry. If that reconstruction returned no structured answer,
+        # there is no candidate for a quote-repair pass, so use the safe fallback.
+        if attempt == 2 and not latest_failed_sentences:
+            break
+        if attempt == 1:
+            # Do not accidentally reuse attempt one's candidate if the fresh
+            # reconstruction itself returns invalid JSON or no sentence list.
+            latest_failed_sentences = None
         attempt_trace = {"attempt": attempt + 1}
         if diagnostics is not None:
             diagnostics.setdefault("attempts", []).append(attempt_trace)
         attempt_messages = messages
         if attempt == 1:
-            attempt_messages = messages + [{
-                "role": "user",
-                "content": (
-                    "Your previous response could not be validated. Try again with fewer claims. "
-                    f"The specific validation issue was: {last_failure}. "
-                    "Address that issue directly. Treat any listed missing wording as a warning about "
-                    "unsupported wording, not as terms to force into the answer. Remove any clause the "
-                    "cited evidence does not support; "
-                    f"For each sentence, copy a run of {MIN_EVIDENCE_QUOTE_WORDS} to "
-                    f"{MAX_EVIDENCE_QUOTE_WORDS} consecutive words exactly "
-                    "from the source passage you cite. If one passage has two separate relevant excerpts, "
-                    "you may cite that same source twice with different quotations. Keep punctuation outside "
-                    "the quotation irrelevant. Do not invent, combine, or paraphrase words inside the "
-                    "quotation. Make sure the "
-                    "quotation supports every clause in the sentence, including any clause introduced "
-                    "by 'which', 'because', or 'but', and preserves any stated relationship."
-                ),
-            }]
-            print("[evidence-check] retry: first response did not pass validation")
+            # Start from the original system rules, but rebuild the user turn
+            # without the rejected draft. This avoids asking a small checker to
+            # repair text that it is already repeating despite explicit feedback.
+            retry_content = (
+                "The earlier draft and answer attempt were not reliable. Do not reuse or repeat their "
+                "wording. Reconstruct a concise answer from the question and passages below. "
+                "Address every numbered validation finding: find a passage that directly supports the "
+                "claim. For every missing-word finding, inspect the available passages before deciding: "
+                "if another passage directly supports the missing part, add a second short, exact quote "
+                "and cite that source too (or use a second distinct quote from the same source); do not "
+                "force missing words into a quotation. If no passage supports the missing part, omit or "
+                "narrow it. Use the author's wording where a paraphrase introduces terms absent from its evidence. "
+                "For a comparison, support each side with the passage that describes it; do not add a label "
+                "such as 'abstract' or 'theoretical' unless the passages establish it. If the question asks "
+                "how or why an argument reaches its conclusion, return exactly "
+                "three separate role-labeled items: conclusion, premise, and reasoning. The reasoning "
+                "item must state how the premise connects to the conclusion, not only repeat the result or "
+                "a definition. Keep distinct claims in separate sentences. A sentence may use at most two "
+                "evidence excerpts, and those exact excerpts are checked together. For each sentence, include a "
+                f"short, exact quotation of {MIN_EVIDENCE_QUOTE_WORDS} to {MAX_EVIDENCE_QUOTE_WORDS} "
+                "consecutive words from its cited passage. A passage may be cited twice with different "
+                "quotes when needed. Do not invent or paraphrase words inside quotations. "
+                + (
+                    "Return exactly one distinct answer item for each numbered question part, set question_part "
+                    "to that item's number, and do not repeat the same claim across different parts. "
+                    + "Question parts:\n"
+                    + "\n".join(
+                        f"{part_number}. {part}"
+                        for part_number, part in enumerate(question_parts, start=1)
+                    )
+                    + "\n\n"
+                    if multipart_question
+                    else ""
+                )
+                + f"Validation findings: {retry_feedback}\n\n"
+                f"Question: {question}\n\nAvailable passages and citation IDs:\n{source_text}"
+            )
+            attempt_messages = [
+                messages[0],
+                {"role": "user", "content": retry_content},
+            ]
+            print("[evidence-check] retry: rebuilding from passages after first response failed")
+        elif attempt == 2:
+            # The fresh reconstruction is itself untrusted, but including it
+            # in this final, bounded repair gives the model enough context to
+            # replace an oversized/mismatched quote without resurrecting the
+            # original draft that triggered the first failure. A missing
+            # reasoning chain is different: omit that candidate entirely to
+            # prevent the checker from repeating its conclusion-only answer.
+            candidate_text = json.dumps(latest_failed_sentences, ensure_ascii=False)
+            if (
+                argument_coverage_failed
+                or claim_evidence_failed
+                or comparison_evidence_failed
+                or multipart_coverage_failed
+            ):
+                # Start from the sources alone when the rejected text either
+                # omits requested argument steps or contains claims unsupported
+                # by its excerpts. This rule applies across question types: a
+                # comparison is just as vulnerable to repeated unsupported
+                # wording as an argument explanation is.
+                clean_slate_instructions = (
+                    "The previous answer attempts did not produce a fully supported answer. Start over from the "
+                    "passages below. Do not reuse a rejected claim or paraphrase it with different words unless "
+                    "a passage directly supports that wording. For every missing-word finding, inspect all passages; "
+                    "if another passage directly supports the missing part, cite it with a second short exact excerpt. "
+                    "If none does, narrow or omit the claim. Prefer the author's terms and "
+                    "short exact excerpts over abstract labels absent from the text. For a comparison, make sure "
+                    "the cited excerpts identify both named concepts. Keep distinct claims in "
+                    "separate sentences. For each sentence, provide one or two exact, continuous quotations of "
+                    f"{MIN_EVIDENCE_QUOTE_WORDS} to {MAX_EVIDENCE_QUOTE_WORDS} words. Do not use the original "
+                    "draft or either rejected answer.\n\n"
+                )
+                if argument_question:
+                    # Explicit argument questions still need a premise and an
+                    # inferential link; clean-slate recovery changes what the
+                    # model sees, not the reasoning structure it must provide.
+                    clean_slate_instructions += (
+                        "Return exactly three separate answer items labeled conclusion, premise, and reasoning. "
+                        "The premise item states a starting point from the text; the reasoning item explains how "
+                        "the author connects it to the conclusion. Cite at least one same passage in both the "
+                        "premise and reasoning items, reuse key concepts from the premise, and include an explicit "
+                        "link such as because, since, therefore, or so. If the passages do not provide a step, "
+                        "identify that gap instead of inventing it.\n\n"
+                    )
+                elif multipart_question:
+                    clean_slate_instructions += (
+                        "This question has distinct parts. Return exactly one answer item for each numbered part, "
+                        "set question_part to its number, and cite evidence that directly supports that part. "
+                        "Do not repeat one part's answer as a substitute for another. If the passages do not "
+                        "support a part, identify that gap in its item.\n\n"
+                        + "Question parts:\n"
+                        + "\n".join(
+                            f"{part_number}. {part}"
+                            for part_number, part in enumerate(question_parts, start=1)
+                        )
+                        + "\n\n"
+                    )
+                repair_content = (
+                    clean_slate_instructions
+                    + f"Validation findings: {retry_feedback}\n\n"
+                    + f"Question: {question}\n\nAvailable passages and citation IDs:\n{source_text}"
+                )
+            else:
+                repair_content = (
+                    "The fresh answer below failed evidence validation. It is only a candidate, not a source of truth. "
+                    "Repair each numbered validation finding using the passages. For a missing-vocabulary finding, "
+                    "first check whether another passage directly supports that part of the claim; if so, add a "
+                    "second short exact excerpt and its source ID (or a second distinct excerpt from the same source). "
+                    "Only omit or narrow that part if the available passages do not support it. Keep supported claims "
+                    "only, and replace invalid quotations with exact, continuous excerpts of "
+                    f"{MIN_EVIDENCE_QUOTE_WORDS} to {MAX_EVIDENCE_QUOTE_WORDS} words. Do not use the original draft.\n\n"
+                    f"Validation findings: {retry_feedback}\n\n"
+                    f"Question: {question}\n\nFresh candidate to repair:\n{candidate_text}\n\n"
+                    f"Available passages and citation IDs:\n{source_text}"
+                )
+            attempt_messages = [
+                messages[0],
+                {"role": "user", "content": repair_content},
+            ]
+            print("[evidence-check] repair: fresh reconstruction still failed validation")
 
         payload = json.dumps({
             "model": model,
@@ -1154,11 +1873,13 @@ def verify_answer(
             checked = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
             if not isinstance(checked, dict):
                 last_failure = "model returned an invalid response"
+                retry_feedback = last_failure
                 attempt_trace.update({"status": "rejected", "reason": last_failure})
                 continue
             # Record only the checker's structured, user-facing sentence and
             # excerpt fields; raw model responses may include unwanted reasoning.
             attempt_trace["checker_sentences"] = checked.get("sentences")
+            latest_failed_sentences = checked.get("sentences")
             validation_issues: list[str] = []
             answer = format_cited_sentences(
                 checked.get("sentences"),
@@ -1167,20 +1888,214 @@ def verify_answer(
                 mark_as_inference=asks_for_author_inference(question),
                 validation_issues=validation_issues,
             )
+            # A correct citation is not enough when the question explicitly
+            # asks for an argument. Reject a conclusion-only answer so the
+            # bounded repair can supply a premise and the missing logical link.
+            if answer:
+                coverage_issue = argument_coverage_issue(
+                    question,
+                    answer,
+                    checked.get("sentences"),
+                )
+                if coverage_issue:
+                    argument_coverage_failed = True
+                    validation_issues.append(coverage_issue)
+                    answer = None
+            if answer:
+                # A compound question cannot pass by covering only its easiest
+                # clause. Require an item assigned to every facet; exact quote
+                # and claim checks above still govern the evidence itself.
+                multipart_issue = multipart_coverage_issue(
+                    question_parts,
+                    checked.get("sentences"),
+                )
+                if multipart_issue:
+                    multipart_coverage_failed = True
+                    validation_issues.append(multipart_issue)
+                    answer = None
+            if answer:
+                # Topic words in the answer are not enough for a comparison:
+                # require exact citations that name both concepts the reader
+                # asked us to distinguish. This prevents a passage about only
+                # one side from making a plausible but incomplete comparison
+                # look fully evidenced.
+                comparison_issue = comparison_evidence_issue(
+                    question,
+                    checked.get("sentences"),
+                )
+                if comparison_issue:
+                    comparison_evidence_failed = True
+                    validation_issues.append(comparison_issue)
+                    answer = None
+            if any(
+                "could not tie every claim clause to its quoted excerpt" in issue
+                for issue in validation_issues
+            ):
+                # A claim-vocabulary failure is substantive for any question
+                # type. The final attempt should rebuild from passages instead
+                # of polishing the same unsupported wording and retaining its
+                # extra claims.
+                claim_evidence_failed = True
             if answer:
                 attempt_trace.update({"status": "accepted", "answer": answer})
                 if diagnostics is not None:
                     diagnostics["status"] = "verified"
                     diagnostics["answer"] = answer
                 return answer
-            last_failure = validation_issues[0] if validation_issues else "no answer sentence passed evidence validation"
+            last_failure = (
+                "; ".join(validation_issues[:6])
+                if validation_issues
+                else "no answer sentence passed evidence validation"
+            )
+            latest_validation_issues = list(validation_issues)
+            retry_feedback = summarize_retry_feedback(validation_issues, last_failure)
             attempt_trace.update({"status": "rejected", "reason": last_failure})
+            if validation_issues:
+                # Keep the complete list in troubleshooting output; the retry
+                # prompt summarizes all findings and caps only their total size.
+                attempt_trace["issues"] = validation_issues
         except json.JSONDecodeError as error:
             last_failure = f"model returned invalid JSON: {error}"
+            retry_feedback = last_failure
             attempt_trace.update({"status": "rejected", "reason": last_failure})
+            if attempt == 1:
+                # The final repair requires a parseable fresh candidate. With
+                # no such candidate, another identical-format call is unlikely
+                # to help and would only add latency.
+                break
         except (urllib.error.URLError, TimeoutError, TypeError, AttributeError) as error:
             attempt_trace.update({"status": "error", "reason": f"model request or response error: {error}"})
             return reject(f"model request or response error: {error}")
+
+    # A failed whole response does not always mean that every sentence failed.
+    # This final recovery is shared by ordinary, multi-part, comparison, and
+    # argument questions: it tries each checker item on its own, then tries
+    # each of that item's excerpts separately. The normal exact-quote and
+    # claim-vocabulary gates still have to accept the sentence, so this only
+    # preserves evidence the user could already inspect in a complete answer.
+    if isinstance(latest_failed_sentences, list):
+        # Multi-part questions need a sentence explicitly assigned to each
+        # question part. For other prompts, retain the verified items in their
+        # original order and label the result as incomplete below.
+        supported_items: dict[int, str] = {}
+        supported_general_items: list[tuple[dict, str]] = []
+        expected_parts = set(range(1, len(question_parts) + 1)) if multipart_question else set()
+
+        def validate_recovery_item(item: dict) -> str | None:
+            """Try a whole item and then exact excerpts one at a time.
+
+            A model can place a supported sentence beside an unrelated quote
+            or an oversized second excerpt. Testing each evidence entry alone
+            lets the app keep that sentence only when one excerpt independently
+            satisfies the same validator used for an ordinary accepted answer.
+            """
+            candidates = [item]
+            evidence = item.get("evidence")
+            if isinstance(evidence, list) and len(evidence) > 1:
+                for entry in evidence:
+                    if not isinstance(entry, dict):
+                        continue
+                    candidates.append({**item, "evidence": [dict(entry)]})
+            for candidate in candidates:
+                # A fresh copy prevents quote compaction in the formatter from
+                # mutating the diagnostic record used by the troubleshooting UI.
+                candidate_evidence = candidate.get("evidence")
+                fresh_candidate = {
+                    **candidate,
+                    "evidence": [
+                        dict(entry) for entry in candidate_evidence
+                        if isinstance(entry, dict)
+                    ] if isinstance(candidate_evidence, list) else [],
+                }
+                checked_sentence = format_cited_sentences(
+                    [fresh_candidate],
+                    sources,
+                    max_sentences=2 if is_simple_question(question) else None,
+                    mark_as_inference=asks_for_author_inference(question),
+                )
+                if checked_sentence:
+                    return checked_sentence
+            return None
+
+        for item_number, item in enumerate(latest_failed_sentences, start=1):
+            if not isinstance(item, dict):
+                continue
+            # Do not use fallback to rehabilitate an item that the same
+            # attempt already found made an unsupported claim. Recovery may
+            # isolate a clean excerpt from a structurally bad citation bundle,
+            # but an item-level claim failure needs a genuinely corrected
+            # answer from the model instead of another formatting route.
+            item_claim_failure = any(
+                issue.startswith(f"answer item {item_number},")
+                and "could not tie every claim clause to its quoted excerpt" in issue
+                for issue in latest_validation_issues
+            )
+            if item_claim_failure:
+                continue
+            evidence = item.get("evidence")
+            if isinstance(evidence, list) and len(evidence) > 2:
+                # More than two excerpts violates the answer schema. Do not
+                # discard citations selectively to turn that invalid item
+                # into a recovered one.
+                continue
+            checked_sentence = validate_recovery_item(item)
+            if not checked_sentence:
+                continue
+
+            if multipart_question:
+                part_number = item.get("question_part")
+                if (
+                    not isinstance(part_number, int)
+                    or isinstance(part_number, bool)
+                    or part_number not in expected_parts
+                    or part_number in supported_items
+                ):
+                    continue
+                supported_items[part_number] = checked_sentence
+            else:
+                # Preserve role tags in the internal candidate set; argument
+                # recovery uses them only to restrict which component can be
+                # shown, never to claim that the complete argument passed.
+                supported_general_items.append((item, checked_sentence))
+
+        if multipart_question:
+            missing_parts = expected_parts - set(supported_items)
+            if supported_items and missing_parts and not comparison_evidence_failed:
+                partial_answer = " ".join(
+                    supported_items[part_number]
+                    for part_number in sorted(supported_items)
+                )
+                partial_answer += " I couldn't verify the remaining part of your question from the passages I found."
+            else:
+                partial_answer = ""
+        else:
+            # An argument question is only fully answered when all three
+            # structural roles pass together. A verified item can still help,
+            # but the wording below makes clear that the argument was not
+            # verified as a whole. Comparisons keep their two-sided evidence
+            # gate even during recovery.
+            if argument_question:
+                supported_general_items = [
+                    pair for pair in supported_general_items
+                    if pair[0].get("role") in {"conclusion", "premise", "reasoning"}
+                ]
+            candidate_items = [item for item, _ in supported_general_items]
+            comparison_issue = comparison_evidence_issue(question, candidate_items)
+            if supported_general_items and comparison_issue is None:
+                partial_answer = " ".join(sentence for _, sentence in supported_general_items)
+                if argument_question:
+                    partial_answer += " I could verify these points, but not the complete argument requested."
+                else:
+                    partial_answer += " I couldn't verify the full answer from the passages I found."
+            else:
+                partial_answer = ""
+
+        if partial_answer:
+            if diagnostics is not None:
+                diagnostics["status"] = "partial"
+                diagnostics["reason"] = last_failure
+                diagnostics["answer"] = partial_answer
+            return partial_answer
 
     return reject(last_failure)
 
@@ -1282,6 +2197,10 @@ class Handler(BaseHTTPRequestHandler):
                         "terms": search_terms,
                         "candidates": diagnostic_source_list(expanded_sources),
                     }
+            # Give explicit reasoning passages the earliest positions in both
+            # model prompts. Citations are reassigned after this stable
+            # retrieval-level rerank so displayed source IDs remain accurate.
+            sources = prioritize_argument_sources(question, sources)
             if trace is not None:
                 trace["retrieval"]["merged"] = diagnostic_source_list(sources)
             if not sources:
