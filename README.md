@@ -12,7 +12,7 @@ Book text is maintained separately in the [`antilogicalism-library-data`](https:
 
 The current pilot works with Aristotle's *Nicomachean Ethics*. It is a step toward the larger goal of making the same reading experience work across the Antilogicalism book collection; it is not yet connected to the full library. The project is testing whether a locally run language model can answer a range of questions while keeping its claims connected to passages readers can inspect.
 
-The app searches the book text, drafts a response from relevant passages, and checks the response's claims and quotations before displaying citations. These checks can catch some unsupported claims, but they cannot guarantee that every interpretation is correct. Readers should use the source links to check context, especially when an answer explains a complicated argument or connects ideas across passages.
+The app searches the book text, drafts a response from relevant passages, and checks the response's claims and quotations before displaying citations. These checks can catch some unsupported claims, but they cannot guarantee that every interpretation is correct. Readers should use the source links to check context, especially when an answer explains a complicated argument or connects ideas across passages. Source links open the Google Drive preview instead of downloading the PDF; Drive may open at page 1, so use the physical page number shown with each citation to navigate within the preview.
 
 ## Run locally
 
@@ -22,6 +22,8 @@ The app searches the book text, drafts a response from relevant passages, and ch
 4. Open `http://127.0.0.1:8765` in your browser and choose an installed model.
 
 The app uses Python's standard library and does not require a hosted AI API key. Its model selector discovers the models installed in Ollama and passes the selected model to the shared retrieval, answer, and evidence-checking flow; the project is not hardwired to Qwen. The current model connection is Ollama-specific, so another inference provider would need its own adapter. Models may differ in how well they follow the prompts and return structured evidence, so the same regression questions should be tested with each candidate model. The app listens only on the local computer and sends questions and retrieved passages to Ollama running there. It is a local research prototype, not an online chatbot.
+
+The regression runner can submit the three core questions to one or more installed models in sequence and collect all responses and troubleshooting traces into one JSON report. This makes paired model checks easier to compare while exercising the same chat pipeline used for ordinary questions. The report includes retrieved passages and model output; it is downloaded to the local computer and is shared only if you choose to attach it.
 
 ## Development
 

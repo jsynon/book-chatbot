@@ -90,18 +90,133 @@ class RetrievalTests(unittest.TestCase):
         page_87 = next(source for source in happiness if source["page"] == 87)
         self.assertIn("happy man needs the goods of the body and external goods", page_87["text"].lower())
 
+    def test_compact_ordered_term_match_surfaces_the_highest_good_passage(self):
+        """Use source-word proximity to recover the opening argument passage.
+
+        The question adds "human" between "highest" and "good," while the
+        book says "highest of all goods achievable by action." BM25 alone ranks
+        this passage below several unrelated pages that repeat the query words
+        farther apart. The shared proximity feature should preserve page 2 in
+        the ordinary top-five retrieval without relying on model expansion.
+        """
+        question = "What is the highest human good, and how does Aristotle argue for it?"
+
+        primary = app.retrieve(question, [])
+
+        page_two = next((source for source in primary if source["page"] == 2), None)
+        self.assertIsNotNone(page_two)
+        self.assertIn("highest of all goods achievable by action", page_two["text"].lower())
+
     def test_weak_lexical_match_triggers_query_expansion(self):
         """Verify expansion supplies search terms only and improves retrieval."""
         question = "What does Aristotle say about raising children?"
         initial = app.retrieve(question, [])
         self.assertTrue(app.query_needs_expansion(question, initial))
 
-        payload = {"message": {"content": json.dumps({"search_terms": ["nurture", "education of the young"]})}}
+        payload = {"message": {"content": json.dumps({
+            "search_terms": ["nurture", "education of the young"],
+            "facet_terms": [["nurture", "education of the young"]],
+        })}}
         with patch.object(app.urllib.request, "urlopen", return_value=FakeResponse(payload)):
-            terms = app.expand_query(question, [], "qwen3:4b")
-        self.assertIn("nurture", terms)
-        expanded = app.retrieve(question, [], search_terms=terms)
+            expansion = app.expand_query(question, [], "qwen3:4b")
+        self.assertIn("nurture", expansion["search_terms"])
+        expanded = app.retrieve(question, [], search_terms=expansion["search_terms"])
         self.assertEqual(expanded[0]["page"], 125)
+
+    def test_expansion_requests_distinct_search_terms_for_each_question_part(self):
+        """Ask for reasoning vocabulary as well as synonyms for a conclusion."""
+        question = "What is the highest human good, and how does Aristotle argue for it?"
+        payload = {"message": {"content": json.dumps({
+            "search_terms": ["happiness", "human good", "virtue"],
+            "facet_terms": [
+                ["highest of all goods achievable by action", "chief good"],
+                ["human function", "rational activity", "activity of soul in accordance with virtue"],
+            ],
+        })}}
+        captured = {}
+
+        def capture_request(request, timeout):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(payload)
+
+        with patch.object(app.urllib.request, "urlopen", side_effect=capture_request):
+            expansion = app.expand_query(question, [], "qwen3:4b")
+
+        prompt = captured["payload"]["messages"][1]["content"].lower()
+        self.assertIn("question parts, in order", prompt)
+        self.assertIn("intermediate ideas", prompt)
+        self.assertIn("separated by semicolons", prompt)
+        expansion_schema = captured["payload"]["format"]["properties"]
+        self.assertEqual(expansion_schema["search_terms"]["type"], "string")
+        self.assertEqual(expansion_schema["facet_1"]["type"], "string")
+        self.assertEqual(expansion_schema["facet_2"]["type"], "string")
+        self.assertEqual(len(expansion["facet_terms"]), 2)
+
+        # With the term groups kept separate, the opening passage that names
+        # the highest good and the later human-function argument both survive
+        # retrieval. This checks the shared pipeline using the real pilot text,
+        # without prescribing any one answer or depending on a live model.
+        primary = app.retrieve(question, [])
+        expanded = app.retrieve(question, [], search_terms=expansion["search_terms"])
+        per_facet = [
+            app.retrieve(part, [], search_terms=terms)
+            for part, terms in zip(app.question_facets(question), expansion["facet_terms"])
+        ]
+        merged = app.merge_retrieval_sources(
+            primary,
+            expanded,
+            facet_sources=per_facet,
+        )
+        self.assertIn(2, [source["page"] for source in merged])
+        self.assertIn(6, [source["page"] for source in merged])
+
+    def test_page_reference_uses_drive_preview_instead_of_download_endpoint(self):
+        """Keep source links in Drive preview; the citation label carries page."""
+        self.assertEqual(
+            app.pdf_page_url(44),
+            "https://drive.google.com/file/d/1XVInAFS2zutV8PDp8A3DirUrW6nLLfvY/view?usp=sharing#page=44",
+        )
+
+    def test_empty_expansion_retries_with_scalar_fields_and_recovers_terms(self):
+        """A valid empty response must trigger the differently shaped retry."""
+        question = "What is the highest human good, and how does Aristotle argue for it?"
+        empty = {"message": {"content": json.dumps({"search_terms": "", "facet_terms": ""})}}
+        recovered = {"message": {"content": json.dumps({
+            "terms": "chief good; happiness; final end",
+            "part_1": "highest good achievable by action; chief good",
+            "part_2": "human function; rational activity; activity of soul",
+        })}}
+        captured = []
+
+        def return_sequential(request, timeout):
+            captured.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(empty if len(captured) == 1 else recovered)
+
+        with patch.object(app.urllib.request, "urlopen", side_effect=return_sequential):
+            expansion = app.expand_query(question, [], "qwen3:4b")
+
+        self.assertEqual(len(captured), 2)
+        self.assertIn("search_terms", captured[0]["format"]["properties"])
+        self.assertIn("terms", captured[1]["format"]["properties"])
+        self.assertIn("happiness", expansion["search_terms"])
+        self.assertIn("highest good achievable by action", expansion["facet_terms"][0])
+        self.assertIn("human function", expansion["facet_terms"][1])
+
+    def test_expansion_parser_removes_inline_number_labels_from_terms(self):
+        """Numbered synonyms must not bleed into the next facet's vocabulary."""
+        question = "What is the highest human good, and how does Aristotle argue for it?"
+        payload = {"message": {"content": json.dumps({
+            "search_terms": "highest good; action",
+            "facet_1": "highest human good; purpose of action: 2: Aristotle's argument",
+            "facet_2": "end all things aim at; desirable for its own sake",
+        })}}
+        with patch.object(app.urllib.request, "urlopen", return_value=FakeResponse(payload)):
+            expansion = app.expand_query(question, [], "qwen3:4b")
+
+        self.assertEqual(len(expansion["facet_terms"]), 2)
+        self.assertIn("Aristotle's argument", expansion["facet_terms"][0])
+        self.assertNotIn("2: Aristotle's argument", expansion["facet_terms"][0])
+        self.assertIn("end all things aim at", expansion["facet_terms"][1])
 
     def test_expansion_threshold_scales_with_question_term_coverage(self):
         """Longer multi-concept queries require more overlap before skipping expansion."""
@@ -227,6 +342,33 @@ class RetrievalTests(unittest.TestCase):
         merged = app.merge_retrieval_sources(primary, expanded)
 
         self.assertIn(115, [source["page"] for source in merged])
+        self.assertEqual([source["source_id"] for source in merged], [
+            f"S{index}" for index in range(1, len(merged) + 1)
+        ])
+
+    def test_facet_expansions_cannot_evict_the_direct_top_five(self):
+        """Model-generated facet scores may add passages, never replace direct hits."""
+        primary = [
+            {"source_id": f"S{index}", "page": index, "text": f"Direct passage {index}.", "score": 10-index}
+            for index in range(1, 6)
+        ]
+        # Several expansion groups can accumulate enough reciprocal-rank score
+        # to push a lower direct result out under ordinary fusion. The merged
+        # context must retain the same direct candidates regardless of the
+        # selected Ollama model's generated vocabulary.
+        facet_sources = [
+            [
+                {"source_id": f"F{group}-{rank}", "page": 100 + group * 10 + rank,
+                 "text": f"Facet {group} candidate {rank}.", "score": 100-rank}
+                for rank in range(1, 6)
+            ]
+            for group in range(1, 4)
+        ]
+
+        merged = app.merge_retrieval_sources(primary, [], facet_sources=facet_sources)
+
+        self.assertEqual({source["page"] for source in merged[:5]}, {1, 2, 3, 4, 5})
+        self.assertEqual(len(merged), 7)
         self.assertEqual([source["source_id"] for source in merged], [
             f"S{index}" for index in range(1, len(merged) + 1)
         ])
@@ -613,6 +755,41 @@ class GroundingTests(unittest.TestCase):
             quote_text = excerpt["quote"]
             self.assertLessEqual(len(app.TOKEN_RE.findall(quote_text)), app.MAX_EVIDENCE_QUOTE_WORDS)
             self.assertTrue(app.evidence_quote_matches(quote_text, source[0]["text"]))
+
+    def test_oversized_quote_can_compact_against_its_sibling_evidence(self):
+        """Keep two-point comparisons when each exact excerpt supports one side."""
+        practical_quote = (
+            "it is to that which observes well the various matters concerning itself "
+            "that one ascribes practical wisdom"
+        )
+        philosophic_quote = (
+            "It is evident also that philosophic wisdom and the art of politics cannot be the same; "
+            "for if the state of mind concerned with a man's own interests is to be called philosophic "
+            "wisdom, there will be many philosophic wisdoms; there will not be one concerned with the "
+            "good of all animals any more than there is one art of medicine for all existing things "
+            "but a different philosophic wisdom about the good of each species."
+        )
+        source_text = f"{practical_quote}. {philosophic_quote}"
+        source = [{"source_id": "S1", "page": 67, "text": source_text}]
+        claim = "Aristotle distinguishes practical wisdom from philosophic wisdom by their objects of knowledge."
+        answer_item = {
+            "text": claim,
+            "evidence": (
+                self.evidence("S1", practical_quote)
+                + self.evidence("S1", philosophic_quote)
+            ),
+        }
+
+        answer = app.format_cited_sentences([answer_item], source)
+
+        self.assertEqual(answer, claim[:-1] + " [S1].")
+        self.assertEqual(len(answer_item["evidence"]), 2)
+        self.assertIn("practical wisdom", answer_item["evidence"][0]["quote"])
+        self.assertIn("philosophic wisdom", answer_item["evidence"][1]["quote"])
+        self.assertLessEqual(
+            len(app.TOKEN_RE.findall(answer_item["evidence"][1]["quote"])),
+            app.MAX_EVIDENCE_QUOTE_WORDS,
+        )
 
     def test_exact_quote_under_model_tolerant_cap_can_be_displayed(self):
         """A real model-sized excerpt should not trigger the old short-quote fallback."""
@@ -1367,6 +1544,7 @@ class GroundingTests(unittest.TestCase):
         corrected = {"message": {"content": json.dumps({
             "sentences": [
                 {
+                    "comparison_side": 1,
                     "text": "Practical wisdom is a reasoned capacity to act for human goods.",
                     "evidence": self.evidence(
                         "S1",
@@ -1374,6 +1552,7 @@ class GroundingTests(unittest.TestCase):
                     ),
                 },
                 {
+                    "comparison_side": 2,
                     "text": "Philosophic wisdom is not concerned with any coming into being.",
                     "evidence": self.evidence(
                         "S2",
@@ -1408,9 +1587,42 @@ class GroundingTests(unittest.TestCase):
         repair_payload = json.loads(mocked_urlopen.call_args_list[2].args[0].data.decode("utf-8"))
         repair_prompt = repair_payload["messages"][-1]["content"]
         self.assertIn("Prefer the author's terms", repair_prompt)
+        self.assertIn("comparison_side 1 describes practical wisdom", repair_prompt)
+        self.assertIn("comparison_side 2 describes philosophic wisdom", repair_prompt)
         self.assertIn("abstract", repair_prompt)
         self.assertNotIn("Fresh candidate to repair", repair_prompt)
         self.assertNotIn("theoretical knowledge", repair_prompt)
+        schema_item = repair_payload["format"]["properties"]["sentences"]["items"]
+        self.assertEqual(schema_item["properties"]["comparison_side"]["enum"], [1, 2])
+
+    def test_comparison_items_keep_each_concepts_claim_and_evidence_together(self):
+        """One concept's excerpt cannot supply the other concept's evidence."""
+        question = "How does Aristotle distinguish practical wisdom from philosophic wisdom?"
+        valid_items = [
+            {
+                "comparison_side": 1,
+                "text": "Practical wisdom is concerned with action.",
+                "evidence": self.evidence("S1", "Practical wisdom is concerned with action"),
+            },
+            {
+                "comparison_side": 2,
+                "text": "Philosophic wisdom concerns the highest objects.",
+                "evidence": self.evidence("S2", "philosophic wisdom concerns the highest objects"),
+            },
+        ]
+        self.assertIsNone(app.comparison_evidence_issue(question, valid_items))
+
+        borrowed_evidence = [
+            valid_items[0],
+            {
+                "comparison_side": 2,
+                "text": "Philosophic wisdom concerns the highest objects.",
+                "evidence": self.evidence("S1", "Practical wisdom is concerned with action"),
+            },
+        ]
+        issue = app.comparison_evidence_issue(question, borrowed_evidence)
+        self.assertIn("comparison item 2", issue)
+        self.assertIn("philosophic wisdom", issue)
 
     def test_evidence_check_retries_once_after_an_invalid_excerpt(self):
         """A first bad quote gets one repair attempt before the safe fallback."""
@@ -1677,6 +1889,76 @@ class GroundingTests(unittest.TestCase):
         """Short factual prompts are concise; explicit how-questions can expand."""
         self.assertTrue(app.is_simple_question("What does Aristotle mean by happiness?"))
         self.assertFalse(app.is_simple_question("How does virtue relate to habit?"))
+        self.assertTrue(app.expects_explanatory_answer("What does Aristotle mean by practical wisdom?"))
+        self.assertFalse(app.requires_multiple_explanatory_points(
+            "What does Aristotle mean by practical wisdom?"
+        ))
+        self.assertTrue(app.expects_explanatory_answer("How does virtue relate to habit?"))
+        self.assertTrue(app.requires_multiple_explanatory_points("How does virtue relate to habit?"))
+        self.assertFalse(app.expects_explanatory_answer("How many virtues are there?"))
+        self.assertIsNone(app.explanatory_depth_issue(
+            "What does Aristotle mean by practical wisdom?",
+            "Practical wisdom is a reasoned capacity to act with regard to human goods [S1].",
+        ))
+        self.assertIsNotNone(app.explanatory_depth_issue(
+            "How does virtue relate to habit?", "Virtue is connected with habit [S1]."
+        ))
+        self.assertIsNone(app.explanatory_depth_issue(
+            "How does virtue relate to habit?",
+            "Virtue is formed through habit [S1]. Repeated actions establish a stable state [S2].",
+        ))
+
+    def test_checker_retries_a_vague_one_sentence_explanation(self):
+        """Do not let evidence review erase the requested relation mechanism."""
+        question = "How do moral virtue and practical wisdom work together?"
+        source = [{
+            "source_id": "S1",
+            "page": 72,
+            "text": (
+                "Moral virtue and practical wisdom work together to guide action. "
+                "Moral virtue makes us aim at the right mark, while practical wisdom "
+                "makes us take the right means."
+            ),
+        }]
+        too_short = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "Moral virtue and practical wisdom work together to guide action.",
+                "evidence": self.evidence(
+                    "S1", "Moral virtue and practical wisdom work together to guide action"
+                ),
+            }],
+        })}}
+        explanatory = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "Moral virtue and practical wisdom work together to guide action.",
+                    "evidence": self.evidence(
+                        "S1", "Moral virtue and practical wisdom work together to guide action"
+                    ),
+                },
+                {
+                    "text": (
+                        "Moral virtue makes us aim at the right mark, while practical wisdom "
+                        "makes us take the right means."
+                    ),
+                    "evidence": self.evidence(
+                        "S1", "Moral virtue makes us aim at the right mark, while practical wisdom makes us take the right means"
+                    ),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(too_short), FakeResponse(explanatory)],
+        ) as mocked_urlopen:
+            answer = app.verify_answer(question, source, "draft", "llama3.2:3b", diagnostics)
+
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        self.assertEqual([item["status"] for item in diagnostics["attempts"]], ["rejected", "accepted"])
+        self.assertIn("right mark", answer)
+        self.assertIn("right means", answer)
 
     def test_author_inference_detection_is_not_book_specific(self):
         """Recognize hypothetical author questions without hardcoding Aristotle."""
@@ -1687,6 +1969,21 @@ class GroundingTests(unittest.TestCase):
         """Keep the clickable source list aligned with visible answer citations."""
         cited = app.sources_cited_by_answer("The claim is supported [S2].", self.sources)
         self.assertEqual([source["source_id"] for source in cited], ["S2"])
+
+
+class InterfaceTests(unittest.TestCase):
+    """Protect the paired regression runner and its fixed prompt set."""
+
+    def test_batch_runner_uses_core_prompts_and_collects_full_chat_diagnostics(self):
+        html = (APP_PATH.parent / "index.html").read_text(encoding="utf-8")
+
+        self.assertEqual(html.count('<button type="button">'), 3)
+        self.assertIn('id="run-regression"', html)
+        self.assertIn('id="download-regression"', html)
+        self.assertIn("fetch('/api/chat'", html)
+        self.assertIn("history:[], model, diagnostics:true", html)
+        self.assertIn("latestRegressionReport", html)
+        self.assertIn("downloadRegressionReport", html)
 
 
 if __name__ == "__main__":
