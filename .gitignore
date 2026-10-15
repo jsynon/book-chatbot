@@ -1,0 +1,26 @@
+# Python-generated files do not belong in source control.
+__pycache__/
+*.py[cod]
+
+# Keep downloaded or generated library text out of the chatbot code repository.
+# The corpus is maintained separately in antilogicalism-library-data.
+data/*.json.gz
+data/*.sqlite
+data/*.sqlite3
+data/index/
+
+# Local settings, credentials, and machine-specific files stay private.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
+
+# Common local development environments and editor files.
+.venv/
+venv/
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

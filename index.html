@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Read with Aristotle — Antilogicalism book chatbot pilot</title>
+  <style>
+    /*
+      The page is intentionally self-contained: keeping these styles in the
+      HTML means the local prototype needs no frontend build step or packages.
+      The palette and typography make the reading surface feel like a book.
+    */
+    :root { color-scheme: light; --ink:#28251f; --muted:#736d62; --line:#ded8cc; --paper:#fbf9f4; --accent:#6b4b32; --accent-soft:#eee7dc; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.6 Georgia, "Times New Roman", serif; }
+
+    /* Center the conversation at a comfortable reading width. */
+    main { width:min(900px, calc(100% - 32px)); margin:36px auto 70px; }
+    header { border-bottom:1px solid var(--line); padding-bottom:22px; margin-bottom:25px; }
+    .eyebrow { color:var(--accent); font:600 12px/1.4 system-ui,sans-serif; letter-spacing:.12em; text-transform:uppercase; }
+    h1 { font-size:clamp(30px, 5vw, 46px); line-height:1.1; margin:9px 0 8px; font-weight:500; }
+    .intro { color:var(--muted); margin:0; max-width:700px; }
+    .controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:18px 0 22px; font:14px system-ui,sans-serif; }
+    label { color:var(--muted); }
+    select, button, textarea { font:inherit; }
+    select { max-width:100%; padding:8px 10px; border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:6px; }
+    /* Separate user prompts from sourced assistant responses. */
+    #thread { display:flex; flex-direction:column; gap:17px; margin:20px 0; }
+    .turn { padding:16px 19px; border:1px solid var(--line); border-radius:9px; background:#fff; }
+    .turn.user { background:var(--accent-soft); border-color:#e2d5c5; margin-left:9%; }
+    .speaker { color:var(--muted); font:600 11px system-ui,sans-serif; letter-spacing:.1em; text-transform:uppercase; margin-bottom:6px; }
+    .body { white-space:pre-wrap; overflow-wrap:anywhere; }
+    .sources { margin:13px 0 0; padding-top:10px; border-top:1px solid var(--line); font:14px/1.55 system-ui,sans-serif; }
+    .sources a { color:var(--accent); margin-right:8px; }
+    /* Keep the composer visible after the message history. */
+    form { border-top:1px solid var(--line); padding-top:20px; }
+    textarea { width:100%; min-height:100px; resize:vertical; padding:13px 14px; border:1px solid #c9c0b3; border-radius:7px; background:white; color:var(--ink); font:16px/1.5 Georgia,serif; }
+    .submit-row { display:flex; justify-content:space-between; align-items:center; gap:14px; margin-top:11px; font:13px system-ui,sans-serif; color:var(--muted); }
+    button { padding:10px 17px; border:0; border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:wait; }
+    #status { min-height:1.5em; color:var(--muted); font:13px system-ui,sans-serif; margin:12px 0; }
+    .suggestions { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 2px; }
+    .suggestions button { background:transparent; border:1px solid var(--line); color:var(--accent); font:13px system-ui,sans-serif; padding:7px 10px; }
+    footer { margin-top:24px; color:var(--muted); font:12px/1.5 system-ui,sans-serif; }
+    /* Reduce margins on phones while retaining the distinction between turns. */
+    @media (max-width:600px) { main { margin-top:22px; } .turn { padding:14px; } .turn.user { margin-left:4%; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">Antilogicalism · local reading companion</div>
+      <h1>Read with Aristotle</h1>
+      <p class="intro">Ask about an idea in the <em>Nicomachean Ethics</em>. Answers are grounded in passages from the book and cite the PDF pages to check for yourself.</p>
+    </header>
+    <!-- The model list is filled from the Ollama API when the page loads. -->
+    <div class="controls">
+      <label for="model">Local Ollama model</label>
+      <select id="model"><option value="qwen3:4b">qwen3:4b</option></select>
+      <span id="model-status"></span>
+    </div>
+    <!-- These are editable examples, not special-cased answer paths. -->
+    <div class="suggestions" aria-label="Example questions">
+      <button type="button">What does Aristotle mean by happiness?</button>
+      <button type="button">How does virtue relate to habit?</button>
+      <button type="button">What is the doctrine of the mean?</button>
+    </div>
+    <!-- JavaScript appends each submitted prompt and its answer to this thread. -->
+    <section id="thread" aria-live="polite"></section>
+    <form id="chat-form">
+      <label for="question">Your question</label>
+      <textarea id="question" placeholder="Ask a question about the book…" required></textarea>
+      <div class="submit-row"><span>Only this book is in the pilot.</span><button id="send" type="submit">Ask Aristotle</button></div>
+    </form>
+    <div id="status" role="status"></div>
+    <!-- Explain where processing happens and display the running server build. -->
+    <footer>This prototype runs on your computer and sends the question and selected book passages to your local Ollama service. It does not call a hosted AI service. Page citations open the source PDF.<br><span id="build-id">Checking local app build…</span></footer>
+  </main>
+  <script>
+    // Cache the UI elements used by the event handlers so they can be updated
+    // without repeatedly querying the document.
+    const form = document.getElementById('chat-form');
+    const question = document.getElementById('question');
+    const thread = document.getElementById('thread');
+    const status = document.getElementById('status');
+    const send = document.getElementById('send');
+    const modelSelect = document.getElementById('model');
+    const modelStatus = document.getElementById('model-status');
+    const buildStatus = document.getElementById('build-id');
+    const history = [];
+
+    // Reading the health endpoint confirms which local build served this page.
+    fetch('/api/health', {cache:'no-store'})
+      .then(response => response.json())
+      .then(data => { buildStatus.textContent = `Local app build: ${data.build || 'unknown'}`; })
+      .catch(() => { buildStatus.textContent = 'Local app build: unavailable'; });
+
+    function addTurn(kind, text, sources = []) {
+      // Build nodes with textContent (rather than interpolated HTML) so model
+      // output is displayed as text and cannot inject markup into the page.
+      const article = document.createElement('article');
+      article.className = `turn ${kind}`;
+      const speaker = document.createElement('div');
+      speaker.className = 'speaker';
+      speaker.textContent = kind === 'user' ? 'You' : 'Reading companion';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.textContent = text;
+      article.append(speaker, body);
+      if (sources.length) {
+        const list = document.createElement('div');
+        list.className = 'sources';
+        const label = document.createElement('strong');
+        label.textContent = 'Sources: ';
+        list.append(label);
+        for (const source of sources) {
+          const a = document.createElement('a');
+          a.href = source.url;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          a.textContent = `[${source.id}] PDF page ${source.page}`;
+          list.append(a);
+        }
+        article.append(list);
+      }
+      thread.append(article);
+      article.scrollIntoView({behavior:'smooth', block:'start'});
+    }
+
+    async function loadModels() {
+      // Discover models installed in Ollama. The server returns the configured
+      // default when discovery succeeds, and the static option remains usable
+      // if Ollama is temporarily unavailable during initial page load.
+      try {
+        const response = await fetch('/api/models');
+        const data = await response.json();
+        if (data.models && data.models.length) {
+          modelSelect.replaceChildren();
+          for (const name of data.models) {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            modelSelect.append(option);
+          }
+          if (data.models.includes(data.default)) modelSelect.value = data.default;
+          modelStatus.textContent = 'models from Ollama';
+        } else {
+          modelStatus.textContent = 'Ollama not detected yet';
+        }
+      } catch (_) { modelStatus.textContent = 'Ollama model list unavailable'; }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      // One request handles the full turn. The server searches, drafts, checks,
+      // and returns citations; this browser code only presents the result.
+      event.preventDefault();
+      const text = question.value.trim();
+      if (!text) return;
+      addTurn('user', text);
+      question.value = '';
+      send.disabled = true;
+      status.textContent = 'Finding passages, drafting an answer, and checking its citations…';
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({question:text, history:history.slice(-6), model:modelSelect.value})
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) throw new Error(data.error || 'The request failed.');
+        addTurn('assistant', data.answer, data.sources || []);
+        history.push({role:'user',content:text},{role:'assistant',content:data.answer});
+        status.textContent = '';
+      } catch (error) {
+        addTurn('assistant', error.message);
+        status.textContent = 'Check that Ollama is running and the selected model is installed.';
+      } finally { send.disabled = false; question.focus(); }
+    });
+
+    document.querySelectorAll('.suggestions button').forEach(button => {
+      // Example buttons simply populate the input, leaving submission under
+      // the user's control and using the same API path as any typed question.
+      button.addEventListener('click', () => { question.value = button.textContent; question.focus(); });
+    });
+    loadModels();
+  </script>
+</body>
+</html>
