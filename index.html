@@ -32,6 +32,12 @@
     .body { white-space:pre-wrap; overflow-wrap:anywhere; }
     .sources { margin:13px 0 0; padding-top:10px; border-top:1px solid var(--line); font:14px/1.55 system-ui,sans-serif; }
     .sources a { color:var(--accent); margin-right:8px; }
+    /* Diagnostic output is tucked away so normal reading stays uncluttered. */
+    .diagnostics { margin:13px 0 0; border-top:1px solid var(--line); padding-top:10px; font:13px/1.5 system-ui,sans-serif; }
+    .diagnostics summary { color:var(--muted); cursor:pointer; }
+    .diagnostics pre { max-height:460px; overflow:auto; padding:12px; border-radius:6px; background:#f5f2ec; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.45 ui-monospace,Consolas,monospace; }
+    .diagnostics button { padding:6px 10px; font:12px system-ui,sans-serif; }
+    .diagnostic-control { flex-basis:100%; color:var(--muted); font:12px/1.5 system-ui,sans-serif; }
     /* Keep the composer visible after the message history. */
     form { border-top:1px solid var(--line); padding-top:20px; }
     textarea { width:100%; min-height:100px; resize:vertical; padding:13px 14px; border:1px solid #c9c0b3; border-radius:7px; background:white; color:var(--ink); font:16px/1.5 Georgia,serif; }
@@ -40,7 +46,8 @@
     button:disabled { opacity:.55; cursor:wait; }
     #status { min-height:1.5em; color:var(--muted); font:13px system-ui,sans-serif; margin:12px 0; }
     .suggestions { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 2px; }
-    .suggestions button { background:transparent; border:1px solid var(--line); color:var(--accent); font:13px system-ui,sans-serif; padding:7px 10px; }
+    .suggestion-label { margin:0 0 7px; color:var(--muted); font:12px system-ui,sans-serif; }
+    .suggestions button { max-width:100%; white-space:normal; text-align:left; background:transparent; border:1px solid var(--line); color:var(--accent); font:13px system-ui,sans-serif; padding:7px 10px; }
     footer { margin-top:24px; color:var(--muted); font:12px/1.5 system-ui,sans-serif; }
     /* Reduce margins on phones while retaining the distinction between turns. */
     @media (max-width:600px) { main { margin-top:22px; } .turn { padding:14px; } .turn.user { margin-left:4%; } }
@@ -58,13 +65,20 @@
       <label for="model">Local Ollama model</label>
       <select id="model"><option value="qwen3:4b">qwen3:4b</option></select>
       <span id="model-status"></span>
+      <label class="diagnostic-control"><input id="diagnostics-toggle" type="checkbox"> Include troubleshooting details in responses</label>
+      <span class="diagnostic-control">Details include the question, retrieved passages, model draft, and checker output. Use this only when diagnosing a response.</span>
     </div>
-    <!-- These are editable examples, not special-cased answer paths. -->
-    <div class="suggestions" aria-label="Example questions">
-      <button type="button">What does Aristotle mean by happiness?</button>
-      <button type="button">How does virtue relate to habit?</button>
-      <button type="button">What is the doctrine of the mean?</button>
-    </div>
+    <!-- These buttons surface the current regression questions for quick, repeatable testing.
+         Clicking one fills the composer; it never sends a question automatically. -->
+    <section aria-label="Suggested test questions">
+      <p class="suggestion-label">Try these questions</p>
+      <div class="suggestions">
+        <button type="button">What does Aristotle mean by practical wisdom, and how does it relate to moral virtue?</button>
+        <button type="button">What does he identify as the highest human good, and how does he argue for it?</button>
+        <button type="button">What does Aristotle say about the soul?</button>
+        <button type="button">Where does Aristotle disagree with Plato?</button>
+      </div>
+    </section>
     <!-- JavaScript appends each submitted prompt and its answer to this thread. -->
     <section id="thread" aria-live="polite"></section>
     <form id="chat-form">
@@ -87,6 +101,7 @@
     const modelSelect = document.getElementById('model');
     const modelStatus = document.getElementById('model-status');
     const buildStatus = document.getElementById('build-id');
+    const diagnosticsToggle = document.getElementById('diagnostics-toggle');
     const history = [];
 
     // Reading the health endpoint confirms which local build served this page.
@@ -95,7 +110,7 @@
       .then(data => { buildStatus.textContent = `Local app build: ${data.build || 'unknown'}`; })
       .catch(() => { buildStatus.textContent = 'Local app build: unavailable'; });
 
-    function addTurn(kind, text, sources = []) {
+    function addTurn(kind, text, sources = [], diagnostics = null) {
       // Build nodes with textContent (rather than interpolated HTML) so model
       // output is displayed as text and cannot inject markup into the page.
       const article = document.createElement('article');
@@ -122,6 +137,30 @@
           list.append(a);
         }
         article.append(list);
+      }
+      if (kind === 'assistant' && diagnostics) {
+        // Keep the raw trace selectable and copyable while avoiding HTML
+        // insertion; retrieved text and model output are treated as untrusted.
+        const details = document.createElement('details');
+        details.className = 'diagnostics';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Troubleshooting details';
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.textContent = 'Copy details';
+        const pre = document.createElement('pre');
+        const serialized = JSON.stringify(diagnostics, null, 2);
+        pre.textContent = serialized;
+        copy.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(serialized);
+            copy.textContent = 'Copied';
+          } catch (_) {
+            copy.textContent = 'Select and copy the text below';
+          }
+        });
+        details.append(summary, copy, pre);
+        article.append(details);
       }
       thread.append(article);
       article.scrollIntoView({behavior:'smooth', block:'start'});
@@ -163,11 +202,22 @@
       try {
         const response = await fetch('/api/chat', {
           method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({question:text, history:history.slice(-6), model:modelSelect.value})
+          body: JSON.stringify({
+            question:text,
+            history:history.slice(-6),
+            model:modelSelect.value,
+            diagnostics:diagnosticsToggle.checked
+          })
         });
         const data = await response.json();
-        if (!response.ok || data.error) throw new Error(data.error || 'The request failed.');
-        addTurn('assistant', data.answer, data.sources || []);
+        if (!response.ok || data.error) {
+          // Server-side failures can include an opt-in trace showing which
+          // pipeline stage failed, so render that trace before ending the turn.
+          addTurn('assistant', data.error || 'The request failed.', [], data.diagnostics || null);
+          status.textContent = 'Check that Ollama is running and the selected model is installed.';
+          return;
+        }
+        addTurn('assistant', data.answer || data.error, data.sources || [], data.diagnostics || null);
         history.push({role:'user',content:text},{role:'assistant',content:data.answer});
         status.textContent = '';
       } catch (error) {

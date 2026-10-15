@@ -1,46 +1,32 @@
-# Antilogicalism Book Chatbot Pilot
+# Antilogicalism Reading Companion
 
-This local prototype lets you ask questions about Aristotle's *Nicomachean Ethics*. It searches extracted book text, asks a local Ollama model to explain the passages it finds, and links each answer to the cited PDF pages. The larger goal is to make the same retrieval and evidence-checking system work across the Antilogicalism library.
+The Antilogicalism Reading Companion is an experiment in making the ideas in books easier to explore. It lets readers ask questions in ordinary language, get an answer grounded in passages from a book, and follow citations back to the relevant PDF pages.
 
-## Start it on Windows
+## Part of the Antilogicalism project
 
-1. Make sure the Ollama app is running. The default model is `qwen3:4b`, which you already use for The Eternal Dialogue. If it is not installed, install it through Ollama first.
-2. Extract this ZIP to a folder on your computer. For repository development, keep it beside your `antilogicalism-library-data` checkout when possible.
-3. Double-click `start.bat`.
-4. The page opens at `http://127.0.0.1:8765`. Close the command window when you are done; that stops the local app.
+[Antilogicalism](https://antilogicalism.com/) brings together essays, reading resources, and a growing library of books for exploring philosophy and related subjects. The Reading Companion adds a conversational way to enter that library: readers can ask about a concept, trace an argument through a text, or use citations to return to the original passage. Its purpose is to support close reading and further thought, not to replace the books or the broader site.
 
-The app uses only Python's standard library. It does not need a pip install or an API key. You can choose any model listed by your local Ollama service from the model dropdown.
+Book text is maintained separately in the [`antilogicalism-library-data`](https://github.com/jsynon/antilogicalism-library-data) repository. Keeping the corpus there gives the library one shared source of truth as it grows. The companion is a separate application that can use those texts to find passages and build answers.
 
-## What this pilot tests
+## Current prototype
 
-- Can it retrieve relevant page passages from a real book?
-- Can the local model explain and synthesize those passages?
-- Are citations useful and do the PDF page links take you to the right place?
-- Do follow-up questions keep enough conversational context?
+The current pilot works with Aristotle's *Nicomachean Ethics*. It is a step toward the larger goal of making the same reading experience work across the Antilogicalism book collection; it is not yet connected to the full library. The project is testing whether a locally run language model can answer a range of questions while keeping its claims connected to passages readers can inspect.
 
-The retriever splits all 127 PDF pages into short passages, includes nearby text from the same paragraph to preserve context, and ranks passages with BM25. It compares meaningful-word coverage before deciding whether to use the selected local model for search-term expansion; those terms improve retrieval only and are never treated as evidence. A second local-model pass checks the draft against the retrieved passages, revises unsupported claims, distinguishes reported positions from the author's response, consolidates repeated points, and assigns a small, selective set of source IDs to each answer sentence before the app formats citations. The source links shown under an answer correspond only to passages cited in that answer. Questions asking what an author would think about a hypothetical or later issue are labeled as interpretations or inferences, since the book cannot directly settle those questions. This extra evidence check can add response time. There are no question-specific page anchors or prewritten answers. This is still an early pilot, so check the linked passages when an answer matters and try a different phrasing if retrieval misses the topic.
+The app searches the book text, drafts a response from relevant passages, and checks the response's claims and quotations before displaying citations. These checks can catch some unsupported claims, but they cannot guarantee that every interpretation is correct. Readers should use the source links to check context, especially when an answer explains a complicated argument or connects ideas across passages.
 
-## Repository and book data
+## Run locally
 
-The chatbot code is separate from [`antilogicalism-library-data`](https://github.com/jsynon/antilogicalism-library-data), which remains the source of truth for extracted library text. The code prefers the Aristotle shard at `../antilogicalism-library-data/data-v47/book-7.json.gz` when that sibling checkout exists. It falls back to the small `data/book-7.json.gz` copy used by the pilot ZIP.
+1. Install [Ollama](https://ollama.com/) and download a model, for example with `ollama pull qwen3:4b`.
+2. Extract this project. To use a separate `antilogicalism-library-data` checkout, place it beside the project folder or configure the data path as described in [`data/README.md`](data/README.md).
+3. Start Ollama, then double-click `start.bat`.
+4. Open `http://127.0.0.1:8765` in your browser and choose an installed model.
 
-You can select another local data checkout or dataset version without editing the code:
+The app uses Python's standard library and does not require a hosted AI API key. It listens only on the local computer and sends questions and retrieved passages to Ollama running there. It is a local research prototype, not an online chatbot.
+
+## Development
+
+Run the retrieval and citation checks from the project folder:
 
 ```bat
-set BOOK_CHATBOT_LIBRARY_DATA=D:\Downloads\antilogicalism-library-data
-set BOOK_CHATBOT_DATA_VERSION=v47
+py -3 -m unittest discover -s tests -v
 ```
-
-For a staged corpus file, set `BOOK_CHATBOT_BOOK_FILE` to its full path. The Git repository ignores compressed book shards and local index files, so extracted books and generated search data are not committed alongside the application. The chatbot currently loads only Aristotle's shard; connecting the complete library is a later architecture step.
-
-This app calls Ollama on the same computer and contains no hosted AI API key. Do not commit credentials, private PDFs, or extracted text files.
-
-The page footer displays the running server's build ID. The health endpoint at `/api/health` returns the same ID, which helps confirm the browser is connected to the expected local server.
-
-To run the local retrieval and citation checks during development, open a command prompt in this folder and run `py -3 -m unittest discover -s tests -v`.
-
-## Privacy and scope
-
-The server binds only to `127.0.0.1`, so it is available on this computer and is not published on the internet. Questions and retrieved passages go to Ollama on this same computer. No hosted AI service is called. This pilot includes only one book and is separate from the live website.
-
-The bundled compressed text is from `antilogicalism-library-data/data-v47/book-7.json.gz`. The source book link is included with the citations.
