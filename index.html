@@ -60,6 +60,12 @@
     .batch-actions button { font:13px system-ui,sans-serif; padding:8px 12px; }
     .batch-actions button.secondary { background:#fff; color:var(--accent); border:1px solid var(--line); }
     #batch-status { min-height:1.4em; margin:8px 0 0; color:var(--muted); }
+    .batch-results { margin-top:12px; overflow-x:auto; }
+    .batch-results table { width:100%; border-collapse:collapse; background:#fff; font:12px/1.45 system-ui,sans-serif; }
+    .batch-results caption { text-align:left; padding:6px 0; font-weight:600; }
+    .batch-results th, .batch-results td { padding:7px 8px; border:1px solid var(--line); text-align:left; vertical-align:top; }
+    .batch-results th { background:#eee7dc; }
+    .batch-results td.question-cell { min-width:230px; }
     footer { margin-top:24px; color:var(--muted); font:12px/1.5 system-ui,sans-serif; }
     /* Reduce margins on phones while retaining the distinction between turns. */
     @media (max-width:600px) { main { margin-top:22px; } .turn { padding:14px; } .turn.user { margin-left:4%; } }
@@ -83,25 +89,28 @@
     <!-- Keep a small fixed prompt set so each build can be compared across models.
          Clicking a button fills the composer; it never submits the question. -->
     <section aria-label="Suggested test questions">
-      <p class="suggestion-label">Core test questions · run each with Qwen and Llama</p>
+      <p class="suggestion-label">Core questions and a broader topic check · run with the selected models</p>
       <div class="suggestions">
         <button type="button">What does Aristotle mean by practical wisdom?</button>
         <button type="button">What is the highest human good, and how does Aristotle argue for it?</button>
         <button type="button">How does Aristotle distinguish practical wisdom from philosophic wisdom?</button>
+        <button type="button">How does habituation help someone become virtuous?</button>
+        <button type="button">What does Aristotle think about God and the soul?</button>
       </div>
       <p class="suggestion-label">Click a question to fill the prompt box, then submit it yourself.</p>
     </section>
-    <!-- The batch runner reuses these three prompts and the normal /api/chat
+    <!-- The batch runner reuses these five prompts and the normal /api/chat
          endpoint, so a paired evaluation follows the same live pipeline. -->
     <section class="batch-runner" aria-label="Automated regression test run">
-      <p><strong>Run the three core questions across models</strong></p>
-      <p>Select the installed Ollama models to compare. They run one at a time, and the full diagnostics are collected into one JSON report saved on this computer.</p>
+      <p><strong>Run all five questions across models</strong></p>
+      <p>Select the installed Ollama models to compare. They run one at a time. The results table shows each final outcome and main issue, while the downloaded JSON keeps the retry history and full diagnostics.</p>
       <div id="batch-model-options" class="batch-model-options" aria-live="polite">Loading installed models…</div>
       <div class="batch-actions">
         <button type="button" id="run-regression">Run test set</button>
         <button type="button" id="download-regression" class="secondary" disabled>Download combined report</button>
       </div>
       <p id="batch-status" role="status"></p>
+      <div id="batch-results" class="batch-results" aria-live="polite"></div>
     </section>
     <!-- JavaScript appends each submitted prompt and its answer to this thread. -->
     <section id="thread" aria-live="polite"></section>
@@ -130,6 +139,7 @@
     const runRegressionButton = document.getElementById('run-regression');
     const downloadRegressionButton = document.getElementById('download-regression');
     const batchStatus = document.getElementById('batch-status');
+    const batchResults = document.getElementById('batch-results');
     const history = [];
     let currentBuild = 'unknown';
     let latestRegressionReport = null;
@@ -144,52 +154,97 @@
       .catch(() => { buildStatus.textContent = 'Local app build: unavailable'; });
 
     function makeDiagnosticSummary(data) {
-      // The full trace stays available below, but these plain-language notes
-      // put the likely cause first so a user does not have to read raw JSON to
-      // tell a retrieval issue from an answer or evidence-check issue.
+      // Use the server's final-outcome summary instead of searching every
+      // retry reason as one string. Earlier errors remain visible as a separate
+      // history, so a corrected first attempt is not mistaken for the final
+      // blocker. The complete trace remains copyable below for deeper review.
       const notes = [];
       const check = data.evidence_check || {};
-      const attempts = Array.isArray(check.attempts) ? check.attempts : [];
-      const retrieval = data.retrieval || {};
-      const expansion = retrieval.expansion || {};
-      const pages = items => [...new Set((Array.isArray(items) ? items : [])
-        .map(item => item && item.page).filter(Number.isInteger))];
-      const status = check.status || 'not recorded';
-      const accepted = attempts.find(item => item.status === 'accepted');
+      const summary = data.summary || {};
+      const retrieval = summary.retrieval || {};
+      const status = summary.outcome || check.status || 'not recorded';
 
       notes.push(`Build: ${data.build || 'unknown'}; model: ${data.model || 'unknown'}.`);
-      notes.push(`Outcome: ${status}${accepted ? ` on checker attempt ${accepted.attempt || '?'}` : ''}.`);
-
-      if (status !== 'verified') {
-        const allReasons = [check.reason, ...attempts.map(item => item.reason)]
-          .filter(value => typeof value === 'string').join(' ').toLowerCase();
-        const categories = [
-          [/too long|maximum \d+ words|safely shortened/, 'A quote was too long to shorten into a precise excerpt.'],
-          [/too short or not an exact passage match|not an exact passage match/, 'A quoted excerpt did not match the source text exactly.'],
-          [/key terms absent|could not tie every claim clause/, 'The cited wording did not adequately support the claim wording.'],
-          [/explanation, comparison, or relationship|distinct evidence-supported explanatory point/, 'The answer was too compressed for a question asking for an explanation.'],
-          [/comparison answer did not discuss both|both requested concepts/, 'The answer did not adequately cover both sides of the comparison.'],
-          [/invalid json|unterminated string|invalid response/, 'The model returned malformed structured output.'],
-          [/no answer sentences|no evidence entries|no supported sentences/, 'The checker could not produce a supported answer item.'],
-          [/repeated a question instead of answering/, 'The response repeated the question instead of answering it.'],
-        ];
-        const matched = categories.filter(([pattern]) => pattern.test(allReasons)).map(([, label]) => label);
-        for (const category of [...new Set(matched)].slice(0, 3)) notes.push(`Evidence check: ${category}`);
-        if (!matched.length && check.reason) notes.push(`Evidence check: ${check.reason}`);
+      notes.push(`Outcome: ${status}.`);
+      if (status === 'verified') {
+        notes.push('Final issue: none; the checked answer passed.');
+      } else if (summary.final_issue) {
+        notes.push(`Main issue (${summary.final_stage || 'review'}): ${summary.final_issue}`);
+        if (summary.final_reason) notes.push(`Final checker finding: ${summary.final_reason}`);
+      } else if (check.reason) {
+        notes.push(`Main issue: ${check.reason}`);
       }
 
-      const directPages = pages(retrieval.primary);
-      const mergedPages = pages(retrieval.merged);
-      if (expansion.triggered) {
-        const termCount = Array.isArray(expansion.terms) ? expansion.terms.length : 0;
-        const expansionNote = expansion.expansion_complete === false
-          ? 'Expansion returned incomplete terms'
-          : `Expansion supplied ${termCount} search terms`;
-        notes.push(`Retrieval: ${expansionNote}; direct pages ${directPages.join(', ') || 'none'}; final pages ${mergedPages.join(', ') || 'none'}.`);
-      } else {
-        notes.push(`Retrieval: expansion was not triggered; direct pages ${directPages.join(', ') || 'none'}.`);
+      const attemptHistory = Array.isArray(summary.attempt_history) ? summary.attempt_history : [];
+      if (attemptHistory.length) {
+        notes.push(`Attempt history: ${attemptHistory.map(attempt =>
+          `#${attempt.attempt} ${attempt.status} — ${attempt.issue}`
+        ).join('; ')}.`);
       }
+
+      const directPages = retrieval.direct_pages || [];
+      const finalPages = retrieval.final_pages || [];
+      const expansionNote = retrieval.expansion_triggered ? 'expanded search ran' : 'no expanded search';
+      notes.push(`Retrieval: ${expansionNote}; direct pages ${directPages.join(', ') || 'none'}; final pages ${finalPages.join(', ') || 'none'}.`);
       return notes;
+    }
+
+    function outcomeCounts(results) {
+      const counts = {verified:0, partial:0, fallback:0, skipped:0, request_error:0, other:0};
+      const byModel = {};
+      for (const result of results) {
+        const outcome = result.summary?.outcome || (result.error ? 'request error' : 'not recorded');
+        const key = result.error ? 'request_error'
+          : outcome === 'verified' || outcome === 'partial' || outcome === 'fallback'
+          ? outcome
+          : outcome.startsWith('skipped') ? 'skipped'
+          : 'other';
+        counts[key] += 1;
+        byModel[result.model] ||= {verified:0, partial:0, fallback:0, skipped:0, request_error:0, other:0};
+        byModel[result.model][key] += 1;
+      }
+      return {counts, by_model:byModel};
+    }
+
+    function renderRegressionSummary(results) {
+      batchResults.replaceChildren();
+      const table = document.createElement('table');
+      const caption = document.createElement('caption');
+      caption.textContent = 'Results by model and question';
+      table.append(caption);
+      const head = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+      for (const label of ['Model', 'Question', 'Outcome', 'Main issue', 'Attempt history']) {
+        const cell = document.createElement('th');
+        cell.scope = 'col';
+        cell.textContent = label;
+        headerRow.append(cell);
+      }
+      head.append(headerRow);
+      table.append(head);
+      const body = document.createElement('tbody');
+      for (const result of results) {
+        const summary = result.summary || {};
+        const row = document.createElement('tr');
+        const values = [
+          result.model || 'unknown',
+          result.question || '',
+          result.error ? 'request error' : summary.outcome || 'not recorded',
+          summary.final_issue || (summary.outcome === 'verified' ? 'None; answer passed.' : result.error || 'No final finding recorded.'),
+          (summary.attempt_history || []).map(attempt =>
+            `#${attempt.attempt} ${attempt.status}: ${attempt.issue}`
+          ).join('\n') || 'No checker attempts recorded.',
+        ];
+        values.forEach((value, index) => {
+          const cell = document.createElement('td');
+          cell.textContent = value;
+          if (index === 1) cell.className = 'question-cell';
+          row.append(cell);
+        });
+        body.append(row);
+      }
+      table.append(body);
+      batchResults.append(table);
     }
 
     function addTurn(kind, text, sources = [], diagnostics = null) {
@@ -288,8 +343,9 @@
     }
 
     function populateBatchModels(models) {
-      // These are the two current regression models. If either is unavailable,
-      // keep the installed choice(s) usable instead of blocking future runs.
+      // Prefer the two established baseline models when both are installed.
+      // The user can still select any installed model, so new Ollama models do
+      // not require code changes and missing baselines never block a test run.
       const preferred = ['qwen3:4b', 'llama3.2:3b'];
       const defaults = preferred.filter(name => models.includes(name));
       const selected = defaults.length ? defaults : models.slice(0, 1);
@@ -328,6 +384,7 @@
       const results = [];
       const total = models.length * prompts.length;
       latestRegressionReport = null;
+      batchResults.replaceChildren();
       downloadRegressionButton.disabled = true;
       runRegressionButton.disabled = true;
       send.disabled = true;
@@ -349,26 +406,43 @@
               entry.answer = data.answer || null;
               entry.sources = data.sources || [];
               entry.diagnostics = data.diagnostics || null;
+              entry.summary = data.diagnostics?.summary || null;
               if (!response.ok || data.error) entry.error = data.error || `HTTP ${response.status}`;
             } catch (error) {
               entry.error = error.message || String(error);
+              entry.summary = {
+                outcome:'request error', final_stage:'model connection',
+                final_issue:entry.error, final_reason:entry.error, attempt_history:[],
+                retrieval:{expansion_triggered:false, direct_pages:[], final_pages:[]}
+              };
+            }
+            if (!entry.summary && entry.error) {
+              entry.summary = {
+                outcome:'request error', final_stage:'request', final_issue:entry.error,
+                final_reason:entry.error, attempt_history:[],
+                retrieval:{expansion_triggered:false, direct_pages:[], final_pages:[]}
+              };
             }
             results.push(entry);
           }
         }
+        const reportSummary = outcomeCounts(results);
         latestRegressionReport = {
           report_type:'antilogicalism-reading-companion-regression',
-          schema_version:1,
+          schema_version:2,
           build:currentBuild,
           started_at:startedAt,
           completed_at:new Date().toISOString(),
           models,
           questions:prompts,
+          summary:reportSummary,
           results
         };
+        renderRegressionSummary(results);
         downloadRegressionButton.disabled = false;
         const errors = results.filter(result => result.error).length;
-        batchStatus.textContent = `Finished ${results.length}/${total} runs${errors ? `; ${errors} request error(s)` : ''}. Download one report to share the full traces.`;
+        const counts = reportSummary.counts;
+        batchStatus.textContent = `Finished ${results.length}/${total}: ${counts.verified} verified, ${counts.partial} partial, ${counts.fallback} fallback${counts.skipped ? `, ${counts.skipped} skipped` : ''}${errors ? `, ${errors} request error(s)` : ''}.`;
       } finally {
         runRegressionButton.disabled = false;
         send.disabled = false;
