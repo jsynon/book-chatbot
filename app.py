@@ -75,7 +75,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "bounded-checker-fields-2026-10-16-97"
+BUILD_ID = "candidate-focused-list-evidence-retrieval-2026-10-17-140"
 PDF_FILE_ID = "1XVInAFS2zutV8PDp8A3DirUrW6nLLfvY"
 BOOK_TITLE = "Nicomachean Ethics — Aristotle"
 
@@ -117,6 +117,12 @@ PASSAGE_METADATA_IN_QUOTE_RE = re.compile(
 # 18-word ceiling caused otherwise-checkable answers to fall back.
 MIN_EVIDENCE_QUOTE_WORDS = 3
 MAX_EVIDENCE_QUOTE_WORDS = 45
+# The validator keeps a 45-word hard ceiling so longer evidence is still
+# recoverable when genuinely needed. The checker should aim substantially
+# lower: Build 97 showed that a character cap alone still let short-word-heavy
+# quotes cross the word limit. Keep this as a prompt target, not a new
+# acceptance rule, so a useful exact excerpt can still use the full ceiling.
+TARGET_EVIDENCE_QUOTE_WORDS = (12, 25)
 # Keep the structured checker response compact before it reaches the validator.
 # Build 96's live traces showed that Qwen sometimes used an evidence field for
 # a 70–130-word quotation or turned fixed argument fields into several
@@ -128,7 +134,13 @@ MAX_EVIDENCE_QUOTE_WORDS = 45
 # focused explanation; they are not a substitute for evidence validation.
 MAX_CHECKER_ANSWER_CHARS = 420
 MAX_ARGUMENT_FIELD_CHARS = 360
-MAX_EVIDENCE_QUOTE_CHARS = 480
+# The 45-word validator remains the actual acceptance rule. This smaller
+# schema ceiling keeps the model from spending most of its response on quotes
+# that regularly exceed that rule, and also reduces the chance that a long
+# copied excerpt crowds the closing JSON braces out of a bounded Ollama reply.
+# Characters are only an imperfect proxy for words, so exact source matching
+# and the word-count check below remain necessary after generation.
+MAX_EVIDENCE_QUOTE_CHARS = 220
 # A source-wide replacement window must share enough ordered words with the
 # model's exact long excerpt to remain a repair of that evidence selection.
 # The ordinary quote minimum is intentionally much shorter, so it is not a
@@ -139,8 +151,10 @@ def tokenize(text: str) -> list[str]:
     """Normalize text for lexical search without requiring an NLP library.
 
     This intentionally lightweight tokenizer removes common stop words and
-    handles a few frequent plurals. Its output is shared by both the question
-    and the book index, so the search scoring compares terms consistently.
+    normalizes a few common inflection patterns. Its output is shared by both
+    the question and the book index, so related forms such as "habituation"
+    and "habituated" can contribute to the same retrieval match without
+    adding a heavyweight NLP dependency.
     """
     tokens = []
     irregular = {"children": "child", "men": "man", "women": "woman", "people": "person"}
@@ -153,6 +167,18 @@ def tokenize(text: str) -> list[str]:
             token = token[:-3] + "y"
         elif len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
             token = token[:-1]
+        # A few derived forms otherwise miss the same lexical root: a query
+        # about habituation will not match a passage saying someone was
+        # habituated. Normalize this productive "-uation" family symmetrically
+        # in questions and passages, while retaining the original family only
+        # through its common verb form. Other words keep the existing
+        # conservative plural handling above.
+        if len(token) > 7 and token.endswith("uation"):
+            token = token[:-6] + "uate"
+        elif len(token) > 7 and token.endswith("uated"):
+            token = token[:-1]
+        elif len(token) > 7 and token.endswith("uating"):
+            token = token[:-3] + "e"
         tokens.append(token)
     return tokens
 
@@ -251,6 +277,62 @@ def format_evidence_context(
                 f'{part_attribute}>\nTEXT: {sentence}\n</passage>'
             )
     return "\n".join(windows)
+
+
+def focus_checker_sources(
+    question: str,
+    draft: str,
+    sources: list[dict],
+    *,
+    max_sources: int = 3,
+    preserve_all: bool = False,
+) -> list[dict]:
+    """Choose a compact, topic-aligned source set for the checker prompt.
+
+    Retrieval can correctly find the requested passage and still return several
+    adjacent or lexically similar passages. Build 118's live traces showed the
+    checker repeatedly selecting an unrelated passage from that larger set,
+    even while a relevant passage was present. Small local models have limited
+    context-attention capacity, so this helper narrows only the *prompt* for
+    an ordinary single-topic check. The caller keeps the complete retrieved
+    source list for finding passages and building UI links. Validation later
+    limits accepted citations to this exact checker-visible subset. This
+    boundary matters because a passage can be relevant to the book while
+    discussing the wrong subject for the reader's question.
+
+    Argument, comparison, and multipart questions opt out because their
+    separate roles may need evidence from different passages. For a simple
+    question, rank candidates by overlap with the reader's topic first, then
+    use the draft's content words as a weaker tie-breaker. Preserve retrieval
+    order for ties, and never invent or rewrite a source ID or passage.
+    """
+    if (
+        preserve_all
+        or len(question_named_topic_groups(question)) > 1
+        or len(sources) <= max_sources
+    ):
+        return list(sources)
+
+    question_terms = question_topic_anchor_terms(question) - STOP_WORDS
+    # Broad framing words add little discrimination between Aristotle's
+    # passages. Keep topic terms such as "good" available only if they are a
+    # genuinely useful signal alongside a more specific term.
+    broad_terms = {"human", "life", "good", "thing", "people", "man", "way"}
+    question_terms -= broad_terms
+    draft_terms = set(tokenize(draft)) - STOP_WORDS - broad_terms
+
+    ranked = []
+    for index, source in enumerate(sources):
+        source_terms = set(tokenize(str(source.get("text", ""))))
+        question_overlap = len(question_terms & source_terms)
+        draft_overlap = len(draft_terms & source_terms)
+        # The question controls selection. Draft overlap is deliberately
+        # secondary because an earlier draft may itself be off topic.
+        ranked.append((-(question_overlap * 3 + draft_overlap), -question_overlap, index, source))
+    chosen = sorted(ranked)[:max_sources]
+    # Re-establish retrieval order after selection so stable source order still
+    # carries the retrieval rank the rest of the app already uses.
+    return [entry[3] for entry in sorted(chosen, key=lambda entry: entry[2])]
 
 
 def evidence_checker_output_budget(
@@ -395,9 +477,23 @@ def expand_query(question: str, history: list[dict], model: str) -> dict:
         "additionalProperties": False,
     }
     part_list = "\n".join(f"{index}. {part}" for index, part in enumerate(facets, start=1))
+    parenthetical_alias_guidance = ""
+    if re.search(r"\b[A-Za-z][A-Za-z'-]{3,}\s*\([^()]{2,100}\)", question):
+        # A reader may know a technical name and offer a plain-language gloss,
+        # while the book uses a third, everyday label. Build 110's live trace
+        # showed expansion terms echoing the reader's labels instead of
+        # finding the book's wording. Ask for source vocabulary explicitly;
+        # the returned terms remain retrieval aids, never evidence.
+        parenthetical_alias_guidance = (
+            "The question gives a term followed by a parenthetical explanation. Treat both as one idea, "
+            "then search for the source book's own wording for that idea, including ordinary terms that "
+            "do not appear in the question. Do not merely repeat the technical term or its gloss as search "
+            "vocabulary. These terms are for retrieval only; do not answer the question. "
+        )
     prompt = (
         "Convert the question into search vocabulary likely to appear in the source book. "
-        "Put 3 to 6 short search terms or phrases in the search_terms string, separated by semicolons. "
+        + parenthetical_alias_guidance
+        + "Put 3 to 6 short search terms or phrases in the search_terms string, separated by semicolons. "
         "For each numbered question part, put at least two source-like search terms in its matching "
         "facet_N string, separated by semicolons. Do not put part numbers inside these strings. "
         "Each part's list should include source-like "
@@ -513,7 +609,8 @@ def expand_query(question: str, history: list[dict], model: str) -> dict:
         }
         retry_prompt = (
             "The previous search expansion was empty or incomplete. Fill all required text fields. "
-            "In terms, write 3 to 6 book vocabulary phrases separated by semicolons. For each question "
+            + parenthetical_alias_guidance
+            + "In terms, write 3 to 6 book vocabulary phrases separated by semicolons. For each question "
             "part, fill its matching part_N field with at least two source-like terms, without numbering "
             "the terms. Include premises and intermediate ideas for how/why questions. Do not answer "
             "the question. Return only the JSON object.\n"
@@ -1081,7 +1178,8 @@ def classify_diagnostic_issue(reason: str) -> dict[str, str]:
         (r"invalid json|unterminated string|invalid response", "structured output", "The model returned malformed structured output."),
         (r"too long|maximum \d+ words|safely shortened", "quote length", "A quote exceeded the limit and could not be safely shortened."),
         (r"too short or not an exact passage match|not an exact passage match", "quote matching", "A quote did not match the cited passage exactly."),
-        (r"repeats a long source passage instead of synthesizing", "answer synthesis", "The answer copied a passage instead of giving a concise synthesis."),
+        (r"copies source wording instead of synthesizing|repeats a long source passage instead of synthesizing", "answer synthesis", "The answer copied a passage instead of giving a concise synthesis."),
+        (r"copied source fragment instead of a complete sentence", "answer synthesis", "The answer copied an incomplete source fragment instead of synthesizing it."),
         (r"key terms absent|could not tie every claim clause", "claim support", "The cited wording did not adequately support the claim wording."),
         (r"must separately identify|missing:\s*(?:conclusion|premise|reasoning)|reasoning component|inferential link", "argument structure", "The answer did not clearly connect textual support to its conclusion."),
         (r"comparison|both requested concepts|separate answer item for each requested concept", "comparison coverage", "The answer did not adequately support both sides of the comparison."),
@@ -1158,6 +1256,146 @@ def summarize_diagnostics(trace: dict) -> dict:
     }
 
 
+def has_unmatched_parenthetical_alias(
+    question: str,
+    sources: list[dict],
+) -> bool:
+    """Detect an unfamiliar term and gloss that both missed top passages.
+
+    Readers often give both a technical term and a plain-language gloss, as in
+    "ataraxia (freedom from disturbance)". If neither wording appears in the
+    strongest retrieved passages, ordinary overlap can still look adequate
+    because the rest of a long question shares generic topic words. In that
+    case, let the model suggest source-like search terms. This helper does not
+    add a synonym, make an answer claim, or alter evidence; it only decides
+    whether the existing query-expansion step should run.
+    """
+    if not sources:
+        return False
+    passage_terms = set(tokenize(" ".join(
+        str(source.get("text", "")) for source in sources[:3]
+    )))
+    for match in re.finditer(
+        r"\b([A-Za-z][A-Za-z'-]{3,})\s*\(([^()]{2,100})\)",
+        question,
+    ):
+        named_term = set(tokenize(match.group(1)))
+        plain_language_gloss = set(tokenize(match.group(2)))
+        # One incidental word such as "freedom" should not stand in for a
+        # multiword gloss such as "freedom from disturbance". Require the
+        # complete named term (normally one token) or at least two distinct
+        # gloss terms, capped at the gloss's length for short labels.
+        named_term_covered = bool(named_term) and named_term.issubset(passage_terms)
+        gloss_overlap = plain_language_gloss.intersection(passage_terms)
+        gloss_covered = bool(plain_language_gloss) and len(gloss_overlap) >= min(
+            2, len(plain_language_gloss)
+        )
+        if (
+            not named_term_covered
+            and not gloss_covered
+        ):
+            return True
+    return False
+
+
+def has_unmatched_single_topic_wording(
+    question: str,
+    sources: list[dict],
+) -> bool:
+    """Detect a single-topic label that only partly matches the passages.
+
+    A reader can ask about an idea using a label the translation does not use.
+    If part of the label overlaps the strongest passages but another meaningful
+    part does not, small models may repeat the absent wording as though it came
+    from the book. That can create a false claim-support failure even when the
+    passages describe the idea under their own vocabulary. This is prompt
+    guidance only: it does not create a synonym, expand the evidence, or weaken
+    the exact quote and claim checks. Multi-topic questions keep their existing
+    per-topic completeness rules and are deliberately excluded here.
+    """
+    if (
+        not sources
+        or len(question_named_topic_groups(question)) > 1
+        or question_requests_direct_quote(question)
+        or has_unmatched_parenthetical_alias(question, sources)
+    ):
+        return False
+
+    # Ignore broad words that can overlap by chance across many passages.
+    # Retain more discriminating concept words so a partial lexical match can
+    # flag a likely naming difference without hardcoding a book or a question.
+    broad_terms = {
+        "good", "human", "life", "man", "person", "people", "thing", "way",
+    }
+    topic_terms = question_topic_anchor_terms(question) - STOP_WORDS - broad_terms
+    if len(topic_terms) < 2:
+        return False
+
+    passage_terms = set(tokenize(" ".join(
+        str(source.get("text", "")) for source in sources[:3]
+    )))
+    represented_terms = topic_terms & passage_terms
+    missing_terms = topic_terms - passage_terms
+    # A mix of present and absent topic words is a useful signal that the book
+    # may name the same idea differently. If every topic word is missing, this
+    # is more likely a retrieval gap; do not imply that the passages contain an
+    # equivalent definition that has not been located.
+    return bool(represented_terms and missing_terms)
+
+
+def evidence_topic_anchor_terms(question: str, sources: list[dict]) -> set[str]:
+    """Choose which question words the cited excerpts must name explicitly.
+
+    Normally every named topic anchor remains available to the existing claim
+    checker. For a single-topic label that does not appear in the supplied
+    passages, the reader may be using vocabulary different from the book's;
+    do not require that absent word as an exact-quote anchor. If it does appear
+    somewhere in the checker context, however, a claim that explicitly names
+    it must quote a passage that names it too. For a multiword single-topic
+    label that only partly appears, retain the existing source-wording
+    accommodation. Multi-topic questions retain every anchor so an answer
+    cannot silently omit one requested subject.
+    """
+    anchors = question_topic_anchor_terms(question)
+    passage_terms = set(tokenize(" ".join(
+        str(source.get("text", "")) for source in sources[:3]
+    )))
+    # A lone absent label such as "happiness" may be a reader-facing name for
+    # a source concept expressed as "the human good." Excluding that absent
+    # anchor preserves source-worded paraphrases, while a present anchor such
+    # as "magnificence" can now be required in the exact quote for a claim
+    # that names it. This also prevents the single-topic rule from becoming a
+    # general exact-keyword demand when retrieval has not found the label.
+    if len(anchors) == 1:
+        return anchors & passage_terms
+    if not has_unmatched_single_topic_wording(question, sources):
+        return anchors
+    return anchors & passage_terms
+
+
+def unmatched_single_topic_claim_terms(
+    question: str,
+    sources: list[dict],
+) -> set[str]:
+    """Find absent label words that should not block a source-worded claim.
+
+    Build 129 relaxed the extra named-topic anchor requirement when the book
+    uses different wording, but the ordinary clause-overlap guard still saw
+    those same absent label words as unsupported answer vocabulary. Ignore
+    only question anchors absent from checker-visible text, and only for the
+    already-detected single-topic wording mismatch. The model checker must
+    still establish the conceptual connection, all remaining answer terms
+    still need quoted support, and multi-topic questions receive no exception.
+    """
+    if not has_unmatched_single_topic_wording(question, sources):
+        return set()
+
+    passage_terms = set(tokenize(" ".join(
+        str(source.get("text", "")) for source in sources[:3]
+    )))
+    return question_topic_anchor_terms(question) - passage_terms
+
+
 def query_needs_expansion(question: str, sources: list[dict]) -> bool:
     """Decide whether a second, model-assisted search pass is likely to help.
 
@@ -1170,6 +1408,13 @@ def query_needs_expansion(question: str, sources: list[dict]) -> bool:
     """
     question_terms = set(tokenize(question))
     if not sources or not question_terms:
+        return True
+
+    # Parenthetical glosses often carry the source's everyday vocabulary for
+    # an unfamiliar technical term. If neither side of that pair is present
+    # in the best passages, their absence should trigger the existing
+    # model-assisted search expansion even when generic question terms overlap.
+    if has_unmatched_parenthetical_alias(question, sources):
         return True
 
     # Retrieval should not call a search "covered" just because one passage
@@ -1254,6 +1499,478 @@ def question_facets(question: str) -> list[str]:
     )
     facets = [part.strip(" \t\r\n,;:.?!") for part in split_pattern.split(question)]
     return [facet for facet in facets if facet]
+
+
+def explicit_list_answer_count(question: str) -> int | None:
+    """Return a clearly requested count for list questions, when present.
+
+    The checker has historically been allowed to compress a multi-item
+    answer into one fluent sentence. That makes it easy for a broad quote
+    about a list's existence to conceal a missing or unsupported member.
+    When the question names a count and a list noun (for example, "three kinds"
+    or "four steps"), ask for that many separately cited answer items instead.
+    This parser intentionally handles only common English number words and
+    digits; ambiguous quantities continue through the ordinary answer path.
+    """
+    number_words = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    }
+    list_noun = (
+        r"kinds?|types?|forms?|categories|options|responses|steps?|stages?|roles?|parts?|examples?|"
+        r"qualities|elements|factors|reasons?"
+    )
+    match = re.search(
+        rf"\b(?:the\s+)?(one|two|three|four|five|six|seven|eight|nine|ten|\d{{1,2}})\s+"
+        rf"(?:distinct\s+|different\s+)?(?:{list_noun})\b",
+        question,
+        re.I,
+    )
+    if not match:
+        return None
+    raw_count = match.group(1).casefold()
+    count = number_words.get(raw_count)
+    if count is None:
+        count = int(raw_count)
+    # A request for one item is not a list-coverage problem. Very large counts
+    # are also too ambiguous for a small fixed-schema response to enforce.
+    return count if 2 <= count <= 5 else None
+
+
+def is_explicit_list_question(question: str) -> bool:
+    """Recognize questions that ask for named kinds, steps, or other lists."""
+    list_noun = (
+        r"kinds?|types?|forms?|categories|options|responses|steps?|stages?|roles?|parts?|examples?|"
+        r"qualities|elements|factors|reasons?"
+    )
+    return bool(
+        explicit_list_answer_count(question)
+        or re.search(rf"\b(?:list|name|identify)\b.{{0,100}}\b(?:{list_noun})\b", question, re.I)
+        or re.search(rf"\bwhat\s+are\b.{{0,80}}\b(?:{list_noun})\b", question, re.I)
+    )
+
+
+def numbered_list_draft_candidates(draft: str, expected_count: int) -> list[str] | None:
+    """Extract only a clearly numbered, complete candidate list from a draft.
+
+    The checker can validate candidate membership only when the app can bind
+    each returned evidence record to one unambiguous draft item. Limit this
+    path to sequential numbered markers (1), 1., (1), etc.) that match the
+    requested count exactly. Free-form lists keep the existing checker path
+    rather than risking a silent split at ordinary numbers or punctuation.
+    """
+    marker = re.compile(r"(?<!\w)(?:\((\d{1,2})\)|(\d{1,2})[.)])\s*")
+    matches = list(marker.finditer(str(draft)))
+    if len(matches) != expected_count:
+        return None
+    numbers = [int(match.group(1) or match.group(2)) for match in matches]
+    if numbers != list(range(1, expected_count + 1)):
+        return None
+
+    candidates = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(draft)
+        candidate = draft[match.end():end].strip()
+        candidate = re.sub(r"^(?:and|or)\s+", "", candidate, flags=re.I)
+        candidate = re.sub(r"(?:[,;]\s*)?(?:and|or)$", "", candidate, flags=re.I).strip()
+        candidate = re.sub(r"[,;:\s]+$", "", candidate)
+        candidate = re.sub(r"[.!?]+$", "", candidate).strip()
+        if not candidate or len(candidate) > 320:
+            return None
+        candidates.append(candidate)
+    return candidates
+
+
+def candidate_source_guidance(
+    candidates: list[str],
+    candidate_source_ids: dict[int, set[str]] | None,
+) -> str:
+    """Describe item-specific retrieval IDs for the list evidence checker."""
+    if candidate_source_ids is None:
+        return ""
+    lines = []
+    for candidate_index, candidate in enumerate(candidates, start=1):
+        source_ids = sorted(candidate_source_ids.get(candidate_index, set()))
+        source_label = ", ".join(source_ids) if source_ids else "no focused passage found"
+        lines.append(f"{candidate_index}. {candidate}: {source_label}")
+    return (
+        "\n\nCandidate-focused retrieval pools (cite only the listed passage IDs "
+        "for that exact candidate):\n" + "\n".join(lines)
+    )
+
+
+def retrieve_numbered_list_candidate_sources(
+    question: str,
+    candidates: list[str],
+    history: list[dict],
+    sources: list[dict],
+) -> tuple[dict[int, set[str]], list[dict]]:
+    """Find a small, independent evidence pool for every numbered candidate.
+
+    The initial retrieval is optimized for the complete question. For a list,
+    that can put a passage saying "there are three kinds" ahead of the passages
+    that identify each kind, or blend nearby but different classifications.
+    After the draft provides explicit numbered candidates, run a local search
+    for each candidate while keeping the reader's question as weaker context.
+    These searches do not add answer claims: the checker still decides whether
+    each candidate belongs in the requested list, and the exact quote and claim
+    validators remain authoritative.
+
+    Preserve every original source ID so the draft and earlier prompt context
+    stay valid. Candidate search results already present in the original set
+    reuse that ID and contribute their best passage window. New pages receive
+    appended IDs, with at most one new page per candidate. A second pass can
+    use another page when the first-pass searches share pages, while keeping
+    the added context bounded. The returned mapping records which passages
+    were actually found by each candidate search; the checker must cite from
+    that item's pool, so evidence for one list entry cannot be borrowed from a
+    different candidate's retrieval.
+    """
+    if not candidates or not sources:
+        return {}, []
+
+    source_by_page = {int(source["page"]): source for source in sources}
+    candidate_results: dict[int, list[dict]] = {}
+    for candidate_index, candidate in enumerate(candidates, start=1):
+        # Search the candidate as the main query so its distinguishing terms
+        # receive full BM25 weight. The original question remains a secondary
+        # signal to keep retrieval tied to the requested subject and list.
+        candidate_results[candidate_index] = retrieve(
+            candidate,
+            history,
+            search_terms=[question],
+            limit=2,
+        )
+
+    candidate_source_ids: dict[int, set[str]] = {
+        candidate_index: set() for candidate_index in range(1, len(candidates) + 1)
+    }
+    added_pages = 0
+    added_page_limit = len(candidates)
+
+    # First take each candidate's strongest result before considering any
+    # second-choice pages. This reserves room for distinct entries instead of
+    # allowing one candidate's many matching passages to consume the budget.
+    for result_rank in range(2):
+        for candidate_index in range(1, len(candidates) + 1):
+            matches = candidate_results[candidate_index]
+            if result_rank >= len(matches):
+                continue
+            result = matches[result_rank]
+            page = int(result["page"])
+            source = source_by_page.get(page)
+            if source is None:
+                if added_pages >= added_page_limit:
+                    continue
+                source = {
+                    "source_id": f"S{len(sources) + 1}",
+                    "page": page,
+                    "text": result["text"],
+                    "score": result.get("score", 0),
+                }
+                sources.append(source)
+                source_by_page[page] = source
+                added_pages += 1
+            else:
+                # Retrieval may find a second, distinct paragraph on a page
+                # that was already selected for the complete question. Merge
+                # only the existing small passage budget; never replace text
+                # or change the stable source/page link.
+                source["text"] = merge_source_text(
+                    str(source.get("text", "")), str(result.get("text", ""))
+                )
+                source["score"] = max(
+                    float(source.get("score", 0) or 0),
+                    float(result.get("score", 0) or 0),
+                )
+            candidate_source_ids[candidate_index].add(source["source_id"])
+
+    retrieval_trace = []
+    for candidate_index, candidate in enumerate(candidates, start=1):
+        retrieval_trace.append({
+            "candidate_index": candidate_index,
+            "searched_pages": [
+                int(result["page"])
+                for result in candidate_results.get(candidate_index, [])
+            ],
+            "source_ids": sorted(candidate_source_ids[candidate_index]),
+        })
+    return candidate_source_ids, retrieval_trace
+
+
+def explicit_list_noun_singular(question: str) -> str:
+    """Return the requested list noun in singular form for locked-list prose."""
+    noun_forms = {
+        "kinds": "kind", "types": "type", "forms": "form", "categories": "category",
+        "options": "option", "responses": "response", "steps": "step", "stages": "stage",
+        "roles": "role", "parts": "part", "examples": "example", "qualities": "quality",
+        "elements": "element", "factors": "factor", "reasons": "reason",
+    }
+    list_noun = (
+        r"(kinds?|types?|forms?|categories|options|responses|steps?|stages?|roles?|parts?|examples?|"
+        r"qualities|elements|factors|reasons?)"
+    )
+    match = re.search(
+        rf"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d{{1,2}})\s+"
+        rf"(?:(?:distinct|different)\s+)?{list_noun}\b",
+        question,
+        re.I,
+    )
+    if not match:
+        return "item"
+    plural_or_singular = match.group(1).casefold()
+    return noun_forms.get(plural_or_singular, plural_or_singular)
+
+
+def bind_numbered_list_evidence(
+    question: str,
+    draft_candidates: list[str],
+    checker_items: object,
+    candidate_source_ids: dict[int, set[str]] | None = None,
+) -> tuple[list[dict], str | None]:
+    """Bind checker evidence records to fixed draft list items by numeric ID.
+
+    The checker does not get a `text` field in locked-list mode. The app uses
+    the candidate index to recover the exact member wording from the initial
+    draft, then runs that wording through the ordinary exact-quote and claim
+    validators. This prevents a retry from silently replacing a candidate
+    with a copied source sentence or a different member.
+    """
+    if not isinstance(checker_items, list):
+        return [], "the checker did not return numbered list evidence records"
+    by_index: dict[int, dict] = {}
+    for item in checker_items:
+        if not isinstance(item, dict):
+            continue
+        index = item.get("candidate_index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            continue
+        if not 1 <= index <= len(draft_candidates) or index in by_index:
+            continue
+        by_index[index] = item
+
+    noun = explicit_list_noun_singular(question)
+    bound = []
+    source_scope_issue = None
+    for index, candidate in enumerate(draft_candidates, start=1):
+        item = by_index.get(index, {})
+        is_member = item.get("is_list_member") is True
+        if candidate_source_ids is not None:
+            allowed_ids = candidate_source_ids.get(index, set())
+            item_evidence = item.get("evidence", [])
+            cited_ids = {
+                str(evidence.get("source_id", "")).strip()
+                for evidence in item_evidence
+                if isinstance(evidence, dict)
+            } if isinstance(item_evidence, list) else set()
+            # Keep the semantic membership judgment separate from citation
+            # scope: both must succeed. A model cannot establish one candidate
+            # by citing a passage retrieved only for a different candidate.
+            if not cited_ids or not allowed_ids or not cited_ids.issubset(allowed_ids):
+                is_member = False
+                if source_scope_issue is None:
+                    source_scope_issue = (
+                        f"list item {index} cited evidence outside its candidate-focused retrieval set"
+                    )
+        bound.append({
+            "text": f"One {noun} is {candidate}.",
+            "list_item_label": str(item.get("list_item_label", "")).strip(),
+            "evidence": item.get("evidence", []),
+            # This internal field communicates the checker's explicit
+            # membership judgment to both whole-answer validation and partial
+            # recovery. It is never rendered as part of the reader-facing text.
+            "_list_member_confirmed": is_member,
+            "_candidate_index": index,
+        })
+    if len(by_index) != len(draft_candidates):
+        return bound, "the checker did not return exactly one evidence record for each candidate list item"
+    return bound, source_scope_issue
+
+
+def explicit_list_item_count_issue(question: str, answer_items: object) -> str | None:
+    """Require list answers to label, ground, and distinguish each entry.
+
+    A list of answer objects is not sufficient by itself: a model can fill the
+    requested number of slots with consequences or repeated descriptions of
+    only one category. Each item therefore carries a short label, repeats
+    that label in its prose, and cites exact wording that names it. Labels must
+    be distinct. These are structural and lexical checks; ordinary quote and
+    claim validation, including model review of meaning, still applies.
+    """
+    if not is_explicit_list_question(question):
+        return None
+    expected_count = explicit_list_answer_count(question)
+    if not isinstance(answer_items, list):
+        return "the list answer did not provide separate answer items"
+    if expected_count is not None and len(answer_items) != expected_count:
+        actual_count = len(answer_items) if isinstance(answer_items, list) else 0
+        return (
+            f"the question requests {expected_count} separately evidenced list items, "
+            f"but the answer supplied {actual_count}"
+        )
+    normalized_labels = []
+    for item_number, item in enumerate(answer_items, start=1):
+        if isinstance(item, dict) and item.get("_list_member_confirmed") is False:
+            return (
+                f"list item {item_number} was not confirmed as a member of the requested list "
+                "by the evidence review"
+            )
+        label_issue = list_item_label_issue(item, item_number)
+        if label_issue:
+            return label_issue
+        normalized_labels.append(
+            " ".join(sorted(tokenize(str(item.get("list_item_label", "")))))
+        )
+    if len(set(normalized_labels)) != len(normalized_labels):
+        return "the requested list items must have distinct labels instead of repeating one entry"
+    return None
+
+
+def list_item_label_issue(item: object, item_number: int = 1) -> str | None:
+    """Require one list label to occur in its answer and exact evidence."""
+    if not isinstance(item, dict):
+        return f"list item {item_number} must be a separately labeled answer object"
+    label = str(item.get("list_item_label", "")).strip()
+    label_terms = set(tokenize(label))
+    answer_terms = set(tokenize(str(item.get("text", ""))))
+    evidence_terms: set[str] = set()
+    evidence = item.get("evidence")
+    if isinstance(evidence, list):
+        for entry in evidence:
+            if isinstance(entry, dict) and isinstance(entry.get("quote"), str):
+                evidence_terms.update(tokenize(entry["quote"]))
+    if not label_terms:
+        return f"list item {item_number} is missing its concise list_item_label"
+    if not label_terms.issubset(answer_terms):
+        return f"list item {item_number} must use its list_item_label in the answer text"
+    if not label_terms.intersection(evidence_terms):
+        return (
+            f"list item {item_number} must cite an exact excerpt that names its "
+            "list_item_label"
+        )
+    return None
+
+
+def question_named_topic_groups(question: str) -> list[set[str]]:
+    """Find explicit topic lists in a question's ``about`` complement.
+
+    Clause splitting already gives questions such as "what is X, and how is
+    it argued?" a separate numbered item for each clause. It does not cover a
+    different common shape: one clause that explicitly asks about two named
+    subjects, such as "what does the text say about courage and friendship?".
+    In that shape, the checker can produce one excellent, well-cited sentence
+    about courage and still omit friendship entirely. The ordinary lexical
+    claim check cannot catch that omission because it only checks claims the
+    model chose to make.
+
+    Keep this detector narrow and deterministic: inspect only a list joined by
+    ``and`` or commas after a clear topic-introducing preposition. We require
+    distinct non-empty term groups and reject clause-like list members, so a
+    phrase such as "about practical wisdom and how it works" is left to the
+    existing clause logic. These are coverage anchors, not a claim that every
+    word in a topic phrase must appear verbatim in an answer.
+    """
+    match = re.search(
+        r"\b(?:about|concerning|regarding)\s+(.+?)[?.!]*$",
+        question.strip(),
+        re.I,
+    )
+    if not match:
+        return []
+
+    complement = match.group(1).strip()
+    # A conjunction that introduces a new finite clause is already represented
+    # by question_facets; do not reinterpret its verb as another topic.
+    complement = re.split(
+        r"\s+(?:and|but|while|whereas)\s+(?="
+        r"(?:how|why|what|where|when|who|which|whether|does|do|did|is|are|was|were|can|could|should|would)\b)",
+        complement,
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+    pieces = [
+        piece.strip(" \t\r\n,;:.?!")
+        for piece in re.split(r"\s+and\s+|\s*,\s*", complement, flags=re.I)
+    ]
+    if len(pieces) < 2 or any(not piece for piece in pieces):
+        return []
+    if any(
+        re.match(r"^(?:how|why|what|where|when|who|which|whether|does|do|did|is|are|was|were|can|could|should|would)\b", piece, re.I)
+        for piece in pieces
+    ):
+        return []
+
+    groups = [set(tokenize(piece)) for piece in pieces]
+    groups = [group for group in groups if group]
+    if len(groups) < 2:
+        return []
+    # Repeated vocabulary usually signals a shared-head construction such as
+    # "practical and philosophic wisdom," rather than two independent topics.
+    # The comparison-specific path handles that form more carefully.
+    if any(groups[left].intersection(groups[right]) for left in range(len(groups)) for right in range(left + 1, len(groups))):
+        return []
+    return groups
+
+
+def named_topic_coverage(
+    question: str,
+    answer_items: object,
+) -> tuple[list[set[str]], list[set[str]]]:
+    """Return the named topic groups covered and missing in answer items.
+
+    The check pairs the answer text and exact quote on the same structured
+    item. This prevents an answer about one subject from borrowing a sibling
+    item's unrelated citation to appear complete. It does not judge whether
+    the interpretation is correct; the regular claim and quotation checks
+    remain responsible for that. Returning both sets lets normal verification
+    require every requested topic, while safe partial recovery can preserve a
+    useful fragment only if at least one requested topic actually survived.
+    """
+    topic_groups = question_named_topic_groups(question)
+    if not topic_groups:
+        return [], []
+    if not isinstance(answer_items, list):
+        return [], topic_groups
+
+    item_terms: list[tuple[set[str], set[str]]] = []
+    for item in answer_items:
+        if not isinstance(item, dict):
+            continue
+        answer_terms = set(tokenize(str(item.get("text", ""))))
+        evidence_terms: set[str] = set()
+        evidence = item.get("evidence", [])
+        if isinstance(evidence, list):
+            for entry in evidence:
+                if isinstance(entry, dict) and isinstance(entry.get("quote"), str):
+                    evidence_terms.update(tokenize(entry["quote"]))
+        item_terms.append((answer_terms, evidence_terms))
+
+    covered_groups: list[set[str]] = []
+    missing_groups: list[set[str]] = []
+    for topic_terms in topic_groups:
+        # At least one identifying term from the requested phrase must occur
+        # in both the answer and its own exact cited wording. Requiring every
+        # word would reject natural paraphrases such as "the soul" for "human
+        # soul," while this paired check still catches a wholly omitted topic.
+        covered = any(
+            topic_terms.intersection(answer_terms)
+            and topic_terms.intersection(evidence_terms)
+            for answer_terms, evidence_terms in item_terms
+        )
+        (covered_groups if covered else missing_groups).append(topic_terms)
+    return covered_groups, missing_groups
+
+
+def named_topic_coverage_issue(question: str, answer_items: object) -> str | None:
+    """Require a distinct, cited answer mention for every named topic group."""
+    covered_groups, missing_groups = named_topic_coverage(question, answer_items)
+    if missing_groups:
+        return (
+            "the answer must mention and cite every explicitly named topic in the question; "
+            "uncovered topic(s): "
+            + "; ".join(" ".join(sorted(topic_terms)) for topic_terms in missing_groups)
+        )
+    return None
 
 
 def contextual_facet_search_terms(
@@ -1392,6 +2109,30 @@ def call_ollama(question: str, sources: list[dict], history: list[dict], model: 
             " For this explanatory, comparative, or relational question, usually give 2 to 4 distinct "
             "sentences: state the answer, then explain a supporting reason, difference, or role. "
             "Do not reduce a relation to a vague statement that the ideas simply 'work together'."
+        )
+    if has_unmatched_parenthetical_alias(question, sources):
+        # When the retrieved text does not use a reader's technical label or
+        # its parenthetical gloss, answer in the text's own vocabulary. This
+        # avoids making the alias itself look like a claim Aristotle states.
+        system += (
+            " The question supplies a term with a parenthetical gloss that the strongest passages do not "
+            "use. Treat those words as the reader's search cues, not as required source wording. Begin with "
+            "the term the book actually uses and explain only what its passages support. Do not state that "
+            "the book uses or defines the absent label unless a quoted passage does so. Do not copy both "
+            "reader-supplied labels into a factual claim whose evidence contains neither."
+        )
+    if has_unmatched_single_topic_wording(question, sources):
+        # A question can use a reasonable label that the supplied translation
+        # does not use. Help the model find the book's own term while requiring
+        # the passages themselves to establish that the terms refer to the same
+        # idea. This changes answer vocabulary only; it never relaxes evidence.
+        system += (
+            " The question's single-topic wording only partly appears in the supplied passages. Treat its "
+            "label as a search cue, not as required wording for a factual claim. If the passages clearly "
+            "describe the same idea using the book's own term, answer with that source term and explain "
+            "the supported connection. Do not repeat absent question wording as though the text used it, "
+            "and do not guess an equivalence when the passages do not establish one. Keep every evidence "
+            "quote copied exactly from a TEXT block."
         )
     messages = [{"role": "system", "content": system}]
     for item in history[-6:]:
@@ -1580,6 +2321,31 @@ def explanatory_depth_issue(question: str, answer: str) -> str | None:
     return None
 
 
+def definition_completeness_issue(question: str, answer: str) -> str | None:
+    """Reject a definition answer that only repeats the requested term.
+
+    A correct citation can still accompany an empty response such as the term
+    being defined. That is not a definition, even when every visible answer
+    word appears in the quote. For clear ``what does ... mean`` questions,
+    require at least two distinct content words beyond the question's own
+    vocabulary. This lightweight coverage floor is deliberately narrow: it
+    does not constrain ordinary short factual answers, and the existing exact
+    quote and claim checks still decide whether those added words are supported.
+    """
+    if not re.search(r"\bwhat\s+(?:does|do|did)\b.{1,120}\bmean\b", question, re.I):
+        return None
+
+    requested_words = set(tokenize(question))
+    answer_words = set(tokenize(re.sub(r"\[S\d+\]", " ", answer)))
+    explanatory_words = answer_words - requested_words
+    if len(explanatory_words) < 2:
+        return (
+            "the definition only repeats the requested term; explain at least one supported "
+            "feature or use of that idea"
+        )
+    return None
+
+
 def requires_multiple_explanatory_points(question: str) -> bool:
     """Decide when a one-sentence answer would miss the requested work.
 
@@ -1682,6 +2448,220 @@ def is_long_verbatim_answer(text: str, cited_sources: list[dict]) -> bool:
     return False
 
 
+def is_complete_verbatim_source_sentence(text: str, cited_sources: list[dict]) -> bool:
+    """Catch a copied complete source sentence below the long-quote limit.
+
+    The long-copy check above focuses on text exceeding the evidence cap. The
+    Build 135 report showed partial recovery returning a complete source
+    sentence of fewer than 45 words as the answer itself. That sentence was
+    factually authentic but did not meet the app's instruction to synthesize
+    the idea. Preserve short definitions, while requiring an original
+    synthesis for complete copied sentences longer than twelve words. An
+    explicit quote request bypasses this check at the formatter call site.
+    """
+    answer_tokens = tuple(token.casefold() for token in TOKEN_RE.findall(str(text)))
+    if len(answer_tokens) <= 12:
+        return False
+    for source in cited_sources:
+        source_text = re.sub(r"\s+", " ", str(source.get("text", ""))).strip()
+        source_sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9“‘\"'])", source_text)
+            if sentence.strip()
+        ] or [source_text]
+        for source_sentence in source_sentences:
+            source_tokens = tuple(
+                token.casefold() for token in TOKEN_RE.findall(source_sentence)
+            )
+            if answer_tokens == source_tokens:
+                return True
+    return False
+
+
+def is_verbatim_source_fragment(text: str, cited_sources: list[dict]) -> bool:
+    """Catch a lower-case copied clause that punctuation could disguise.
+
+    The long-copy check above intentionally leaves short quotations alone. A
+    different failure occurs when a model copies only the tail of a sentence,
+    such as a "this being determined ..." clause, and the formatter adds a
+    capital letter and period that make the fragment look like an answer. The
+    formatter's capitalization step tells us the model itself began with a
+    lower-case continuation. Look for an exact contiguous token sequence that
+    begins inside, rather than at the start of, one source sentence. Complete
+    source sentences, ordinary synthesized answers, and very short phrases
+    remain eligible. Explicit quote requests are handled by the caller.
+    """
+    raw_answer = str(text).strip()
+    if not raw_answer[:1].islower():
+        return False
+    answer_tokens = [token.casefold() for token in TOKEN_RE.findall(raw_answer)]
+    # Short source phrases can be natural concise answers, so this check only
+    # targets substantial spans where copied wording can masquerade as a
+    # complete explanation.
+    if len(answer_tokens) < 8:
+        return False
+
+    # A sentence copied from the middle of a source sentence can still be
+    # grammatically complete. The live Build 106 report included such a
+    # sentence beginning "philosophic wisdom is scientific knowledge". Keep
+    # that wording eligible for normal evidence checks by limiting this guard
+    # to openings that have no finite verb before their first comma (or in the
+    # whole answer when there is no comma). This catches dependent openings
+    # such as "the mean relative to us, this being..." and "this being
+    # determined..." without treating a complete assertion as a fragment
+    # merely because it starts with a lower-case word.
+    opening_clause = raw_answer.split(",", 1)[0]
+    finite_verb = re.compile(
+        r"\b(?:am|is|are|was|were|has|have|had|do|does|did|can|could|"
+        r"will|would|shall|should|may|might|must)\b",
+        re.I,
+    )
+    if finite_verb.search(opening_clause):
+        return False
+
+    answer_sequence = tuple(answer_tokens)
+    for source in cited_sources:
+        source_text = re.sub(r"\s+", " ", str(source.get("text", ""))).strip()
+        # Sentence boundaries prevent a span that crosses from one source
+        # sentence into the next from being mistaken for a copied clause.
+        source_sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9“‘\"'])", source_text)
+            if sentence.strip()
+        ] or [source_text]
+        for source_sentence in source_sentences:
+            sentence_tokens = tuple(
+                token.casefold() for token in TOKEN_RE.findall(source_sentence)
+            )
+            if answer_sequence == sentence_tokens or len(answer_sequence) > len(sentence_tokens):
+                continue
+            window_size = len(answer_sequence)
+            if any(
+                start > 0 and sentence_tokens[start:start + window_size] == answer_sequence
+                for start in range(len(sentence_tokens) - window_size + 1)
+            ):
+                return True
+    return False
+
+
+def copied_answer_drift_issue(
+    draft: str,
+    answer_items: object,
+    cited_sources: list[dict],
+    *,
+    allow_verbatim_answer: bool = False,
+    minimum_unique_terms: int = 12,
+) -> str | None:
+    """Reject a copied source sentence that has drifted away from the draft.
+
+    The checker is allowed to narrow or correct a draft, but a live Build 111
+    trace showed it can instead replace a relevant explanation with a long,
+    exact sentence from a different retrieved topic. Exact quote matching and
+    claim-to-quote overlap alone cannot catch that: the copied sentence is
+    genuinely present in its cited passage and supports its own words. Keep
+    this guard narrow by applying it only to verbatim answer sentences above
+    the caller's minimum vocabulary threshold (the evidence field remains the
+    place for exact source wording),
+    and only when their content has little lexical connection to the draft
+    that the checker was asked to review. Explicit quote requests retain their
+    existing behavior. This is a drift alarm, not a semantic truth test; the
+    ordinary claim and source checks remain in force for every answer.
+    """
+    if allow_verbatim_answer or not isinstance(answer_items, list):
+        return None
+
+    draft_terms = set(tokenize(str(draft or "")))
+    # Very broad words can appear in unrelated passages in a large library.
+    # Ignore them only for this cross-answer comparison; they remain available
+    # to retrieval and the normal claim/evidence validators.
+    broad_terms = {"human", "life", "good", "thing", "people", "man", "way"}
+    draft_terms -= broad_terms
+    if not draft_terms:
+        return None
+    # Some recovery tests, and a few callers, can reach this helper with only
+    # a placeholder draft. In that case there is no meaningful topic to compare
+    # against, so keep the original substantial-sentence threshold rather than
+    # treating relevant short source wording as unrelated by default.
+    effective_minimum_unique_terms = (
+        minimum_unique_terms if len(draft_terms) >= 2 else max(12, minimum_unique_terms)
+    )
+
+    for item_number, item in enumerate(answer_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", ""))
+        evidence = item.get("evidence", [])
+        cited_ids = {
+            str(entry.get("source_id", "")).strip()
+            for entry in evidence
+            if isinstance(entry, dict)
+        } if isinstance(evidence, list) else set()
+        cited_sources_for_item = [
+            source for source in cited_sources
+            if str(source.get("source_id", "")).strip() in cited_ids
+        ]
+        # Check individual sentences so one copied sentence cannot hide inside
+        # a multi-sentence item that also contains a relevant paraphrase.
+        sentences = [
+            part.strip()
+            for part in re.split(r"(?<=[.!?])\s+", text)
+            if part.strip()
+        ]
+        for sentence in sentences:
+            sentence_terms = set(tokenize(sentence))
+            if len(sentence_terms) < effective_minimum_unique_terms:
+                continue
+            if not any(
+                _evidence_quote_is_contiguous(sentence, source.get("text", ""))
+                for source in cited_sources_for_item
+            ):
+                continue
+            shared_terms = sentence_terms.intersection(draft_terms)
+            if len(sentence_terms) < 12:
+                # Build 115's live trace showed the recovery threshold now
+                # catches short unrelated copies, but the ordinary two-term
+                # overlap floor can also reject a relevant short source line
+                # whose wording has one distinctive connection to the draft
+                # (for example, "habituated" matching "habituation"). Treat
+                # that one clear topic match as enough for a short sentence to
+                # proceed to the existing claim and quote validators. Generic
+                # bridge words such as "become" do not count as that signal,
+                # so the unrelated short pain sentence still fails here.
+                short_copy_common_terms = {
+                    "become", "seem", "make", "use", "show", "also", "thus",
+                    "therefore", "life", "good", "thing", "people", "person",
+                    "human", "man", "way", "time", "case", "one",
+                }
+                distinctive_shared_terms = shared_terms - short_copy_common_terms
+                if distinctive_shared_terms:
+                    continue
+            # Require at least one quarter of the copied sentence's content
+            # vocabulary (and never fewer than two terms) to connect it to the
+            # draft. The ratio lets longer source sentences carry more context
+            # while the floor avoids approving a one-word coincidence.
+            required_shared = max(2, math.ceil(len(sentence_terms) * 0.25))
+            if len(shared_terms) < required_shared:
+                return (
+                    f"answer item {item_number} copies a source sentence that is not meaningfully "
+                    "connected to the answer draft; keep the checker focused on the requested topic "
+                    "or explain a supported correction in the draft's terms"
+                )
+    return None
+
+
+def split_answer_sentences(text: str) -> list[str]:
+    """Split answer prose without treating common abbreviations as endings.
+
+    Checker output often uses "i.e." before a continuation. A plain period
+    splitter turns the words after that abbreviation into a fake standalone
+    sentence, which can trigger fragment checks and sentence limits. Protect
+    these abbreviations while splitting, then restore their original spelling.
+    """
+    protected = re.sub(r"\b(i\.e\.|e\.g\.)", lambda match: match.group(0).replace(".", "<DOT>"), text, flags=re.I)
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", protected) if part.strip()]
+    return [part.replace("<DOT>", ".") for part in parts]
+
+
 def argument_claims_are_near_duplicates(first_text: str, second_text: str) -> bool:
     """Catch argument roles that repeat almost the same substantive claim.
 
@@ -1779,16 +2759,13 @@ def argument_coverage_issue(
 
 
 def argument_item_length_issues(question: str, answer_items: object) -> list[str]:
-    """Keep fixed conclusion and reasoning fields from turning into essays.
+    """Keep conclusion and reasoning fields concise without dropping context.
 
-    The structured argument schema has exactly two fields, but a model can
-    still place a paragraph of several claims inside either field. That makes
-    each quote responsible for a bundle of points, increases quote-length
-    failures, and makes partial recovery harder to interpret. One or two
-    sentences per field leave room for a concise explanation while preserving
-    the required distinction between the result and its support. Ordinary
-    explanatory answers use the separate sentence-array schema and are not
-    constrained by this argument-specific limit.
+    Two sentences can be useful when one states a textual starting point and
+    the next explains the inference. Longer paragraphs make a single evidence
+    array responsible for a bundle of claims and are too difficult to check
+    reliably. Ordinary explanatory answers use the separate sentence-array
+    schema and are not constrained by this argument-specific limit.
     """
     if not asks_for_argument_explanation(question):
         return []
@@ -2173,6 +3150,128 @@ def repair_quote_with_one_extra_article(quote: str, source_text: str) -> str | N
     return None
 
 
+def repair_quote_with_one_merged_word(quote: str, source_text: str) -> str | None:
+    """Restore one missing space only when the source proves the exact split.
+
+    Live checker output sometimes joins adjacent words (for example,
+    ``andthe`` or ``todo``). This is a formatting error, not a new quotation:
+    accept it only when splitting one quote token into exactly two adjacent
+    source tokens makes the entire excerpt an exact, continuous source span.
+    Punctuation, word order, and every other token must already match. The
+    normal word-count and claim-support checks still run after repair.
+    """
+    quote_matches = list(TOKEN_RE.finditer(quote))
+    source_matches = list(TOKEN_RE.finditer(source_text))
+    if not MIN_EVIDENCE_QUOTE_WORDS <= len(quote_matches) <= MAX_EVIDENCE_QUOTE_WORDS:
+        return None
+    quote_words = [match.group(0).casefold() for match in quote_matches]
+    source_words = [match.group(0).casefold() for match in source_matches]
+    # Repeated source paragraphs can contain the same exact phrase more than
+    # once. Their positions are ambiguous, but if every match yields the same
+    # corrected excerpt, the repair text itself is not ambiguous.
+    repaired_excerpts = set()
+
+    for source_start in range(len(source_words)):
+        source_index = source_start
+        quote_index = 0
+        used_split = False
+        while source_index < len(source_words) and quote_index < len(quote_words):
+            if source_words[source_index] == quote_words[quote_index]:
+                source_index += 1
+                quote_index += 1
+                continue
+
+            # Permit one joined quote token to represent exactly two source
+            # words separated by whitespace. Hyphenated or punctuated joins
+            # are handled by the existing source tokenizer and are not
+            # silently rewritten here.
+            if (
+                not used_split
+                and source_index + 1 < len(source_words)
+                and quote_words[quote_index]
+                == source_words[source_index] + source_words[source_index + 1]
+            ):
+                between = source_text[
+                    source_matches[source_index].end():source_matches[source_index + 1].start()
+                ]
+                if between and between.isspace():
+                    source_index += 2
+                    quote_index += 1
+                    used_split = True
+                    continue
+            break
+
+        if used_split and quote_index == len(quote_words):
+            source_end = source_index
+            repaired_excerpts.add(source_text[
+                source_matches[source_start].start():source_matches[source_end - 1].end()
+            ])
+
+    # Proceed only when all exact source matches produce the same corrected
+    # wording. Distinct punctuation or spelling variants stay ambiguous and
+    # are left for the model to repair.
+    if len(repaired_excerpts) != 1:
+        return None
+    return next(iter(repaired_excerpts))
+
+
+def repair_quote_truncated_at_schema_limit(quote: str, source_text: str) -> str | None:
+    """Complete one visibly clipped final word using its exact source span.
+
+    A JSON string can hit the quote-field character ceiling mid-word even
+    though its beginning is copied exactly. Repair only a quote at that
+    ceiling, only when every earlier token is an exact contiguous match, and
+    only when the final fragment is a clear prefix of the immediately
+    following source word. The returned excerpt uses the passage's original
+    spelling; it still faces every ordinary evidence check. A complete word,
+    a paraphrase, or a cutoff in the middle of the excerpt is never expanded.
+    """
+    if len(quote) < MAX_EVIDENCE_QUOTE_CHARS - 2:
+        return None
+    quote_matches = list(TOKEN_RE.finditer(quote))
+    source_matches = list(TOKEN_RE.finditer(source_text))
+    if len(quote_matches) < MIN_EVIDENCE_QUOTE_WORDS:
+        return None
+
+    final_match = quote_matches[-1]
+    partial_word = final_match.group(0).casefold()
+    trailing_marker = quote[final_match.end():]
+    if not partial_word or len(partial_word) < 4:
+        return None
+    if trailing_marker.strip() and not all(char in "-‐‑‒–—\u00ad" for char in trailing_marker.strip()):
+        return None
+
+    quote_prefix = [match.group(0).casefold() for match in quote_matches[:-1]]
+    source_words = [match.group(0).casefold() for match in source_matches]
+    repaired_excerpts = set()
+    for source_start in range(len(source_words)):
+        source_end = source_start + len(quote_prefix)
+        if source_end >= len(source_words):
+            continue
+        if source_words[source_start:source_end] != quote_prefix:
+            continue
+
+        source_final_word = source_words[source_end]
+        if not source_final_word.startswith(partial_word) or source_final_word == partial_word:
+            continue
+        # Without an explicit hyphen-like cutoff, keep the completion narrow:
+        # a clipped fragment should be close to its source word's beginning,
+        # not an arbitrary alternate word sharing a short prefix.
+        has_cut_marker = bool(trailing_marker.strip())
+        if not has_cut_marker and len(source_final_word) - len(partial_word) > 4:
+            continue
+        repaired_excerpts.add(source_text[
+            source_matches[source_start].start():source_matches[source_end].end()
+        ])
+
+    # A passage may repeat the same paragraph, as happened in a live Build
+    # 117 citation. Accept repeated matches only when they produce byte-for-
+    # byte identical source wording; differing punctuation remains ambiguous.
+    if len(repaired_excerpts) != 1:
+        return None
+    return next(iter(repaired_excerpts))
+
+
 def quote_contains_passage_metadata(quote: str) -> bool:
     """Identify locator labels accidentally copied into an evidence quote.
 
@@ -2204,6 +3303,56 @@ def split_evidence_clauses(text: str) -> list[str]:
     clauses = []
     for part in parts:
         clauses.extend(pivot_pattern.split(part))
+    # A list can hide several independent factual claims inside one sentence.
+    # The ordinary overlap floor is intentionally modest, so a single quote
+    # that repeats the list introduction (for example, "three kinds of
+    # friendship") can otherwise lend enough generic words to unsupported
+    # entries. Check each explicitly numbered entry separately, even when the
+    # model separates entries with commas rather than semicolons.
+    numbered_items = re.split(
+        r"(?<!\w)(?:\(\s*\d+\s*\)|\d+[.)])\s*",
+        text,
+    )
+    if len(numbered_items) > 2:
+        clauses.extend(item.strip(" ,;:") for item in numbered_items[1:] if tokenize(item))
+
+    # Small models also return unnumbered lists. Split those only when the
+    # sentence clearly introduces a set of kinds, types, forms, categories,
+    # options, responses, steps, or examples. This avoids treating ordinary
+    # commas in descriptive prose as independent evidence claims.
+    list_intro = re.search(
+        r"\b(?:kinds?|types?|forms?|categories|options|responses|steps?|examples?|"
+        r"recommendations|qualities|elements|factors|reasons?)\b[^:.;]{0,100}:\s*(.+)$",
+        text,
+        flags=re.I,
+    )
+    if list_intro:
+        clauses.extend(
+            item.strip(" ,;:")
+            for item in re.split(r",\s*(?:and\s+)?|\s+and\s+", list_intro.group(1))
+            if tokenize(item)
+        )
+    else:
+        # Also recognize a plainly stated list without a colon, such as "The
+        # three forms are patience, courage, and restraint." The recognized
+        # set noun and list verb keep this narrow and avoid splitting normal
+        # compound sentences joined by "and."
+        unpunctuated_list_intro = re.search(
+            r"\b(?:kinds?|types?|forms?|categories|options|responses|steps?|examples?|"
+            r"recommendations|qualities|elements|factors|reasons?)\b[^.;]{0,80}?"
+            r"\b(?:are|include|comprise|consist\s+of)\b\s+(.+)$",
+            text,
+            flags=re.I,
+        )
+        if unpunctuated_list_intro:
+            clauses.extend(
+                item.strip(" ,;:")
+                for item in re.split(
+                    r",\s*(?:and\s+)?|\s+and\s+",
+                    unpunctuated_list_intro.group(1),
+                )
+                if tokenize(item)
+            )
     return [clause.strip() for clause in clauses if tokenize(clause)]
 
 
@@ -2211,6 +3360,7 @@ def claim_vocabulary_gaps(
     text: str,
     evidence_texts: list[str],
     required_topic_terms: set[str] | None = None,
+    ignored_claim_terms: set[str] | None = None,
 ) -> list[list[str]]:
     """Return key words from answer clauses that lack excerpt overlap.
 
@@ -2230,8 +3380,13 @@ def claim_vocabulary_gaps(
         evidence_terms.update(tokenize(evidence_text))
     gaps = []
     required_topic_terms = set(required_topic_terms or ())
+    ignored_claim_terms = set(ignored_claim_terms or ())
     for clause in split_evidence_clauses(text):
-        clause_terms = set(tokenize(clause))
+        # Strip only unmatched single-topic label words identified from the
+        # checker-visible source context. Keeping them out of the lexical
+        # floor prevents a translation label from defeating an otherwise
+        # supported claim; it does not create a synonym or change the quote.
+        clause_terms = set(tokenize(clause)) - ignored_claim_terms
         # Proper names and small grammatical fragments can be absent from a
         # passage without making the book claim unsupported. Require two shared
         # terms for a substantive clause (or its only term for a very short
@@ -2242,15 +3397,26 @@ def claim_vocabulary_gaps(
         missing_terms = set()
         if clause_terms and len(shared_terms) < required_overlap:
             missing_terms.update(clause_terms - evidence_terms)
-        # If one clause makes a claim about several concepts the reader named,
-        # the same exact excerpt bundle must give each named concept some
-        # lexical footing. This catches citations that mention "the soul" and
-        # "measure" while the answer silently adds a claim about God. Limiting
-        # this to two or more anchors avoids turning a lone topic word into a
-        # brittle exact-keyword requirement for ordinary paraphrases or
-        # statements that these passages do not establish a view.
+        # Every named topic that a clause explicitly discusses needs lexical
+        # footing in that clause's exact quote bundle. Previously the stricter
+        # floor applied only when one clause named two or more topics, which
+        # still let a sentence such as "Aristotle does not discuss God" ride
+        # on a generic quote about the soul or the good man. In multi-topic
+        # questions, each topic may appear in its own sentence, but each such
+        # sentence must cite wording about the topic it names. The answer-level
+        # completeness check separately ensures that no requested topic is
+        # omitted altogether.
         clause_anchors = clause_terms.intersection(required_topic_terms)
-        if len(clause_anchors) >= 2:
+        # A single-topic answer that explicitly names its central concept
+        # should cite a short excerpt that names that concept too. Without
+        # this floor, a long claim about one topic can pass on two generic
+        # shared words from a nearby, exact but different topic (as the live
+        # magnificence trace showed with a quote about liberality). When the
+        # question has multiple anchors, retain the stricter all-mentioned-
+        # anchors rule below so one requested subject cannot ride on another.
+        if len(required_topic_terms) == 1 and clause_anchors:
+            missing_terms.update(clause_anchors - evidence_terms)
+        elif clause_anchors:
             missing_terms.update(clause_anchors - evidence_terms)
         if missing_terms:
             gaps.append(sorted(missing_terms))
@@ -2262,6 +3428,7 @@ def evidence_covers_claim_vocabulary(
     cited_sources: list[dict],
     excerpts: list[str] | None = None,
     required_topic_terms: set[str] | None = None,
+    ignored_claim_terms: set[str] | None = None,
 ) -> bool:
     """Require each detected claim clause to overlap with its quoted evidence.
 
@@ -2276,7 +3443,9 @@ def evidence_covers_claim_vocabulary(
     evidence_texts = excerpts if excerpts is not None else [
         source.get("text", "") for source in cited_sources
     ]
-    return not claim_vocabulary_gaps(text, evidence_texts, required_topic_terms)
+    return not claim_vocabulary_gaps(
+        text, evidence_texts, required_topic_terms, ignored_claim_terms
+    )
 
 
 def compact_exact_evidence_quotes(
@@ -2285,19 +3454,22 @@ def compact_exact_evidence_quotes(
     claim_text: str,
     supporting_excerpts: list[str] | None = None,
     required_topic_terms: set[str] | None = None,
+    ignored_claim_terms: set[str] | None = None,
 ) -> list[str] | None:
     """Repair one oversized quote into at most two checked excerpts.
 
     Some local models select a whole argument paragraph even when only two
     small parts support the sentence. The helper first searches the overlong
     excerpt itself. If it cannot find a compact window that covers the claim,
-    and the model's entire long quote is an exact contiguous passage excerpt,
-    it also checks nearby windows from that same source passage. This handles
-    a useful case where the model quoted a relevant paragraph but started just
-    after a short phrase needed to ground the sentence. Each displayed window
-    must still be an exact continuous excerpt from the cited passage, overlap
-    substantially with the model's quote, and contribute wording from the
-    claim. Short excerpts already attached to this answer item can support
+    and the model's long quote contains a sufficiently long exact run from the
+    cited passage, it also checks nearby windows from that same source passage.
+    This handles a useful case where the model quoted a relevant paragraph but
+    started just after a short phrase needed to ground the sentence, or
+    introduced a localized wording error near the end of an otherwise exact
+    excerpt. A source window must overlap at least twelve consecutive words
+    that the model actually quoted. Each displayed window must still be an
+    exact continuous excerpt from the cited passage and contribute wording
+    from the claim. Short excerpts already attached to this answer item can support
     other clauses, so a repaired window only needs to contribute evidence
     that its siblings lack. The complete set must still pass the formatter's
     ordinary claim-coverage check. The app never joins separate source phrases
@@ -2348,7 +3520,9 @@ def compact_exact_evidence_quotes(
         if not clause_terms:
             return False
         if has_supporting_excerpts:
-            return not claim_vocabulary_gaps(clause, excerpts, required_topic_terms)
+            return not claim_vocabulary_gaps(
+                clause, excerpts, required_topic_terms, ignored_claim_terms
+            )
         excerpt_terms = set()
         for excerpt in excerpts:
             excerpt_terms.update(tokenize(excerpt))
@@ -2411,30 +3585,65 @@ def compact_exact_evidence_quotes(
 
     # If the model quoted an exact, continuous source span but that span lacks
     # an adjacent phrase needed by its own answer, allow a source window to
-    # extend beyond the supplied span. Anchor every such window to at least a
-    # twelve-word overlap with the model's quote, so the app cannot turn an
-    # unrelated source ID into a general-purpose passage search. Comparing
-    # normalized word sequences keeps punctuation differences harmless while
-    # still requiring the words and their order to be present in the passage.
+    # extend beyond the supplied span. If the quote has a localized error,
+    # allow the same repair only when a run of twelve consecutive quoted words
+    # still matches the source exactly. The long exact run anchors the search
+    # to the cited passage; it does not authorize rewriting the model's quote
+    # or searching elsewhere in the corpus. Every selected result is sliced
+    # from the exact source text and later passes the ordinary claim checks.
     source_tokens = list(TOKEN_RE.finditer(source_text))
     quote_words = [match.group(0).casefold() for match in quote_tokens]
     source_words = [match.group(0).casefold() for match in source_tokens]
-    quote_spans = []
+    quote_source_anchors = []
     if len(quote_words) <= len(source_words):
         for quote_start in range(len(source_words) - len(quote_words) + 1):
             if source_words[quote_start:quote_start + len(quote_words)] == quote_words:
-                quote_spans.append((quote_start, quote_start + len(quote_words)))
+                quote_source_anchors.append((
+                    quote_start,
+                    quote_start + len(quote_words),
+                    quote_start,
+                    quote_start + len(quote_words),
+                ))
 
-    for quote_start, quote_end in quote_spans:
-        # Only inspect windows that can overlap the model's excerpt by at
-        # least twelve words. A short amount of neighboring source
-        # context is allowed when the 45-word display cap leaves room for it.
-        earliest_start = max(0, quote_start - MAX_EVIDENCE_QUOTE_WORDS + MIN_SOURCE_WINDOW_OVERLAP_WORDS)
-        latest_start = min(quote_end - MIN_SOURCE_WINDOW_OVERLAP_WORDS, len(source_tokens) - MIN_EVIDENCE_QUOTE_WORDS)
+    # A long quote can contain one local substitution or truncation without
+    # providing a safe one-word repair. Find only exact consecutive token runs
+    # of the same minimum length used by the source-window overlap rule. This
+    # is deliberately stricter than fuzzy matching: a changed token breaks
+    # the run, and all words in a repaired quote still come verbatim from the
+    # citation's source passage. Multiple occurrences are kept because each
+    # source window remains exact and must independently pass claim coverage.
+    anchor_length = MIN_SOURCE_WINDOW_OVERLAP_WORDS
+    if (
+        not quote_source_anchors
+        and anchor_length > 0
+        and len(quote_words) >= anchor_length
+        and len(source_words) >= anchor_length
+    ):
+        source_anchor_positions: dict[tuple[str, ...], list[int]] = {}
+        for source_start in range(len(source_words) - anchor_length + 1):
+            source_anchor = tuple(source_words[source_start:source_start + anchor_length])
+            source_anchor_positions.setdefault(source_anchor, []).append(source_start)
+        for quote_start in range(len(quote_words) - anchor_length + 1):
+            quote_anchor = tuple(quote_words[quote_start:quote_start + anchor_length])
+            for source_start in source_anchor_positions.get(quote_anchor, []):
+                quote_source_anchors.append((
+                    quote_start,
+                    quote_start + anchor_length,
+                    source_start,
+                    source_start + anchor_length,
+                ))
+
+    for quote_start, quote_end, source_start, source_end in quote_source_anchors:
+        # Only inspect windows that contain the whole exact anchor. For an
+        # exact full-quote match this retains prior behavior. For a partial
+        # match, the anchor is the twelve-word exact run above; source context
+        # can extend around it but cannot replace or paraphrase it.
+        earliest_start = max(0, source_start - MAX_EVIDENCE_QUOTE_WORDS + MIN_SOURCE_WINDOW_OVERLAP_WORDS)
+        latest_start = min(source_end - MIN_SOURCE_WINDOW_OVERLAP_WORDS, len(source_tokens) - MIN_EVIDENCE_QUOTE_WORDS)
         for start in range(earliest_start, latest_start + 1):
             final_end = min(len(source_tokens), start + MAX_EVIDENCE_QUOTE_WORDS)
             for end in range(start + MIN_EVIDENCE_QUOTE_WORDS, final_end + 1):
-                overlap = min(end, quote_end) - max(start, quote_start)
+                overlap = min(end, source_end) - max(start, source_start)
                 if overlap < MIN_SOURCE_WINDOW_OVERLAP_WORDS:
                     continue
                 excerpt = source_text[source_tokens[start].start():source_tokens[end - 1].end()]
@@ -2469,6 +3678,7 @@ def expand_exact_quote_for_claim_context(
     claim_text: str,
     supporting_excerpts: list[str],
     required_topic_terms: set[str] | None = None,
+    ignored_claim_terms: set[str] | None = None,
 ) -> str | None:
     """Add adjacent words to an exact short quote when they complete support.
 
@@ -2488,7 +3698,8 @@ def expand_exact_quote_for_claim_context(
     source_matches = list(TOKEN_RE.finditer(source_text))
     source_words = [match.group(0).casefold() for match in source_matches]
     baseline_gap_count = claim_context_gap_count(
-        claim_text, supporting_excerpts + [quote], required_topic_terms
+        claim_text, supporting_excerpts + [quote], required_topic_terms,
+        ignored_claim_terms,
     )
     if baseline_gap_count == 0:
         return None
@@ -2515,6 +3726,7 @@ def expand_exact_quote_for_claim_context(
                         claim_text,
                         supporting_excerpts + [candidate],
                         required_topic_terms,
+                        ignored_claim_terms,
                     )
                     # Only widen a citation when the resulting exact window
                     # supplies a substantial lexical footprint for every
@@ -2540,19 +3752,21 @@ def claim_context_gap_count(
     claim_text: str,
     evidence_texts: list[str],
     required_topic_terms: set[str] | None = None,
+    ignored_claim_terms: set[str] | None = None,
 ) -> int:
     """Score whether a context-expanded quote substantively covers each clause.
 
     The ordinary claim check needs only modest lexical overlap because the
     local model checker also reviews meaning. Quote expansion has a stricter
     job: it should add enough exact source wording to make widening worthwhile.
-    Require up to six shared content terms in every clause, and all of the
-    question's named anchors when a clause refers to multiple concepts.
+    Require up to six shared content terms in every clause, and a lexical
+    footing for each named question topic that the clause itself discusses.
     """
     evidence_terms = {
         term for excerpt in evidence_texts for term in tokenize(excerpt)
     }
     required_topic_terms = set(required_topic_terms or ())
+    ignored_claim_terms = set(ignored_claim_terms or ())
     gaps = 0
     clauses = []
     for clause in split_evidence_clauses(claim_text):
@@ -2562,14 +3776,14 @@ def claim_context_gap_count(
         # second half during context selection.
         clauses.extend(re.split(r",\s+and\s+", clause, flags=re.I))
     for clause in clauses:
-        clause_terms = set(tokenize(clause))
+        clause_terms = set(tokenize(clause)) - ignored_claim_terms
         if not clause_terms:
             continue
         shared_terms = clause_terms.intersection(evidence_terms)
         required_overlap = min(6, len(clause_terms))
         gaps += max(0, required_overlap - len(shared_terms))
         clause_anchors = clause_terms.intersection(required_topic_terms)
-        if len(clause_anchors) >= 2:
+        if clause_anchors:
             gaps += len(clause_anchors - evidence_terms)
     return gaps
 
@@ -2584,6 +3798,8 @@ def format_cited_sentences(
     allow_verbatim_answer: bool = False,
     required_topic_terms: set[str] | None = None,
     quote_repair_trace: list[dict] | None = None,
+    question: str = "",
+    allowed_source_ids: set[str] | None = None,
 ) -> str | None:
     """Validate cited evidence and render checked sentences for the UI.
 
@@ -2596,8 +3812,22 @@ def format_cited_sentences(
     For author-opinion hypotheticals, it can also label the first answer sentence
     as an inference, so the app does not present interpretation as a direct quote
     or documented historical opinion. It rejects IDs not retrieved this turn.
+    When a focused checker context is used, `allowed_source_ids` further limits
+    evidence to passages the checker actually saw, preventing a retrieved but
+    intentionally excluded off-topic passage from supporting verification.
     """
     valid_sources = {source["source_id"]: source for source in sources}
+    checker_visible_sources = [
+        source for source in sources
+        if allowed_source_ids is None or source["source_id"] in allowed_source_ids
+    ]
+    # The formatter receives the full retrieval set for quote lookup and
+    # source-link resolution, but alias handling must use only passages the
+    # checker actually saw. This keeps a hidden lower-ranked passage from
+    # changing which words the visible claim validator treats as source terms.
+    ignored_claim_terms = unmatched_single_topic_claim_terms(
+        question, checker_visible_sources
+    )
     marker_pattern = re.compile(r"\[((?:S\d+)(?:\s*,\s*S\d+)*)\]")
 
     validation_error_found = False
@@ -2650,6 +3880,13 @@ def format_cited_sentences(
                 )
                 item_has_invalid_evidence = True
                 continue
+            if allowed_source_ids is not None and source_id not in allowed_source_ids:
+                invalid(
+                    f"answer item {item_number}, evidence {evidence_number}: evidence referenced source "
+                    f"{source_id} that was not supplied to the checker"
+                )
+                item_has_invalid_evidence = True
+                continue
             if not isinstance(quote, str):
                 invalid(
                     f"answer item {item_number}, evidence {evidence_number}: "
@@ -2661,18 +3898,29 @@ def format_cited_sentences(
                 corrected_quote = repair_quote_with_one_extra_article(
                     quote, source["text"]
                 )
+                repair_outcome = "removed_one_extra_article"
+                if corrected_quote is None:
+                    corrected_quote = repair_quote_with_one_merged_word(
+                        quote, source["text"]
+                    )
+                    repair_outcome = "restored_one_missing_space"
+                if corrected_quote is None:
+                    corrected_quote = repair_quote_truncated_at_schema_limit(
+                        quote, source["text"]
+                    )
+                    repair_outcome = "completed_truncated_final_word"
                 if corrected_quote is not None:
-                    # Replace only a demonstrably inserted article and then
-                    # let the normal exact quote validator inspect the source
-                    # wording. Keep a small diagnostic trace so live reports
-                    # show when this deterministic repair made a difference.
+                    # Each repair above is anchored to one exact contiguous
+                    # source span. Keep its original spelling in the evidence
+                    # record, then run the normal word-count, claim-vocabulary,
+                    # topic-anchor, and citation checks without exception.
                     if quote_repair_trace is not None:
                         quote_repair_trace.append({
                             "item": item_number,
                             "evidence": evidence_number,
                             "source_id": source_id,
                             "input_words": len(TOKEN_RE.findall(quote)),
-                            "outcome": "removed_one_extra_article",
+                            "outcome": repair_outcome,
                         })
                     item_evidence["quote"] = corrected_quote
                     quote = corrected_quote
@@ -2702,6 +3950,7 @@ def format_cited_sentences(
                     item["text"],
                     supporting_excerpts=supporting_excerpts,
                     required_topic_terms=required_topic_terms,
+                    ignored_claim_terms=ignored_claim_terms,
                 )
                 if quote_repair_trace is not None:
                     source_context_available = _evidence_quote_is_contiguous(
@@ -2765,6 +4014,8 @@ def format_cited_sentences(
                     allow_verbatim_answer=allow_verbatim_answer,
                     required_topic_terms=required_topic_terms,
                     quote_repair_trace=quote_repair_trace,
+                    question=question,
+                    allowed_source_ids=allowed_source_ids,
                 )
             # An overlong quote already has a precise validation finding. The
             # exact-match helper enforces the same word cap, so calling it here
@@ -2815,7 +4066,8 @@ def format_cited_sentences(
         # usual exact-match and topic checks below remain in force.
         while True:
             current_gap_count = claim_context_gap_count(
-                item["text"], evidence_excerpts, required_topic_terms
+                item["text"], evidence_excerpts, required_topic_terms,
+                ignored_claim_terms,
             )
             if current_gap_count == 0:
                 break
@@ -2832,11 +4084,13 @@ def format_cited_sentences(
                     item["text"],
                     sibling_excerpts,
                     required_topic_terms,
+                    ignored_claim_terms,
                 )
                 if expanded is None:
                     continue
                 gap_count = claim_context_gap_count(
-                    item["text"], sibling_excerpts + [expanded], required_topic_terms
+                    item["text"], sibling_excerpts + [expanded], required_topic_terms,
+                    ignored_claim_terms,
                 )
                 if gap_count < current_gap_count:
                     choice = (
@@ -2897,7 +4151,7 @@ def format_cited_sentences(
         )
         text = marker_pattern.sub("", text)
         text = re.sub(r"\s{2,}", " ", text).strip()
-        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+        sentences = split_answer_sentences(text)
         if not sentences:
             invalid(f"answer item {item_number}: an answer sentence became empty after citation cleanup")
             continue
@@ -2917,12 +4171,32 @@ def format_cited_sentences(
             # presenting a copied passage as if it were the model's answer.
             # A user who explicitly asks for a quotation can still receive
             # verbatim text; all ordinary answers should synthesize the source.
-            if not allow_verbatim_answer and is_long_verbatim_answer(sentence, cited_sources):
+            if not allow_verbatim_answer and (
+                is_long_verbatim_answer(sentence, cited_sources)
+                or (
+                    is_explicit_list_question(question)
+                    and is_complete_verbatim_source_sentence(sentence, cited_sources)
+                )
+            ):
                 invalid(
                     f"answer item {item_number}, sentence {sentence_number}: "
-                    "the answer repeats a long source passage instead of synthesizing it; "
+                    "the answer copies source wording instead of synthesizing it; "
                     "summarize the claim in your own concise wording and keep exact book text "
                     "in the evidence quotes"
+                )
+                continue
+            # A shorter substring may still be an incomplete clause. Reject
+            # substantial verbatim fragments separately from long full-passage
+            # copies, while leaving a complete source sentence and explicitly
+            # requested quotation eligible for the ordinary evidence checks.
+            if (
+                not allow_verbatim_answer
+                and is_verbatim_source_fragment(sentence, cited_sources)
+            ):
+                invalid(
+                    f"answer item {item_number}, sentence {sentence_number}: "
+                    "the answer starts with an incomplete copied source fragment instead of a complete sentence; "
+                    "synthesize the point in your own words and keep exact source wording in evidence"
                 )
                 continue
             # A short quote can be real but unrelated to an added clause. Check
@@ -2944,12 +4218,14 @@ def format_cited_sentences(
                     cited_sources,
                     evidence_excerpts,
                     required_topic_terms,
+                    ignored_claim_terms,
                 )
             ):
                 missing_terms = sorted({
                     term
                     for gap in claim_vocabulary_gaps(
-                        sentence, evidence_excerpts, required_topic_terms
+                        sentence, evidence_excerpts, required_topic_terms,
+                        ignored_claim_terms,
                     )
                     for term in gap
                 })[:12]
@@ -2988,12 +4264,23 @@ def format_cited_sentences(
                 f"{sentence} {' '.join(f'[{source_id}]' for source_id in ids)}{punctuation}"
             )
             if max_sentences is not None and len(rendered) >= max_sentences:
-                if validation_error_found:
-                    return None
-                return " ".join(rendered)
+                # Finish through the shared post-check below so sentence caps
+                # cannot bypass the completeness rule for definition answers.
+                break
+        # The sentence list is nested inside answer items, so stop both loops
+        # after reaching the display cap and leave later items unvalidated just
+        # as the previous early return did.
+        if max_sentences is not None and len(rendered) >= max_sentences:
+            break
     if validation_error_found:
         return None
-    return " ".join(rendered) if rendered else None
+    answer = " ".join(rendered) if rendered else None
+    if answer and question:
+        issue = definition_completeness_issue(question, answer)
+        if issue:
+            invalid(issue)
+            return None
+    return answer
 
 
 def sources_cited_by_answer(answer: str, sources: list[dict]) -> list[dict]:
@@ -3041,12 +4328,73 @@ def summarize_retry_feedback(issues: list[str], fallback: str) -> str:
     return "; ".join(summaries)[:4000]
 
 
+def explicit_list_retry_content(
+    question: str,
+    candidates: list[str] | None,
+    draft: str,
+    retry_feedback: str,
+    source_text: str,
+    candidate_source_ids: dict[int, set[str]] | None = None,
+) -> str:
+    """Ask for evidence against fixed draft items rather than rewritten claims.
+
+    Build 137's live report showed that merely keeping the draft in the prompt
+    did not stop either model from regenerating the same copied answer. When a
+    numbered list has been parsed safely, name each candidate and ask only for
+    its evidence record and membership judgment. Unnumbered lists retain a
+    general retry because their individual candidate boundaries are uncertain.
+    """
+    if candidates is not None:
+        numbered_candidates = "\n".join(
+            f"{index}. {candidate}"
+            for index, candidate in enumerate(candidates, start=1)
+        )
+        return (
+            "The prior list answer failed validation. The candidate list below is fixed: do not rewrite, "
+            "replace, combine, reorder, or add candidate wording. Return one evidence record per candidate, "
+            "identified by candidate_index. Set is_list_member to true only when the passages establish that "
+            "this exact candidate is one of the requested members; a passage that merely mentions a related "
+            "person, example, or consequence does not establish membership. Select a concise label from the "
+            "candidate using the source's wording, and attach an exact excerpt that supports the candidate in "
+            "its list role. The application will restore the candidate wording and independently validate every "
+            "quote, claim, label, and membership flag. Do not return answer prose.\n\n"
+            f"Validation findings: {retry_feedback}\n\n"
+            f"Question: {question}\n\nFixed candidate list (preserve these exact item texts):\n"
+            f"{numbered_candidates}"
+            f"{candidate_source_guidance(candidates, candidate_source_ids)}\n\n"
+            f"Original draft for context only:\n{draft}\n\n"
+            f"Available passages and citation IDs:\n{source_text}"
+        )
+
+    expected_count = explicit_list_answer_count(question)
+    count_instruction = (
+        f"Return exactly {expected_count} separately evidenced items. "
+        if expected_count is not None
+        else "Return one separately evidenced item for each distinct requested member. "
+    )
+    return (
+        "The previous checker output failed validation. Recheck the original draft's proposed list members "
+        "against the passages instead of replacing them with copied passage sentences. "
+        + count_instruction
+        + "For each item, keep a concise answer in your own words, give it a distinct list_item_label using "
+        "the source's term, and attach an exact quote that supports that member in its role as a member of "
+        "the requested list. A passage that merely mentions a related example or consequence is not enough. "
+        "Do not invent a missing member to fill the list. Address every validation finding below, and do not "
+        "present a member as supported unless the passages establish it. Do not put exact source wording in "
+        "the answer sentence; keep it in the quote field.\n\n"
+        f"Validation findings: {retry_feedback}\n\n"
+        f"Question: {question}\n\nOriginal draft to check (not assumed correct):\n{draft}\n\n"
+        f"Available passages and citation IDs:\n{source_text}"
+    )
+
+
 def verify_answer(
     question: str,
     sources: list[dict],
     draft: str,
     model: str,
     diagnostics: dict | None = None,
+    candidate_source_ids: dict[int, set[str]] | None = None,
 ) -> str:
     """Check the draft against its evidence and return cited answer text.
 
@@ -3069,8 +4417,6 @@ def verify_answer(
             diagnostics["reason"] = reason
         return failure
 
-    source_text = format_evidence_context(sources, question_facets(question))
-    required_topic_terms = question_topic_anchor_terms(question)
     argument_question = asks_for_argument_explanation(question)
     direct_quote_requested = question_requests_direct_quote(question)
     # Explicit argument questions use a compact conclusion/reasoning pair.
@@ -3079,9 +4425,48 @@ def verify_answer(
     multipart_question = len(question_parts) > 1
     comparison_pair = comparison_concepts(question) if not argument_question else None
     structured_comparison = comparison_pair is not None and not multipart_question
-    # Ordinary answers use a small sentence schema. Argument questions add a
-    # hidden role label to each item, letting the model and validator separate
-    # the conclusion from a concise, evidence-backed explanation of its support.
+    # Keep the full evidence set for any question whose completeness depends
+    # on distinct parts, sides, or argument roles. For an ordinary single-topic
+    # check, a smaller, topic-ranked prompt can reduce the distraction seen in
+    # Build 118 traces. Keep `sources` untouched so exact quotes are checked
+    # against their original full text and links can still be resolved from
+    # the complete retrieval set. Bind accepted citations to `checker_sources`
+    # below so an answer cannot borrow evidence from a passage the checker
+    # never saw.
+    checker_sources = focus_checker_sources(
+        question,
+        draft,
+        sources,
+        preserve_all=(
+            argument_question
+            or multipart_question
+            or structured_comparison
+            or is_explicit_list_question(question)
+            or question_requests_direct_quote(question)
+        ),
+    )
+    # Keep strict named-topic anchors unless a single-topic label only partly
+    # appears in the checker-visible text. In that limited case, the semantic
+    # checker can use the text's own term for the idea, while exact quote
+    # matching and the ordinary claim/evidence overlap still guard each claim.
+    required_topic_terms = evidence_topic_anchor_terms(question, checker_sources)
+    source_text = format_evidence_context(checker_sources, question_facets(question))
+    expected_list_count = explicit_list_answer_count(question)
+    numbered_list_candidates = (
+        numbered_list_draft_candidates(draft, expected_list_count)
+        if expected_list_count is not None
+        else None
+    )
+    if diagnostics is not None and candidate_source_ids is not None:
+        diagnostics["candidate_source_pools"] = {
+            str(index): sorted(source_ids)
+            for index, source_ids in candidate_source_ids.items()
+        }
+    # Ordinary answers use a small sentence schema. Argument questions use
+    # role-specific singleton arrays below: the JSON shape allocates one
+    # separately evidenced claim slot to the conclusion and one to its
+    # reasoning, so a model cannot satisfy the requested argument by filling
+    # one untyped prose array with repeated or missing role labels.
     answer_item_schema = {
         "type": "object",
         "properties": {
@@ -3093,7 +4478,7 @@ def verify_answer(
                     "properties": {
                         "source_id": {
                             "type": "string",
-                            "enum": sorted(source["source_id"] for source in sources),
+                            "enum": sorted(source["source_id"] for source in checker_sources),
                         },
                         "quote": {"type": "string", "maxLength": MAX_EVIDENCE_QUOTE_CHARS},
                     },
@@ -3101,13 +4486,48 @@ def verify_answer(
                     "additionalProperties": False,
                 },
                 "minItems": 1,
-                # At most two exact excerpts can support one focused answer item.
+                # Each list member is returned as its own short sentence with
+                # its own evidence. Keep the usual two-excerpt ceiling inside
+                # that item; list completeness comes from separate items,
+                # never from pooling unrelated list-item quotations.
                 "maxItems": 2,
             },
         },
         "required": ["text", "evidence"],
         "additionalProperties": False,
     }
+    if is_explicit_list_question(question):
+        # A free-form sentence alone does not reveal whether the model has
+        # supplied the requested list members or several related details
+        # about just one member. Give every member a short, checkable label;
+        # the later list validator requires that label in both its answer and
+        # its own exact evidence.
+        answer_item_schema["properties"]["list_item_label"] = {
+            "type": "string",
+            "maxLength": 80,
+        }
+        answer_item_schema["required"].append("list_item_label")
+    if numbered_list_candidates is not None:
+        # Freeze the candidate claim text in application code. In this mode,
+        # the model has no prose field to rewrite: it can only identify which
+        # fixed candidate it is reviewing, judge list membership, and return
+        # short exact evidence that the shared validator checks independently.
+        answer_item_schema = {
+            "type": "object",
+            "properties": {
+                "candidate_index": {
+                    "type": "integer",
+                    "enum": list(range(1, len(numbered_list_candidates) + 1)),
+                },
+                "is_list_member": {"type": "boolean"},
+                "list_item_label": {"type": "string", "maxLength": 80},
+                "evidence": answer_item_schema["properties"]["evidence"],
+            },
+            "required": [
+                "candidate_index", "is_list_member", "list_item_label", "evidence"
+            ],
+            "additionalProperties": False,
+        }
     if multipart_question:
         answer_item_schema["properties"]["question_part"] = {
             "type": "integer",
@@ -3146,6 +4566,20 @@ def verify_answer(
                 # side, so claim vocabulary and exact quotes are validated
                 # together instead of pooled across a compound sentence.
                 **({"minItems": 2, "maxItems": 2} if structured_comparison else {}),
+                # Simple questions are rendered with a two-sentence ceiling
+                # below. Give structured generation the same bound: leaving
+                # this array open lets a small model spend its output budget
+                # on many extra claims and quotes, sometimes truncating JSON
+                # before the closing brackets. This shapes output only; every
+                # returned item still passes the ordinary evidence checks.
+                **(
+                    {"minItems": explicit_list_answer_count(question),
+                     "maxItems": explicit_list_answer_count(question)}
+                    if explicit_list_answer_count(question) is not None
+                    else {"maxItems": 5} if is_explicit_list_question(question)
+                    else {"maxItems": 2} if is_simple_question(question)
+                    else {}
+                ),
                 "items": answer_item_schema,
             },
         },
@@ -3154,13 +4588,12 @@ def verify_answer(
     }
     if argument_question:
         # Give argument components fixed JSON property names instead of asking
-        # the model to choose a role label for each element in an array. Build
-        # 83's live reports showed both small models repeating the conclusion
-        # role and omitting reasoning even when the output schema listed the
-        # valid role values. Fixed fields move that distinction into the JSON
-        # structure itself, where constrained decoding can enforce it for any
-        # argument question. The values still use the same sentence-and-exact-
-        # evidence shape as every other answer item.
+        # the model to choose a role label. Each property is one compact
+        # answer object with its own evidence. Build 101's singleton-array
+        # wrapper added structure without stopping models from putting several
+        # sentences into the text value, and the live report showed it often
+        # ended in fallback. Keep the simpler object shape and enforce a
+        # concise sentence limit in the shared validator below.
         argument_component_schema = {
             "type": "object",
             # A conclusion and its reason should stay compact even when the
@@ -3232,7 +4665,7 @@ def verify_answer(
                     "JSON shape. The conclusion field identifies the result. The reasoning field may combine a "
                     "starting point found in the passages with the connection the author makes to that result; "
                     "state the inference itself in concise, natural wording. Keep each field to one or two "
-                    "sentences so a single citation does not have to support a long list of claims. "
+                    "sentences so it can explain the reasoning without bundling a long list of claims. "
                     "Do not repeat the conclusion as its "
                     "own support or narrate these role labels. The reasoning item must carry key concepts from "
                     "the conclusion and include an explicit textual link such as because, since, or so. "
@@ -3262,6 +4695,12 @@ def verify_answer(
                     "sentences should make the basis of the distinction clear.\n"
                     if structured_comparison else ""
                 )
+                + (
+                    "This asks what a term means. Explain at least one supported feature or use in a complete "
+                    "sentence; do not answer by repeating only the term itself. "
+                    if re.search(r"\bwhat\s+(?:does|do|did)\b.{1,120}\bmean\b", question, re.I)
+                    else ""
+                )
                 + "For a simple question, use no more than two "
                 "sentences and prefer one when the passages establish one point. If the draft or passages "
                 "state the same claim in different words, as a negation, or as a restatement, merge it "
@@ -3269,7 +4708,7 @@ def verify_answer(
                 "qualification. "
                 + (
                     "For this argument question, use the required top-level conclusion and reasoning fields; "
-                    "each field contains one text value and its own evidence array. "
+                    "each field contains one text value of one or two concise sentences and its own evidence array. "
                     if argument_question
                     else "Return one object per answer sentence in the sentences array. Each object must contain the sentence text and an evidence array "
                 )
@@ -3278,7 +4717,10 @@ def verify_answer(
                 "source_id may appear twice when two separate excerpts from that passage are needed to establish "
                 "one claim. For each excerpt, include "
                 f"a short, exact, continuous quotation of {MIN_EVIDENCE_QUOTE_WORDS} to "
-                f"{MAX_EVIDENCE_QUOTE_WORDS} words copied from that passage; do not paraphrase or "
+                f"{MAX_EVIDENCE_QUOTE_WORDS} words copied from that passage. Aim for "
+                f"{TARGET_EVIDENCE_QUOTE_WORDS[0]} to {TARGET_EVIDENCE_QUOTE_WORDS[1]} words whenever that "
+                f"directly supports the claim; treat the {MAX_EVIDENCE_QUOTE_WORDS}-word figure as a hard maximum, not a target. "
+                "Do not paraphrase or "
                 "use ellipses in the quotation. Do not copy a whole sentence when it exceeds this limit; "
                 "choose the shortest exact phrase that directly supports the answer. If one sentence "
                 "contains separate points, split the answer so each point can use its own short excerpt. "
@@ -3290,6 +4732,8 @@ def verify_answer(
                 "When a concise sentence combines two connected points, use a second short exact excerpt "
                 "if the first excerpt supports only one point and another passage supports the other. "
                 "Do not make one long quote cover unrelated material, and do not treat a paraphrase as a quote. "
+                "Write the answer as a complete sentence in your own words; do not copy only a source clause "
+                "and let punctuation make it look like a complete answer. Keep exact source wording in the evidence field. "
                 "Split a sentence that combines separate factual claims into "
                 "separate answer sentences, each with evidence for all of its claims. In particular, "
                 "check relative clauses beginning with words such as 'which' and 'because' separately; "
@@ -3341,6 +4785,50 @@ def verify_answer(
             ),
         },
     ]
+    if numbered_list_candidates is not None:
+        # Include candidate boundaries as explicit numbered data, so the model
+        # returns an evidence mapping rather than trying to rediscover or
+        # regenerate list members from a long passage.
+        messages[-1]["content"] += (
+            "\n\nFixed candidate list; return evidence records for these exact entries:\n"
+            + "\n".join(
+                f"{index}. {candidate}"
+                for index, candidate in enumerate(numbered_list_candidates, start=1)
+            )
+            + candidate_source_guidance(
+                numbered_list_candidates,
+                candidate_source_ids,
+            )
+        )
+    if is_explicit_list_question(question):
+        if numbered_list_candidates is not None:
+            messages[0]["content"] += (
+                " This draft contains a clearly numbered list, so use fixed-candidate evidence mode. "
+                "Do not write or rewrite any answer text. Return one object for each candidate with its "
+                "candidate_index, is_list_member judgment, list_item_label, and exact evidence. Evaluate "
+                "whether the candidate is actually one of the requested list members, not merely whether "
+                "some related wording appears in a passage. Set is_list_member false when the source does not "
+                "establish the candidate's list membership. The application will restore the candidate's "
+                "original wording and reject unsupported or incomplete lists. For each item, cite only the "
+                "passage IDs in that candidate's focused retrieval pool."
+            )
+        elif expected_list_count is not None:
+            messages[0]["content"] += (
+                f" This question requests {expected_list_count} separate list items. Return exactly that many "
+                "answer objects, one actual list member per object. Give each object a concise, distinct "
+                "list_item_label using the author's term, include that label in its answer sentence, and attach "
+                "an exact quotation that names and supports that member. Do not fill an item with a consequence, "
+                "example, or explanation of another member. Do not cite only a passage that says a list exists, "
+                "and do not let another item's quotation support this one. If the passages do not support every "
+                "requested member, do not invent or infer the missing member."
+            )
+        else:
+            messages[0]["content"] += (
+                " This question asks for a list. Put each distinct list member in its own answer object and give "
+                "it a concise, distinct list_item_label using the author's term. Include that label in the answer "
+                "sentence and in an exact quotation that supports the member. Do not let a quote that only "
+                "introduces the list stand in for evidence of its entries."
+            )
     if expects_explanatory_answer(question):
         # The general checker prompt favors concise prose so it can remove
         # unsupported detail. For explanation requests, make the opposite
@@ -3351,7 +4839,31 @@ def verify_answer(
             "passages permit it. State the core answer, then explain at least one separate reason, role, "
             "or contrast. Do not collapse the explanation into a generic one-sentence summary."
         )
-    if not direct_quote_requested:
+    if has_unmatched_parenthetical_alias(question, sources):
+        # The checker must not recreate the same lexical trap as the draft
+        # model: a useful response may use the book's term (such as
+        # "happiness") even when the reader's technical label is absent.
+        # Exact quotations and all claim-support checks remain authoritative.
+        messages[0]["content"] += (
+            " The question includes a term and parenthetical gloss absent from the strongest passages. "
+            "Use the book's own wording for the idea and keep that source wording in the answer. Do not "
+            "require the absent reader-supplied labels to appear in the answer or quotation, and do not "
+            "claim the book explicitly uses those labels unless the cited passage does."
+        )
+    if has_unmatched_single_topic_wording(question, checker_sources):
+        # Keep the checker from turning an absent question label into an
+        # unsupported sentence or quote. It may use the source's own label only
+        # when the supplied passage makes the concept link clear; all exact
+        # quotation and lexical claim checks remain in force after this prompt.
+        messages[0]["content"] += (
+            " The question's single-topic wording only partly appears in the supplied passages. Treat its "
+            "label as a search cue, not as required wording for a factual claim. If the passages clearly "
+            "describe the same idea using the book's own term, answer with that source term and explain "
+            "the supported connection. Do not repeat absent question wording as though the text used it, "
+            "and do not guess an equivalence when the passages do not establish one. Keep every evidence "
+            "quote copied exactly from a TEXT block."
+        )
+    if not direct_quote_requested and numbered_list_candidates is None:
         messages[0]["content"] += (
             " Keep the answer sentence in concise original wording; exact book wording belongs in the "
             "evidence quote field. Do not paste a long source passage into the answer text."
@@ -3365,12 +4877,12 @@ def verify_answer(
         )
     last_failure = "model returned no supported sentences or invalid evidence excerpts"
     retry_feedback = last_failure
-    # The first call checks the draft. A second call rebuilds from sources
-    # without that draft, avoiding an anchoring effect. Only if that fresh
-    # reconstruction still fails do we spend one final call repairing its
-    # structured evidence using the concrete validation findings. This bounded
-    # sequence gives format errors one more chance without creating an
-    # open-ended retry loop or a question-specific rule.
+    # The first call checks the draft. A second call normally rebuilds from
+    # sources without that draft to avoid anchoring. Explicit lists are the
+    # exception: the latest live report showed a useful list being replaced by
+    # copied source prose, so list retries retain the original candidate
+    # members while still requiring independent evidence and normal validation.
+    # Only if that retry fails do we spend one final bounded repair call.
     latest_failed_sentences = None
     latest_validation_issues: list[str] = []
     # Permit a final source-only call when a validated answer failed, then the
@@ -3384,6 +4896,7 @@ def verify_answer(
     argument_coverage_failed = False
     claim_evidence_failed = False
     answer_synthesis_failed = False
+    source_copy_drift_failed = False
     comparison_evidence_failed = False
     multipart_coverage_failed = False
     explanation_depth_failed = False
@@ -3391,13 +4904,30 @@ def verify_answer(
     # Remember the format failure across the bounded retry sequence so the
     # final repair retains enough space to finish structured JSON.
     json_truncation_seen = False
-    configured_item_count = 2 if argument_question else schema["properties"]["sentences"].get("maxItems")
+    # Keep one additional, tightly bounded call available only when the
+    # checker's most recent structured response is the user's question copied
+    # back as if it were an answer. Build 109's live report showed this exact
+    # failure ending three Llama retries across several different prompts.
+    # A source-only correction is justified in that narrow case; it does not
+    # loosen quote, claim, topic-coverage, or answer-structure validation.
+    question_echo_failed = False
+    # An argument response has two named role objects, but each can contain up
+    # to two separately cited sentences and two exact excerpts. Reserve output
+    # space for four answer items rather than counting only the two top-level
+    # role names; the small pilot models otherwise run out of JSON budget while
+    # they are still returning evidence fields.
+    configured_item_count = 4 if argument_question else schema["properties"]["sentences"].get("maxItems")
     if configured_item_count is None:
         # Explanatory answers can use several separate grounded sentences;
         # simple prompts normally need only one or two. This estimates the
         # structured response size without forcing additional answer items.
         configured_item_count = 4 if expects_explanatory_answer(question) else 2
-    for attempt in range(3):
+    for attempt in range(4):
+        # The fourth call is reserved for one observed failure mode, not a
+        # general extra retry. Without an echo on attempt three, preserve the
+        # existing three-call bound and go directly to safe recovery/fallback.
+        if attempt == 3 and not question_echo_failed:
+            break
         # The third call is a repair of the fresh reconstruction, not another
         # generic retry. If that reconstruction returned no structured answer,
         # there is no candidate for a quote-repair pass, so use the safe fallback.
@@ -3415,47 +4945,65 @@ def verify_answer(
             # Start from the original system rules, but rebuild the user turn
             # without the rejected draft. This avoids asking a small checker to
             # repair text that it is already repeating despite explicit feedback.
-            retry_content = (
-                "The earlier draft and answer attempt were not reliable. Do not reuse or repeat their "
-                "wording. Reconstruct a clear answer from the question and passages below. "
-                + (
-                    "For this explanatory question, preserve the core answer and at least one distinct "
-                    "supported reason, concept role, or comparison point in separate sentences. "
-                    if expects_explanatory_answer(question) else ""
+            if is_explicit_list_question(question):
+                # A list draft can already name the right members even when
+                # the checker attached bad evidence or replaced those members
+                # with copied source wording. Keep the draft available for
+                # this targeted retry; every item still has to pass the same
+                # exact-quote, distinct-label, synthesis, and completeness
+                # checks as a normal response.
+                retry_content = explicit_list_retry_content(
+                    question,
+                    numbered_list_candidates,
+                    draft,
+                    retry_feedback,
+                    source_text,
+                    candidate_source_ids=candidate_source_ids,
                 )
-                + " "
-                "Address every numbered validation finding: find a passage that directly supports the "
-                "claim. For every missing-word finding, inspect the available passages before deciding: "
-                "if another passage directly supports the missing part, add a second short, exact quote "
-                "and cite that source too (or use a second distinct quote from the same source); do not "
-                "force missing words into a quotation. If no passage supports the missing part, omit or "
-                "narrow it. Use the author's wording where a paraphrase introduces terms absent from its evidence. "
-                "For a comparison, support each side with the passage that describes it; do not add a label "
-                "such as 'abstract' or 'theoretical' unless the passages establish it. If the question asks "
-                "how or why an argument reaches its conclusion, return exactly "
-                "fill the separate conclusion and reasoning fields in the required JSON shape. The reasoning "
-                "field may combine a textual starting point with the link to the conclusion. It must explain "
-                "the inference rather than repeat the result, a definition, or narrate the answer structure. "
-                "Keep distinct claims in separate sentences. A sentence may use at most two "
-                "evidence excerpts, and those exact excerpts are checked together. For each sentence, include a "
-                f"short, exact quotation of {MIN_EVIDENCE_QUOTE_WORDS} to {MAX_EVIDENCE_QUOTE_WORDS} "
-                "consecutive words from its cited passage. A passage may be cited twice with different "
-                "quotes when needed. Do not invent or paraphrase words inside quotations. "
-                + (
-                    "Return exactly one distinct answer item for each numbered question part, set question_part "
-                    "to that item's number, and do not repeat the same claim across different parts. "
-                    + "Question parts:\n"
-                    + "\n".join(
-                        f"{part_number}. {part}"
-                        for part_number, part in enumerate(question_parts, start=1)
+            else:
+                retry_content = (
+                    "The earlier draft and answer attempt were not reliable. Do not reuse or repeat their "
+                    "wording. Reconstruct a clear answer from the question and passages below. "
+                    + (
+                        "For this explanatory question, preserve the core answer and at least one distinct "
+                        "supported reason, concept role, or comparison point in separate sentences. "
+                        if expects_explanatory_answer(question) else ""
                     )
-                    + "\n\n"
-                    if multipart_question
-                    else ""
+                    + " "
+                    "Address every numbered validation finding: find a passage that directly supports the "
+                    "claim. For every missing-word finding, inspect the available passages before deciding: "
+                    "if another passage directly supports the missing part, add a second short, exact quote "
+                    "and cite that source too (or use a second distinct quote from the same source); do not "
+                    "force missing words into a quotation. If no passage supports the missing part, omit or "
+                    "narrow it. Use the author's wording where a paraphrase introduces terms absent from its evidence. "
+                    "For a comparison, support each side with the passage that describes it; do not add a label "
+                    "such as 'abstract' or 'theoretical' unless the passages establish it. If the question asks "
+                    "how or why an argument reaches its conclusion, return exactly "
+                    "fill the separate conclusion and reasoning fields in the required JSON shape. The reasoning "
+                    "field may combine a textual starting point with the link to the conclusion. It must explain "
+                    "the inference rather than repeat the result, a definition, or narrate the answer structure. "
+                    "Keep distinct claims in separate sentences. A sentence may use at most two "
+                    "evidence excerpts, and those exact excerpts are checked together. For each sentence, include a "
+                    f"short, exact quotation of {MIN_EVIDENCE_QUOTE_WORDS} to {MAX_EVIDENCE_QUOTE_WORDS} "
+                    f"consecutive words from its cited passage. Aim for {TARGET_EVIDENCE_QUOTE_WORDS[0]} to "
+                    f"{TARGET_EVIDENCE_QUOTE_WORDS[1]} words whenever that directly supports the claim; "
+                    f"treat the {MAX_EVIDENCE_QUOTE_WORDS}-word figure as a hard maximum, not a target. A passage may be cited twice with different "
+                    "quotes when needed. Do not invent or paraphrase words inside quotations. "
+                    + (
+                        "Return exactly one distinct answer item for each numbered question part, set question_part "
+                        "to that item's number, and do not repeat the same claim across different parts. "
+                        + "Question parts:\n"
+                        + "\n".join(
+                            f"{part_number}. {part}"
+                            for part_number, part in enumerate(question_parts, start=1)
+                        )
+                        + "\n\n"
+                        if multipart_question
+                        else ""
+                    )
+                    + f"Validation findings: {retry_feedback}\n\n"
+                    f"Question: {question}\n\nAvailable passages and citation IDs:\n{source_text}"
                 )
-                + f"Validation findings: {retry_feedback}\n\n"
-                f"Question: {question}\n\nAvailable passages and citation IDs:\n{source_text}"
-            )
             attempt_messages = [
                 messages[0],
                 {"role": "user", "content": retry_content},
@@ -3469,7 +5017,20 @@ def verify_answer(
             # reasoning chain is different: omit that candidate entirely to
             # prevent the checker from repeating its conclusion-only answer.
             candidate_text = json.dumps(latest_failed_sentences, ensure_ascii=False)
-            if (
+            if is_explicit_list_question(question):
+                # The second list retry also returns to the original candidate
+                # list rather than rebuilding from nearby source prose. This
+                # avoids anchoring the repair to the first failed checker
+                # output, while the findings identify what each item must fix.
+                repair_content = explicit_list_retry_content(
+                    question,
+                    numbered_list_candidates,
+                    draft,
+                    retry_feedback,
+                    source_text,
+                    candidate_source_ids=candidate_source_ids,
+                )
+            elif (
                 argument_coverage_failed
                 or claim_evidence_failed
                 or answer_synthesis_failed
@@ -3492,7 +5053,9 @@ def verify_answer(
                     "short exact excerpts over abstract labels absent from the text. For a comparison, make sure "
                     "the cited excerpts identify both named concepts. Keep distinct claims in "
                     "separate sentences. For each sentence, provide one or two exact, continuous quotations of "
-                    f"{MIN_EVIDENCE_QUOTE_WORDS} to {MAX_EVIDENCE_QUOTE_WORDS} words. Do not use the original "
+                    f"{MIN_EVIDENCE_QUOTE_WORDS} to {MAX_EVIDENCE_QUOTE_WORDS} words; aim for "
+                    f"{TARGET_EVIDENCE_QUOTE_WORDS[0]} to {TARGET_EVIDENCE_QUOTE_WORDS[1]} when enough "
+                    "to support the claim. Do not use the original "
                     "draft or either rejected answer.\n\n"
                 )
                 if structured_comparison:
@@ -3512,7 +5075,8 @@ def verify_answer(
                     # distinct supported explanation, but the premise and
                     # inference can now share one compact reasoning item.
                     clean_slate_instructions += (
-                        "Fill the separate conclusion and reasoning fields in the required JSON shape. The reasoning "
+                        "Fill the separate conclusion and reasoning fields in the required JSON shape. Each field "
+                        "contains one object with one or two concise sentences in its text. The reasoning "
                         "field may state a textual starting point and explain how the author connects it to the "
                         "conclusion. Include an explicit link such as because, since, therefore, or so; retain key "
                         "concepts from the conclusion; do not repeat the conclusion as its own support. If the passages do not provide a step, "
@@ -3544,7 +5108,9 @@ def verify_answer(
                     "second short exact excerpt and its source ID (or a second distinct excerpt from the same source). "
                     "Only omit or narrow that part if the available passages do not support it. Keep supported claims "
                     "only, and replace invalid quotations with exact, continuous excerpts of "
-                    f"{MIN_EVIDENCE_QUOTE_WORDS} to {MAX_EVIDENCE_QUOTE_WORDS} words. Do not use the original draft.\n\n"
+                    f"{MIN_EVIDENCE_QUOTE_WORDS} to {MAX_EVIDENCE_QUOTE_WORDS} words; aim for "
+                    f"{TARGET_EVIDENCE_QUOTE_WORDS[0]} to {TARGET_EVIDENCE_QUOTE_WORDS[1]} when enough "
+                    "to support the claim. Do not use the original draft.\n\n"
                     f"Validation findings: {retry_feedback}\n\n"
                     f"Question: {question}\n\nFresh candidate to repair:\n{candidate_text}\n\n"
                     f"Available passages and citation IDs:\n{source_text}"
@@ -3554,6 +5120,47 @@ def verify_answer(
                 {"role": "user", "content": repair_content},
             ]
             print("[evidence-check] repair: fresh reconstruction still failed validation")
+        elif attempt == 3:
+            # A question echo is not a candidate worth repairing sentence by
+            # sentence. Discard every failed answer and make one clear source-
+            # only request that says exactly what went wrong. The original
+            # system message still supplies the response schema and all normal
+            # evidence rules, and the normal formatter below still validates
+            # the resulting answer before anything can be shown to the reader.
+            latest_failed_sentences = None
+            echo_recovery_content = (
+                "The previous checker response repeated the question instead of answering it. "
+                "Discard that response and all earlier answer wording. Start again from only the "
+                "question and passages below. Do not copy or rephrase the question as an answer. "
+                "Answer directly and concisely using only claims that the passages support. "
+                "Return the required structured JSON, with exact short quotations from the supplied "
+                "passages. If the passages do not support a requested point, state that limit instead "
+                "of guessing.\n\n"
+            )
+            if argument_question:
+                echo_recovery_content += (
+                    "For this argument question, provide the distinct conclusion and reasoning fields; "
+                    "the reasoning must explain a supported connection rather than restate the question "
+                    "or conclusion.\n\n"
+                )
+            elif multipart_question:
+                echo_recovery_content += (
+                    "This question has separate parts. Return one answer item per numbered part and do "
+                    "not leave a supported part unanswered. Question parts:\n"
+                    + "\n".join(
+                        f"{part_number}. {part}"
+                        for part_number, part in enumerate(question_parts, start=1)
+                    )
+                    + "\n\n"
+                )
+            echo_recovery_content += (
+                f"Question: {question}\n\nAvailable passages and citation IDs:\n{source_text}"
+            )
+            attempt_messages = [
+                messages[0],
+                {"role": "user", "content": echo_recovery_content},
+            ]
+            print("[evidence-check] repair: one source-only retry after question echo")
 
         output_budget = evidence_checker_output_budget(
             configured_item_count,
@@ -3591,28 +5198,46 @@ def verify_answer(
                 attempt_trace.update({"status": "rejected", "reason": last_failure})
                 continue
             if argument_question and not isinstance(checked.get("sentences"), list):
-                # Convert the fixed top-level argument fields into the shared
-                # sentence representation used by citation formatting and all
-                # downstream evidence checks. The fallback accepts older
-                # array-shaped mocked responses and makes local upgrades
-                # resilient if a model returns the previous shape despite the
-                # stricter schema. In both cases, the validator sees the same
-                # two distinct internal roles before it can approve an answer.
+                # Convert each fixed role array into the shared sentence
+                # representation used by citation formatting and downstream
+                # evidence checks. A legacy object is also wrapped as one
+                # item so a temporarily nonconforming local model can still
+                # produce a candidate; it receives no weaker validation.
                 checked["sentences"] = []
                 for role in ("conclusion", "reasoning"):
                     component = checked.get(role)
                     if isinstance(component, dict):
                         checked["sentences"].append({"role": role, **component})
+                    elif isinstance(component, list):
+                        for answer_item in component:
+                            if isinstance(answer_item, dict):
+                                checked["sentences"].append({"role": role, **answer_item})
+            numbered_list_mapping_issue = None
+            if numbered_list_candidates is not None:
+                # The constrained checker returns only list evidence records.
+                # Reattach the immutable draft phrases before any normal
+                # answer validation or partial recovery can inspect them.
+                bound_items, numbered_list_mapping_issue = bind_numbered_list_evidence(
+                    question,
+                    numbered_list_candidates,
+                    checked.get("sentences"),
+                    candidate_source_ids=candidate_source_ids,
+                )
+                checked["sentences"] = bound_items
             # Record only the checker's structured, user-facing sentence and
             # excerpt fields; raw model responses may include unwanted reasoning.
             attempt_trace["checker_sentences"] = checked.get("sentences")
             latest_failed_sentences = checked.get("sentences")
             validation_issues: list[str] = []
+            if numbered_list_mapping_issue:
+                validation_issues.append(numbered_list_mapping_issue)
             quote_repair_trace: list[dict] = []
             argument_length_issues = argument_item_length_issues(
                 question, checked.get("sentences")
             )
-            if argument_length_issues:
+            if numbered_list_mapping_issue:
+                answer = None
+            elif argument_length_issues:
                 # Refuse a multi-sentence role bundle before spending quote
                 # compaction work on excerpts that must cover an entire
                 # paragraph. The bounded retry can then rebuild the two roles
@@ -3623,14 +5248,36 @@ def verify_answer(
                 answer = format_cited_sentences(
                     checked.get("sentences"),
                     sources,
-                    max_sentences=2 if is_simple_question(question) else None,
+                    max_sentences=(
+                        explicit_list_answer_count(question)
+                        or (5 if is_explicit_list_question(question) else None)
+                        or (2 if is_simple_question(question) else None)
+                    ),
                     mark_as_inference=asks_for_author_inference(question),
                     validation_issues=validation_issues,
                     inference_topic_terms=author_inference_topic_terms(question),
                     allow_verbatim_answer=direct_quote_requested,
                     required_topic_terms=required_topic_terms,
                     quote_repair_trace=quote_repair_trace,
+                    question=question,
+                    allowed_source_ids={source["source_id"] for source in checker_sources},
                 )
+            if answer:
+                # A source can exactly support its own wording and still be
+                # unrelated to the topic the answer model drafted. Check only
+                # substantial copied sentences against that draft; ordinary
+                # paraphrases continue through the shared validators below.
+                drift_issue = copied_answer_drift_issue(
+                    draft,
+                    checked.get("sentences"),
+                    sources,
+                    allow_verbatim_answer=direct_quote_requested,
+                )
+                if drift_issue:
+                    source_copy_drift_failed = True
+                    answer_synthesis_failed = True
+                    validation_issues.append(drift_issue)
+                    answer = None
             if quote_repair_trace:
                 # This compact trace makes quote repair observable in the
                 # downloaded report without duplicating the quotation text.
@@ -3675,6 +5322,29 @@ def verify_answer(
                     comparison_evidence_failed = True
                     validation_issues.append(comparison_issue)
                     answer = None
+            if answer:
+                list_count_issue = explicit_list_item_count_issue(
+                    question,
+                    checked.get("sentences"),
+                )
+                if list_count_issue:
+                    validation_issues.append(list_count_issue)
+                    answer = None
+            if answer:
+                # A single-clause question can still explicitly name several
+                # independent subjects (for example, "about God and the
+                # soul"). Unlike numbered clause parts, those topics have no
+                # existing part labels, so check the cited items directly.
+                # This catches a verifier blind spot where every sentence is
+                # well supported but the response silently answers only half
+                # of what the reader named.
+                topic_issue = named_topic_coverage_issue(
+                    question,
+                    checked.get("sentences"),
+                )
+                if topic_issue:
+                    validation_issues.append(topic_issue)
+                    answer = None
             if answer and not argument_question and not multipart_question:
                 # A one-sentence relation such as "the ideas work together"
                 # can pass a quote check while omitting the actual mechanism.
@@ -3694,7 +5364,11 @@ def verify_answer(
                 # of polishing the same unsupported wording and retaining its
                 # extra claims.
                 claim_evidence_failed = True
-            if any("repeats a long source passage instead of synthesizing" in issue for issue in validation_issues):
+            if any(
+                "copies source wording instead of synthesizing" in issue
+                or "repeats a long source passage instead of synthesizing" in issue
+                for issue in validation_issues
+            ):
                 # The final bounded repair must be source-led and start over;
                 # repairing a pasted passage sentence-by-sentence would keep
                 # anchoring the answer to copied wording instead of explaining it.
@@ -3712,6 +5386,10 @@ def verify_answer(
             )
             latest_validation_issues = list(validation_issues)
             retry_feedback = summarize_retry_feedback(validation_issues, last_failure)
+            question_echo_failed = any(
+                "response repeated a question instead of answering it" in issue
+                for issue in validation_issues
+            )
             attempt_trace.update({"status": "rejected", "reason": last_failure})
             if validation_issues:
                 # Keep the complete list in troubleshooting output; the retry
@@ -3722,10 +5400,11 @@ def verify_answer(
             retry_feedback = last_failure
             json_truncation_seen = True
             attempt_trace.update({"status": "rejected", "reason": last_failure})
-            if attempt == 1 and latest_validation_issues:
-                # The ordinary fresh reconstruction had a known validation
-                # issue to repair, but its malformed JSON supplied no usable
-                # candidate. Let the final attempt rebuild from passages only.
+            if attempt == 1:
+                # The ordinary fresh reconstruction supplied no usable
+                # candidate. Even when the first response was also malformed,
+                # retain the final bounded attempt and rebuild from passages
+                # alone rather than stopping before that recovery.
                 source_only_repair_after_json_failure = True
             # Keep the final bounded call available when the fresh
             # reconstruction is malformed. The next iteration has no
@@ -3736,6 +5415,12 @@ def verify_answer(
         except (urllib.error.URLError, TimeoutError, TypeError, AttributeError) as error:
             attempt_trace.update({"status": "error", "reason": f"model request or response error: {error}"})
             return reject(f"model request or response error: {error}")
+
+    # Do not reintroduce an unrelated copied source sentence through the
+    # sentence-level partial-recovery path. The checker has already had its
+    # bounded retries to return a topic-connected answer; a fallback is safer.
+    if source_copy_drift_failed:
+        return reject(last_failure)
 
     # A failed whole response does not always mean that every sentence failed.
     # This final recovery is shared by ordinary, multi-part, comparison, and
@@ -3784,6 +5469,17 @@ def verify_answer(
                 # as normal acceptance; otherwise a rejected paragraph could
                 # re-enter through this safety path without a corrected retry.
                 return None
+            if item.get("_list_member_confirmed") is False:
+                # A false membership judgment is stronger than ordinary item
+                # incompleteness: do not surface that candidate through the
+                # sentence-level partial-answer recovery path.
+                return None
+            # A recovered fragment from a list question still needs its own
+            # labeled identity. Otherwise the partial path could show a true
+            # fact about friendship without telling the reader which requested
+            # category it represents.
+            if is_explicit_list_question(question) and list_item_label_issue(item):
+                return None
             candidates = [item]
             evidence = item.get("evidence")
             if isinstance(evidence, list) and len(evidence) > 1:
@@ -3811,11 +5507,37 @@ def verify_answer(
                     allow_verbatim_answer=direct_quote_requested,
                     required_topic_terms=required_topic_terms,
                     quote_repair_trace=(recovery_quote_repairs := []),
+                    question=question,
+                    allowed_source_ids={source["source_id"] for source in checker_sources},
                 )
                 if recovery_quote_repairs and diagnostics is not None:
                     diagnostics.setdefault("recovery_quote_repairs", []).extend(
                         recovery_quote_repairs
                     )
+                # Partial recovery rechecks each sentence after a larger
+                # answer fails. Build 113 showed that this path can otherwise
+                # surface an exact, supported sentence copied from an
+                # unrelated retrieved topic (for example, a sentence about
+                # pain inside a failed habituation answer). Apply the same
+                # narrow draft-drift guard used for full verification before
+                # preserving any recovered sentence.
+                recovery_drift_issue = copied_answer_drift_issue(
+                    draft,
+                    [fresh_candidate],
+                    sources,
+                    allow_verbatim_answer=direct_quote_requested,
+                    # Partial recovery examines one sentence at a time. A
+                    # shorter exact copy can still be an unrelated fact, so
+                    # use a lower threshold here while retaining the stricter
+                    # default for full-answer acceptance.
+                    minimum_unique_terms=5,
+                )
+                if recovery_drift_issue:
+                    if diagnostics is not None:
+                        diagnostics.setdefault("recovery_rejections", []).append({
+                            "reason": recovery_drift_issue,
+                        })
+                    return None
                 # The partial-answer recovery must not undo the depth guard by
                 # extracting one terse sentence from a failed explanation.
                 if checked_sentence and (
@@ -3823,7 +5545,7 @@ def verify_answer(
                     or multipart_question
                     or not explanation_depth_failed
                     or not explanatory_depth_issue(question, checked_sentence)
-                ):
+                ) and not definition_completeness_issue(question, checked_sentence):
                     return checked_sentence
             return None
 
@@ -3843,7 +5565,7 @@ def verify_answer(
                 or (
                     issue.startswith(f"answer item {item_number}:")
                     and "field contains" in issue
-                    and "sentences; keep each argument field" in issue
+                    and "sentences; keep each argument field to one or two" in issue
                 )
                 or (
                     issue.startswith(f"answer item {item_number}:")
@@ -3931,7 +5653,21 @@ def verify_answer(
                 candidate_items,
                 require_separate_sides=structured_comparison,
             )
-            if supported_general_items and comparison_issue is None:
+            covered_topics, missing_topics = named_topic_coverage(
+                question,
+                candidate_items,
+            )
+            has_named_topic_groups = bool(covered_topics or missing_topics)
+            # A related fact can be useful as a partial answer only when it
+            # actually addresses at least one subject the reader named. Build
+            # 99 correctly stopped a one-sided answer from being verified,
+            # but its final sentence-level recovery still returned a checked
+            # fact about virtue even though it mentioned neither requested
+            # topic. In that case a safe fallback is clearer than a partial
+            # response that is merely adjacent to the question.
+            if has_named_topic_groups and not covered_topics:
+                partial_answer = ""
+            elif supported_general_items and comparison_issue is None:
                 partial_content = " ".join(sentence for _, sentence in supported_general_items)
                 if (
                     explanation_depth_failed
@@ -3958,24 +5694,42 @@ def verify_answer(
                         )
                     else:
                         recovery_argument_issue = "recovered answer is missing an argument role"
-                    if recovery_argument_issue and {"conclusion", "reasoning"}.issubset(recovered_roles):
-                        # The individual sentences are still useful when each
-                        # passes the normal evidence checks, but a role label
-                        # cannot turn a topical summary into an inference. Keep
-                        # the related points and say explicitly that their
-                        # argument link was not verified.
-                        limitation = " I could verify these related points, but not the complete argument requested: the evidence did not establish a reasoning link to the conclusion."
-                    elif "reasoning" not in recovered_roles and "conclusion" in recovered_roles:
-                        limitation = " I could verify a point about the conclusion, but not the complete argument requested or the reasoning it requires."
-                    elif "reasoning" not in recovered_roles:
-                        limitation = " I could verify a supporting point, but not the complete argument requested."
-                    elif "conclusion" not in recovered_roles:
-                        limitation = " I could verify a reasoning point, but not the conclusion it is meant to establish."
+                    if "conclusion" not in recovered_roles:
+                        # A supported premise or reasoning fragment alone may
+                        # be a true statement from the book without answering
+                        # what conclusion the reader asked about. Build 116
+                        # returned a partial Aristotle argument answer whose
+                        # only surviving point described Plato's view of the
+                        # good. Without an evidenced conclusion, there is no
+                        # safe anchor for presenting that fragment as part of
+                        # the requested argument; use the ordinary fallback.
+                        partial_answer = ""
                     else:
-                        limitation = " I could verify these argument components, but not the complete argument requested."
-                    partial_answer = partial_content + limitation
+                        if recovery_argument_issue and {"conclusion", "reasoning"}.issubset(recovered_roles):
+                            # The individual sentences are still useful when
+                            # each passes the normal evidence checks, but a
+                            # role label cannot turn a topical summary into an
+                            # inference. Keep the related points and say
+                            # explicitly that their argument link was not
+                            # verified.
+                            limitation = " I could verify these related points, but not the complete argument requested: the evidence did not establish a reasoning link to the conclusion."
+                        elif "reasoning" not in recovered_roles:
+                            limitation = " I could verify a point about the conclusion, but not the complete argument requested or the reasoning it requires."
+                        else:
+                            limitation = " I could verify these argument components, but not the complete argument requested."
+                        partial_answer = partial_content + limitation
                 else:
-                    partial_answer = partial_content + " I couldn't verify the full answer from the passages I found."
+                    list_count_issue = explicit_list_item_count_issue(
+                        question,
+                        candidate_items,
+                    )
+                    if list_count_issue:
+                        partial_answer = (
+                            partial_content
+                            + " I couldn't verify every requested item in the list from the passages I found."
+                        )
+                    else:
+                        partial_answer = partial_content + " I couldn't verify the full answer from the passages I found."
             else:
                 partial_answer = ""
 
@@ -4155,7 +5909,39 @@ class Handler(BaseHTTPRequestHandler):
                 trace["draft"] = {"status": "complete", "text": draft}
                 trace["evidence_check"]["status"] = "running"
             check_trace = trace["evidence_check"] if trace is not None else None
-            answer = verify_answer(question, sources, draft, model, diagnostics=check_trace)
+            candidate_source_ids = None
+            expected_list_count = explicit_list_answer_count(question)
+            draft_candidates = (
+                numbered_list_draft_candidates(draft, expected_list_count)
+                if expected_list_count is not None
+                else None
+            )
+            if draft_candidates is not None:
+                # The first retrieval serves the whole question. Before the
+                # evidence checker runs, add a bounded passage search for each
+                # draft member so the checker can compare candidates with the
+                # text that best discusses them. The candidate list remains
+                # untrusted; every item still needs an explicit membership
+                # judgment and exact, claim-supporting evidence.
+                candidate_source_ids, candidate_search_trace = retrieve_numbered_list_candidate_sources(
+                    question,
+                    draft_candidates,
+                    history,
+                    sources,
+                )
+                if trace is not None:
+                    trace["retrieval"]["list_candidate_searches"] = {
+                        "searches": candidate_search_trace,
+                        "sources": diagnostic_source_list(sources),
+                    }
+            answer = verify_answer(
+                question,
+                sources,
+                draft,
+                model,
+                diagnostics=check_trace,
+                candidate_source_ids=candidate_source_ids,
+            )
             # The response's [S#] markers are the source of truth for which
             # retrieved passages appear as clickable citations in the UI.
             cited_sources = sources_cited_by_answer(answer, sources)

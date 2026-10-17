@@ -86,20 +86,21 @@
       <label class="diagnostic-control"><input id="diagnostics-toggle" type="checkbox"> Include troubleshooting details in responses</label>
       <span class="diagnostic-control">Details include the question, retrieved passages, model draft, and checker output. Use this only when diagnosing a response.</span>
     </div>
-    <!-- Keep a small fixed prompt set so each build can be compared across models.
-         Clicking a button fills the composer; it never submits the question. -->
+    <!-- Keep a compact mix of stable baselines, a completeness check, and new
+         exploratory topics so builds stay comparable without making each run
+         longer. Clicking a button fills the composer; it never submits. -->
     <section aria-label="Suggested test questions">
-      <p class="suggestion-label">Core questions and a broader topic check · run with the selected models</p>
+      <p class="suggestion-label">Five repeatable test questions · run with the selected models</p>
       <div class="suggestions">
         <button type="button">What does Aristotle mean by practical wisdom?</button>
-        <button type="button">What is the highest human good, and how does Aristotle argue for it?</button>
-        <button type="button">How does Aristotle distinguish practical wisdom from philosophic wisdom?</button>
-        <button type="button">How does habituation help someone become virtuous?</button>
+        <button type="button">What does Aristotle mean by the mean relative to us?</button>
         <button type="button">What does Aristotle think about God and the soul?</button>
+        <button type="button">What are the three kinds of friendship Aristotle describes?</button>
+        <button type="button">What does Aristotle mean by magnificence?</button>
       </div>
       <p class="suggestion-label">Click a question to fill the prompt box, then submit it yourself.</p>
     </section>
-    <!-- The batch runner reuses these five prompts and the normal /api/chat
+    <!-- The batch runner reuses these five buttons and the normal /api/chat
          endpoint, so a paired evaluation follows the same live pipeline. -->
     <section class="batch-runner" aria-label="Automated regression test run">
       <p><strong>Run all five questions across models</strong></p>

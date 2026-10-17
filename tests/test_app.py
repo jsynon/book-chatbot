@@ -71,6 +71,19 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(min(chunk["page"] for chunk in app.CHUNKS), 1)
         self.assertEqual(max(chunk["page"] for chunk in app.CHUNKS), 127)
 
+    def test_tokenizer_matches_common_uation_inflections(self):
+        """Let a query's derived form match the corresponding verb in the book."""
+        expected = "habituate"
+        self.assertIn(expected, app.tokenize("habituation"))
+        self.assertIn(expected, app.tokenize("habituated"))
+        self.assertIn(expected, app.tokenize("habituating"))
+
+    def test_direct_search_uses_shared_lemma_for_habituation(self):
+        """Retrieve the formation-of-character passage without model expansion."""
+        results = app.retrieve("How does habituation help someone become virtuous?", [])
+        self.assertTrue(results)
+        self.assertIn(14, [source["page"] for source in results[:5]])
+
     def test_evidence_context_labels_sentences_without_losing_words(self):
         """Separate passage locator metadata from quotable source wording."""
         text = "Scientific knowledge concerns universal and necessary things. Philosophic wisdom concerns the highest objects."
@@ -103,6 +116,85 @@ class RetrievalTests(unittest.TestCase):
         self.assertNotIn("highest human good", context)
         self.assertNotIn("Aristotle argue", context)
         self.assertIn("TEXT: Every pursuit aims at some good.", context)
+
+    def test_checker_focus_prefers_topic_passages_and_keeps_specialized_sets(self):
+        """Focus ordinary checks without hiding evidence for complex requests."""
+        sources = [
+            {"source_id": "S1", "page": 12,
+             "text": "Happiness is an activity of soul in accordance with perfect virtue."},
+            {"source_id": "S2", "page": 14,
+             "text": "Virtue is formed through habituation and repeated actions."},
+            {"source_id": "S3", "page": 67,
+             "text": "Philosophic wisdom concerns the highest things and divine objects."},
+            {"source_id": "S4", "page": 79,
+             "text": "Continence and temperance concern appetites and bodily pleasures."},
+            {"source_id": "S5", "page": 92,
+             "text": "Wealth and honor are external goods sought by many people."},
+        ]
+
+        focused = app.focus_checker_sources(
+            "What does happiness mean?",
+            "Happiness is activity of the soul in accordance with virtue.",
+            sources,
+        )
+
+        self.assertEqual(len(focused), 3)
+        self.assertIn("S1", [source["source_id"] for source in focused])
+        self.assertNotIn("S5", [source["source_id"] for source in focused])
+        # Argument and multi-part checks must retain every candidate so the
+        # focus optimization cannot make one requested role or topic vanish.
+        self.assertEqual(
+            app.focus_checker_sources("Why?", "draft", sources, preserve_all=True),
+            sources,
+        )
+        self.assertEqual(
+            app.focus_checker_sources(
+                "What does Aristotle think about God and the soul?", "draft", sources
+            ),
+            sources,
+        )
+
+    def test_checker_cannot_verify_with_a_retrieved_but_hidden_off_topic_source(self):
+        """A valid quote is insufficient when its passage was outside checker context."""
+        # Model a common retrieval shape: several candidates concern the asked
+        # subject, while a lower-ranked candidate is a real passage about a
+        # different subject. The checker receives only the focused three, and
+        # validation must enforce that same boundary even though the complete
+        # retrieval list remains available for quote lookup and source links.
+        sources = [
+            {"source_id": "S1", "page": 12,
+             "text": "Insomnia is a disorder of sleeping and waking."},
+            {"source_id": "S2", "page": 14,
+             "text": "Quiet rest is a remedy for sleeplessness."},
+            {"source_id": "S3", "page": 16,
+             "text": "Rest helps restore ordinary sleep."},
+            {"source_id": "S4", "page": 80,
+             "text": "Friendship is founded on mutual goodwill."},
+        ]
+        focused = app.focus_checker_sources(
+            "What remedy does the text propose for insomnia?",
+            "Quiet rest is suggested for insomnia.",
+            sources,
+        )
+        allowed_ids = {source["source_id"] for source in focused}
+        self.assertEqual(allowed_ids, {"S1", "S2", "S3"})
+
+        issues = []
+        rejected = app.format_cited_sentences(
+            [{
+                "text": "Friendship is founded on mutual goodwill.",
+                "evidence": [{
+                    "source_id": "S4",
+                    "quote": "Friendship is founded on mutual goodwill",
+                }],
+            }],
+            sources,
+            validation_issues=issues,
+            allowed_source_ids=allowed_ids,
+        )
+
+        self.assertIsNone(rejected)
+        self.assertTrue(any("not supplied to the checker" in issue for issue in issues))
 
     def test_expanded_queries_find_passages_for_varied_topics(self):
         """Exercise unrelated topics to ensure retrieval is not question-specific."""
@@ -147,9 +239,262 @@ class RetrievalTests(unittest.TestCase):
         page_fourteen = next(source for source in combined if source["page"] == 14)
         self.assertIn("become just", page_fourteen["text"].lower())
         self.assertIn(14, [source["page"] for source in combined[:5]])
-        # Promotion changes ordering but keeps this original direct hit in the
-        # context so the model can compare it with the stronger expansion.
-        self.assertIn(126, [source["page"] for source in combined])
+        # Promotion changes ordering but never discards a page from the actual
+        # direct result set, even if a general tokenizer improvement changes
+        # which page occupies a particular rank.
+        combined_pages = [source["page"] for source in combined]
+        self.assertTrue(all(source["page"] in combined_pages for source in direct))
+
+    def test_unmatched_parenthetical_alias_triggers_query_expansion(self):
+        """Do not let generic overlap hide a missed term and its plain gloss.
+
+        This synthetic example is deliberately unrelated to the Aristotle
+        pilot. A passage can share enough broad words with a detailed question
+        to pass the ordinary overlap threshold even though it matches neither
+        the named concept nor the explanation in parentheses. Expansion is
+        useful in that case, while a top passage that covers either side of
+        the alias should not trigger this additional check by itself.
+        """
+        question = (
+            "What is ataraxia (freedom from disturbance), and how does this "
+            "concept shape a person's good life?"
+        )
+        generic_sources = [{
+            "text": "A person shapes a good life through wise choices and activity.",
+        }]
+
+        # The passages share enough generic wording to meet ordinary overlap
+        # thresholds, but neither side of the explicit alias is represented.
+        self.assertTrue(app.has_unmatched_parenthetical_alias(question, generic_sources))
+        self.assertTrue(app.query_needs_expansion(question, generic_sources))
+
+        named_term_covered = [{
+            "text": "Ataraxia shapes a good life through wise activity.",
+        }]
+        gloss_covered = [{
+            "text": "Freedom from disturbance shapes a good life through wise activity.",
+        }]
+        incidental_gloss_word = [{
+            "text": "Freedom shapes a good life through wise activity.",
+        }]
+        self.assertFalse(app.has_unmatched_parenthetical_alias(question, named_term_covered))
+        self.assertFalse(app.has_unmatched_parenthetical_alias(question, gloss_covered))
+        self.assertTrue(app.has_unmatched_parenthetical_alias(question, incidental_gloss_word))
+
+    def test_unmatched_single_topic_wording_uses_a_general_source_vocabulary_signal(self):
+        """Detect partial topic-label mismatch without naming a pilot question."""
+        question = "What does the author mean by tranquil virtue?"
+        translated_wording = [{
+            "text": "Quiet virtue is a settled state of character.",
+        }]
+        self.assertTrue(app.has_unmatched_single_topic_wording(question, translated_wording))
+
+        fully_matched_wording = [{
+            "text": "Tranquil virtue is a settled state of character.",
+        }]
+        self.assertFalse(app.has_unmatched_single_topic_wording(question, fully_matched_wording))
+
+        # Each side of an explicit multi-topic question keeps its own coverage
+        # requirements; the single-label hint must not blur them together.
+        multipart = "What does the author think about justice and friendship?"
+        self.assertFalse(app.has_unmatched_single_topic_wording(
+            multipart,
+            [{"text": "Justice guides fair distribution."}],
+        ))
+
+    def test_single_topic_evidence_anchors_follow_the_book_wording_when_label_is_absent(self):
+        """Do not demand an absent reader label from a source-language quote."""
+        question = "What does the author mean by tranquil virtue?"
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": "Quiet virtue is a settled state of character.",
+        }]
+        self.assertEqual(
+            app.evidence_topic_anchor_terms(question, source),
+            {"virtue"},
+        )
+        self.assertEqual(
+            app.unmatched_single_topic_claim_terms(question, source),
+            {"tranquil"},
+        )
+
+        # A one-word reader label can also be absent because the book uses a
+        # different expression (for example, "happiness" and "the human
+        # good"). Keep it out of the exact-topic rule so source-worded
+        # paraphrases remain possible; the generic claim/evidence floor still
+        # applies to every cited sentence.
+        self.assertEqual(
+            app.evidence_topic_anchor_terms(
+                "What is happiness?",
+                [{"text": "The human good is activity in accordance with virtue."}],
+            ),
+            set(),
+        )
+
+        # The source still has to supply a genuine lexical foothold for the
+        # claim; this only removes the absent question label from the stricter
+        # multi-anchor check. Exact quote matching remains mandatory.
+        issues = []
+        answer = app.format_cited_sentences(
+            [{
+                "text": "Tranquil virtue is a settled state of character.",
+                "evidence": [{
+                    "source_id": "S1",
+                    "quote": "Quiet virtue is a settled state of character",
+                }],
+            }],
+            source,
+            required_topic_terms=app.evidence_topic_anchor_terms(question, source),
+            validation_issues=issues,
+            question=question,
+        )
+        self.assertIsNotNone(answer)
+        self.assertEqual(issues, [])
+
+        # Multipart topic coverage is still strict: evidence about soul alone
+        # must not erase the separately requested God topic.
+        god_and_soul = "What does the author think about God and the soul?"
+        soul_only_source = [{
+            "source_id": "S1",
+            "page": 2,
+            "text": "The soul is an activity of life.",
+        }]
+        self.assertEqual(
+            app.evidence_topic_anchor_terms(god_and_soul, soul_only_source),
+            app.question_topic_anchor_terms(god_and_soul),
+        )
+        self.assertEqual(
+            app.unmatched_single_topic_claim_terms(god_and_soul, soul_only_source),
+            set(),
+        )
+
+    def test_source_wording_can_support_a_claim_with_an_absent_single_topic_label(self):
+        """Ignore only an absent reader label, retaining exact quote checks."""
+        question = "What does the author mean by tranquil virtue?"
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": "Quiet virtue is a settled state of character.",
+        }]
+        issues = []
+        answer = app.format_cited_sentences(
+            [{
+                "text": "Tranquil virtue; it is a settled state of character.",
+                "evidence": [{
+                    "source_id": "S1",
+                    "quote": "Quiet virtue is a settled state of character",
+                }],
+            }],
+            source,
+            validation_issues=issues,
+            question=question,
+            required_topic_terms=app.evidence_topic_anchor_terms(question, source),
+        )
+        self.assertEqual(
+            answer,
+            "Tranquil virtue; it is a settled state of character [S1].",
+        )
+        self.assertEqual(issues, [])
+
+        # This exception cannot make a paraphrase count as an exact quotation.
+        issues = []
+        rejected = app.format_cited_sentences(
+            [{
+                "text": "Tranquil virtue; it is a settled state of character.",
+                "evidence": [{
+                    "source_id": "S1",
+                    "quote": "Calm virtue is a settled state of character",
+                }],
+            }],
+            source,
+            validation_issues=issues,
+            question=question,
+            required_topic_terms=app.evidence_topic_anchor_terms(question, source),
+        )
+        self.assertIsNone(rejected)
+        self.assertTrue(any("not an exact passage match" in issue for issue in issues))
+
+    def test_draft_prompt_uses_source_vocabulary_for_partly_unmatched_topic_label(self):
+        """Guide a model toward source terminology when one label is absent."""
+        question = "What does the author mean by tranquil virtue?"
+        captured = {}
+        response = {"message": {"content": json.dumps({
+            "answer": "The text uses quiet virtue to describe a settled state of character.",
+        })}}
+
+        def record_request(request, timeout=0):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(response)
+
+        with patch.object(app.urllib.request, "urlopen", side_effect=record_request):
+            app.call_ollama(
+                question,
+                [{"source_id": "S1", "page": 1,
+                  "text": "Quiet virtue is a settled state of character."}],
+                [],
+                "qwen3:4b",
+            )
+
+        system_prompt = captured["payload"]["messages"][0]["content"]
+        self.assertIn("single-topic wording only partly appears", system_prompt)
+        self.assertIn("answer with that source term", system_prompt)
+        self.assertIn("Keep every evidence quote copied exactly", system_prompt)
+
+    def test_checker_prompt_keeps_alias_guidance_and_exact_quotes_together(self):
+        """The validation pass gets source-term guidance without weaker checks."""
+        question = "What does the author mean by tranquil virtue?"
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": "Quiet virtue is a settled state of character.",
+        }]
+        response = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "Quiet virtue is a settled state of character.",
+                "evidence": [{
+                    "source_id": "S1",
+                    "quote": "Quiet virtue is a settled state of character",
+                }],
+            }],
+        })}}
+        captured = {}
+
+        def record_request(request, timeout=0):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(response)
+
+        with patch.object(app.urllib.request, "urlopen", side_effect=record_request):
+            answer = app.verify_answer(
+                question, source, "Quiet virtue is a settled state of character.", "qwen3:4b"
+            )
+
+        self.assertIn("Quiet virtue", answer)
+        system_prompt = captured["payload"]["messages"][0]["content"]
+        self.assertIn("single-topic wording only partly appears", system_prompt)
+        self.assertIn("answer with that source term", system_prompt)
+        self.assertIn("Keep every evidence quote copied exactly", system_prompt)
+
+    def test_parenthetical_alias_expansion_prompt_asks_for_book_wording(self):
+        """Search wording from the text instead of echoing a reader's labels."""
+        question = "What does Aristotle mean by eudaimonia (human flourishing)?"
+        response = {"message": {"content": json.dumps({
+            "search_terms": "happiness; activity of soul",
+            "facet_1": "happiness; activity in accordance with virtue",
+        })}}
+        captured = {}
+
+        def record_request(request, timeout=0):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(response)
+
+        with patch.object(app.urllib.request, "urlopen", side_effect=record_request):
+            expanded = app.expand_query(question, [], "qwen3:4b")
+
+        prompt = captured["payload"]["messages"][-1]["content"]
+        self.assertIn("search for the source book's own wording", prompt)
+        self.assertIn("Do not merely repeat the technical term", prompt)
+        self.assertIn("happiness", expanded["search_terms"])
 
     def test_broad_expansion_keeps_a_distinct_passage_from_the_same_page(self):
         """Retain a strong second paragraph when page-level dedup hid it.
@@ -668,7 +1013,7 @@ class DiagnosticSummaryTests(unittest.TestCase):
 
     def test_long_source_copy_is_classified_as_answer_synthesis(self):
         summary = app.classify_diagnostic_issue(
-            "the answer repeats a long source passage instead of synthesizing it"
+            "the answer copies source wording instead of synthesizing it"
         )
         self.assertEqual(summary["stage"], "answer synthesis")
         self.assertEqual(summary["issue"], "The answer copied a passage instead of giving a concise synthesis.")
@@ -697,6 +1042,730 @@ class GroundingTests(unittest.TestCase):
         """Build one exact passage excerpt for the evidence-checker schema."""
         return [{"source_id": source_id, "quote": quote}]
 
+    def test_named_topic_coverage_is_general_and_requires_each_topic_citation(self):
+        """Catch a fully supported answer that quietly omits one named subject."""
+        # Use an unrelated synthetic question and domain so this regression
+        # protects the coverage rule itself rather than one pilot prompt.
+        question = "What does the text say about courage and friendship?"
+        self.assertEqual(
+            app.question_named_topic_groups(question),
+            [{"courage"}, {"friendship"}],
+        )
+
+        courage_only = [{
+            "text": "Courage guides action.",
+            "evidence": self.evidence("S1", "Courage guides action"),
+        }]
+        issue = app.named_topic_coverage_issue(question, courage_only)
+        self.assertIn("every explicitly named topic", issue)
+
+    def test_explicit_list_count_is_general_and_requires_one_item_per_entry(self):
+        """List completeness follows the requested count, not a pilot answer."""
+        question = "Which four stages does the handbook describe?"
+        self.assertTrue(app.is_explicit_list_question(question))
+        self.assertEqual(app.explicit_list_answer_count(question), 4)
+        self.assertIsNone(app.explicit_list_answer_count("What does the handbook say about planning?"))
+
+        three_items = [
+            {
+                "text": "Planning organizes the work.",
+                "list_item_label": "planning",
+                "evidence": self.evidence("S1", "planning organizes the work"),
+            },
+            {
+                "text": "Review checks the result.",
+                "list_item_label": "review",
+                "evidence": self.evidence("S1", "review checks the result"),
+            },
+            {
+                "text": "Revision corrects its weaknesses.",
+                "list_item_label": "revision",
+                "evidence": self.evidence("S1", "revision corrects its weaknesses"),
+            },
+        ]
+        issue = app.explicit_list_item_count_issue(question, three_items)
+        self.assertIn("requests 4 separately evidenced list items", issue)
+        self.assertIsNone(
+            app.explicit_list_item_count_issue(
+                question,
+                three_items + [{
+                    "text": "Delivery completes the work.",
+                    "list_item_label": "delivery",
+                    "evidence": self.evidence("S1", "delivery completes the work"),
+                }],
+            )
+        )
+        repeated_item = three_items + [
+            {
+                "text": "Planning is the fourth stage.",
+                "list_item_label": "planning",
+                "evidence": self.evidence("S1", "planning organizes the work"),
+            },
+        ]
+        self.assertIn("distinct labels", app.explicit_list_item_count_issue(question, repeated_item))
+        mislabeled_item = dict(
+            three_items[0],
+            list_item_label="delivery",
+            text="Delivery completes the work.",
+        )
+        self.assertIn(
+            "exact excerpt that names",
+            app.list_item_label_issue(mislabeled_item),
+        )
+
+    def test_checker_builds_separate_evidenced_items_for_an_explicit_list(self):
+        """Keep each requested list member attached to its own exact support."""
+        question = "Which three stages does the handbook describe?"
+        source_text = (
+            "The handbook names three stages. First, planning organizes the work. "
+            "Next, review checks the result. Finally, revision corrects its weaknesses."
+        )
+        source = [{"source_id": "S1", "page": 1, "text": source_text}]
+        response = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "Planning organizes the work.",
+                    "list_item_label": "planning",
+                    "evidence": self.evidence("S1", "planning organizes the work"),
+                },
+                {
+                    "text": "Review checks the result.",
+                    "list_item_label": "review",
+                    "evidence": self.evidence("S1", "review checks the result"),
+                },
+                {
+                    "text": "Revision corrects its weaknesses.",
+                    "list_item_label": "revision",
+                    "evidence": self.evidence("S1", "revision corrects its weaknesses"),
+                },
+            ],
+        })}}
+        payloads = []
+
+        def capture_request(request, timeout):
+            payloads.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(response)
+
+        with patch.object(app.urllib.request, "urlopen", side_effect=capture_request):
+            answer = app.verify_answer(question, source, "draft", "qwen3:4b")
+
+        self.assertIn("Planning organizes the work", answer)
+        self.assertIn("Review checks the result", answer)
+        self.assertIn("Revision corrects its weaknesses", answer)
+        self.assertEqual(answer.count("[S1]"), 3)
+        schema = payloads[0]["format"]["properties"]["sentences"]
+        self.assertEqual(schema["minItems"], 3)
+        self.assertEqual(schema["maxItems"], 3)
+        item_schema = schema["items"]
+        self.assertIn("list_item_label", item_schema["required"])
+        self.assertIn("one actual list member per object", payloads[0]["messages"][0]["content"])
+
+    def test_numbered_draft_list_locks_candidate_text_and_checks_each_member(self):
+        """The checker maps evidence to fixed candidates instead of rewriting list prose."""
+        question = "Which three stages does the handbook describe?"
+        draft = "The stages are: 1) planning, 2) review, and 3) revision."
+        self.assertEqual(
+            app.numbered_list_draft_candidates(draft, 3),
+            ["planning", "review", "revision"],
+        )
+        self.assertIsNone(app.numbered_list_draft_candidates(
+            "The stages are planning, review, and revision.", 3
+        ))
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": (
+                "Planning is the first stage. Review is the second stage. "
+                "Revision is the final stage."
+            ),
+        }]
+        response = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "candidate_index": 1,
+                    "is_list_member": True,
+                    "list_item_label": "planning",
+                    "evidence": self.evidence("S1", "Planning is the first stage"),
+                },
+                {
+                    "candidate_index": 2,
+                    "is_list_member": True,
+                    "list_item_label": "review",
+                    "evidence": self.evidence("S1", "Review is the second stage"),
+                },
+                {
+                    "candidate_index": 3,
+                    "is_list_member": True,
+                    "list_item_label": "revision",
+                    "evidence": self.evidence("S1", "Revision is the final stage"),
+                },
+            ],
+        })}}
+        payloads = []
+
+        def capture_request(request, timeout):
+            payloads.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(response)
+
+        candidate_source_ids = {1: {"S1"}, 2: {"S1"}, 3: {"S1"}}
+        with patch.object(app.urllib.request, "urlopen", side_effect=capture_request):
+            answer = app.verify_answer(
+                question,
+                source,
+                draft,
+                "qwen3:4b",
+                candidate_source_ids=candidate_source_ids,
+            )
+
+        self.assertEqual(answer.count("One stage is"), 3)
+        self.assertIn("One stage is planning [S1].", answer)
+        self.assertIn("One stage is review [S1].", answer)
+        self.assertIn("One stage is revision [S1].", answer)
+        item_schema = payloads[0]["format"]["properties"]["sentences"]["items"]
+        self.assertNotIn("text", item_schema["properties"])
+        self.assertIn("candidate_index", item_schema["required"])
+        self.assertIn("is_list_member", item_schema["required"])
+        prompt = payloads[0]["messages"][-1]["content"]
+        self.assertIn("Fixed candidate list", prompt)
+        self.assertIn("1. planning", prompt)
+        self.assertIn("Candidate-focused retrieval pools", prompt)
+        self.assertIn("1. planning: S1", prompt)
+        self.assertIn("Do not write or rewrite any answer text", payloads[0]["messages"][0]["content"])
+
+    def test_numbered_list_retrieval_builds_bounded_candidate_source_pools(self):
+        """List candidates get their own retrieval without renumbering existing citations."""
+        sources = [{
+            "source_id": "S1",
+            "page": 10,
+            "text": "The handbook groups its stages into a sequence.",
+            "score": 1.0,
+        }]
+        search_results = {
+            "planning": [
+                {"source_id": "S1", "page": 20, "text": "Planning is the opening stage.", "score": 2.0},
+                {"source_id": "S1", "page": 21, "text": "Planning sets the goal before review.", "score": 1.5},
+            ],
+            "review": [
+                {"source_id": "S1", "page": 10, "text": "Review follows the initial stage.", "score": 2.2},
+                {"source_id": "S1", "page": 22, "text": "Review checks the completed work.", "score": 1.8},
+            ],
+        }
+
+        def candidate_search(query, history, search_terms=None, limit=5):
+            return search_results[query][:limit]
+
+        with patch.object(app, "retrieve", side_effect=candidate_search):
+            source_pools, trace = app.retrieve_numbered_list_candidate_sources(
+                "Which two stages does the handbook describe?",
+                ["planning", "review"],
+                [],
+                sources,
+            )
+
+        self.assertEqual(sources[0]["source_id"], "S1")
+        self.assertEqual(sources[0]["page"], 10)
+        self.assertEqual(len(sources), 3)
+        self.assertIn("S2", source_pools[1])
+        self.assertIn("S1", source_pools[2])
+        self.assertTrue(source_pools[1].isdisjoint(source_pools[2]))
+        self.assertEqual([entry["candidate_index"] for entry in trace], [1, 2])
+        self.assertEqual(trace[0]["searched_pages"], [20, 21])
+        self.assertIn("Planning sets the goal", next(
+            source["text"] for source in sources if source["page"] == 21
+        ))
+
+    def test_numbered_list_evidence_must_use_its_candidate_retrieval_pool(self):
+        """A list candidate cannot borrow another item's newly retrieved source."""
+        candidates = ["planning", "review"]
+        checker_items = [
+            {
+                "candidate_index": 1,
+                "is_list_member": True,
+                "list_item_label": "planning",
+                "evidence": self.evidence("S2", "Planning is the opening stage"),
+            },
+            {
+                "candidate_index": 2,
+                "is_list_member": True,
+                "list_item_label": "review",
+                # This passage is valid for candidate 1 but was not returned
+                # by candidate 2's separate local search.
+                "evidence": self.evidence("S2", "Planning is the opening stage"),
+            },
+        ]
+
+        bound, issue = app.bind_numbered_list_evidence(
+            "Which two stages does the handbook describe?",
+            candidates,
+            checker_items,
+            candidate_source_ids={1: {"S2"}, 2: {"S3"}},
+        )
+
+        self.assertEqual(bound[0]["_list_member_confirmed"], True)
+        self.assertEqual(bound[1]["_list_member_confirmed"], False)
+        self.assertIn("outside its candidate-focused retrieval set", issue)
+
+    def test_numbered_draft_list_does_not_recover_checker_rejected_candidate(self):
+        """A candidate the checker rejects as a member cannot leak through partial recovery."""
+        question = "Which three stages does the handbook describe?"
+        draft = "The stages are: 1) planning, 2) review, and 3) coffee."
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": (
+                "Planning is the first stage. Review is the second stage. "
+                "Revision is the final stage."
+            ),
+        }]
+        rejected_list = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "candidate_index": 1,
+                    "is_list_member": True,
+                    "list_item_label": "planning",
+                    "evidence": self.evidence("S1", "Planning is the first stage"),
+                },
+                {
+                    "candidate_index": 2,
+                    "is_list_member": True,
+                    "list_item_label": "review",
+                    "evidence": self.evidence("S1", "Review is the second stage"),
+                },
+                {
+                    "candidate_index": 3,
+                    "is_list_member": False,
+                    "list_item_label": "coffee",
+                    "evidence": self.evidence("S1", "Revision is the final stage"),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(rejected_list)] * 3,
+        ):
+            answer = app.verify_answer(question, source, draft, "qwen3:4b", diagnostics)
+
+        self.assertEqual(diagnostics["status"], "partial")
+        self.assertIn("One stage is planning", answer)
+        self.assertIn("One stage is review", answer)
+        self.assertNotIn("coffee", answer.casefold())
+        self.assertIn("couldn't verify every requested item in the list", answer)
+
+    def test_list_retry_keeps_original_candidate_members_after_copied_text_fails(self):
+        """A failed evidence pass should repair a list without replacing its members with source prose."""
+        question = "Which three stages does the handbook describe?"
+        source_text = (
+            "First, planning organizes the work by assigning each task to a responsible member before the team begins. "
+            "Next, review checks completed work for accuracy. Finally, revision corrects identified weaknesses."
+        )
+        source = [{"source_id": "S1", "page": 1, "text": source_text}]
+        copied_response = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "First, planning organizes the work by assigning each task to a responsible member before the team begins.",
+                    "list_item_label": "planning",
+                    "evidence": self.evidence("S1", "planning organizes the work by assigning each task"),
+                },
+                {
+                    "text": "Review checks completed work for accuracy.",
+                    "list_item_label": "review",
+                    "evidence": self.evidence("S1", "review checks completed work for accuracy"),
+                },
+                {
+                    "text": "Revision corrects identified weaknesses.",
+                    "list_item_label": "revision",
+                    "evidence": self.evidence("S1", "revision corrects identified weaknesses"),
+                },
+            ],
+        })}}
+        corrected_response = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "Planning assigns tasks before the work begins.",
+                    "list_item_label": "planning",
+                    "evidence": self.evidence("S1", "planning organizes the work by assigning each task"),
+                },
+                {
+                    "text": "Review checks completed work for accuracy.",
+                    "list_item_label": "review",
+                    "evidence": self.evidence("S1", "review checks completed work for accuracy"),
+                },
+                {
+                    "text": "Revision addresses identified weaknesses.",
+                    "list_item_label": "revision",
+                    "evidence": self.evidence("S1", "revision corrects identified weaknesses"),
+                },
+            ],
+        })}}
+        draft = "The stages are planning, review, and revision."
+        diagnostics = {}
+        payloads = []
+
+        def capture_request(request, timeout):
+            payloads.append(json.loads(request.data.decode("utf-8")))
+            response = copied_response if len(payloads) == 1 else corrected_response
+            return FakeResponse(response)
+
+        with patch.object(app.urllib.request, "urlopen", side_effect=capture_request):
+            answer = app.verify_answer(question, source, draft, "qwen3:4b", diagnostics)
+
+        self.assertEqual(diagnostics["status"], "verified")
+        self.assertIn("Planning assigns tasks", answer)
+        self.assertIn("Review checks completed work", answer)
+        self.assertIn("Revision addresses identified weaknesses", answer)
+        self.assertEqual(len(payloads), 2)
+        retry_prompt = payloads[1]["messages"][-1]["content"]
+        self.assertIn("Original draft to check (not assumed correct)", retry_prompt)
+        self.assertIn(draft, retry_prompt)
+        self.assertIn("instead of replacing them with copied passage sentences", retry_prompt)
+        self.assertIn("Do not put exact source wording in the answer sentence", retry_prompt)
+
+    def test_checker_does_not_verify_an_incomplete_requested_list(self):
+        """Individually supported entries remain partial when a requested item is absent."""
+        question = "Which three stages does the handbook describe?"
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": (
+                "The handbook names three stages. First, planning organizes the work. "
+                "Next, review checks the result. Finally, revision corrects its weaknesses."
+            ),
+        }]
+        incomplete = {"message": {"content": json.dumps({
+            "sentences": [
+                {
+                    "text": "Planning organizes the work.",
+                    "list_item_label": "planning",
+                    "evidence": self.evidence("S1", "planning organizes the work"),
+                },
+                {
+                    "text": "Review checks the result.",
+                    "list_item_label": "review",
+                    "evidence": self.evidence("S1", "review checks the result"),
+                },
+            ],
+        })}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(incomplete)] * 3,
+        ):
+            answer = app.verify_answer(
+                question, source, "draft", "qwen3:4b", diagnostics
+            )
+
+        self.assertEqual(diagnostics["status"], "partial")
+        self.assertIn("Planning organizes the work", answer)
+        self.assertIn("Review checks the result", answer)
+        self.assertIn("couldn't verify every requested item in the list", answer)
+
+        both_topics = [
+            {
+                "text": "Courage guides action.",
+                "evidence": self.evidence("S1", "Courage guides action"),
+            },
+            {
+                "text": "Friendship supports shared activity.",
+                "evidence": self.evidence("S2", "Friendship supports shared activity"),
+            },
+        ]
+        self.assertIsNone(app.named_topic_coverage_issue(question, both_topics))
+
+    def test_definition_answer_must_add_supported_content_beyond_the_term(self):
+        """A citation cannot make a bare repetition count as a definition."""
+        # Use a synthetic topic so this guards definition requests generally,
+        # rather than encoding the pilot's practical-wisdom question.
+        question = "What does civic excellence mean?"
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": "Civic excellence is practiced public judgment for shared civic choices.",
+        }]
+        issues = []
+        bare_term = app.format_cited_sentences(
+            [{
+                "text": "Civic excellence.",
+                "evidence": self.evidence("S1", "Civic excellence is practiced public judgment"),
+            }],
+            source,
+            validation_issues=issues,
+            question=question,
+        )
+        self.assertIsNone(bare_term)
+        self.assertIn("only repeats the requested term", " ".join(issues))
+
+        substantive_definition = app.format_cited_sentences(
+            [{
+                "text": "Civic excellence is practiced public judgment for shared civic choices.",
+                "evidence": self.evidence(
+                    "S1", "Civic excellence is practiced public judgment for shared civic choices"
+                ),
+            }],
+            source,
+            question=question,
+        )
+        self.assertEqual(
+            substantive_definition,
+            "Civic excellence is practiced public judgment for shared civic choices [S1].",
+        )
+        self.assertIsNone(app.definition_completeness_issue(
+            "Who wrote Civic Excellence?", "Civic excellence."
+        ))
+
+    def test_definition_with_parenthetical_alias_can_use_the_book_term(self):
+        """Ground the answer in the book's label when the user's label is absent."""
+        question = "What does Aristotle mean by eudaimonia (human flourishing)?"
+        answer = "The book calls happiness an activity of soul in accordance with perfect virtue."
+        source = [self.sources[1]]
+        result = app.format_cited_sentences(
+            [{
+                "text": answer,
+                "evidence": self.evidence(
+                    "S2", "Happiness is an activity of soul in accordance with perfect virtue"
+                ),
+            }],
+            source,
+            question=question,
+        )
+
+        self.assertEqual(
+            result,
+            "The book calls happiness an activity of soul in accordance with perfect virtue [S2].",
+        )
+
+    def test_draft_prompt_uses_source_wording_for_unmatched_parenthetical_alias(self):
+        """Tell the answer model not to repeat labels absent from its passages."""
+        question = "What does Aristotle mean by eudaimonia (human flourishing)?"
+        captured = {}
+        response = {"message": {"content": json.dumps({
+            "answer": "The book calls happiness an activity of soul in accordance with virtue [S2].",
+        })}}
+
+        def record_request(request, timeout=0):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(response)
+
+        with patch.object(app.urllib.request, "urlopen", side_effect=record_request):
+            answer = app.call_ollama(question, [self.sources[1]], [], "qwen3:4b")
+
+        system_prompt = captured["payload"]["messages"][0]["content"]
+        self.assertIn("the term the book actually uses", system_prompt)
+        self.assertIn("Do not copy both reader-supplied labels", system_prompt)
+        self.assertIn("happiness", answer)
+
+    def test_unrelated_verbatim_checker_sentence_is_rejected_after_retries(self):
+        """Do not let a supported source copy replace the answer's topic.
+
+        This synthetic case tests the checker/draft relationship rather than
+        encoding the Aristotle question or Build 111's specific bad passage.
+        The copied sentence is exact and its quote is valid, so ordinary
+        evidence matching alone would accept it. Only the unrelated drift
+        between the answer draft and copied checker text should stop it.
+        """
+        question = "What does the text say about courage?"
+        passage = (
+            "The artisan examines the painted vessels with careful attention, noting their color, "
+            "shape, texture, and origin before describing each object to the waiting students."
+        )
+        sources = [{"source_id": "S1", "page": 1, "text": passage}]
+        copied_response = {"message": {"content": json.dumps({"sentences": [{
+            "text": passage,
+            "evidence": self.evidence("S1", passage),
+        }]})}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(copied_response)] * 3,
+        ) as mocked_urlopen:
+            answer = app.verify_answer(
+                question,
+                sources,
+                "Courage is a practiced quality guiding brave action in difficult situations.",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertTrue(answer.startswith("I couldn't verify a reliable answer"))
+        self.assertEqual(diagnostics["status"], "fallback")
+        self.assertTrue(all(
+            "not meaningfully connected to the answer draft" in attempt.get("reason", "")
+            for attempt in diagnostics["attempts"]
+        ))
+
+    def test_substantive_paraphrase_is_not_flagged_as_source_copy_drift(self):
+        """Keep the drift alarm limited to substantial exact source copying."""
+        issue = app.copied_answer_drift_issue(
+            "Courage guides deliberate action in difficult situations.",
+            [{
+                "text": "Courage is a trained disposition that guides deliberate choices in difficult situations.",
+                "evidence": self.evidence("S1", "Courage guides deliberate action in difficult situations"),
+            }],
+            [{
+                "source_id": "S1",
+                "text": "Courage guides deliberate action in difficult situations.",
+            }],
+        )
+        self.assertIsNone(issue)
+
+    def test_short_exact_copy_with_a_distinctive_topic_match_can_recover(self):
+        """One distinctive inflection match can connect a short source line."""
+        sentence = "The habituated navigator steadies the vessel through rough water."
+        issue = app.copied_answer_drift_issue(
+            "Habituation trains people to respond steadily under strain.",
+            [{
+                "text": sentence,
+                "evidence": self.evidence("S1", sentence),
+            }],
+            [{"source_id": "S1", "text": sentence}],
+            minimum_unique_terms=5,
+        )
+        self.assertIsNone(issue)
+
+    def test_partial_recovery_drops_unrelated_copied_source_sentence(self):
+        """Keep a supported requested point without surfacing an adjacent copy."""
+        question = "How does courage guide action when danger threatens?"
+        relevant = (
+            "Courage guides deliberate action when danger threatens the community and its members."
+        )
+        # Keep this copied sentence deliberately short: partial recovery sees
+        # one sentence at a time and must reject concise unrelated source text
+        # as well as longer copied paragraphs.
+        unrelated = "The quiet harbor appears brighter after careful inspection."
+        source_text = f"{relevant} {unrelated}"
+        sources = [{"source_id": "S1", "page": 1, "text": source_text}]
+        mixed_answer = {"message": {"content": json.dumps({"sentences": [{
+            "text": f"{relevant} {unrelated} Cats rule the sea.",
+            "evidence": self.evidence("S1", source_text),
+        }]})}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(mixed_answer)] * 3,
+        ) as mocked_urlopen:
+            answer = app.verify_answer(
+                question,
+                sources,
+                relevant,
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertEqual(diagnostics["status"], "partial")
+        self.assertIn(
+            "Courage guides deliberate action when danger threatens the community and its members [S1].",
+            answer,
+        )
+        self.assertIn("couldn't verify the full answer", answer)
+        self.assertNotIn("The quiet harbor appears brighter", answer)
+        self.assertTrue(any(
+            "not meaningfully connected to the answer draft" in item.get("reason", "")
+            for item in diagnostics.get("recovery_rejections", [])
+        ))
+
+    def test_evidence_check_retries_when_a_named_topic_is_omitted(self):
+        """Require each requested subject before labeling a response verified."""
+        question = "What does the text say about courage and friendship?"
+        sources = [
+            {"source_id": "S1", "page": 1, "text": "Courage guides action."},
+            {"source_id": "S2", "page": 2, "text": "Friendship supports shared activity."},
+        ]
+        incomplete = {"message": {"content": json.dumps({"sentences": [{
+            "text": "Courage guides action.",
+            "evidence": self.evidence("S1", "Courage guides action"),
+        }]})}}
+        complete = {"message": {"content": json.dumps({"sentences": [
+            {
+                "text": "Courage guides action.",
+                "evidence": self.evidence("S1", "Courage guides action"),
+            },
+            {
+                "text": "Friendship supports shared activity.",
+                "evidence": self.evidence("S2", "Friendship supports shared activity"),
+            },
+        ]})}}
+        diagnostics = {}
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(incomplete), FakeResponse(complete)],
+        ) as mocked_urlopen:
+            result = app.verify_answer(question, sources, "draft", "qwen3:4b", diagnostics)
+
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        self.assertEqual(diagnostics["status"], "verified")
+        self.assertEqual(
+            [attempt["status"] for attempt in diagnostics["attempts"]],
+            ["rejected", "accepted"],
+        )
+        self.assertIn("Courage guides action", result)
+        self.assertIn("Friendship supports shared activity", result)
+        first_attempt = diagnostics["attempts"][0]
+        self.assertIn("every explicitly named topic", first_attempt["reason"])
+
+    def test_partial_recovery_falls_back_when_no_named_topic_survives(self):
+        """Do not return a merely adjacent fact as a partial topic-list answer."""
+        question = "What does the text say about courage and friendship?"
+        sources = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": "Wisdom guides choices.",
+        }]
+        unrelated_but_supported = {"message": {"content": json.dumps({"sentences": [{
+            "text": "Wisdom guides choices.",
+            "evidence": self.evidence("S1", "Wisdom guides choices"),
+        }]})}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(unrelated_but_supported)] * 3,
+        ) as mocked_urlopen:
+            answer = app.verify_answer(
+                question, sources, "draft", "qwen3:4b", diagnostics
+            )
+
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertTrue(answer.startswith("I couldn't verify a reliable answer"))
+        self.assertEqual(diagnostics["status"], "fallback")
+
+    def test_partial_recovery_keeps_a_cited_requested_topic(self):
+        """Preserve a genuinely relevant point when another named topic is missing."""
+        question = "What does the text say about courage and friendship?"
+        sources = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": "Courage guides action.",
+        }]
+        one_requested_topic = {"message": {"content": json.dumps({"sentences": [{
+            "text": "Courage guides action.",
+            "evidence": self.evidence("S1", "Courage guides action"),
+        }]})}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(one_requested_topic)] * 3,
+        ) as mocked_urlopen:
+            answer = app.verify_answer(
+                question, sources, "draft", "qwen3:4b", diagnostics
+            )
+
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertIn("Courage guides action", answer)
+        self.assertIn("couldn't verify the full answer", answer)
+        self.assertEqual(diagnostics["status"], "partial")
+
     def test_long_verbatim_answer_is_rejected_but_direct_quote_requests_allow_it(self):
         """Keep a pasted passage out of normal answers while honoring quote requests."""
         source_text = (
@@ -714,7 +1783,7 @@ class GroundingTests(unittest.TestCase):
 
         self.assertTrue(app.is_long_verbatim_answer(source_text, source))
         self.assertIsNone(app.format_cited_sentences([answer_item], source, validation_issues=issues))
-        self.assertIn("repeats a long source passage instead of synthesizing", issues[0])
+        self.assertIn("copies source wording instead of synthesizing", issues[0])
         self.assertTrue(app.question_requests_direct_quote("Quote Aristotle's exact wording about happiness."))
         self.assertFalse(app.question_requests_direct_quote("How does Aristotle define happiness?"))
         self.assertEqual(
@@ -722,6 +1791,95 @@ class GroundingTests(unittest.TestCase):
                 [answer_item], source, allow_verbatim_answer=True
             ),
             source_text[:-1] + " [S1].",
+        )
+
+    def test_complete_source_sentence_is_not_recovered_as_a_synthesis(self):
+        """Prevent partial recovery from displaying a copied mid-length source sentence."""
+        source_sentence = (
+            "And thus these friendships are only incidental; for it is not as being the man he is "
+            "that the loved person is loved, but as providing some good or pleasure."
+        )
+        source = [{"source_id": "S1", "page": 1, "text": source_sentence}]
+        item = {
+            "text": source_sentence,
+            "evidence": self.evidence("S1", source_sentence),
+        }
+        self.assertTrue(app.is_complete_verbatim_source_sentence(source_sentence, source))
+        issues = []
+        self.assertIsNone(app.format_cited_sentences(
+            [item], source, validation_issues=issues,
+            question="What are the three kinds described in this passage?",
+        ))
+        self.assertIn("copies source wording instead of synthesizing", issues[0])
+
+        # Readers who explicitly ask for the author's words can still receive
+        # an exact sentence; the restriction applies to ordinary answers.
+        self.assertIsNotNone(
+            app.format_cited_sentences(
+                [item], source, allow_verbatim_answer=True,
+                question="Quote the three kinds described in this passage.",
+            )
+        )
+
+    def test_verbatim_source_fragment_is_retried_as_a_complete_synthesis(self):
+        """Do not turn a copied dependent clause into a verified answer."""
+        question = "What does civic excellence mean?"
+        source_text = (
+            "Civic excellence is a standard of character, this being determined by reason and careful judgment."
+        )
+        sources = [{"source_id": "S1", "page": 1, "text": source_text}]
+        copied_clause = {"message": {"content": json.dumps({"sentences": [{
+            "text": "this being determined by reason and careful judgment.",
+            "evidence": self.evidence("S1", "this being determined by reason and careful judgment"),
+        }]})}}
+        synthesis = {"message": {"content": json.dumps({"sentences": [{
+            "text": "Civic excellence is a standard of character determined by reason and careful judgment.",
+            "evidence": self.evidence("S1", source_text),
+        }]})}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(copied_clause), FakeResponse(synthesis)],
+        ) as mocked_urlopen:
+            answer = app.verify_answer(question, sources, "draft", "qwen3:4b", diagnostics)
+
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        self.assertIn("Civic excellence is a standard of character determined", answer)
+        self.assertEqual(diagnostics["status"], "verified")
+        self.assertEqual(
+            [attempt["status"] for attempt in diagnostics["attempts"]],
+            ["rejected", "accepted"],
+        )
+        self.assertIn("copied source fragment", diagnostics["attempts"][0]["reason"])
+
+    def test_complete_lowercase_source_sentence_is_not_misclassified_as_a_fragment(self):
+        """A full assertion copied from a sentence midpoint remains checkable."""
+        source_text = (
+            "Nor are these first principles the objects of philosophic wisdom, "
+            "for it is a mark of the philosopher to have demonstration about some things. "
+            "From what has been said it is plain, then, that philosophic wisdom is scientific "
+            "knowledge, combined with intuitive reason, of the things that are highest by nature."
+        )
+        complete_assertion = (
+            "philosophic wisdom is scientific knowledge, combined with intuitive reason, "
+            "of the things that are highest by nature."
+        )
+        sources = [{"source_id": "S1", "page": 67, "text": source_text}]
+
+        self.assertFalse(app.is_verbatim_source_fragment(complete_assertion, sources))
+
+    def test_abbreviation_does_not_turn_a_source_continuation_into_a_sentence(self):
+        """Keep "i.e." attached to its sentence before applying fragment checks."""
+        checker_text = (
+            "Aristotle means by the mean relative to us a state of character, "
+            "i.e. the mean relative to us, this being determined by a rational principle."
+        )
+
+        self.assertEqual(
+            app.split_answer_sentences(checker_text),
+            [checker_text],
         )
 
     def test_long_verbatim_answer_retries_from_sources_and_accepts_a_synthesis(self):
@@ -752,7 +1910,7 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(answer, "The highest good achievable by action is happiness [S1].")
         self.assertEqual(mocked_urlopen.call_count, 3)
         self.assertIn(
-            "repeats a long source passage instead of synthesizing",
+            "copies source wording instead of synthesizing",
             diagnostics["attempts"][0]["reason"],
         )
         final_prompt = json.loads(mocked_urlopen.call_args_list[2].args[0].data.decode("utf-8"))["messages"][-1]["content"]
@@ -822,6 +1980,18 @@ class GroundingTests(unittest.TestCase):
             ordinary_item_schema["properties"]["evidence"]["items"]["properties"]["quote"]["maxLength"],
             app.MAX_EVIDENCE_QUOTE_CHARS,
         )
+        # Simple-answer rendering is limited to two sentences. Carry that
+        # same bound into generation so a model cannot spend its JSON budget
+        # on a long list that the reader would never see in full.
+        self.assertEqual(
+            payloads[0]["format"]["properties"]["sentences"]["maxItems"],
+            2,
+        )
+        # The generation schema discourages the oversized excerpts seen in
+        # live runs, while the independent word validator still allows a
+        # useful exact quote up to its established hard ceiling.
+        self.assertEqual(app.MAX_EVIDENCE_QUOTE_CHARS, 220)
+        self.assertEqual(app.MAX_EVIDENCE_QUOTE_WORDS, 45)
 
     def test_checker_keeps_added_output_room_after_intervening_quote_failure(self):
         """A quote failure between truncated responses must not reset repair capacity."""
@@ -922,6 +2092,85 @@ class GroundingTests(unittest.TestCase):
         self.assertIsNone(app.repair_quote_with_one_extra_article(
             "not states of character arise out of like activities", source_text
         ))
+
+    def test_quote_with_one_missing_space_is_repaired_from_the_exact_source(self):
+        """Repair a joined word only when its two source words are adjacent."""
+        source_text = "Principle rests in agent and the action follows."
+        source = [{"source_id": "S1", "page": 1, "text": source_text}]
+        item = {
+            "text": "The principle rests in the agent and the action follows.",
+            "evidence": self.evidence("S1", "Principle rests in agent andthe action follows"),
+        }
+        trace = []
+
+        answer = app.format_cited_sentences([item], source, quote_repair_trace=trace)
+
+        self.assertEqual(
+            answer,
+            "The principle rests in the agent and the action follows [S1].",
+        )
+        self.assertEqual(
+            item["evidence"][0]["quote"],
+            "Principle rests in agent and the action follows",
+        )
+        self.assertEqual(trace[0]["outcome"], "restored_one_missing_space")
+        self.assertTrue(app.evidence_quote_matches(item["evidence"][0]["quote"], source_text))
+
+    def test_joined_word_quote_repairs_when_identical_source_passage_repeats(self):
+        """Repeated identical spans are safe when they yield the same repair."""
+        sentence = "The captain chose to do the work."
+        source_text = f"{sentence} {sentence}"
+        source = [{"source_id": "S1", "page": 1, "text": source_text}]
+        item = {
+            "text": sentence,
+            "evidence": self.evidence("S1", "The captain chose todo the work"),
+        }
+        trace = []
+
+        answer = app.format_cited_sentences(
+            [item], source, quote_repair_trace=trace
+        )
+
+        self.assertEqual(answer, "The captain chose to do the work [S1].")
+        self.assertEqual(item["evidence"][0]["quote"], sentence[:-1])
+        self.assertEqual(trace[0]["outcome"], "restored_one_missing_space")
+
+    def test_quote_clipped_at_schema_limit_can_complete_one_source_word(self):
+        """A final partial word may be restored from one unambiguous exact span."""
+        source_text = "The soul carries apprehension."
+        clipped_quote = "The soul carries appreh-"
+        source = [{"source_id": "S1", "page": 1, "text": source_text}]
+        item = {
+            "text": "The soul carries apprehension.",
+            "evidence": self.evidence("S1", clipped_quote),
+        }
+        trace = []
+
+        with patch.object(app, "MAX_EVIDENCE_QUOTE_CHARS", len(clipped_quote)):
+            answer = app.format_cited_sentences(
+                [item], source, quote_repair_trace=trace
+            )
+            self.assertEqual(answer, "The soul carries apprehension [S1].")
+            self.assertEqual(
+                item["evidence"][0]["quote"], "The soul carries apprehension"
+            )
+            self.assertEqual(
+                trace[0]["outcome"], "completed_truncated_final_word"
+            )
+            self.assertTrue(app.evidence_quote_matches(
+                item["evidence"][0]["quote"], source_text
+            ))
+
+            # The same prefix is not enough when the source does not prove the
+            # intended final word, and a quote far below the schema ceiling
+            # cannot invoke this repair.
+            self.assertIsNone(app.repair_quote_truncated_at_schema_limit(
+                clipped_quote, "The soul carries comprehension."
+            ))
+        with patch.object(app, "MAX_EVIDENCE_QUOTE_CHARS", len(clipped_quote) + 5):
+            self.assertIsNone(app.repair_quote_truncated_at_schema_limit(
+                clipped_quote, source_text
+            ))
 
     def test_short_exact_quote_expands_only_to_context_that_covers_its_claim(self):
         """A narrow exact quote may gain adjacent exact wording from its passage."""
@@ -1051,6 +2300,173 @@ class GroundingTests(unittest.TestCase):
         )
         self.assertIsNone(result)
         self.assertIn("missing wording includes: god", issues[0])
+
+    def test_each_named_topic_in_a_multi_topic_question_needs_its_own_quote(self):
+        """A one-topic claim cannot borrow generic overlap from the other topic."""
+        question = "What does the author say about rivers and forests?"
+        unrelated_quote = "Rivers carry moisture through the valley and protect the soil."
+        filler = "Water follows the landscape and supports nearby plant life. " * 8
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": (
+                unrelated_quote + " " + filler
+                + "Forests retain moisture and protect the soil."
+            ),
+        }]
+        claim = "Forests retain moisture and protect the soil."
+        topic_terms = app.evidence_topic_anchor_terms(question, source)
+        self.assertEqual(topic_terms, {"river", "forest"})
+
+        # The exact river quote shares generic wording with the forest claim,
+        # but a sentence explicitly about forests must cite forest wording.
+        issues = []
+        rejected = app.format_cited_sentences(
+            [{"text": claim, "evidence": self.evidence("S1", unrelated_quote)}],
+            source,
+            validation_issues=issues,
+            question=question,
+            required_topic_terms=topic_terms,
+        )
+        self.assertIsNone(rejected)
+        self.assertTrue(any("forest" in issue for issue in issues))
+
+        relevant_quote = "Forests retain moisture and protect the soil."
+        issues = []
+        accepted = app.format_cited_sentences(
+            [{"text": claim, "evidence": self.evidence("S1", relevant_quote)}],
+            source,
+            validation_issues=issues,
+            question=question,
+            required_topic_terms=topic_terms,
+        )
+        self.assertIsNotNone(accepted)
+        self.assertEqual(issues, [])
+
+    def test_numbered_list_items_need_independent_evidence_support(self):
+        """Generic overlap from one list entry cannot carry another entry."""
+        unrelated_quote = (
+            "People pause and consider choices before acting, then ask for help."
+        )
+        filler = "The surrounding discussion explains how readers weigh options. " * 5
+        relevant_quote = (
+            "The guidance lists: (1) pause and consider, (2) act deliberately, "
+            "and (3) ask for help."
+        )
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": unrelated_quote + " " + filler + " " + relevant_quote,
+        }]
+        claim = (
+            "The guidance lists: (1) pause and consider, (2) act deliberately, "
+            "and (3) ask for help."
+        )
+
+        # The unrelated exact quote shares several broad words with the whole
+        # answer and with the first and third entries. It says nothing about
+        # acting deliberately, so it must not make the complete list appear
+        # verified just because the sentence as a whole overlaps.
+        issues = []
+        rejected = app.format_cited_sentences(
+            [{"text": claim, "evidence": self.evidence("S1", unrelated_quote)}],
+            source,
+            validation_issues=issues,
+            required_topic_terms=set(),
+        )
+        self.assertIsNone(rejected)
+        self.assertTrue(any("deliberately" in issue for issue in issues))
+
+        issues = []
+        accepted = app.format_cited_sentences(
+            [{"text": claim, "evidence": self.evidence("S1", relevant_quote)}],
+            source,
+            validation_issues=issues,
+            required_topic_terms=set(),
+        )
+        self.assertIsNotNone(accepted)
+        self.assertEqual(issues, [])
+
+        # The same guard must recognize a comma-separated list of types even
+        # when a small model omits numbering. A generic sentence confirming
+        # that three types exist cannot substantiate the names of those types.
+        unnumbered_claim = (
+            "Three response types: utility-based, pleasure-based, and virtue-based."
+        )
+        unnumbered_bad_quote = (
+            "There are three response types, each serving a different purpose."
+        )
+        unnumbered_good_quote = (
+            "Three response types: utility-based, pleasure-based, and virtue-based."
+        )
+        unnumbered_source = [{
+            "source_id": "S2",
+            "page": 2,
+            "text": unnumbered_bad_quote + " " + filler + " " + unnumbered_good_quote,
+        }]
+        issues = []
+        rejected = app.format_cited_sentences(
+            [{"text": unnumbered_claim, "evidence": self.evidence("S2", unnumbered_bad_quote)}],
+            unnumbered_source,
+            validation_issues=issues,
+            required_topic_terms=set(),
+        )
+        self.assertIsNone(rejected)
+        self.assertTrue(any("utility" in issue or "pleasure" in issue for issue in issues))
+
+        issues = []
+        accepted = app.format_cited_sentences(
+            [{"text": unnumbered_claim, "evidence": self.evidence("S2", unnumbered_good_quote)}],
+            unnumbered_source,
+            validation_issues=issues,
+            required_topic_terms=set(),
+        )
+        self.assertIsNotNone(accepted)
+        self.assertEqual(issues, [])
+
+    def test_single_topic_claim_must_name_its_topic_in_the_exact_quote(self):
+        """Generic overlap cannot let a quote about a neighboring topic verify."""
+        question = "What does the author mean by radiance?"
+        unrelated_quote = "Generosity is a mean between excess and defect."
+        filler = "Ordinary choices require careful attention to circumstances and suitable measures. " * 8
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": (
+                unrelated_quote + " " + filler
+                + "Radiance is a virtue concerned with generosity, excess, and defect."
+            ),
+        }]
+        claim = "Radiance is a virtue concerned with generosity, excess, and defect."
+        topic_terms = app.evidence_topic_anchor_terms(question, source)
+        self.assertEqual(topic_terms, {"radiance"})
+
+        # The quote is exact and shares several generic terms with the claim,
+        # but it describes generosity rather than the named topic. Context
+        # expansion cannot bridge the deliberately distant source statements.
+        issues = []
+        rejected = app.format_cited_sentences(
+            [{"text": claim, "evidence": self.evidence("S1", unrelated_quote)}],
+            source,
+            validation_issues=issues,
+            question=question,
+            required_topic_terms=topic_terms,
+        )
+        self.assertIsNone(rejected)
+        self.assertTrue(any("radiance" in issue for issue in issues))
+
+        # Exact source wording about the requested topic remains verifiable.
+        relevant_quote = "Radiance is a virtue concerned with generosity, excess, and defect."
+        issues = []
+        accepted = app.format_cited_sentences(
+            [{"text": claim, "evidence": self.evidence("S1", relevant_quote)}],
+            source,
+            validation_issues=issues,
+            question=question,
+            required_topic_terms=topic_terms,
+        )
+        self.assertIsNotNone(accepted)
+        self.assertEqual(issues, [])
 
     def test_checker_retries_when_a_clause_adds_unsupported_content(self):
         """A valid quote cannot carry a separate claim absent from that passage."""
@@ -1280,7 +2696,8 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("the book does not discuss this subject", system_prompt)
         self.assertIn("the passage that explicitly establishes those roles", system_prompt)
         self.assertIn("short, exact, continuous quotation", system_prompt)
-        self.assertIn("3 to 45 words", system_prompt)
+        self.assertIn("12 to 25 words", system_prompt)
+        self.assertIn("45-word figure as a hard maximum, not a target", system_prompt)
         self.assertIn("Split a sentence that combines separate factual claims", system_prompt)
         self.assertIn("direction of any relationship", system_prompt)
         self.assertIn("Keep that inference modest", system_prompt)
@@ -1412,6 +2829,62 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(quote_repair_trace[0]["outcome"], "compacted")
         self.assertTrue(quote_repair_trace[0]["source_context_available"])
         self.assertTrue(quote_repair_trace[0]["added_source_context"])
+
+    def test_oversized_quote_with_localized_error_uses_only_exact_source_anchor(self):
+        """Recover nearby context from an exact long run, never from fuzzy wording."""
+        source_text = (
+            "Friendship based on utility is not for the person's character but for the good they get from one another. "
+            "For the sake of utility, people love one another only for what is good for themselves, and their affection "
+            "ends when that benefit no longer remains. These friendships are useful only while a benefit is shared by "
+            "both parties, and they change as circumstances change."
+        )
+        source_words = list(app.TOKEN_RE.finditer(source_text))
+        quote_start = next(
+            index for index, token in enumerate(source_words)
+            if token.group(0).casefold() == "based"
+        )
+        # Keep a long exact run, then introduce a model-word substitution at
+        # the end. The whole checker quote is no longer contiguous in the
+        # passage, but an exact source window can still add the nearby word
+        # "Friendship" and support the concise claim below.
+        oversized_quote = source_text[
+            source_words[quote_start].start():source_words[quote_start + 46 - 1].end()
+        ]
+        oversized_quote = oversized_quote.rsplit(" ", 1)[0] + "humans"
+        claim = "Friendship based on utility seeks good for oneself."
+        source = [{"source_id": "S1", "page": 90, "text": source_text}]
+        answer_item = {
+            "text": claim,
+            "evidence": self.evidence("S1", oversized_quote),
+        }
+        trace = []
+
+        answer = app.format_cited_sentences(
+            [answer_item], source, quote_repair_trace=trace
+        )
+
+        self.assertEqual(answer, claim[:-1] + " [S1].")
+        self.assertEqual(trace[0]["source_context_available"], False)
+        self.assertEqual(trace[0]["outcome"], "compacted")
+        self.assertTrue(trace[0]["added_source_context"])
+        self.assertTrue(any("Friendship based on utility" in item["quote"] for item in answer_item["evidence"]))
+        for item in answer_item["evidence"]:
+            self.assertLessEqual(
+                len(app.TOKEN_RE.findall(item["quote"])),
+                app.MAX_EVIDENCE_QUOTE_WORDS,
+            )
+            self.assertTrue(app.evidence_quote_matches(item["quote"], source_text))
+
+        # Matching topic words alone cannot authorize a source search. The
+        # model must preserve one exact, contiguous source anchor of the
+        # configured overlap length before neighboring words can be added.
+        unrelated_quote = " ".join(
+            ["Friendship", "based", "on", "utility"]
+            + [f"invented{index}" for index in range(42)]
+        )
+        self.assertIsNone(app.compact_exact_evidence_quotes(
+            unrelated_quote, source_text, claim
+        ))
 
     def test_oversized_quote_can_compact_against_its_sibling_evidence(self):
         """Keep two-point comparisons when each exact excerpt supports one side."""
@@ -1577,6 +3050,7 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("answer item 1, evidence 1", repair_prompt)
         self.assertIn("answer item 2, evidence 1", repair_prompt)
         self.assertIn("maximum 45", repair_prompt)
+        self.assertIn("aim for 12 to 25", repair_prompt.lower())
         self.assertIn("Contemplation requires practical wisdom", repair_prompt)
         self.assertNotIn("ORIGINAL_DRAFT_SENTINEL", repair_prompt)
 
@@ -1710,11 +3184,11 @@ class GroundingTests(unittest.TestCase):
             },
         })}}
         reasoned_answer = {"message": {"content": json.dumps({
-            "conclusion": {
+            "conclusion": [{
                 "text": "Aristotle identifies happiness as the highest good achievable by action.",
                 "evidence": self.evidence("S1", "highest of all goods achievable by action is happiness"),
-            },
-            "reasoning": {
+            }],
+            "reasoning": [{
                 "text": (
                     "Since a function is well performed in accordance with appropriate excellence, "
                     "Aristotle identifies human good with activity of soul in accordance with virtue."
@@ -1724,7 +3198,7 @@ class GroundingTests(unittest.TestCase):
                     "If an action is well performed in accordance with appropriate excellence, human good "
                     "turns out to be activity of soul in accordance with virtue",
                 ),
-            },
+            }],
         })}}
         diagnostics = {}
         with patch.object(
@@ -1759,12 +3233,19 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("reasoning", initial_payload["format"]["properties"])
         # Fixed argument roles get the tighter text ceiling; their exact quote
         # fields keep the shared quote ceiling and are still checked by words.
-        argument_properties = initial_payload["format"]["properties"]["conclusion"]["properties"]
+        role_schema = initial_payload["format"]["properties"]["conclusion"]
+        self.assertEqual(role_schema["type"], "object")
+        argument_properties = role_schema["properties"]
+        # The live trace showed argument responses receiving only 580 tokens,
+        # too little for two role objects and their exact evidence fields.
+        self.assertEqual(initial_payload["options"]["num_predict"], 980)
         self.assertEqual(argument_properties["text"]["maxLength"], app.MAX_ARGUMENT_FIELD_CHARS)
         self.assertEqual(
             argument_properties["evidence"]["items"]["properties"]["quote"]["maxLength"],
             app.MAX_EVIDENCE_QUOTE_CHARS,
         )
+        self.assertEqual(app.MAX_EVIDENCE_QUOTE_CHARS, 220)
+        self.assertEqual(app.MAX_EVIDENCE_QUOTE_WORDS, 45)
         self.assertIn("state the inference itself in the source's terms", initial_payload["messages"][0]["content"])
         self.assertIn("Do not narrate the answer structure", initial_payload["messages"][0]["content"])
         self.assertIn("separate conclusion and reasoning fields", repair_prompt)
@@ -1847,6 +3328,42 @@ class GroundingTests(unittest.TestCase):
         self.assertNotIn("Fresh candidate to repair", final_prompt)
         self.assertNotIn("malformed fresh reconstruction", final_prompt)
 
+    def test_two_malformed_checker_responses_still_get_final_source_only_attempt(self):
+        """Do not stop early when two JSON failures leave no answer candidate."""
+        final_answer = {"message": {"content": json.dumps({"sentences": [{
+            "text": "Happiness is activity of soul.",
+            "evidence": self.evidence(
+                "S2", "Happiness is an activity of soul in accordance with perfect virtue"
+            ),
+        }]})}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[
+                FakeResponse({"message": {"content": "{malformed first response"}}),
+                FakeResponse({"message": {"content": "{malformed fresh response"}}),
+                FakeResponse(final_answer),
+            ],
+        ) as mocked_urlopen:
+            answer = app.verify_answer(
+                "What is happiness?", self.sources, "draft", "qwen3:4b", diagnostics
+            )
+
+        self.assertEqual(answer, "Happiness is activity of soul [S2].")
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertEqual(
+            [attempt["status"] for attempt in diagnostics["attempts"]],
+            ["rejected", "rejected", "accepted"],
+        )
+        final_prompt = json.loads(
+            mocked_urlopen.call_args_list[2].args[0].data.decode("utf-8")
+        )["messages"][-1]["content"]
+        self.assertIn("Start over from the passages below", final_prompt)
+        self.assertNotIn("malformed first response", final_prompt)
+        self.assertNotIn("malformed fresh response", final_prompt)
+
     def test_argument_reasoning_may_cite_a_different_passage_from_conclusion(self):
         """Do not require premise and inference to occupy the conclusion's passage."""
         question = "What is the highest good, and how does Aristotle argue for it?"
@@ -1902,6 +3419,13 @@ class GroundingTests(unittest.TestCase):
     def test_argument_role_paragraph_is_rebuilt_as_concise_fields(self):
         """Stop one role field from hiding a long bundle of answer claims."""
         question = "What is the highest good, and how does Aristotle argue for it?"
+        self.assertEqual(
+            app.argument_item_length_issues(question, [{
+                "role": "reasoning",
+                "text": "A concise premise appears first. A concise inference follows.",
+            }]),
+            [],
+        )
         source = [{
             "source_id": "S1",
             "page": 2,
@@ -2042,6 +3566,39 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("Happiness is the highest good achievable by action [S1].", answer)
         self.assertIn("I could verify a point about the conclusion", answer)
         self.assertIn("not the complete argument requested", answer)
+
+    def test_argument_recovery_falls_back_when_only_reasoning_survives(self):
+        """Do not show an unanchored reasoning fragment without a conclusion."""
+        question = "What is the expedition's destination, and how do its leaders justify that route?"
+        sources = [
+            {"source_id": "S1", "page": 1, "text": "The expedition reaches the coast at dawn."},
+            {"source_id": "S2", "page": 2, "text": "The captain follows the northern wind to cross the open sea."},
+        ]
+        reasoning_only = {"message": {"content": json.dumps({
+            "conclusion": {
+                "text": "The destination is the inland desert.",
+                "evidence": self.evidence("S1", "The expedition reaches the coast at dawn"),
+            },
+            "reasoning": {
+                "text": "The captain follows the northern wind to cross the open sea.",
+                "evidence": self.evidence("S2", "The captain follows the northern wind to cross the open sea"),
+            },
+        })}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(reasoning_only)] * 3,
+        ) as mocked_urlopen:
+            answer = app.verify_answer(
+                question, sources, "draft", "qwen3:4b", diagnostics
+            )
+
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertEqual(diagnostics["status"], "fallback")
+        self.assertTrue(answer.startswith("I couldn't verify a reliable answer"))
+        self.assertNotIn("The captain follows the northern wind", answer)
 
     def test_argument_recovery_does_not_trust_reasoning_role_without_a_link(self):
         """A supported summary labeled reasoning is not an argument link."""
@@ -2858,6 +4415,66 @@ class GroundingTests(unittest.TestCase):
         )
         self.assertIn("repeated a question", diagnostics["attempts"][0]["reason"])
 
+    def test_third_attempt_question_echo_gets_one_source_only_recovery(self):
+        """Spend one extra checker call only after the final answer echoes the prompt.
+
+        This models the Build 109 live failure without tying the behavior to
+        Aristotle's question set: two unsupported answers are followed by an
+        exact question echo, then a concise passage-backed answer. The fourth
+        call must start from the question and passages, and its result still
+        passes every ordinary claim and quotation check.
+        """
+        unsupported = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "Happiness is a possession of wealth.",
+                "evidence": self.evidence(
+                    "S2", "Happiness is an activity of soul in accordance with perfect virtue"
+                ),
+            }],
+        })}}
+        echoed_question = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "What is happiness?",
+                "evidence": self.evidence(
+                    "S2", "Happiness is an activity of soul in accordance with perfect virtue"
+                ),
+            }],
+        })}}
+        supported_answer = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "Happiness is activity of soul.",
+                "evidence": self.evidence(
+                    "S2", "Happiness is an activity of soul in accordance with perfect virtue"
+                ),
+            }],
+        })}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[
+                FakeResponse(unsupported),
+                FakeResponse(unsupported),
+                FakeResponse(echoed_question),
+                FakeResponse(supported_answer),
+            ],
+        ) as mocked_urlopen:
+            result = app.verify_answer(
+                "What is happiness?", self.sources, "draft", "llama3.2:3b", diagnostics
+            )
+
+        self.assertEqual(result, "Happiness is activity of soul [S2].")
+        self.assertEqual(mocked_urlopen.call_count, 4)
+        self.assertEqual(
+            [attempt["status"] for attempt in diagnostics["attempts"]],
+            ["rejected", "rejected", "rejected", "accepted"],
+        )
+        self.assertIn(
+            "repeated a question",
+            diagnostics["attempts"][2]["reason"],
+        )
+
     def test_one_source_can_support_a_claim_with_two_distinct_excerpts(self):
         """A short quote need not omit one side of a linked definition."""
         source = [{
@@ -3115,12 +4732,19 @@ class GroundingTests(unittest.TestCase):
 class InterfaceTests(unittest.TestCase):
     """Protect the paired regression runner and its fixed prompt set."""
 
-    def test_batch_runner_uses_core_prompts_and_collects_full_chat_diagnostics(self):
+    def test_batch_runner_uses_five_baseline_and_exploration_prompts(self):
         html = (APP_PATH.parent / "index.html").read_text(encoding="utf-8")
 
         self.assertEqual(html.count('<button type="button">'), 5)
-        self.assertIn("How does habituation help someone become virtuous?", html)
+        self.assertIn("What does Aristotle mean by practical wisdom?", html)
+        self.assertIn("What does Aristotle mean by the mean relative to us?", html)
         self.assertIn("What does Aristotle think about God and the soul?", html)
+        self.assertIn("What are the three kinds of friendship Aristotle describes?", html)
+        self.assertIn("What does Aristotle mean by magnificence?", html)
+        self.assertNotIn("What does Aristotle mean by the great-souled person?", html)
+        self.assertNotIn("What does Aristotle mean by distributive justice?", html)
+        self.assertNotIn("What does Aristotle mean by courage?", html)
+        self.assertNotIn("What does Aristotle mean by equity, and how does it correct the law?", html)
         self.assertIn("Run all five questions", html)
         self.assertIn('id="run-regression"', html)
         self.assertIn('id="download-regression"', html)
