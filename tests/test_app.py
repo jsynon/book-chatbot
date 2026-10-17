@@ -64,12 +64,106 @@ class RetrievalTests(unittest.TestCase):
 
         self.assertEqual(resolved, fallback)
 
+    def test_shared_corpus_resolver_accepts_another_catalog_id(self):
+        """Resolve a non-pilot book shard through configuration, not code edits."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "book-chatbot"
+            library = pathlib.Path(temporary) / "antilogicalism-library-data"
+            alternate_shard = library / "data-v48" / "book-42.json.gz"
+            alternate_shard.parent.mkdir(parents=True)
+            alternate_shard.touch()
+
+            resolved = app.resolve_book_file(root, {
+                "BOOK_CHATBOT_LIBRARY_DATA": str(library),
+                "BOOK_CHATBOT_DATA_VERSION": "v48",
+                "BOOK_CHATBOT_BOOK_ID": "42",
+            })
+
+        self.assertEqual(resolved, alternate_shard)
+
+    def test_alternate_catalog_id_uses_the_matching_local_fallback(self):
+        """Keep alternate shard selection consistent in standalone test folders."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "book-chatbot"
+            fallback = root / "data" / "book-42.json.gz"
+            fallback.parent.mkdir(parents=True)
+            fallback.touch()
+
+            resolved = app.resolve_book_file(root, {
+                "BOOK_CHATBOT_LIBRARY_DATA": str(pathlib.Path(temporary) / "missing-library"),
+                "BOOK_CHATBOT_DATA_VERSION": "v48",
+                "BOOK_CHATBOT_BOOK_ID": "42",
+            })
+
+        self.assertEqual(resolved, fallback)
+
+    def test_corpus_resolver_rejects_non_numeric_catalog_ids(self):
+        """Reject path-like IDs before composing a corpus shard path."""
+        with self.assertRaisesRegex(ValueError, "numeric library catalog ID"):
+            app.resolve_book_file(settings={"BOOK_CHATBOT_BOOK_ID": "../42"})
+
     def test_indexes_short_passages_across_the_book(self):
         """Guard against accidentally bundling an empty or partial text corpus."""
         self.assertEqual(len(app.PAGES), 127)
         self.assertGreater(len(app.CHUNKS), 500)
         self.assertEqual(min(chunk["page"] for chunk in app.CHUNKS), 1)
         self.assertEqual(max(chunk["page"] for chunk in app.CHUNKS), 127)
+
+    def test_reconstructs_a_sentence_that_continues_across_adjacent_pages(self):
+        """Join only a clear lower-case continuation and retain both page IDs."""
+        pages = [
+            {"page": 44, "text": "A paragraph with enough words to index this passage. "
+             "The mean being without a"},
+            {"page": 45, "text": "name, the extremes seem to dispute for its place. "
+             "A separate new paragraph starts here."},
+        ]
+
+        chunks = app.build_page_bridge_chunks(pages)
+
+        joined = next(chunk for chunk in chunks if "The mean being without a name" in chunk["text"])
+        self.assertEqual(joined["pages"], [44, 45])
+        self.assertFalse(any(
+            "A paragraph with enough words to index this passage. name" in chunk["text"]
+            for chunk in chunks
+        ))
+
+    def test_page_boundary_reconstruction_is_conservative(self):
+        """Do not join completed sentences or a new capitalized paragraph."""
+        completed = app.build_page_bridge_chunks([
+            {"page": 10, "text": "A complete sentence ends here."},
+            {"page": 11, "text": "A new sentence begins with a capital letter."},
+        ])
+        self.assertFalse(completed)
+
+        self.assertTrue(app.likely_page_continuation("The argument ends with a", "name."))
+        self.assertFalse(app.likely_page_continuation("The argument ends here.", "name."))
+        self.assertFalse(app.likely_page_continuation("The argument ends with a", "A new paragraph."))
+
+    def test_pilot_source_page_44_to_45_fragment_is_reconstructed(self):
+        """Retrieve the real continuation without prescribing any answer text."""
+        pilot_pages = [page for page in app.PAGES if page["page"] in {44, 45}]
+        chunks = app.build_page_bridge_chunks(pilot_pages)
+
+        joined = [
+            chunk for chunk in chunks
+            if "The mean being without a name, the extremes" in chunk["text"]
+        ]
+        self.assertTrue(joined)
+        self.assertTrue(any(chunk["pages"] == [44, 45] for chunk in joined))
+
+        retrieved = app.retrieve("What does Aristotle mean by the mean without a name?", [])
+        source = next(source for source in retrieved if source.get("pages") == [44, 45])
+        self.assertIn("The mean being without a name", source["text"])
+
+    def test_source_text_review_flags_are_non_mutating_and_conservative(self):
+        """Flag conspicuous extraction artifacts but leave source words untouched."""
+        original = "The source contains � and the the repeated word."
+        self.assertEqual(
+            app.source_text_review_flags(original),
+            ["replacement_character", "repeated_adjacent_word"],
+        )
+        self.assertEqual(original, "The source contains � and the the repeated word.")
+        self.assertEqual(app.source_text_review_flags("Ordinary clean source wording."), [])
 
     def test_tokenizer_matches_common_uation_inflections(self):
         """Let a query's derived form match the corresponding verb in the book."""
@@ -103,6 +197,75 @@ class RetrievalTests(unittest.TestCase):
             ),
             text,
         )
+
+    def test_cross_page_evidence_context_exposes_all_physical_pages(self):
+        """Keep sentence references and locators aligned for stitched text."""
+        context = app.format_evidence_context([{
+            "source_id": "S1",
+            "page": 44,
+            "pages": [44, 45],
+            "text": "The mean being without a name, the extremes dispute for its place.",
+        }])
+
+        self.assertIn('source_id="S1" page="44" sentence="1" pages="44,45"', context)
+        self.assertIn("The mean being without a name", context)
+
+    def test_sentence_reference_resolves_to_the_exact_displayed_window(self):
+        """Let the app, rather than a small model, copy exact source wording."""
+        source = {
+            "source_id": "S4",
+            "page": 66,
+            "text": "Scientific knowledge concerns universal and necessary things.\n"
+                    "Philosophic wisdom concerns the highest objects.",
+        }
+        checked = {
+            "sentences": [{
+                "text": "Scientific knowledge concerns universal and necessary things.",
+                "evidence": [{"source_id": "S4", "quote": "", "sentence_number": 1}],
+            }]
+        }
+
+        bound = app.bind_sentence_evidence_references(checked, [source])
+        answer = app.format_cited_sentences(
+            checked["sentences"], [source], question="What does scientific knowledge concern?"
+        )
+
+        self.assertEqual(bound, 1)
+        self.assertEqual(
+            checked["sentences"][0]["evidence"][0]["quote"],
+            "Scientific knowledge concerns universal and necessary things.",
+        )
+        self.assertIn("[S4]", answer)
+
+    def test_sentence_reference_rejects_invalid_source_or_number(self):
+        """Never turn a missing sentence locator into invented evidence."""
+        checked = {"sentences": [
+            {"text": "Claim.", "evidence": [
+                {"source_id": "S1", "quote": "", "sentence_number": 99},
+                {"source_id": "S9", "quote": "", "sentence_number": 1},
+            ]}
+        ]}
+        source = {"source_id": "S1", "page": 1, "text": "Only one sentence."}
+
+        bound = app.bind_sentence_evidence_references(checked, [source])
+
+        self.assertEqual(bound, 0)
+        self.assertEqual(checked["sentences"][0]["evidence"][0]["quote"], "")
+        self.assertEqual(checked["sentences"][0]["evidence"][1]["quote"], "")
+
+    def test_long_evidence_sentences_become_bounded_exact_windows(self):
+        """Keep selected source windows under the quote ceiling without editing text."""
+        first = " ".join(f"alpha{i}" for i in range(1, 24)) + ";"
+        second = " ".join(f"beta{i}" for i in range(1, 27)) + "."
+        third = " ".join(f"gamma{i}" for i in range(1, 91)) + "."
+        text = f"{first} {second} {third}"
+
+        windows = app.evidence_sentence_windows(text)
+
+        self.assertGreater(len(windows), 3)
+        self.assertTrue(all(len(app.TOKEN_RE.findall(window)) <= 40 for window in windows))
+        self.assertEqual(" ".join(windows), text)
+        self.assertTrue(any(window.endswith(";") for window in windows))
 
     def test_evidence_context_uses_numeric_question_part_metadata(self):
         """Do not repeat the full question alongside every source window."""
@@ -441,6 +604,124 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("answer with that source term", system_prompt)
         self.assertIn("Keep every evidence quote copied exactly", system_prompt)
 
+    def test_counted_list_draft_uses_compact_structured_candidate_plan(self):
+        """Create complete list candidates before separate evidence validation."""
+        question = "What are the three kinds of friendship Aristotle describes?"
+        captured = {}
+        response = {"message": {"content": json.dumps({
+            "candidates": [
+                "friendship based on utility",
+                "friendship based on pleasure",
+                "friendship of the good",
+            ],
+        })}}
+
+        def record_request(request, timeout=0):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(response)
+
+        sources = [{
+            "source_id": "S1",
+            "page": 90,
+            "text": (
+                "There are three kinds of friendship. Those who love each other for utility "
+                "do not love each other for themselves. Those who love for pleasure find "
+                "each other pleasant. Friendship of the good is complete."
+            ),
+        }]
+        with patch.object(app.urllib.request, "urlopen", side_effect=record_request):
+            plan = app.call_ollama(question, sources, [], "qwen3:4b")
+
+        self.assertEqual(
+            plan,
+            "1. friendship based on utility\n"
+            "2. friendship based on pleasure\n"
+            "3. friendship of the good",
+        )
+        payload = captured["payload"]
+        self.assertEqual(payload["format"], app.list_candidate_plan_schema(3))
+        self.assertIn("internal evidence-first plan", payload["messages"][0]["content"])
+        self.assertIn("parenthetical details", payload["messages"][0]["content"])
+        self.assertIn("return an empty candidates array", payload["messages"][-1]["content"])
+        self.assertEqual(payload["options"]["num_predict"], 320)
+
+    def test_incomplete_or_repeated_candidate_plan_never_becomes_a_locked_list(self):
+        """Only a full, distinct plan may activate candidate-focused checks."""
+        self.assertIsNone(app.render_list_candidate_plan(
+            {"candidates": ["utility friendship", "pleasure friendship"]}, 3
+        ))
+        self.assertIsNone(app.render_list_candidate_plan(
+            {"candidates": ["utility friendship", "pleasure friendship", "utility friendship"]}, 3
+        ))
+        self.assertIsNone(app.render_list_candidate_plan(
+            {"candidates": ["utility friendship", "", "friendship of the good"]}, 3
+        ))
+        self.assertIsNone(app.render_list_candidate_plan(
+            {"candidates": ["S2", "S3", "S4"]}, 3
+        ))
+        self.assertEqual(
+            app.render_list_candidate_plan(
+                {"candidates": ["utility friendship", "pleasure friendship", "friendship of the good"]}, 3
+            ),
+            "1. utility friendship\n2. pleasure friendship\n3. friendship of the good",
+        )
+
+    def test_counted_list_needs_distinctive_membership_in_list_context(self):
+        """Related mentions and the question topic alone cannot prove membership."""
+        question = "What are the three kinds of friendship Aristotle describes?"
+        sources = [
+            {
+                "source_id": "S1",
+                "text": (
+                    "There are three kinds of friendship. Friendship for utility "
+                    "is based on usefulness, and friendship for pleasure is based "
+                    "on enjoyment."
+                ),
+            },
+            {
+                "source_id": "S5",
+                "text": "Friendship and justice concern the same objects in communities.",
+            },
+        ]
+        items = [
+            {
+                "list_item_label": "friendship",
+                "evidence": [{"source_id": "S1", "quote": "There are three kinds of friendship"}],
+            },
+            {
+                "list_item_label": "justice",
+                "evidence": [{"source_id": "S5", "quote": "Friendship and justice concern the same objects"}],
+            },
+            {
+                "list_item_label": "utility friendship",
+                "evidence": [{"source_id": "S1", "quote": "Friendship for utility is based on usefulness"}],
+            },
+        ]
+
+        issues = app.counted_list_membership_witness_issues(question, items, sources)
+
+        self.assertEqual(len(issues), 2)
+        self.assertIn("list item 1", issues[0])
+        self.assertIn("list item 2", issues[1])
+        # A genuinely different list remains governed by reusable list nouns,
+        # explicit overview wording, and the candidate's exact quoted term.
+        stages_question = "Which three stages does the handbook describe?"
+        stages_source = [{
+            "source_id": "S1",
+            "text": "The handbook describes three stages: planning, review, and revision.",
+        }]
+        self.assertEqual(
+            app.counted_list_membership_witness_issues(
+                stages_question,
+                [{
+                    "list_item_label": "planning",
+                    "evidence": [{"source_id": "S1", "quote": "three stages: planning"}],
+                }],
+                stages_source,
+            ),
+            [],
+        )
+
     def test_checker_prompt_keeps_alias_guidance_and_exact_quotes_together(self):
         """The validation pass gets source-term guidance without weaker checks."""
         question = "What does the author mean by tranquil virtue?"
@@ -628,6 +909,22 @@ class RetrievalTests(unittest.TestCase):
             "https://drive.google.com/file/d/1XVInAFS2zutV8PDp8A3DirUrW6nLLfvY/view?usp=sharing#page=44",
         )
 
+    def test_cross_page_citation_payload_links_each_physical_page(self):
+        """Expose both source pages while preserving the original Drive URL field."""
+        payload = app.citation_source_payload({
+            "source_id": "S2",
+            "page": 44,
+            "pages": [44, 45],
+        })
+
+        self.assertEqual(payload["id"], "S2")
+        self.assertEqual(payload["pages"], [44, 45])
+        self.assertTrue(payload["url"].endswith("#page=44"))
+        self.assertEqual(
+            [item["url"].rsplit("#page=", 1)[1] for item in payload["page_urls"]],
+            ["44", "45"],
+        )
+
     def test_empty_expansion_retries_with_scalar_fields_and_recovers_terms(self):
         """A valid empty response must trigger the differently shaped retry."""
         question = "What is the highest human good, and how does Aristotle argue for it?"
@@ -692,6 +989,29 @@ class RetrievalTests(unittest.TestCase):
             "how does he argue for it",
         ])
         self.assertTrue(app.query_needs_expansion(question, sources))
+
+    def test_question_facets_split_explicit_named_topic_lists(self):
+        """Give each explicitly listed subject its own retrieval and answer slot."""
+        self.assertEqual(
+            app.question_facets("What does the text say about courage and friendship?"),
+            [
+                "What does the text say about courage",
+                "What does the text say about friendship",
+            ],
+        )
+        self.assertEqual(
+            app.question_facets("What does the text say about courage, friendship, and pleasure?"),
+            [
+                "What does the text say about courage",
+                "What does the text say about friendship",
+                "What does the text say about pleasure",
+            ],
+        )
+
+    def test_question_facets_keep_shared_head_concepts_together(self):
+        """Do not split adjectives that modify one shared topic noun."""
+        question = "What does Aristotle think about practical and philosophic wisdom?"
+        self.assertEqual(app.question_facets(question), [question.rstrip("?")])
 
     def test_anaphoric_question_part_inherits_the_prior_topic_for_search(self):
         """Resolve a later "it" search to the concept named in the prior part."""
@@ -959,7 +1279,8 @@ class RetrievalTests(unittest.TestCase):
         """The troubleshooting view must expose the exact evidence candidates."""
         sources = [{"source_id": "S1", "page": 72, "score": 12.5, "text": "Virtue aims at the right mark."}]
         self.assertEqual(app.diagnostic_source_list(sources), [{
-            "source_id": "S1", "page": 72, "score": 12.5, "text": "Virtue aims at the right mark."
+            "source_id": "S1", "page": 72, "pages": [72], "score": 12.5,
+            "text": "Virtue aims at the right mark.", "text_review_flags": []
         }])
 
 
@@ -1178,33 +1499,31 @@ class GroundingTests(unittest.TestCase):
                 "Planning is the first stage. Review is the second stage. "
                 "Revision is the final stage."
             ),
+        }, {
+            "source_id": "S2",
+            "page": 2,
+            "text": "An unrelated passage that was retrieved for the broad question.",
         }]
-        response = {"message": {"content": json.dumps({
-            "sentences": [
-                {
-                    "candidate_index": 1,
-                    "is_list_member": True,
-                    "list_item_label": "planning",
-                    "evidence": self.evidence("S1", "Planning is the first stage"),
-                },
-                {
-                    "candidate_index": 2,
-                    "is_list_member": True,
-                    "list_item_label": "review",
-                    "evidence": self.evidence("S1", "Review is the second stage"),
-                },
-                {
-                    "candidate_index": 3,
-                    "is_list_member": True,
-                    "list_item_label": "revision",
-                    "evidence": self.evidence("S1", "Revision is the final stage"),
-                },
-            ],
-        })}}
         payloads = []
+        evidence_by_candidate = {
+            1: {"source_id": "S1", "sentence_number": 1},
+            2: {"source_id": "S1", "sentence_number": 2},
+            3: {"source_id": "S1", "sentence_number": 3},
+        }
+        labels = {1: "planning", 2: "review", 3: "revision"}
 
         def capture_request(request, timeout):
-            payloads.append(json.loads(request.data.decode("utf-8")))
+            payload = json.loads(request.data.decode("utf-8"))
+            payloads.append(payload)
+            candidate_index = payload["format"]["properties"]["sentences"]["items"]["properties"]["candidate_index"]["enum"][0]
+            response = {"message": {"content": json.dumps({
+                "sentences": [{
+                    "candidate_index": candidate_index,
+                    "is_list_member": True,
+                    "list_item_label": labels[candidate_index],
+                    "evidence": [evidence_by_candidate[candidate_index]],
+                }],
+            })}}
             return FakeResponse(response)
 
         candidate_source_ids = {1: {"S1"}, 2: {"S1"}, 3: {"S1"}}
@@ -1221,16 +1540,177 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("One stage is planning [S1].", answer)
         self.assertIn("One stage is review [S1].", answer)
         self.assertIn("One stage is revision [S1].", answer)
-        item_schema = payloads[0]["format"]["properties"]["sentences"]["items"]
-        self.assertNotIn("text", item_schema["properties"])
-        self.assertIn("candidate_index", item_schema["required"])
-        self.assertIn("is_list_member", item_schema["required"])
-        prompt = payloads[0]["messages"][-1]["content"]
-        self.assertIn("Fixed candidate list", prompt)
-        self.assertIn("1. planning", prompt)
-        self.assertIn("Candidate-focused retrieval pools", prompt)
-        self.assertIn("1. planning: S1", prompt)
-        self.assertIn("Do not write or rewrite any answer text", payloads[0]["messages"][0]["content"])
+        self.assertEqual(len(payloads), 3)
+        for candidate_index, payload in enumerate(payloads, start=1):
+            item_schema = payload["format"]["properties"]["sentences"]["items"]
+            self.assertNotIn("text", item_schema["properties"])
+            self.assertEqual(item_schema["properties"]["candidate_index"]["enum"], [candidate_index])
+            self.assertIn("is_list_member", item_schema["required"])
+            self.assertEqual(
+                item_schema["properties"]["evidence"]["items"]["properties"]["source_id"]["enum"],
+                ["S1"],
+            )
+            prompt = payload["messages"][-1]["content"]
+            self.assertIn(f"Review only fixed candidate {candidate_index}:", prompt)
+            self.assertNotIn("unrelated passage", prompt)
+            self.assertIn("Do not assess, restate, or provide evidence for any other candidate", payload["messages"][0]["content"])
+
+    def test_numbered_list_cannot_verify_related_mentions_as_members(self):
+        """The evidence pipeline rejects a complete-looking but false list."""
+        question = "What are the three kinds of friendship Aristotle describes?"
+        draft = "The kinds are: 1) friendship, 2) justice, and 3) utility."
+        sources = [{
+            "source_id": "S1",
+            "page": 90,
+            "text": (
+                "There are three kinds of friendship. This kind exists for utility, "
+                "and those who pursue utility benefit from one another."
+            ),
+        }, {
+            "source_id": "S5",
+            "page": 96,
+            "text": "Friendship and justice concern the same objects in communities.",
+        }]
+        labels = {1: "friendship", 2: "justice", 3: "utility"}
+        references = {
+            1: {"source_id": "S1", "sentence_number": 1},
+            2: {"source_id": "S5", "sentence_number": 1},
+            3: {"source_id": "S1", "sentence_number": 2},
+        }
+
+        def answer_candidate(request, timeout):
+            payload = json.loads(request.data.decode("utf-8"))
+            candidate_index = payload["format"]["properties"]["sentences"]["items"]["properties"]["candidate_index"]["enum"][0]
+            return FakeResponse({"message": {"content": json.dumps({
+                "sentences": [{
+                    "candidate_index": candidate_index,
+                    "is_list_member": True,
+                    "list_item_label": labels[candidate_index],
+                    "evidence": [references[candidate_index]],
+                }],
+            })}})
+
+        diagnostics = {}
+        candidate_source_ids = {1: {"S1"}, 2: {"S5"}, 3: {"S1"}}
+        with patch.object(app.urllib.request, "urlopen", side_effect=answer_candidate):
+            answer = app.verify_answer(
+                question,
+                sources,
+                draft,
+                "qwen3:4b",
+                diagnostics,
+                candidate_source_ids=candidate_source_ids,
+            )
+
+        self.assertNotEqual(diagnostics["status"], "verified")
+        self.assertNotIn("One kind is justice", answer)
+
+    def test_isolated_list_checks_do_not_restore_a_rejected_candidate(self):
+        """Independent evidence calls preserve the model's rejection through partial recovery."""
+        question = "Which three stages does the handbook describe?"
+        draft = "The stages are: 1) planning, 2) review, and 3) coffee."
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": "Planning is the first stage. Review is the second stage. Revision is the final stage.",
+        }]
+        diagnostics = {}
+        seen = []
+
+        def candidate_response(request, timeout):
+            payload = json.loads(request.data.decode("utf-8"))
+            index = payload["format"]["properties"]["sentences"]["items"]["properties"]["candidate_index"]["enum"][0]
+            seen.append(index)
+            is_member = index < 3
+            return FakeResponse({"message": {"content": json.dumps({
+                "sentences": [{
+                    "candidate_index": index,
+                    "is_list_member": is_member,
+                    "list_item_label": ["planning", "review", "revision"][index - 1],
+                    "evidence": [{"source_id": "S1", "sentence_number": index}],
+                }],
+            })}})
+
+        with patch.object(app.urllib.request, "urlopen", side_effect=candidate_response):
+            answer = app.verify_answer(
+                question,
+                source,
+                draft,
+                "qwen3:4b",
+                diagnostics,
+                candidate_source_ids={1: {"S1"}, 2: {"S1"}, 3: {"S1"}},
+            )
+
+        self.assertEqual(diagnostics["status"], "partial")
+        self.assertIn("planning", answer)
+        self.assertIn("review", answer)
+        self.assertNotIn("coffee", answer.casefold())
+        self.assertEqual(seen[:3], [1, 2, 3])
+        first_attempt_items = diagnostics["attempts"][0]["checker_sentences"]
+        self.assertEqual(first_attempt_items[2]["_list_member_confirmed"], False)
+
+    def test_numbered_list_does_not_require_app_generated_noun_in_evidence(self):
+        """Candidate evidence need not repeat the app's grammatical list connector."""
+        question = "Which three kinds of friendship does Aristotle describe?"
+        draft = (
+            "The kinds are: 1) friendship based on utility, "
+            "2) friendship based on pleasure, and 3) friendship based on virtue."
+        )
+        source = [{
+            "source_id": "S1",
+            "page": 1,
+            "text": (
+                "Friendship based on utility serves gain. "
+                "Friendship based on pleasure brings enjoyment. "
+                "Friendship based on virtue belongs to good people."
+            ),
+        }]
+        sentence_numbers = {1: 1, 2: 2, 3: 3}
+        labels = {1: "utility", 2: "pleasure", 3: "virtue"}
+
+        def response_for_candidate(request, timeout):
+            payload = json.loads(request.data.decode("utf-8"))
+            index = payload["format"]["properties"]["sentences"]["items"]["properties"]["candidate_index"]["enum"][0]
+            return FakeResponse({"message": {"content": json.dumps({
+                "sentences": [{
+                    "candidate_index": index,
+                    "is_list_member": True,
+                    "list_item_label": labels[index],
+                    "evidence": [{"source_id": "S1", "sentence_number": sentence_numbers[index]}],
+                }],
+            })}})
+        diagnostics = {}
+        with patch.object(app.urllib.request, "urlopen", side_effect=response_for_candidate):
+            answer = app.verify_answer(
+                question,
+                source,
+                draft,
+                "qwen3:4b",
+                diagnostics,
+                candidate_source_ids={1: {"S1"}, 2: {"S1"}, 3: {"S1"}},
+            )
+
+        self.assertEqual(diagnostics["status"], "verified")
+        self.assertEqual(answer.count("One kind is"), 3)
+        self.assertIn("One kind is friendship based on utility [S1].", answer)
+        self.assertIn("One kind is friendship based on pleasure [S1].", answer)
+        self.assertIn("One kind is friendship based on virtue [S1].", answer)
+
+    def test_candidate_pool_checker_context_excludes_unfocused_sources(self):
+        """List repairs see only pages found by the independent candidate searches."""
+        sources = [
+            {"source_id": "S1", "page": 1, "text": "Focused candidate evidence."},
+            {"source_id": "S2", "page": 2, "text": "Broad question-level distractor."},
+            {"source_id": "S3", "page": 3, "text": "Focused evidence for another candidate."},
+        ]
+
+        focused = app.candidate_pool_checker_sources(
+            sources,
+            {1: {"S1"}, 2: {"S3"}},
+        )
+
+        self.assertEqual([source["source_id"] for source in focused], ["S1", "S3"])
+        self.assertEqual([source["source_id"] for source in sources], ["S1", "S2", "S3"])
 
     def test_numbered_list_retrieval_builds_bounded_candidate_source_pools(self):
         """List candidates get their own retrieval without renumbering existing citations."""
@@ -1273,6 +1753,114 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("Planning sets the goal", next(
             source["text"] for source in sources if source["page"] == 21
         ))
+
+    def test_numbered_list_pools_share_only_matching_overview_passages(self):
+        """A passage naming the requested count and topic can anchor every candidate."""
+        question = "Which three kinds of friendship does Aristotle describe?"
+        sources = [
+            {
+                "source_id": "S1",
+                "page": 90,
+                "text": "There are three kinds of friendship: utility, pleasure, and virtue.",
+            },
+            {
+                "source_id": "S2",
+                "page": 91,
+                "text": "There are three kinds of courage, each with distinct traits.",
+            },
+        ]
+        candidates = ["utility", "pleasure", "virtue"]
+
+        with patch.object(app, "retrieve", return_value=[]):
+            pools, trace = app.retrieve_numbered_list_candidate_sources(
+                question,
+                candidates,
+                [],
+                sources,
+            )
+
+        self.assertEqual(pools, {1: {"S1"}, 2: {"S1"}, 3: {"S1"}})
+        self.assertTrue(all(
+            row["shared_list_overview_source_ids"] == ["S1"]
+            for row in trace
+        ))
+        self.assertTrue(all(
+            row["candidate_search_source_ids"] == []
+            for row in trace
+        ))
+
+    def test_candidate_evidence_context_groups_exact_windows_by_list_item(self):
+        """A list checker sees item-matched sentences with stable source references."""
+        sources = [{
+            "source_id": "S1",
+            "page": 90,
+            "text": (
+                "There are three kinds of friendship. "
+                "Those who love each other for utility do not love for themselves. "
+                "Those who love for pleasure find each other pleasant. "
+                "Friendship of the good is the complete form."
+            ),
+        }]
+        candidates = ["utility", "pleasure", "the good"]
+        pools = {1: {"S1"}, 2: {"S1"}, 3: {"S1"}}
+
+        context = app.format_candidate_evidence_context(
+            candidates,
+            sources,
+            pools,
+            "What are the three kinds of friendship?",
+        )
+
+        utility_section, pleasure_section, good_section = context.split("\n\n")
+        self.assertIn('candidate="1" source_id="S1" page="90" sentence="2"', utility_section)
+        self.assertIn("love each other for utility", utility_section)
+        self.assertIn('candidate="2" source_id="S1" page="90" sentence="3"', pleasure_section)
+        self.assertIn("love for pleasure", pleasure_section)
+        self.assertIn('candidate="3" source_id="S1" page="90" sentence="4"', good_section)
+        self.assertIn("Friendship of the good", good_section)
+
+    def test_candidate_evidence_context_has_bounded_fallback_for_no_lexical_match(self):
+        """A missed candidate term keeps topical context available without inventing evidence."""
+        sources = [{
+            "source_id": "S2",
+            "page": 4,
+            "text": "There are two stages in this process. The next phase follows the first.",
+        }]
+        context = app.format_candidate_evidence_context(
+            ["revision"],
+            sources,
+            {1: {"S2"}},
+            "What are the two stages in this process?",
+            max_windows_per_candidate=1,
+        )
+        self.assertIn("Candidate 1: revision", context)
+        self.assertIn('source_id="S2" page="4" sentence="1"', context)
+        self.assertNotIn("revision is", context.casefold())
+
+    def test_isolated_candidate_schema_and_context_use_only_that_item_pool(self):
+        """One candidate request cannot cite or inspect another item's passage."""
+        sources = [
+            {"source_id": "S1", "page": 1, "text": "Planning is the first stage."},
+            {"source_id": "S2", "page": 2, "text": "Review is the second stage."},
+        ]
+        messages, schema = app.isolated_list_candidate_check(
+            "Which two stages does the handbook describe?",
+            "planning",
+            1,
+            2,
+            sources,
+            {1: {"S1"}, 2: {"S2"}},
+            "Evidence checker system rules.",
+        )
+
+        item_schema = schema["properties"]["sentences"]["items"]
+        self.assertEqual(item_schema["properties"]["candidate_index"]["enum"], [1])
+        self.assertEqual(
+            item_schema["properties"]["evidence"]["items"]["properties"]["source_id"]["enum"],
+            ["S1"],
+        )
+        self.assertIn("Planning is the first stage", messages[1]["content"])
+        self.assertNotIn("Review is the second stage", messages[1]["content"])
 
     def test_numbered_list_evidence_must_use_its_candidate_retrieval_pool(self):
         """A list candidate cannot borrow another item's newly retrieved source."""
@@ -1598,6 +2186,48 @@ class GroundingTests(unittest.TestCase):
             for attempt in diagnostics["attempts"]
         ))
 
+    def test_unverified_answer_fallback_shows_bounded_exact_source_excerpts(self):
+        """A failed synthesis still gives readers clickable evidence to inspect."""
+        passage = (
+            "Courage shapes action under pressure. Deliberation guides a choice "
+            "toward good ends."
+        )
+        sources = [{"source_id": "S1", "page": 23, "text": passage}]
+        unsupported = {"message": {"content": json.dumps({"sentences": [{
+            "text": "Courage is the source of all happiness.",
+            "evidence": self.evidence("S1", "Courage shapes action under pressure"),
+        }]})}}
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(unsupported)] * 3,
+        ):
+            answer = app.verify_answer(
+                "What does the text say about courage?",
+                sources,
+                "Courage guides action under pressure.",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertEqual(diagnostics["status"], "fallback")
+        self.assertIn("I couldn't verify a reliable answer", answer)
+        self.assertIn("Retrieved excerpts", answer)
+        self.assertIn("“Courage shapes action under pressure.” [S1]", answer)
+        fallback_evidence = diagnostics["fallback_evidence"]
+        self.assertEqual(fallback_evidence[0]["page"], 23)
+        self.assertEqual(fallback_evidence[0]["quote"], "Courage shapes action under pressure.")
+        self.assertLessEqual(
+            len(list(app.TOKEN_RE.finditer(fallback_evidence[0]["quote"]))),
+            app.MAX_EVIDENCE_QUOTE_WORDS,
+        )
+        self.assertEqual(
+            app.sources_cited_by_answer(answer, sources),
+            sources,
+        )
+
     def test_substantive_paraphrase_is_not_flagged_as_source_copy_drift(self):
         """Keep the drift alarm limited to substantial exact source copying."""
         issue = app.copied_answer_drift_issue(
@@ -1612,6 +2242,53 @@ class GroundingTests(unittest.TestCase):
             }],
         )
         self.assertIsNone(issue)
+
+    def test_synthesis_retry_keeps_a_good_draft_as_an_untrusted_outline(self):
+        """Recover a useful draft when the checker only copied its evidence."""
+        passage = (
+            "Courage is a deliberate capacity to choose well and act steadily "
+            "when danger threatens the community and its members, helping sustain "
+            "purposeful action through hardship and uncertainty."
+        )
+        source = [{"source_id": "S1", "page": 8, "text": passage}]
+        copied = {"message": {"content": json.dumps({"sentences": [{
+            "text": (
+                "and act steadily when danger threatens the community and its members, "
+                "helping sustain purposeful action through hardship and uncertainty."
+            ),
+            "evidence": self.evidence("S1", passage),
+        }]})}}
+        synthesized = {"message": {"content": json.dumps({"sentences": [{
+            "text": "Courage helps people choose well and act steadily when danger threatens the community.",
+            "evidence": self.evidence("S1", passage),
+        }]})}}
+        draft = "Courage helps people choose well and act steadily when danger threatens the community."
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(copied), FakeResponse(synthesized)],
+        ) as mocked_urlopen:
+            answer = app.verify_answer(
+                "What does the text say about courage?",
+                source,
+                draft,
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertEqual(
+            answer,
+            "Courage helps people choose well and act steadily when danger threatens the community [S1].",
+        )
+        self.assertEqual(diagnostics["status"], "verified")
+        self.assertEqual([item["status"] for item in diagnostics["attempts"]], ["rejected", "accepted"])
+        retry_payload = json.loads(mocked_urlopen.call_args_list[1].args[0].data.decode("utf-8"))
+        retry_prompt = retry_payload["messages"][-1]["content"]
+        self.assertIn("Original draft (untrusted outline, not evidence)", retry_prompt)
+        self.assertIn(draft, retry_prompt)
+        self.assertIn("do not copy source wording into the answer", retry_prompt)
 
     def test_short_exact_copy_with_a_distinctive_topic_match_can_recover(self):
         """One distinctive inflection match can connect a short source line."""
@@ -1680,15 +2357,18 @@ class GroundingTests(unittest.TestCase):
         ]
         incomplete = {"message": {"content": json.dumps({"sentences": [{
             "text": "Courage guides action.",
+            "question_part": 1,
             "evidence": self.evidence("S1", "Courage guides action"),
         }]})}}
         complete = {"message": {"content": json.dumps({"sentences": [
             {
                 "text": "Courage guides action.",
+                "question_part": 1,
                 "evidence": self.evidence("S1", "Courage guides action"),
             },
             {
                 "text": "Friendship supports shared activity.",
+                "question_part": 2,
                 "evidence": self.evidence("S2", "Friendship supports shared activity"),
             },
         ]})}}
@@ -1709,7 +2389,7 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("Courage guides action", result)
         self.assertIn("Friendship supports shared activity", result)
         first_attempt = diagnostics["attempts"][0]
-        self.assertIn("every explicitly named topic", first_attempt["reason"])
+        self.assertIn("for each question part", first_attempt["reason"])
 
     def test_partial_recovery_falls_back_when_no_named_topic_survives(self):
         """Do not return a merely adjacent fact as a partial topic-list answer."""
@@ -1748,6 +2428,7 @@ class GroundingTests(unittest.TestCase):
         }]
         one_requested_topic = {"message": {"content": json.dumps({"sentences": [{
             "text": "Courage guides action.",
+            "question_part": 1,
             "evidence": self.evidence("S1", "Courage guides action"),
         }]})}}
         diagnostics = {}
@@ -1763,8 +2444,65 @@ class GroundingTests(unittest.TestCase):
 
         self.assertEqual(mocked_urlopen.call_count, 3)
         self.assertIn("Courage guides action", answer)
-        self.assertIn("couldn't verify the full answer", answer)
+        self.assertIn("couldn't verify the remaining part", answer)
         self.assertEqual(diagnostics["status"], "partial")
+
+    def test_partial_recovery_rejects_a_relation_built_from_separate_topic_words(self):
+        """Do not salvage a claim whose key relation appears in no exact quote."""
+        question = "What does the text say about courage and friendship?"
+        sources = [
+            {
+                "source_id": "S1",
+                "page": 1,
+                "text": "Courage guides deliberate action when danger threatens.",
+            },
+            {
+                "source_id": "S2",
+                "page": 2,
+                "text": "Friendship supports shared activity between people.",
+            },
+        ]
+        # Both requested topic names occur in the combined evidence, so the
+        # ordinary low-overlap rule can be satisfied even though neither
+        # passage says they are the same virtue. The unrelated second sentence
+        # forces the final partial-recovery path to inspect the first claim
+        # independently, as it would after a mixed checker response.
+        unsupported_relation = {
+            "message": {"content": json.dumps({"sentences": [{
+                "text": (
+                    "Courage and friendship are the same virtue. "
+                    "Cats rule the sea."
+                ),
+                "question_part": 1,
+                "evidence": [
+                    self.evidence("S1", "Courage guides deliberate action when danger threatens")[0],
+                    self.evidence("S2", "Friendship supports shared activity between people")[0],
+                ],
+            }]})}
+        }
+        diagnostics = {}
+
+        with patch.object(
+            app.urllib.request,
+            "urlopen",
+            side_effect=[FakeResponse(unsupported_relation)] * 3,
+        ) as mocked_urlopen:
+            answer = app.verify_answer(
+                question,
+                sources,
+                "The passages discuss courage and friendship separately.",
+                "qwen3:4b",
+                diagnostics,
+            )
+
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertEqual(diagnostics["status"], "fallback")
+        self.assertTrue(answer.startswith("I couldn't verify a reliable answer"))
+        self.assertTrue(any(
+            "substantive wording absent from its exact quotes" in item.get("reason", "")
+            and "virtue" in item.get("reason", "")
+            for item in diagnostics.get("recovery_rejections", [])
+        ))
 
     def test_long_verbatim_answer_is_rejected_but_direct_quote_requests_allow_it(self):
         """Keep a pasted passage out of normal answers while honoring quote requests."""
@@ -1976,10 +2714,9 @@ class GroundingTests(unittest.TestCase):
             ordinary_item_schema["properties"]["text"]["maxLength"],
             app.MAX_CHECKER_ANSWER_CHARS,
         )
-        self.assertEqual(
-            ordinary_item_schema["properties"]["evidence"]["items"]["properties"]["quote"]["maxLength"],
-            app.MAX_EVIDENCE_QUOTE_CHARS,
-        )
+        evidence_schema = ordinary_item_schema["properties"]["evidence"]["items"]
+        self.assertEqual(evidence_schema["required"], ["source_id", "sentence_number"])
+        self.assertNotIn("quote", evidence_schema["properties"])
         # Simple-answer rendering is limited to two sentences. Carry that
         # same bound into generation so a model cannot spend its JSON budget
         # on a long list that the reader would never see in full.
@@ -2265,6 +3002,27 @@ class GroundingTests(unittest.TestCase):
         ))
         self.assertTrue(app.evidence_covers_claim_vocabulary(
             relationship, cited, [explicit_excerpt]
+        ))
+
+    def test_material_claim_relation_must_appear_in_exact_evidence(self):
+        """Shared topic words cannot hide an unsupported causal relation."""
+        passage = "The practice brings calm to people during hardship."
+        unsupported_claim = "The practice is the source of calm."
+
+        # The ordinary two-word overlap floor would accept this sentence on
+        # "practice" and "calm." Require the excerpt to support the specific
+        # relationship too, rather than letting the checker infer it.
+        self.assertFalse(app.evidence_covers_claim_vocabulary(
+            unsupported_claim, [], [passage]
+        ))
+        self.assertIn(
+            "source",
+            app.claim_vocabulary_gaps(unsupported_claim, [passage])[0],
+        )
+
+        supported_passage = "The practice is the source of calm during hardship."
+        self.assertTrue(app.evidence_covers_claim_vocabulary(
+            unsupported_claim, [], [supported_passage]
         ))
 
     def test_multi_concept_claim_requires_each_question_concept_in_quoted_evidence(self):
@@ -2708,7 +3466,9 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("Never copy source IDs, page numbers", system_prompt)
         self.assertIn("Do not copy a whole sentence when it exceeds this limit", system_prompt)
         self.assertIn("same source_id may appear twice", system_prompt)
-        self.assertIn('"quote"', json.dumps(captured["payload"]["format"]))
+        evidence_schema = captured["payload"]["format"]["properties"]["sentences"]["items"]["properties"]["evidence"]["items"]
+        self.assertEqual(evidence_schema["required"], ["source_id", "sentence_number"])
+        self.assertNotIn("quote", evidence_schema["properties"])
         self.assertGreaterEqual(captured["payload"]["options"]["num_predict"], 580)
         self.assertIn('<passage source_id="S1" page="123"', captured["payload"]["messages"][-1]["content"])
         self.assertIn("TEXT: Human contemplation needs external prosperity", captured["payload"]["messages"][-1]["content"])
@@ -3240,11 +4000,9 @@ class GroundingTests(unittest.TestCase):
         # too little for two role objects and their exact evidence fields.
         self.assertEqual(initial_payload["options"]["num_predict"], 980)
         self.assertEqual(argument_properties["text"]["maxLength"], app.MAX_ARGUMENT_FIELD_CHARS)
-        self.assertEqual(
-            argument_properties["evidence"]["items"]["properties"]["quote"]["maxLength"],
-            app.MAX_EVIDENCE_QUOTE_CHARS,
-        )
-        self.assertEqual(app.MAX_EVIDENCE_QUOTE_CHARS, 220)
+        evidence_schema = argument_properties["evidence"]["items"]
+        self.assertEqual(evidence_schema["required"], ["source_id", "sentence_number"])
+        self.assertNotIn("quote", evidence_schema["properties"])
         self.assertEqual(app.MAX_EVIDENCE_QUOTE_WORDS, 45)
         self.assertIn("state the inference itself in the source's terms", initial_payload["messages"][0]["content"])
         self.assertIn("Do not narrate the answer structure", initial_payload["messages"][0]["content"])
@@ -4307,8 +5065,31 @@ class GroundingTests(unittest.TestCase):
             app.verify_answer("How does virtue relate to habit?", self.sources, "draft", "qwen3:4b")
 
         system_prompt = captured["payload"]["messages"][0]["content"]
+        user_prompt = captured["payload"]["messages"][-1]["content"]
         self.assertIn("state the same claim in different words", system_prompt)
         self.assertIn("distinct, useful qualification", system_prompt)
+        evidence_schema = captured["payload"]["format"]["properties"]["sentences"]["items"]["properties"]["evidence"]["items"]
+        self.assertIn("sentence_number", evidence_schema["properties"])
+        self.assertNotIn("quote", evidence_schema["properties"])
+        self.assertIn("Do not include a quote field", user_prompt)
+
+    def test_checker_can_select_evidence_by_sentence_reference(self):
+        """Resolve a model's locator into exact wording before normal checks."""
+        response = {"message": {"content": json.dumps({
+            "sentences": [{
+                "text": "Happiness consists in virtuous activity of the soul.",
+                "evidence": [{"source_id": "S2", "sentence_number": 1}],
+            }],
+        })}}
+        diagnostics = {}
+        with patch.object(app.urllib.request, "urlopen", return_value=FakeResponse(response)):
+            answer = app.verify_answer(
+                "What is happiness?", self.sources, "draft", "qwen3:4b", diagnostics
+            )
+
+        self.assertIn("[S2]", answer)
+        self.assertEqual(diagnostics["status"], "verified")
+        self.assertEqual(diagnostics["attempts"][0]["sentence_references_bound"], 1)
 
     def test_answer_prompt_tracks_who_holds_each_view(self):
         """Give the drafting pass the same attribution rule as the checker."""

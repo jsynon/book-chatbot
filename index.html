@@ -150,7 +150,7 @@
       .then(response => response.json())
       .then(data => {
         currentBuild = data.build || 'unknown';
-        buildStatus.textContent = `Local app build: ${currentBuild}`;
+        buildStatus.textContent = `Local app build: ${currentBuild}${data.pipeline ? ` (${data.pipeline})` : ''}`;
       })
       .catch(() => { buildStatus.textContent = 'Local app build: unavailable'; });
 
@@ -167,6 +167,10 @@
 
       notes.push(`Build: ${data.build || 'unknown'}; model: ${data.model || 'unknown'}.`);
       notes.push(`Outcome: ${status}.`);
+      if (data.pipeline) notes.push(`Pipeline: ${data.pipeline}.`);
+      if (Array.isArray(data.stages)) {
+        notes.push(`Stages: ${data.stages.map(stage => `${stage.stage}: ${stage.elapsed_ms} ms (${stage.status})`).join('; ')}.`);
+      }
       if (status === 'verified') {
         notes.push('Final issue: none; the checked answer passed.');
       } else if (summary.final_issue) {
@@ -267,12 +271,44 @@
         label.textContent = 'Sources: ';
         list.append(label);
         for (const source of sources) {
-          const a = document.createElement('a');
-          a.href = source.url;
-          a.target = '_blank';
-          a.rel = 'noopener noreferrer';
-          a.textContent = `[${source.id}] PDF page ${source.page}`;
-          list.append(a);
+          const pageLinks = Array.isArray(source.page_urls) && source.page_urls.length
+            ? source.page_urls
+            : [{ page: source.page, url: source.url }];
+          if (pageLinks.length === 1) {
+            const a = document.createElement('a');
+            a.href = pageLinks[0].url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = `[${source.id}] PDF page ${pageLinks[0].page}`;
+            list.append(a);
+          } else {
+            const prefix = document.createElement('span');
+            prefix.textContent = `[${source.id}] PDF pages `;
+            list.append(prefix);
+            pageLinks.forEach((pageLink, index) => {
+              const a = document.createElement('a');
+              a.href = pageLink.url;
+              a.target = '_blank';
+              a.rel = 'noopener noreferrer';
+              a.textContent = String(pageLink.page);
+              list.append(a);
+              if (index < pageLinks.length - 1) list.append(document.createTextNode(', '));
+            });
+          }
+          // Full context is available during ordinary reading, not only in
+          // diagnostics. Treat extracted text as text, never as HTML. The
+          // existing per-page Drive links above retain their exact behavior.
+          if (source.excerpt) {
+            const passage = document.createElement('details');
+            passage.open = source.expanded === true;
+            const heading = document.createElement('summary');
+            heading.textContent = `Read passage [${source.id}] — ${source.title || 'Source'}`;
+            const excerpt = document.createElement('p');
+            excerpt.textContent = source.excerpt;
+            excerpt.style.whiteSpace = 'pre-wrap';
+            passage.append(heading, excerpt);
+            list.append(passage);
+          }
         }
         article.append(list);
       }
