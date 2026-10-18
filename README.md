@@ -6,6 +6,10 @@
 
 **The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
+## Version 1.6.4: complete follow-up questions
+
+"Explore further" now displays only complete, concise questions. Model-generated fragments are filtered without discarding the cited answer or triggering extra model calls. The compose prompt asks for short standalone questions; a second client-side guard suppresses unpunctuated fragments, including responses from older backends. If there are no valid questions, the section is hidden. The answer and sources remain unchanged.
+
 ## Version 1.6.3: highlighted cited passages
 
 Clicking a citation now attempts to find its actual quoted word sequence within the indexed source page. The source reader highlights only a sufficiently long, distinctive contiguous match and scrolls the inner reader to that passage. OCR hard wraps and punctuation spacing do not prevent a match. A cross-page excerpt can highlight the portion present on each cited physical page. If the excerpt is too short, ambiguous, or unlocatable, the page remains readable without a potentially misleading highlight. The Readable paragraphs/Original OCR layout selector works with highlighting, and all source data, PDF provenance, and Ollama/retrieval behavior remain unchanged.
