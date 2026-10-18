@@ -87,13 +87,18 @@
   <main>
     <header>
       <div class="eyebrow">Antilogicalism · local reading companion</div>
-      <h1>Read with Aristotle</h1>
-      <p class="intro">Ask about an idea in the <em>Nicomachean Ethics</em>. Answers are grounded in passages from the book and cite the PDF pages to check for yourself.</p>
+      <h1 id="reading-title">Read with Aristotle</h1>
+      <p class="intro" id="reading-intro">Ask about an idea in the <em>Nicomachean Ethics</em>. Answers are grounded in passages from the book and cite the PDF pages to check for yourself.</p>
     </header>
     <!-- The model list is filled from the Ollama API when the page loads. -->
     <div class="controls">
+      <label for="book-filter">Find a book or author in the Antilogicalism library</label>
+      <input id="book-filter" type="search" placeholder="Search titles and authors" autocomplete="off">
+      <label for="book">Book to read</label>
+      <select id="book"><option value="7">Nicomachean Ethics — Aristotle</option></select>
+      <span id="book-status" aria-live="polite">Loading the existing library catalog…</span>
       <label for="model">Local Ollama model</label>
-      <select id="model"><option value="qwen3:14b">qwen3:14b</option></select>
+      <select id="model"><option value="gemma3:12b">gemma3:12b</option></select>
       <span id="model-status"></span>
       <label for="pipeline">Answering method</label>
       <select id="pipeline">
@@ -107,7 +112,7 @@
     <!-- Keep a compact mix of stable baselines, a completeness check, and new
          exploratory topics so builds stay comparable without making each run
          longer. Clicking a button fills the composer; it never submits. -->
-    <section aria-label="Suggested test questions">
+    <section id="aristotle-prompts" aria-label="Suggested test questions">
       <p class="suggestion-label">Five repeatable test questions · run with the selected models</p>
       <div class="suggestions">
         <button type="button">What does Aristotle mean by practical wisdom?</button>
@@ -122,7 +127,7 @@
     </section>
     <!-- The original five tests remain unchanged. The new synthesis comparison
          follows the same /api/chat pipeline, including grounding and review. -->
-    <section class="batch-runner" aria-label="Automated regression test run">
+    <details id="developer-tests" class="batch-runner"><summary>Development tests and model comparisons (optional)</summary><section aria-label="Automated regression test run">
       <p><strong>Compare installed Ollama models</strong></p>
       <p>Run the same questions through evidence-first v1.2, direct v1.1, or the historical reviewer. Compare v1.2 against v1.1 in one report, including passages, timings, and full answers. Citations do not certify philosophical accuracy.</p>
       <label for="test-suite">Question set</label>
@@ -134,24 +139,24 @@
       <label class="diagnostic-control"><input id="compare-pipelines" type="checkbox"> Compare v1.2 evidence-first vs. v1.1 direct (double the requests)</label>
       <div id="batch-model-options" class="batch-model-options" aria-live="polite">Loading installed models…</div>
       <div class="batch-actions">
-        <button type="button" id="select-recommended-models" class="secondary">Select three larger models</button>
+        <button type="button" id="select-recommended-models" class="secondary">Select baseline model</button>
         <button type="button" id="select-all-models" class="secondary">Select all installed</button>
         <button type="button" id="run-regression">Run test set</button>
         <button type="button" id="download-regression" class="secondary" disabled>Download combined report</button>
       </div>
       <p id="batch-status" role="status"></p>
       <div id="batch-results" class="batch-results" aria-live="polite"></div>
-    </section>
+    </section></details>
     <!-- JavaScript appends each submitted prompt and its answer to this thread. -->
     <section id="thread" aria-live="polite"></section>
     <form id="chat-form">
       <label for="question">Your question</label>
       <textarea id="question" placeholder="Ask a question about the book…" required></textarea>
-      <div class="submit-row"><span>Only this book is in the pilot.</span><button id="send" type="submit">Ask Aristotle</button></div>
+      <div class="submit-row"><span id="book-coverage">One selected book per conversation; cross-book search is coming next.</span><button id="send" type="submit">Ask the book</button></div>
     </form>
     <div id="status" role="status"></div>
     <!-- Explain where processing happens and display the running server build. -->
-    <footer>This Version 1.2 prototype runs locally using Ollama. Source excerpts are exact quotations; citations lead to their pages, but neither certifies an interpretation's correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
+    <footer>This Version 1.3 local demo runs on Ollama, with on-demand retrieval from other books in the catalog. Source excerpts are exact quotations; citations lead to their pages, but neither certifies an interpretation's correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
   </main>
   <script>
     // Cache the UI elements used by the event handlers so they can be updated
@@ -162,6 +167,16 @@
     const status = document.getElementById('status');
     const send = document.getElementById('send');
     const modelSelect = document.getElementById('model');
+    const bookSelect = document.getElementById('book');
+    const bookFilter = document.getElementById('book-filter');
+    const bookStatus = document.getElementById('book-status');
+    const readingTitle = document.getElementById('reading-title');
+    const readingIntro = document.getElementById('reading-intro');
+    const aristotlePrompts = document.getElementById('aristotle-prompts');
+    const developerTests = document.getElementById('developer-tests');
+    const coverage = document.getElementById('book-coverage');
+    let libraryBooks = [];
+    let defaultBookId = '7';
     const pipelineSelect = document.getElementById('pipeline');
     const comparePipelinesToggle = document.getElementById('compare-pipelines');
     const modelStatus = document.getElementById('model-status');
@@ -170,7 +185,7 @@
     const batchModelOptions = document.getElementById('batch-model-options');
     const testSuiteSelect = document.getElementById('test-suite');
     const synthesisPromptButton = document.getElementById('synthesis-prompt');
-    const recommendedModelNames = ['qwen3:14b', 'gemma3:12b', 'qwen3:8b'];
+    const recommendedModelNames = ['gemma3:12b'];
     const runRegressionButton = document.getElementById('run-regression');
     const downloadRegressionButton = document.getElementById('download-regression');
     const batchStatus = document.getElementById('batch-status');
@@ -190,6 +205,90 @@
         buildStatus.textContent = `Local app build: ${currentBuild}${data.pipeline ? ` (${data.pipeline})` : ''}`;
       })
       .catch(() => { buildStatus.textContent = 'Local app build: unavailable'; });
+
+    // Catalog browsing never opens a book shard or calls Ollama. The server
+    // loads selected source text only on the first actual question about it.
+    function showBookOptions() {
+      const term = bookFilter.value.trim().toLocaleLowerCase();
+      const selected = bookSelect.value || defaultBookId;
+      const choices = libraryBooks.filter(book =>
+        book.title.toLocaleLowerCase().includes(term) ||
+        (book.author || '').toLocaleLowerCase().includes(term)
+      );
+      const visible = term ? choices.slice(0, 80) : choices.slice(0, 60);
+      const current = libraryBooks.find(book => book.book_id === selected);
+      if (current && !visible.some(book => book.book_id === current.book_id)) {
+        visible.unshift(current);
+      }
+      bookSelect.replaceChildren();
+      for (const book of visible) {
+        const option = document.createElement('option');
+        option.value = book.book_id;
+        option.textContent = book.title +
+          (book.available ? '' : ' (text or PDF unavailable)');
+        option.disabled = !book.available;
+        bookSelect.append(option);
+      }
+      if (visible.some(book => book.book_id === selected)) {
+        bookSelect.value = selected;
+      } else if (visible.some(book => book.available)) {
+        bookSelect.value = visible.find(book => book.available).book_id;
+      }
+      bookStatus.textContent = term
+        ? choices.length + ' matching titles (showing at most 80)'
+        : libraryBooks.length + ' catalog entries; choose a title or search by author';
+    }
+
+    async function loadBooks() {
+      try {
+        const response = await fetch('/api/books', {cache:'no-store'});
+        if (!response.ok) throw Error('Catalog endpoint unavailable');
+        const data = await response.json();
+        libraryBooks = Array.isArray(data.books) ? data.books : [];
+        defaultBookId = data.default_book_id || '7';
+        if (!libraryBooks.length) throw Error('Catalog is empty');
+        showBookOptions();
+        bookSelect.value = defaultBookId;
+        if (!data.catalog_available) {
+          bookStatus.textContent = 'Website catalog not found locally; only the pilot is selectable. ' +
+            'Keep antilogicalism and book-chatbot in sibling folders or set BOOK_CHATBOT_CATALOG.';
+        }
+      } catch (error) {
+        bookStatus.textContent = 'Library catalog unavailable: ' + error.message;
+      }
+      setActiveBook(false);
+    }
+
+    function setActiveBook(resetConversation = true) {
+      const book = libraryBooks.find(item => item.book_id === bookSelect.value);
+      if (!book) return;
+      const isPilot = book.book_id === defaultBookId;
+      readingTitle.textContent = isPilot ? 'Read with Aristotle' :
+        'Read ' + (book.work_title || book.title);
+      readingIntro.textContent = 'Ask a question about ' + book.title +
+        '. Explanations link back to original PDF pages.';
+      aristotlePrompts.hidden = !isPilot;
+      developerTests.hidden = !isPilot;
+      coverage.textContent = isPilot
+        ? 'Aristotle is the pilot; select another book to explore the larger library.'
+        : 'This chat searches only the selected work; cross-book retrieval is a future milestone.';
+      if (resetConversation) {
+        history.length = 0; // Never mix conversation history across authors.
+        thread.replaceChildren();
+        question.value = '';
+        status.textContent = 'New book selected. Your conversation has been cleared.';
+      }
+    }
+
+    bookFilter.addEventListener('input', () => {
+      const selected = bookSelect.value;
+      showBookOptions();
+      // Filtering is NOT a book switch; the dropdown change event is.
+      if (selected && [...bookSelect.options].some(opt => opt.value === selected)) {
+        bookSelect.value = selected;
+      }
+    });
+    bookSelect.addEventListener('change', () => setActiveBook());
 
     function makeDiagnosticSummary(data) {
       // Use the server's final-outcome summary instead of searching every
@@ -565,7 +664,7 @@
               const response = await fetch('/api/chat', {
                 method:'POST',
                 headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({question:prompt, history:[], model, pipeline, diagnostics:true})
+                body:JSON.stringify({question:prompt, history:[], book_id:bookSelect.value, model, pipeline, diagnostics:true})
               });
               const data = await response.json();
               entry.http_status = response.status;
@@ -657,6 +756,7 @@
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({
             question:text,
+            book_id:bookSelect.value,
             history:history.slice(-6),
             model:modelSelect.value,
             pipeline:pipelineSelect.value,
@@ -687,6 +787,7 @@
       button.addEventListener('click', () => { question.value = button.textContent; question.focus(); });
     });
     loadModels();
+    loadBooks();
   </script>
 </body>
 </html>

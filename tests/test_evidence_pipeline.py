@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 from evidence_pipeline import (
     answer_evidence_first, choose_evidence, passage_spotlight,
-    select_neighbor_context,
+    select_neighbor_context, render_argument_context, context_dependencies,
 )
 from grounded_pipeline import PassageIndex
 from inference import CompletionError
@@ -177,17 +177,76 @@ class EvidenceFirstTests(unittest.TestCase):
             self.assertEqual(item["page"], by_source[item["source_id"]]["page"])
             self.assertIn("test-drive-id", item["url"])
 
-    def test_short_primary_passage_adds_neighbor_with_own_citation(self):
+    def test_transition_passage_has_preceding_context_with_own_citation(self):
         candidates = self.index.search(self.question, [self.question])
         self.assertGreaterEqual(len(candidates), 2)
-        anchor = next(p for p in candidates if p["page"] == 1)
-        passages, added = select_neighbor_context(self.index, [anchor], candidates)
+        # Page 2 begins "But...", so page 1 is relevant to its argument.
+        anchor = next(p for p in candidates if p["page"] == 2)
+        passages, added = select_neighbor_context(
+            self.index, [anchor], candidates
+        )
         self.assertTrue(added)
         self.assertEqual(added[0]["context_for"], anchor["source_id"])
+        self.assertEqual(added[0]["context_role"], "preceding")
+        self.assertEqual(added[0]["pages"], [1])
+        self.assertEqual(
+            len({p["source_id"] for p in passages}), len(passages)
+        )
+        self.assertNotEqual(passages[0]["passage_id"],
+                            passages[1]["passage_id"])
+
+        # Even if the retrieved anchor comes first, the actual source
+        # sequence must put the earlier paragraph BEFORE its clarification.
+        groups = json.loads(render_argument_context(
+            self.index, [anchor], passages
+        ))
+        self.assertEqual(groups[0]["reading_sequence"][0]["pages"], [1])
+        self.assertEqual(
+            groups[0]["reading_sequence"][0]["role"], "preceding"
+        )
+        self.assertEqual(
+            groups[0]["reading_sequence"][1]["role"], "central_evidence"
+        )
+
+    def test_short_standalone_statement_has_no_arbitrary_adjacent_context(self):
+        candidates = self.index.search(self.question, [self.question])
+        anchor = next(p for p in candidates if p["page"] == 1)
+        self.assertEqual(context_dependencies(anchor["text"]), (False, False))
+        selected, added = select_neighbor_context(
+            self.index, [anchor], candidates
+        )
+        self.assertFalse(added)
+        self.assertEqual(selected, [anchor])
+
+    def test_following_text_restores_unfinished_sentence(self):
+        from grounded_pipeline import PassageIndex
+        index = PassageIndex([(BOOK, [
+            {"page": 1, "text": "We can illustrate this distinction by considering the measurements recorded during calibration, e.g."},
+            {"page": 2, "text": "Several changes in the instrument are tested under controlled conditions."}
+        ])], app.tokenize)
+        anchor = next(p for p in index.search(
+            "instrument distinction", ["instrument distinction"]
+        ) if p["page"] == 1)
+        selected, added = select_neighbor_context(
+            index, [anchor],
+            index.search("instrument distinction", ["instrument distinction"])
+        )
+        self.assertEqual([x["context_role"] for x in added], ["following"])
         self.assertEqual(added[0]["pages"], [2])
-        self.assertEqual(len({p["source_id"] for p in passages}), len(passages))
-        self.assertNotEqual(passages[0]["passage_id"], passages[1]["passage_id"])
-        self.assertEqual(passages[1]["book_id"], passages[0]["book_id"])
+
+    def test_source_group_stays_isolated_across_books(self):
+        other = {**BOOK, "book_id": "44", "title": "Another Source"}
+        index = PassageIndex([
+            (BOOK, [{"page": 1, "text": "But the meaning of the original comparison changes."}]),
+            (other, [{"page": 2, "text": "A completely separate argument appears in this work."}]),
+        ], app.tokenize)
+        candidates = index.search(
+            "comparison argument", ["comparison argument"]
+        )
+        anchor = next(p for p in candidates if p["book_id"] == BOOK["book_id"])
+        selected, added = select_neighbor_context(index, [anchor], candidates)
+        self.assertFalse(added)
+        self.assertEqual(len(selected), 1)
 
     def test_avoid_cross_book_neighbor_contamination(self):
         index = PassageIndex([
