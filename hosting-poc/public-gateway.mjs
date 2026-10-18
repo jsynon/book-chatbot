@@ -173,6 +173,45 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     return json({status:'ready',service:'Antilogicalism Reading Companion',
       publicEnabled:env.PUBLIC_ENABLED==='true',mode:'public-foundation'},200,origin);
   }
+  // A manual CPU feasibility probe. This is a separate, secret-protected
+  // diagnostic endpoint on the DISABLED new Worker, never the live site.
+  // It invokes the exact production trustedSources() implementation,
+  // without Turnstile, visitor-facing rate limits, or ANY AI inference.
+  // Browser calls are deliberately disallowed; use a private CLI request.
+  if(url.pathname==='/internal/source-probe') {
+    if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
+    if(origin)return json({error:'Browser requests not supported'},403,origin);
+    if(typeof env.SOURCE_PROBE_TOKEN!=='string' ||
+       env.SOURCE_PROBE_TOKEN.length<32) {
+      return json({error:'Private source diagnostic disabled'},503);
+    }
+    if(request.headers.get('Authorization')!=='Bearer '+env.SOURCE_PROBE_TOKEN) {
+      return json({error:'Unauthorized'},401);
+    }
+    const start=performance.now();
+    try {
+      const sources=await trustedSources(
+        'What caused the Peloponnesian War?',
+        [{bookId:'152',page:38}],fetcher
+      );
+      const s=sources[0];
+      return json({
+        status:'retrieved',
+        bookId:s.bookId,title:s.title,
+        page:s.page,globalPageId:s.globalPageId,
+        sourceUrl:s.url,excerptLength:s.preview.length,
+        excerptSample:s.preview.slice(0,200),
+        wallElapsedMs:Math.round(performance.now()-start),
+        cpuTimeMs:null,
+        interpretation:'wallElapsedMs includes network waiting, NOT CPU time. '+
+          'Check actual CPU time in Cloudflare Workers metrics/logs. No AI was run.',
+      });
+    } catch(error) {
+      console.error('Trusted source probe failed:',String(error?.message||error));
+      return json({error:'Trusted source retrieval failed',wallElapsedMs:
+        Math.round(performance.now()-start)},503);
+    }
+  }
   if(url.pathname!=='/api/answer')return json({error:'Not found'},404,origin);
   if(origin&&origin!==FRONTEND_ORIGIN)return json({error:'Origin not allowed'},403,origin);
   if(request.method==='OPTIONS')return new Response(null,{status:204,headers:headers(origin)});
@@ -266,4 +305,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     notice:'Source provenance checked against v47; individual AI claims are not independently verified.',
   },200,origin);
 }
-export default {fetch:handleRequest};
+// Cloudflare calls fetch(request, env, ctx): ctx is an execution-context
+// object, not the test fetcher. Keep mock injection on the named helper only.
+export default {
+  fetch(request, env, _ctx) {
+    return handleRequest(request, env);
+  },
+};
