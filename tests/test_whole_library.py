@@ -313,6 +313,45 @@ class CrossLibraryFixture(unittest.TestCase):
                 ["named_author_citation_coverage"]["missing_authors"]), 1
         )
 
+    def test_citing_another_work_by_same_author_satisfies_coverage(self):
+        # Regression: v1.4 mistakenly REQUIRED Aristotle's multi-volume Works
+        # even when the answer properly cited the Ethics. The requirement
+        # belongs to the person, not whichever work ranked first.
+        index, _ = self.locator.search(
+            "How do Aristotle and Tolstoy understand happiness?"
+        )
+        by_author = {
+            g["author"]: g for g in
+            index.discovery["required_author_groups"]
+        }
+        by_author["aristotle"]["book_ids"].append("293")
+        candidates = index.search("happiness", ["happiness"])
+        ethics = next(x for x in candidates if x["book_id"] == "7")
+        confession = next(x for x in candidates if x["book_id"] == "88")
+        wanted = [ethics["source_id"], confession["source_id"]]
+
+        class Provider:
+            def complete(self, stage, system, user, schema, max_tokens):
+                if stage == "evidence_selection":
+                    return {"source_ids": wanted}
+                return {"paragraphs": [{
+                    "text": "These two primary texts offer different ways "
+                            "to understand happiness and lived meaning.",
+                    "source_ids": wanted
+                }], "follow_up_questions": []}
+
+        result = answer_evidence_first(
+            "How do Aristotle and Tolstoy understand happiness?", [],
+            index, ["happiness"], Provider(), "test-v1.4.1"
+        )
+        self.assertEqual(result["outcome"], "draft")
+        self.assertEqual(result["coverage_notice"], "")
+        coverage = result["diagnostics"]["evidence_check"][
+            "named_author_citation_coverage"
+        ]
+        self.assertEqual(coverage["missing_authors"], [])
+        self.assertEqual(set(coverage["cited_book_ids"]), {"7", "88"})
+
     def test_http_scope_uses_two_calls_and_correct_library_book_labels(self):
         class Provider:
             def __init__(self):
