@@ -136,6 +136,22 @@ Automatic tests can verify only structural integrity: known source IDs, numeric 
 
 For the first evaluation, try **one science, one history, and one literature case** (Darwin, Thucydides, Dostoevsky) before spending time on all eight. Categorize the actual failure as discovery, selection, interpretation, citation, or presentation. Prefer fixes that generalize across genres. Do not turn this into another model comparison.
 
+## v1.4.4: source form, reported speech and narrative sequence
+
+The first v1.4.3 live answers from **Darwin, Thucydides and Dostoevsky** were successfully cited drafts, but exposed three recurring cross-disciplinary weaknesses:
+
+- Darwin: the evidence selector accepted a chapter heading and a contents listing, neither of which establishes the mechanism of natural selection, despite having actual explanatory prose elsewhere in the book.
+- Thucydides: the answer quoted the Corinthians reporting the **Corcyraeans' own characterization** of nonalignment, then mistakenly suggested the Corinthians endorsed that characterization.
+- Dostoevsky: the answer conflated Porfiry's presentation of Raskolnikov's theory with Raskolnikov's direct words, and called a conversation with Dounia a "final confession" without establishing its place in the full event sequence.
+
+v1.4.4 addresses evidence *before* generation. `passage_quality.py` conservatively identifies navigation/contents text and downranks it within the one-book BM25 index; the evidence selector excludes navigation when at least two real-prose candidates remain, unless the reader asks about the contents themselves. Dialogue/reporting signals in the original source excerpts are exposed to the model, and an opening that appears clipped or unattributed may recover the actual preceding passage under the existing neighbor budget. **No model or heuristic infers the identity of a speaker automatically.** Distant passages are never asserted to be consecutive narrative events simply because their physical pages are ordered.
+
+The optional real-v47 audit (`python scripts/audit_source_quality_v144.py`) checks all three original text shards in a temporary folder. It establishes passage identity, non-navigation candidate quality and the continued availability of the decisive pages; it cannot assess a generated interpretation. The normal GitHub CI remains offline.
+
+**Live acceptance:** Run the same three questions in one-book mode, Gemma3:12b, Evidence-first, troubleshooting enabled. Inspect candidate page lists and the answer separately. For Darwin, verify no chapter headings entered selected evidence and check the mechanism explanation. For Thucydides, identify who actually makes each reported claim. For Dostoevsky, distinguish a characterization of Raskolnikov's theory from his actual speech, and avoid unsupported event-finality claims. Keep two model calls; save the reports and compare with v1.4.3 rather than running every model.
+
+Source labels and valid page links remain necessary but never sufficient for semantic or historical accuracy. Prefer not to merge further quality changes until the actual new-model outputs are inspected.
+
 ## Failure analysis
 
 For v1.4.1, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see grouped citation markers, any added source IDs, and rejected conflicts. This recovery supports at most six unique, existing source IDs per paragraph and does not grade whether the cited passage supports each claim. Preserve the same philosophical scoring rubric after a format-only recovery.
