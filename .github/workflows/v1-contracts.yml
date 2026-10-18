@@ -62,7 +62,7 @@ jobs:
           }
           console.log('Source reader activation and locator contract OK.');
           const formatting = require('./source_text_format.js');
-          const sample = '    He knows that when someone speaks at\\n    length the meaning is not changed.\\n\\n    A second paragraph remains separate.';
+          const sample = '    He knows that when someone speaks at\n    length the meaning is not changed.\n\n    A second paragraph remains separate.';
           const readable = formatting.readableParagraphs(sample);
           if (readable.length !== 2 || readable[0] !== 'He knows that when someone speaks at length the meaning is not changed.' || readable[1] !== 'A second paragraph remains separate.') {
             throw new Error('OCR prose reflow changed content or paragraph boundaries');
