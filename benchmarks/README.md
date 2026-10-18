@@ -15,7 +15,7 @@ python scripts\run_cross_discipline.py --case history-thucydides-causes
 python scripts\run_cross_discipline.py --summary
 \`\`\`
 
-The script **lists questions without running Ollama** by default. Running a selected case invokes up to **two local Ollama calls** and saves one full JSON report under reports/cross-disciplinary-v1/. If the report already exists, it is preserved; use **--rerun** to replace it. Tests run sequentially, never concurrently. When ready to run the entire suite, **--all --resume** runs only unanswered cases. Reports contain question, build, model, elapsed seconds, actual cited original passages, citation/integrity findings, retrieval trace, and **blank human-review scores**. The entire reports/ folder is gitignored to keep full transcripts out of the public code repository.
+The script **lists questions without running Ollama** by default. Running a selected case invokes up to **two local Ollama calls** and saves one full JSON report under reports/cross-disciplinary-v1/. If the report already exists, it is preserved; use **--rerun** to replace it. Tests run sequentially, never concurrently. When ready to run the entire suite, **--all --resume** runs only unanswered cases. Reports contain question, build, model, elapsed seconds, actual cited original passages, citation/integrity findings, retrieval trace, and **blank human-review scores**. The entire reports/ folder is gitignored to keep full transcripts out of the public code repository. `--summary` groups saved results by **build and discipline**, reports times and structural source checks, and averages human scores **only for explicitly reviewed answers**.
 
 The reader's local web page also has a **collapsed cross-disciplinary question picker**. Select a question to switch to its assigned book and populate the question field; the page **never sends the question until Ask is clicked**. Enable troubleshooting to download a diagnostic JSON from an individual chat.
 
@@ -46,6 +46,10 @@ Specific considerations differ across the disciplines.
 The benchmark records source book IDs, citation markers, verified-looking Google Drive URL formats, physical PDF page references, distinct PDF identities within each response, and the model call count. For one-book tests, citations must belong to the assigned book. For cross-author tests, citations must represent both author groups. Those are **structural** checks. They do not independently fetch a PDF page or prove that a claim is semantically supported. Some PDF previews ignore page anchors, and OCR errors remain possible.
 
 A fluent, fully cited answer could earn zero for accuracy. A provenance pass is **never** an automatic human-review pass; the report's human scores remain null until someone reviews it.
+
+## Audit the real book texts without a model
+
+Run `python scripts/audit_cross_discipline_sources.py` to download the seven original v47 single-book shards into a temporary folder, verify their catalog/PDF identities, and print a few passages the local lexical index would find. This is read-only and uses **no Ollama calls**. The initial real-v47 audit passed all seven books; its output showed meaningful but uneven relevance. Aristotle's aim/means passage appeared; history and literary-character questions sometimes retrieved incidental terms in their top results. **That is evidence of remaining ranking work, not an accuracy pass.** The network-dependent audit is deliberately separate from GitHub's offline CI.
 
 ## How to use results to guide development
 
