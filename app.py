@@ -40,6 +40,7 @@ from grounded_pipeline import PassageIndex, answer_question
 from direct_pipeline import answer_direct
 from evidence_pipeline import answer_evidence_first
 from whole_library import WholeLibraryLocator, LibrarySearchError
+from conceptual_retrieval import needs_concept_plan, conceptual_search_plan
 from library_catalog import (BookSelectionError, LibraryIndexRegistry,
                              resolve_catalog_path)
 # Keep source text in the Antilogicalism library-data repository, not in this
@@ -95,7 +96,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "reading-companion-v1.4.1"
+BUILD_ID = "reading-companion-v1.4.2"
 PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "evidence").lower()
 if PIPELINE_MODE not in {"evidence", "direct", "grounded", "legacy"}:
     raise ValueError("BOOK_CHATBOT_PIPELINE must be evidence, direct, grounded, or legacy")
@@ -7125,13 +7126,46 @@ class Handler(BaseHTTPRequestHandler):
             request_book_id = str(
                 data.get("book_id") or GROUNDED_BOOK["book_id"]
             ).strip()
+            conceptual_mode = False
+            planning_stage = None
             if scope == "library":
                 if request_pipeline in {"grounded", "legacy"}:
                     self._json(400, {"error":
                         "Across-library mode supports evidence-first or direct synthesis."})
                     return
                 try:
-                    current_index, discovery = WHOLE_LIBRARY.search(question)
+                    concept_plan = None
+                    groups = (needs_concept_plan(
+                        question, LIBRARY_REGISTRY.entries
+                    ) if request_pipeline == "evidence" else [])
+                    if groups:
+                        # Use the FIRST of two Ollama calls on a source
+                        # discovery plan for this genuinely hypothetical
+                        # question. The second remains cited synthesis.
+                        provider = OllamaProvider(
+                            OLLAMA_URL, model, CONTEXT_TOKENS
+                        )
+                        conceptual_mode = True
+                        concept_plan, planning_stage = conceptual_search_plan(
+                            question, groups, tokenize, provider
+                        )
+                    try:
+                        current_index, discovery = WHOLE_LIBRARY.search(
+                            question, concept_plan=concept_plan
+                        )
+                    except LibrarySearchError as first_error:
+                        if concept_plan is None:
+                            raise
+                        # A guessed search hint may be absent from OCR/index.
+                        # Fall back to real literal-index pages without
+                        # requesting a THIRD model inference.
+                        current_index, discovery = WHOLE_LIBRARY.search(
+                            question
+                        )
+                        planning_stage.update(
+                            status="index_fallback",
+                            reason=str(first_error)
+                        )
                 except LibrarySearchError as error:
                     self._json(400, {"error": str(error)})
                     return
@@ -7157,10 +7191,20 @@ class Handler(BaseHTTPRequestHandler):
             if request_pipeline == "evidence":
                 # v1.3: argument-ordered primary evidence from the chosen book.
                 # No model-as-judge review or automatic answer repair.
-                provider = OllamaProvider(OLLAMA_URL, model, CONTEXT_TOKENS)
+                if provider is None:
+                    provider = OllamaProvider(
+                        OLLAMA_URL, model, CONTEXT_TOKENS
+                    )
                 payload = answer_evidence_first(
-                    question, history, current_index, question_facets(question), provider, BUILD_ID
+                    question, history, current_index,
+                    question_facets(question), provider, BUILD_ID,
+                    selection_mode=("ranked" if conceptual_mode else "model"),
+                    pre_stage=planning_stage,
                 )
+                if planning_stage:
+                    # End-to-end user latency includes the first call even
+                    # though it happened before evidence retrieval.
+                    payload["diagnostics"]["elapsed_ms"] += planning_stage["elapsed_ms"]
                 trace = payload["diagnostics"]
                 trace["model"] = model
                 trace["book"] = {"book_id": request_book_id,

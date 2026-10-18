@@ -8,7 +8,7 @@ import unittest
 import app
 from retrieval_relevance import (
     canonical_author, content_terms, named_author_groups, passage_topic_score,
-    refers_to_previous_question,
+    refers_to_previous_question, is_edited_collection,
 )
 from whole_library import WholeLibraryLocator
 
@@ -30,6 +30,18 @@ class QueryRelevanceTests(unittest.TestCase):
             "546": book(546, "Various Authors"),
             "283": book(283, "Anonymous"),
         }
+
+    def test_edited_collection_is_a_source_form_signal_not_an_author_identity(self):
+        self.assertTrue(is_edited_collection(
+            "The Portable Nietzsche — Friedrich Nietzsche (edited by an editor)"
+        ))
+        self.assertTrue(is_edited_collection("The Collected Works of a Writer"))
+        self.assertFalse(is_edited_collection(
+            "On the Genealogy of Morals — Friedrich Nietzsche"
+        ))
+        self.assertFalse(is_edited_collection(
+            "Fear and Trembling — Søren Kierkegaard"
+        ))
 
     def test_generic_authors_do_not_create_false_named_author_requirement(self):
         query = ("How do different authors in the library approach "

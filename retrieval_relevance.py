@@ -181,3 +181,22 @@ def refers_to_previous_question(question, tokenize):
         return True
     # Very short elliptical queries generally lack a self-contained subject.
     return len(set(tokenize(question))) <= 2
+
+
+# Collection titles are useful discovery aids but have a greater risk of
+# mixing editorial introduction/commentary with an author's own prose.
+# This is a general SOURCE-FORM distinction, not a score assigned to writers.
+COLLECTION_TITLE = re.compile(
+    r"\b(?:portable|anthology|collected|selected writings|"
+    r"complete works|works of|the works|reader|edited by|compiled by)\b",
+    re.I,
+)
+
+
+def is_edited_collection(title):
+    """Return a cautious metadata signal, not a claim about source contents.
+
+    The most relevant collected volume is still eligible if no standalone
+    text has comparable passage matches; it is merely downweighted.
+    """
+    return bool(COLLECTION_TITLE.search(str(title or "")))
