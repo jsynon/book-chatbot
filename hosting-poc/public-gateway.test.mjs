@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,sourceExcerpt} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,sourceExcerpt,turnstileRejection} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -567,4 +567,23 @@ test('v1.9.5 exposes only safe CORS preflight on public endpoint',async()=>{
    method:'OPTIONS',headers:{Origin:'https://other.example'}
  }),pilot.environment,pilot.fetcher);
  assert.equal(bad.status,403);
+});
+
+test('Turnstile diagnostic identifies invalid secret without logging any credentials',()=>{
+ const provided={success:false,'error-codes':['invalid-input-secret','bad-token\nSECRET-DO-NOT-LOG'],
+    hostname:'attacker.example',action:'unknown',
+    token:'sensitive-visitor-token',secret:'sensitive-private-secret'};
+ assert.deepEqual(turnstileRejection(provided),
+    {reason:'siteverify-rejected',codes:['invalid-input-secret']});
+ const diagnostic=JSON.stringify(turnstileRejection(provided));
+ assert(!diagnostic.includes('sensitive-'));
+ assert(!diagnostic.includes('attacker.example'));
+ assert(!diagnostic.includes('DO-NOT-LOG'));
+});
+test('Turnstile diagnostic distinguishes hostname and action mismatches',()=>{
+ assert.deepEqual(turnstileRejection({success:true,hostname:'different.example',action:'companion_ask'}),
+    {reason:'hostname-mismatch'});
+ assert.deepEqual(turnstileRejection({success:true,hostname:'jsynon.github.io',action:'different_action'}),
+    {reason:'action-mismatch'});
+ assert.equal(turnstileRejection({success:true,hostname:'jsynon.github.io',action:'companion_ask'}),null);
 });
