@@ -6,11 +6,14 @@
 
 **The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
-## Version 1.4.2: question-aware conceptual retrieval
+## Version 1.4.3: cross-disciplinary evaluation and mobile-friendly question picker
 
-Version 1.4 established the first across-library reading mode. **Version 1.4.1 improves relevance and attribution** after real-reader tests exposed keyword-only false matches, unrelated edited anthologies, and an incorrect requirement to cite one arbitrary volume rather than an author. The established **one-book** Aristotle demo remains available and unchanged.
+Version 1.4 established the across-library reading mode; v1.4.1 improved relevance and attribution; v1.4.2 added conceptual planning for counterfactual comparisons. **Version 1.4.3 adds a cross-disciplinary evaluation framework** rather than an additional heuristic prompt or model switch. The existing one-book Aristotle demo and both two-call answering paths remain unchanged.
 
 - **One selected book:** The v1.3 path remains available. Find a title or author in the website catalog; only its compressed text shard is loaded and indexed, with an LRU cache of two book indexes by default.
+- **Cross-disciplinary tests:** A fixed set of eight real-catalog questions covers scientific explanation, theory and uncertainty, historical causation and source criticism, fictional character versus author, literary thematic synthesis, and the two philosophical control cases. The new reader question picker is closed by default, works at mobile widths, and fills the composer **without sending a request**. A separate opt-in, single-model local CLI saves one resumable diagnostic report per selected case.
+- **Honest evaluation:** Deterministic checks detect unknown source IDs, wrong book PDFs, page-link mismatches, missing author evidence and extra model calls. The reports explicitly leave **accuracy and interpretation ungraded** until someone reviews the original passages. Questions are not used as production retrieval rules or a hidden answer key.
+
 - **Hypothetical cross-author questions (v1.4.2):** For questions such as “What would Nietzsche think about Kierkegaard's thought?”, the system recognizes the kind of question, then uses the **first of the existing two Ollama calls** to propose distinct topical search words for each *catalog-recognized* author. It retrieves original passages from the v47 index using those concepts and uses the **second** call for a cited, expressly hypothetical explanation. Ordinary questions still use first-call evidence selection and second-call synthesis. **No third model request, model judge, embedding service, or hardcoded philosopher answer** has been introduced.
 - **Edited-volume caution:** The ranking now modestly prefers standalone works over edited collections when comparable primary material is available. Collected editions remain searchable and are flagged as such so an editor's introduction is not automatically attributed to the author. This is a safeguard, not proof of who wrote each excerpt.
 
@@ -42,6 +45,22 @@ Keep the default **One selected book** mode for Aristotle's *Nicomachean Ethics*
 The console prints progress from evidence selection and answer composition. The first global search may take slightly longer to load the compressed manifest and term partitions; subsequent searches reuse a bounded partition cache. PDF links open Google Drive previews, which sometimes ignore page fragments; the companion always displays the physical page number.
 
 The optional **Development tests and model comparisons** section preserves the established Aristotle test questions. We use Gemma3:12b as our primary local baseline and test different models only when there is a concrete reason.
+
+## Cross-disciplinary acceptance tests
+
+With the local app running, open the **Try questions from science, history, literature, and philosophy** disclosure. Choose a question: the UI selects the relevant source book and fills the text box, but never clicks Ask for you. The browser experience remains responsive for phones.
+
+For reusable reports, run these commands in the repository on Windows (PowerShell or CMD):
+
+```powershell
+python scripts\run_cross_discipline.py --list
+python scripts\run_cross_discipline.py --case science-darwin-selection
+python scripts\run_cross_discipline.py --case history-thucydides-causes
+python scripts\run_cross_discipline.py --case literature-dostoevsky-raskolnikov
+python scripts\run_cross_discipline.py --summary
+```
+
+Each successful test writes a full JSON file in `reports/cross-disciplinary-v1/` (ignored by Git). **Nothing invokes Ollama with `--list` or `--summary`.** The runner defaults to Gemma3:12b, evidence-first and a fresh conversation for each question. Running all eight requires explicitly passing `--all`; `--resume` skips prior results and `--rerun` deliberately overwrites one. See [benchmarks/README.md](benchmarks/README.md) for question-by-question review criteria, the five 0–3 manual score dimensions, and the limits of automatic provenance checks.
 
 ## Answer architecture
 

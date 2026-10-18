@@ -2,7 +2,10 @@
 
 The [Antilogicalism](https://jsynon.github.io/antilogicalism/) Reading Companion is a primary-source-grounded local reading assistant. It is intended to cover the full digital library, not only the current Aristotle pilot. The application deliberately separates bibliographic metadata, indexed PDF text, retrieval, answer composition and verification of citation identities.
 
-## Architecture in v1.4.2
+## Architecture in v1.4.3
+
+Version 1.4.3 introduces reproducible **cross-disciplinary evaluation**, not a new question-specific answer generator. The normal one-book, across-library, and two-call conceptual planning routes remain as implemented in v1.4.2. The benchmark and the optional question picker are isolated from the production retrieval ranking.
+
 
 The library now has **two supported retrieval scopes** sharing the same answer pipeline.
 
@@ -62,6 +65,16 @@ The v47 manifest, postings encoding and matching page IDs were inspected against
 A successful answer is deliberately labeled **draft**. It means source IDs are valid, not that the model's interpretation is true, complete or supported sentence by sentence. OCR damage, lexical mismatch, limited passage context, overconfident synthesis, and missing conceptual links remain real risks. A fixed set of passages cannot prove what an author *never* says across a book.
 
 The library ranking currently relies on lexical term matches and page-level presence. It is not a pretrained semantic embedding system; references to the same idea using very different vocabulary may be missed. A broad question samples up to four books; it is **not an exhaustive overview of all 644 works**. When appropriate, ask a more specific question or open an individual book. Some Google Drive PDF previews ignore the page anchor, so the physical page is also displayed.
+
+## Evaluation across the library's disciplines
+
+The fixed [cross-disciplinary evaluation manifest](../benchmarks/cross-disciplinary-v1.json) pairs seven specific catalog book IDs with questions and adds an eighth cross-author philosophy control. Each discipline has two distinct reasoning requirements: science (mechanisms versus theory/uncertainty), history (causes versus source criticism), literature (character versus author and recurring themes), philosophy (conceptual synthesis versus hypothetical comparison).
+
+The local **GET /api/benchmarks/cross-disciplinary** returns sanitized evaluation metadata only and never calls Ollama. The browser renders these as a closed, responsive question picker; selecting an entry sets the book or whole-library scope, clears the old conversation, and populates the question field. The user must click Ask to run the model.
+
+The separate `scripts/run_cross_discipline.py` CLI uses the same `POST /api/chat` contract, with Gemma3:12b and evidence-first as defaults, explicit opt-in to selected questions or all eight, fresh conversation histories, serialized requests, and one resumable report per case under gitignored `reports/`. `benchmark_suite.py` validates benchmark scope and expected book groups and checks basic source/citation/PDF identity, but explicitly marks *human interpretation unchecked*. Neither the benchmark nor its expected book IDs influence live source ranking, the generation prompt, or inference selection.
+
+The evaluation deliberately asks different disciplines different critical questions: historical claims versus reported traditions; scientific observations versus theoretical predictions; a narrator or character versus the author's point of view; and documented ideas versus conjectural philosophical comparisons. Existing caveats about OCR corruption, limited context, and false inferences remain in force.
 
 ## Testing and future work
 

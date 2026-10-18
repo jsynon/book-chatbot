@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "suite_id": "antilogicalism-cross-disciplinary-v1",
+  "purpose": "Eight fixed questions covering four disciplines; measure retrieval, citation integrity and human-assessed explanation quality. This is evaluation data, not production retrieval rules or expected model answers.",
+  "default_model": "gemma3:12b",
+  "default_pipeline": "evidence",
+  "manual_score_dimensions": [
+    "accuracy",
+    "completeness",
+    "explanatory_value",
+    "citation_support",
+    "readability"
+  ],
+  "cases": [
+    {
+      "id": "science-darwin-selection",
+      "discipline": "science",
+      "task": "mechanism_explanation",
+      "scope": "book",
+      "book_id": "529",
+      "question": "According to Darwin's On the Origin of Species, how does natural selection operate, and what roles do inherited variation and the struggle for existence play?",
+      "source_expectation": {
+        "mode": "only",
+        "book_ids": [
+          "529"
+        ]
+      },
+      "review_focus": [
+        "Separate Darwin's historical explanation from present-day genetic mechanisms that this work does not establish.",
+        "Explain a mechanism, not merely restate words such as selection and variation.",
+        "Check any claims about inheritance or competing mechanisms against the actual cited pages."
+      ]
+    },
+    {
+      "id": "science-hawking-black-holes",
+      "discipline": "science",
+      "task": "theory_and_uncertainty",
+      "scope": "book",
+      "book_id": "102",
+      "question": "In A Brief History of Time, how does Stephen Hawking explain black holes, and how does he distinguish observational knowledge from theoretical predictions?",
+      "source_expectation": {
+        "mode": "only",
+        "book_ids": [
+          "102"
+        ]
+      },
+      "review_focus": [
+        "Distinguish what the author presents as observation, mathematical theory and conjecture.",
+        "Check for anachronistic claims presented as though Hawking wrote them in this edition.",
+        "Preserve technical distinctions without invented equations or unsupported certainty."
+      ]
+    },
+    {
+      "id": "history-thucydides-causes",
+      "discipline": "history",
+      "task": "causal_chronological_explanation",
+      "scope": "book",
+      "book_id": "152",
+      "question": "According to Thucydides, what were the underlying causes of the Peloponnesian War, and how did they differ from the immediate disputes that preceded it?",
+      "source_expectation": {
+        "mode": "only",
+        "book_ids": [
+          "152"
+        ]
+      },
+      "review_focus": [
+        "Separate the underlying explanation from immediate causes and incidents.",
+        "Attribute the causal interpretation to Thucydides instead of declaring it undisputed historical consensus.",
+        "Preserve chronology and the status of reported speeches."
+      ]
+    },
+    {
+      "id": "history-herodotus-reports",
+      "discipline": "history",
+      "task": "source_criticism",
+      "scope": "book",
+      "book_id": "149",
+      "question": "In The Histories, how does Herodotus handle accounts he has heard from others, and how can a reader distinguish reported traditions from his own judgments?",
+      "source_expectation": {
+        "mode": "only",
+        "book_ids": [
+          "149"
+        ]
+      },
+      "review_focus": [
+        "Distinguish first-person judgments, secondhand reports, and contested traditions.",
+        "Do not present reported narratives as independently verified events.",
+        "Cite passages that actually exhibit Herodotus's sourcing practices."
+      ]
+    },
+    {
+      "id": "literature-dostoevsky-raskolnikov",
+      "discipline": "literature",
+      "task": "character_versus_author",
+      "scope": "book",
+      "book_id": "114",
+      "question": "In Crime and Punishment, how does Raskolnikov attempt to justify murder, and how does the novel challenge his reasoning?",
+      "source_expectation": {
+        "mode": "only",
+        "book_ids": [
+          "114"
+        ]
+      },
+      "review_focus": [
+        "Distinguish a character's rationalization from Dostoevsky's endorsed view.",
+        "Follow how the character's reasoning is challenged rather than quoting one isolated scene.",
+        "Avoid attributing other characters' dialogue to the narrator."
+      ]
+    },
+    {
+      "id": "literature-orwell-language",
+      "discipline": "literature",
+      "task": "theme_across_chapters",
+      "scope": "book",
+      "book_id": "89",
+      "question": "In 1984, how does Orwell portray the connections between language, memory, and political power?",
+      "source_expectation": {
+        "mode": "only",
+        "book_ids": [
+          "89"
+        ]
+      },
+      "review_focus": [
+        "Ground the thematic synthesis in the novel rather than an assumed general theory of propaganda.",
+        "Distinguish characters' beliefs and Party slogans from the novel's portrayal.",
+        "Look for evidence connecting the three named themes, potentially across chapters."
+      ]
+    },
+    {
+      "id": "philosophy-aristotle-synthesis",
+      "discipline": "philosophy",
+      "task": "conceptual_synthesis_control",
+      "scope": "book",
+      "book_id": "7",
+      "question": "In Aristotle's Nicomachean Ethics, what is the relationship between moral virtue, practical wisdom (phronesis), and happiness (eudaimonia)? Explain how these concepts fit together, rather than simply defining each one separately.",
+      "source_expectation": {
+        "mode": "only",
+        "book_ids": [
+          "7"
+        ]
+      },
+      "review_focus": [
+        "Keep moral virtue's right aim distinct from practical wisdom's right means.",
+        "Explain happiness as virtuous activity rather than a fleeting emotion.",
+        "Check whether the answer appropriately handles the special place of contemplation."
+      ]
+    },
+    {
+      "id": "philosophy-nietzsche-kierkegaard",
+      "discipline": "philosophy",
+      "task": "qualified_hypothetical_comparison_control",
+      "scope": "library",
+      "question": "What would Nietzsche think about Kierkegaard's thought?",
+      "source_expectation": {
+        "mode": "groups",
+        "groups": [
+          {
+            "label": "Nietzsche",
+            "book_ids": [
+              "54",
+              "144",
+              "239"
+            ]
+          },
+          {
+            "label": "Kierkegaard",
+            "book_ids": [
+              "140",
+              "192",
+              "253",
+              "436"
+            ]
+          }
+        ]
+      },
+      "review_focus": [
+        "Distinguish documented passages from a speculative historical response.",
+        "Avoid editorial passages from compiled editions being treated as an author's words.",
+        "Require original passages from both philosophers; unsupported inferences must be clearly qualified."
+      ]
+    }
+  ]
+}

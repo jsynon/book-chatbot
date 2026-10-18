@@ -41,6 +41,7 @@ from direct_pipeline import answer_direct
 from evidence_pipeline import answer_evidence_first
 from whole_library import WholeLibraryLocator, LibrarySearchError
 from conceptual_retrieval import needs_concept_plan, conceptual_search_plan
+from benchmark_suite import load_suite, InvalidBenchmark
 from library_catalog import (BookSelectionError, LibraryIndexRegistry,
                              resolve_catalog_path)
 # Keep source text in the Antilogicalism library-data repository, not in this
@@ -96,7 +97,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "reading-companion-v1.4.2"
+BUILD_ID = "reading-companion-v1.4.3"
 PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "evidence").lower()
 if PIPELINE_MODE not in {"evidence", "direct", "grounded", "legacy"}:
     raise ValueError("BOOK_CHATBOT_PIPELINE must be evidence, direct, grounded, or legacy")
@@ -7062,6 +7063,20 @@ class Handler(BaseHTTPRequestHandler):
                              "full_library_available": WHOLE_LIBRARY.status()["available"],
                              "pipeline": PIPELINE_MODE,
                              "pipelines": ["evidence", "direct", "grounded"]})
+            return
+        if self.path == "/api/benchmarks/cross-disciplinary":
+            # Evaluation metadata only. These questions are never used to
+            # tune the live retrieval engine or hardcode an answer.
+            try:
+                suite = load_suite(
+                    ROOT / "benchmarks" / "cross-disciplinary-v1.json"
+                )
+                self._json(200, {
+                    "suite_id": suite["suite_id"], "cases": suite["cases"]
+                })
+            except (OSError, ValueError, InvalidBenchmark) as error:
+                self._json(500, {"error":
+                    "Cross-disciplinary benchmark unavailable: " + str(error)})
             return
         if self.path == "/api/books":
             self._json(200, {
