@@ -1,50 +1,52 @@
 # Reading Companion: architecture and roadmap
 
-This document describes the **Version 1** system as a new reader or contributor would encounter it. The goal is not to reproduce the history of earlier experiments; the working question is how to make the full Antilogicalism library useful for trustworthy exploration.
+[Antilogicalism](https://jsynon.github.io/antilogicalism/) combines writing, a curated **Bookshelf**, and a searchable **Digital Library** of primary-source texts. The Reading Companion adds an interactive layer: ask a question, understand the reasoning, follow source passages, and keep exploring. The long-term project is conversation **across the entire library**, not an Aristotle-only question-answer engine.
 
-## The project in context
+The pilot uses Aristotle's *Nicomachean Ethics* and local Ollama inference. The design remains book-agnostic and preserves text/page provenance so multi-book retrieval can replace the pilot index without rewriting the answer system.
 
-[Antilogicalism](https://jsynon.github.io/antilogicalism/) provides writing and resources for independent reading across philosophy, literature, religion, history, science, and related subjects. Its **Bookshelf** organizes primary sources, while **Library Search** exposes full-text searching over the separately maintained [antilogicalism-library-data](https://github.com/jsynon/antilogicalism-library-data) corpus. The companion makes those books approachable through questions and follow-up conversations, always linking explanations back to inspectable source text.
+## Version 1.2: data flow
 
-Eventually the same core should support questions involving multiple books and authors. The user interface and citation format should therefore not assume every passage belongs to the same book, even while the running pilot loads only Aristotle's *Nicomachean Ethics*.
+1. **Resolve the corpus.** The HTTP app finds a compressed book shard in the sibling [antilogicalism-library-data](https://github.com/jsynon/antilogicalism-library-data) checkout (or from an explicit file path). Metadata includes catalog ID, title, corpus version, PDF identity, and physical page numbers.
+2. **Retrieve broadly.** The PassageIndex in grounded_pipeline.py indexes complete sentence windows using lightweight BM25-style lexical search. The server retrieves **up to 24 candidates** with all source identities intact. Multi-part queries use existing facet handling.
+3. **Select decisive evidence.** The new evidence_pipeline.py presents bounded, question-aware previews to Ollama and requests **up to six important passages**. It favors explicit definitions, relevant contrasts, and evidence connecting parts of the question. This is the **first inference call**. If the selector produces invalid IDs, its failure is recorded and the original ranked passages are used instead; sources are never invented.
+4. **Restore context.** Short or connective-leading selected passages can pull up to three physically adjacent passages from the **same book and corpus version**. Every neighbor retains or receives a **separate, unique source ID**; no two passages are silently fused into a single citation.
+5. **Compose a thoughtful explanation.** The **second inference call** receives the complete selected passages and nearby context within a prompt budget. The model is directed to answer the central question immediately, develop the argument with actual evidence, separate an author's position from objections, and avoid padded repetition. Complexity, not a fixed word count, determines response length.
+6. **Bind citations.** Each output paragraph includes prose and a distinct array of source IDs. Python validates the source IDs and inserts visible citation markers and links. Malformed citations cannot become accepted answers; the structured model output is retained in opt-in diagnostic JSON.
+7. **Show evidence and next questions.** Deterministic extractive highlights show **verbatim complete source sentences**, when short enough, from cited passages with PDF links. The model may also suggest up to two optional follow-up questions; these do not affect whether an otherwise valid answer is accepted.
 
-## Current data flow
+The browser calls Python on localhost, and Python calls local Ollama. It does not send the text to a hosted AI API. Opening a source link takes the reader to a Google Drive PDF; some Drive previews ignore the page number. The browser never renders model- or book-generated HTML as markup.
 
-1. **Corpus resolution:** app.py resolves a compressed book shard from antilogicalism-library-data (or a bundled pilot fallback), using a configurable book ID, version, title, and PDF identity.
-2. **Passage index:** grounded_pipeline.PassageIndex creates source windows from page text and indexes them with a lightweight BM25-style lexical search. A passage retains its book ID, version, page range, immutable content identity, and the source page(s) it spans.
-3. **Question retrieval:** the server searches the loaded book. In Version 1's direct mode, up to eight top-ranked passages are included within a bounded context budget; the source content is treated as untrusted data, not as model instructions.
-4. **Local synthesis:** direct_pipeline.answer_direct asks the chosen Ollama model for coherent paragraphs, each with natural-language text and separate source IDs. The model never needs to place citation markers inside its prose.
-5. **Provenance validation:** Python checks the ID arrays, binds only known passages, and displays the paragraphs with application-generated [S#] citation markers. If output fails structural validation, the unvalidated response is preserved in opt-in diagnostics. These checks establish source identity, **not** that an interpretation is true.
-6. **Presentation and evaluation:** index.html shows the readable answer and page links. The test runner executes the same prompts and models with one or both pipelines and exports source passages and call timings.
+## Comparison methods
 
-The browser calls a local Python HTTP service. The Python application calls a local Ollama installation. The companion does not send book text to a hosted AI API. Opening Drive source links takes the reader to the book PDF.
+| Method | Steps | Role |
+| --- | --- | --- |
+| evidence (default) | Wider retrieval, model selection, nearby source context, synthesis, deterministic citations | Version 1.2 |
+| direct | First eight ranked passages, synthesis, deterministic citations | Version 1.1 single-call baseline |
+| grounded | Model evidence selector, claim composer, model reviewer, possible repair | Historical comparison; its verified flag does **not** certify truth |
 
-## Two answering methods
+The browser preserves the five historical regression questions and one synthesis question. Checking **Compare v1.2 vs. v1.1** sends identical questions and models through the two modern pipelines, sequentially, and exports their passages, results, stage times and diagnostics. The historical pipeline can still be selected separately.
 
-**Direct (default)** uses a single model call after retrieval and minimal provenance validation. It aims to assess whether a capable local model can synthesize a good answer when unnecessary intermediate supervision is removed. Its outcome is labeled **draft**, deliberately not verified.
+**Important:** evidence selection can be wrong, and even a real citation can accompany a false or reversed interpretation. Nothing in the default pipeline semantically certifies the claims. Successful answers are deliberately labeled **draft**. See [evaluation.md](evaluation.md) for human quality assessment.
 
-**Grounded (comparison)** retains the previous multi-call passage selector, claim composer, self-reviewer, and bounded repair. Its **verified** label means only that the model-based review accepted the answer. It is not equivalent to independent textual or philosophical correctness.
+## Source integrity principles
 
-The two routes share the same index and source identity. They need not select exactly the same passage subset, and this difference should be considered when interpreting comparative results. The interface supports controlled comparisons by using identical questions and models and fresh conversational history.
+- Treat book prose as untrusted **data**, not as a source of instructions.
+- Generate source identities and URLs from the actual indexed book, not from model text.
+- Adjacent context must belong to the same book and corpus version, and remain independently citable.
+- An evidence spotlight must be a **verbatim complete sentence** from the cited primary text, or be omitted; never silently truncate it.
+- A source marker establishes **provenance**, not philosophical accuracy. A reader can inspect the original context from the full passage and PDF links.
+- If evidence selection fails, use a transparent ranked fallback. If generated citations are invalid, report that failure rather than passing off unsourced prose as an accepted answer.
 
-## Evaluation standard
+## Limitations and roadmap
 
-Success is judged by **correctness, completeness, thoughtful explanation, genuine passage support, readability, and responsiveness**. Automatic citation validation is useful but cannot replace direct human evaluation.
+**Now:** one configured book in memory, a lexical retrieval index, bounded prompts, two default inference calls, imperfect OCR, and occasional page-anchor issues in Google Drive. Larger local models cost time and VRAM; measure quality against latency rather than assuming larger is always better.
 
-A repeatable test should record: the exact question, selected model, pipeline, full answer, selected and cited passage text, physical page numbers, response time, provider token counts where available, and any failure reason. Starting with Version 1.1, the direct route also records the structured paragraph output even when citation binding fails, so the raw model response remains available for debugging without being shown as a trusted answer. An answer with nonexistent sources must fail provenance checks; an answer with real sources can still be wrong. Do not optimize solely for the older checker's approval rate.
+**Next:** stabilize a genuinely useful Aristotle pilot, add accurate book/author/edition/PDF metadata, introduce a persistent retrieval layer over the entire existing full-text corpus, support questions and source selection spanning multiple books, and deploy a sustainable public inference service. GitHub Pages can host the static frontend but not Python or Ollama.
 
-The pilot includes five fixed regression prompts and one synthesis prompt. More varied questions and independently reviewed examples will be needed before a public demo is treated as trustworthy.
-
-## Limits and future work
-
-- **One book loaded at a time:** there is no corpus-wide catalog resolver or persisted multi-book search index in Version 1.
-- **Corpus quality matters:** repaired extracted text is the source of truth for the application, but it may still contain OCR artifacts. Fix text in the data repository rather than hardcoding corrections into prompts.
-- **PDF navigation:** Google Drive may ignore page fragments. Displayed physical page numbers provide a fallback, but a reliable page-specific viewer remains desirable.
-- **Context constraints:** stronger models demand more VRAM at larger context sizes. Keep evidence selection bounded and measure actual local performance.
-- **No public inference host yet:** GitHub Pages serves a static site but cannot run the Python/Ollama backend.
-
-The next engineering steps are: choose the more useful single-book answering method based on **human-scored** test results; stabilize a local Aristotle demo; add per-book metadata and persistent retrieval across the entire library; design cross-book evidence selection and synthesis; then deploy a sustainable public inference service.
+Do not introduce author-specific answer patches to the shared pipeline. Prefer improvements demonstrated across questions and measured by **accuracy, completeness, explanation, grounding, readability, and responsiveness**.
 
 ## Working on the project
 
-The code uses the Python standard library and Ollama's local HTTP interface. Run **python -m unittest discover -s tests -v** to check contracts and API behavior. Source texts are stored in the separate repository. Avoid answer-specific patch tables and escalating verification complexity unless comparisons demonstrate that a change actually improves the quality readers experience.
+This repository uses the Python standard library and local Ollama. Run **python -m unittest discover -s tests -v** for HTTP and source-integrity contracts. GitHub Actions creates a small synthetic book for automated tests, but those tests do **not** connect to Ollama, measure philosophical correctness or prove public deployment readiness.
+
+Keep the documentation oriented toward the current useful system and the larger Antilogicalism mission, not a chronology of earlier experimental builds.
