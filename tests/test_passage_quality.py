@@ -100,6 +100,15 @@ class PassageQualityTests(unittest.TestCase):
         self.assertEqual(verdict["kind"], "navigation")
         self.assertLess(verdict["ranking_multiplier"], .10)
 
+    def test_ocr_damaged_chapter_header_is_not_treated_as_a_claim(self):
+        noisy = ("STRUGGLE FOR ExIstENCE . . «6 6 + +e © @ ee oe oe "
+                 "GE CHAPTER IV")
+        self.assertEqual(source_form(noisy)["kind"], "navigation")
+        # A legitimate sentence referring to a chapter must remain prose.
+        sentence = ("The author revisits the argument in Chapter IV "
+                    "and explains why a former distinction matters.")
+        self.assertEqual(source_form(sentence)["kind"], "prose")
+
     def test_long_contents_list_is_detected_even_with_many_topic_words(self):
         self.assertEqual(source_form(CONTENTS)["reason"], "contents_list")
         self.assertEqual(source_form(THUCYDIDES_HEADING)["kind"], "navigation")
