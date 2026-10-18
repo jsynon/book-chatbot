@@ -130,7 +130,10 @@ def curate_candidates(candidates, question, max_results=24):
         return original, []
     clean = [p for p in original
              if source_form(p.get("text", ""))["kind"] == "prose"]
-    if len(clean) < 4:
+    # Two real prose candidates are already more useful than adding a
+    # heading as purported proof. With one or none, preserve thin/OCR
+    # retrieval instead of silently suppressing all available evidence.
+    if len(clean) < 2:
         return original, []
     removed = [
         {"source_id": p["source_id"],
