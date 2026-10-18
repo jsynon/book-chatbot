@@ -206,6 +206,90 @@
       })
       .catch(() => { buildStatus.textContent = 'Local app build: unavailable'; });
 
+    // Catalog browsing never opens a book shard or calls Ollama. The server
+    // loads selected source text only on the first actual question about it.
+    function showBookOptions() {
+      const term = bookFilter.value.trim().toLocaleLowerCase();
+      const selected = bookSelect.value || defaultBookId;
+      const choices = libraryBooks.filter(book =>
+        book.title.toLocaleLowerCase().includes(term) ||
+        (book.author || '').toLocaleLowerCase().includes(term)
+      );
+      const visible = term ? choices.slice(0, 80) : choices.slice(0, 60);
+      const current = libraryBooks.find(book => book.book_id === selected);
+      if (current && !visible.some(book => book.book_id === current.book_id)) {
+        visible.unshift(current);
+      }
+      bookSelect.replaceChildren();
+      for (const book of visible) {
+        const option = document.createElement('option');
+        option.value = book.book_id;
+        option.textContent = book.title +
+          (book.available ? '' : ' (text or PDF unavailable)');
+        option.disabled = !book.available;
+        bookSelect.append(option);
+      }
+      if (visible.some(book => book.book_id === selected)) {
+        bookSelect.value = selected;
+      } else if (visible.some(book => book.available)) {
+        bookSelect.value = visible.find(book => book.available).book_id;
+      }
+      bookStatus.textContent = term
+        ? choices.length + ' matching titles (showing at most 80)'
+        : libraryBooks.length + ' catalog entries; choose a title or search by author';
+    }
+
+    async function loadBooks() {
+      try {
+        const response = await fetch('/api/books', {cache:'no-store'});
+        if (!response.ok) throw Error('Catalog endpoint unavailable');
+        const data = await response.json();
+        libraryBooks = Array.isArray(data.books) ? data.books : [];
+        defaultBookId = data.default_book_id || '7';
+        if (!libraryBooks.length) throw Error('Catalog is empty');
+        showBookOptions();
+        bookSelect.value = defaultBookId;
+        if (!data.catalog_available) {
+          bookStatus.textContent = 'Website catalog not found locally; only the pilot is selectable. ' +
+            'Keep antilogicalism and book-chatbot in sibling folders or set BOOK_CHATBOT_CATALOG.';
+        }
+      } catch (error) {
+        bookStatus.textContent = 'Library catalog unavailable: ' + error.message;
+      }
+      setActiveBook(false);
+    }
+
+    function setActiveBook(resetConversation = true) {
+      const book = libraryBooks.find(item => item.book_id === bookSelect.value);
+      if (!book) return;
+      const isPilot = book.book_id === defaultBookId;
+      readingTitle.textContent = isPilot ? 'Read with Aristotle' :
+        'Read ' + (book.work_title || book.title);
+      readingIntro.textContent = 'Ask a question about ' + book.title +
+        '. Explanations link back to original PDF pages.';
+      aristotlePrompts.hidden = !isPilot;
+      developerTests.hidden = !isPilot;
+      coverage.textContent = isPilot
+        ? 'Aristotle is the pilot; select another book to explore the larger library.'
+        : 'This chat searches only the selected work; cross-book retrieval is a future milestone.';
+      if (resetConversation) {
+        history.length = 0; // Never mix conversation history across authors.
+        thread.replaceChildren();
+        question.value = '';
+        status.textContent = 'New book selected. Your conversation has been cleared.';
+      }
+    }
+
+    bookFilter.addEventListener('input', () => {
+      const selected = bookSelect.value;
+      showBookOptions();
+      // Filtering is NOT a book switch; the dropdown change event is.
+      if (selected && [...bookSelect.options].some(opt => opt.value === selected)) {
+        bookSelect.value = selected;
+      }
+    });
+    bookSelect.addEventListener('change', () => setActiveBook());
+
     function makeDiagnosticSummary(data) {
       // Use the server's final-outcome summary instead of searching every
       // retry reason as one string. Earlier errors remain visible as a separate
