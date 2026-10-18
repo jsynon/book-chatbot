@@ -60,9 +60,17 @@ def source_form(text):
         list_separators >= 3 and internal_sentences == 0
         and (count >= 15 or list_separators >= 5)
     )
+    # OCR can scatter punctuation through a table-of-contents line:
+    # "STRUGGLE FOR ExIstENCE . . «6 6 + +e ... CHAPTER IV".
+    # An explicit chapter numeral in a short NONSENTENCE record is strong
+    # evidence of page furniture; chapter references in full prose stay.
+    embedded_chapter = bool(re.search(
+        r"\bchapter\s+(?:[IVXLC]+|\d+)\b", plain, re.I
+    ))
     heading = bool(
         count <= 17 and (
             leader or label or (count >= 3 and cap_fraction >= .70)
+            or (embedded_chapter and not has_terminal_sentence)
         ) and not (has_terminal_sentence and count >= 9)
     )
     # Isolated running headers/page labels with no full proposition.
