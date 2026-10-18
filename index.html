@@ -284,8 +284,8 @@
   <main class="companion-content" id="content">
     <header>
       <div class="eyebrow">Antilogicalism · Reading Companion</div>
-      <h1 id="reading-title">Read with Aristotle</h1>
-      <p class="intro" id="reading-intro">Ask about an idea in the <em>Nicomachean Ethics</em>. Answers are grounded in passages from the book and cite the PDF pages to check for yourself.</p>
+      <h1 id="reading-title">Read across the Antilogicalism Library</h1>
+      <p class="intro" id="reading-intro">Explore books, authors, and ideas through passages from the Antilogicalism library, with links to original source pages.</p>
     </header>
     <aside id="developer-mode-nav" aria-label="Local development workspace">
       <p><strong>Developer Mode</strong> · Local testing workspace. Model selection, retrieval experiments, diagnostics, and benchmark runs are available below. This page is not intended for public visitors.</p>
@@ -296,8 +296,8 @@
       <div class="field">
         <label for="search-scope">Read from</label>
         <select id="search-scope">
+          <option value="library" selected>Across the Antilogicalism Library</option>
           <option value="book">One selected book</option>
-          <option value="library">Across the Antilogicalism Library</option>
         </select>
       </div>
       <div id="book-picker" class="book-picker">
@@ -406,12 +406,12 @@
     <section id="thread" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></section>
     <form id="chat-form">
       <label for="question">Your question</label>
-      <textarea id="question" placeholder="Ask a question about the book…" required></textarea>
+      <textarea id="question" placeholder="Ask about a book, author, or idea…" required></textarea>
       <div class="submit-row">
-        <span id="book-coverage">Select one book or search for passages across several books.</span>
+        <span id="book-coverage">Explore ideas across the library using cited original passages.</span>
         <div class="composer-actions">
           <button id="clear-chat" type="button" class="secondary-action">New conversation</button>
-          <button id="send" type="submit">Ask the book</button>
+          <button id="send" type="submit">Ask the Companion</button>
         </div>
       </div>
       <p class="keyboard-hint">Tip: Ctrl+Enter (or ⌘+Enter on Mac) sends your question.</p>
@@ -624,6 +624,7 @@
     const coverage = document.getElementById('book-coverage');
     let libraryBooks = [];
     let defaultBookId = '7';
+    let activeBookId = '7';
     const pipelineSelect = document.getElementById('pipeline');
     const comparePipelinesToggle = document.getElementById('compare-pipelines');
     const modelStatus = document.getElementById('model-status');
@@ -661,16 +662,12 @@
     // loads selected source text only on the first actual question about it.
     function showBookOptions() {
       const term = bookFilter.value.trim().toLocaleLowerCase();
-      const selected = bookSelect.value || defaultBookId;
+      const selected = activeBookId;
       const choices = libraryBooks.filter(book =>
         book.title.toLocaleLowerCase().includes(term) ||
         (book.author || '').toLocaleLowerCase().includes(term)
       );
       const visible = choices; // All catalog entries are accessible; search narrows them.
-      const current = libraryBooks.find(book => book.book_id === selected);
-      if (current && !visible.some(book => book.book_id === current.book_id)) {
-        visible.unshift(current);
-      }
       bookSelect.replaceChildren();
       for (const book of visible) {
         const option = document.createElement('option');
@@ -682,8 +679,10 @@
       }
       if (visible.some(book => book.book_id === selected)) {
         bookSelect.value = selected;
-      } else if (visible.some(book => book.available)) {
-        bookSelect.value = visible.find(book => book.available).book_id;
+      } else {
+        // Filtering does not select a different reading scope or active book.
+        // A matching item can be picked explicitly from the dropdown.
+        bookSelect.selectedIndex = -1;
       }
       bookStatus.textContent = term
         ? choices.length + ' matching titles'
@@ -698,6 +697,10 @@
         if (!result.available) {
           const option = searchScope.querySelector('option[value="library"]');
           option.disabled = true;
+          if (searchScope.value === 'library') {
+            searchScope.value = 'book';
+            setActiveBook(false);
+          }
           scopeStatus.textContent = DEVELOPER_MODE ?
             'Full-text manifest missing from local antilogicalism-library-data/data-' +
               result.corpus_version : 'Across-library reading is temporarily unavailable.';
@@ -708,6 +711,10 @@
         }
       } catch (error) {
         searchScope.querySelector('option[value="library"]').disabled = true;
+        if (searchScope.value === 'library') {
+          searchScope.value = 'book';
+          setActiveBook(false);
+        }
         scopeStatus.textContent = DEVELOPER_MODE ?
           'Whole-library search unavailable: ' + error.message :
           'Across-library reading is temporarily unavailable.';
@@ -721,9 +728,9 @@
         const data = await response.json();
         libraryBooks = Array.isArray(data.books) ? data.books : [];
         defaultBookId = data.default_book_id || '7';
+        activeBookId = defaultBookId;
         if (!libraryBooks.length) throw Error('Catalog is empty');
         showBookOptions();
-        bookSelect.value = defaultBookId;
         if (!data.catalog_available) {
           bookStatus.textContent = 'Website catalog not found locally; only the pilot is selectable. ' +
             'Keep antilogicalism and book-chatbot in sibling folders or set BOOK_CHATBOT_CATALOG.';
@@ -732,7 +739,7 @@
         bookStatus.textContent = 'Library catalog unavailable: ' + error.message;
       }
       setActiveBook(false);
-      loadLibraryStatus();
+      await loadLibraryStatus();
     }
 
     async function loadDisciplineCases() {
@@ -787,6 +794,7 @@
         bookFilter.value = book.title;
         showBookOptions();
         bookSelect.value = book.book_id;
+        activeBookId = book.book_id;
       }
       pipelineSelect.value = 'evidence';
       setActiveBook(); // Reset conversations when changing works or scopes.
@@ -804,7 +812,7 @@
 
     function setActiveBook(resetConversation = true) {
       const acrossLibrary = searchScope.value === 'library';
-      const book = libraryBooks.find(item => item.book_id === bookSelect.value);
+      const book = libraryBooks.find(item => item.book_id === activeBookId);
       if (acrossLibrary && !['evidence', 'direct'].includes(pipelineSelect.value)) {
         pipelineSelect.value = 'evidence';
       }
@@ -815,6 +823,8 @@
       bookPicker.hidden = acrossLibrary;
       if (acrossLibrary) {
         readingTitle.textContent = 'Read across the Antilogicalism Library';
+        question.placeholder = 'Ask about a book, author, or idea…';
+        send.textContent = 'Ask the Companion';
         readingIntro.textContent = 'Compare ideas and authors using passages from several indexed books, with source-specific PDF citations.';
         aristotlePrompts.hidden = true;
         libraryPrompts.hidden = false;
@@ -823,6 +833,8 @@
           'Experimental: retrieves selected passages from up to four books for each question.' :
           'Compare ideas using passages from a selection of works.';
       } else if (book) {
+        question.placeholder = 'Ask a question about this book…';
+        send.textContent = 'Ask about this book';
         const isPilot = book.book_id === defaultBookId;
         readingTitle.textContent = isPilot ? 'Read with Aristotle' :
           'Read ' + (book.work_title || book.title);
@@ -845,15 +857,12 @@
       }
     }
 
-    bookFilter.addEventListener('input', () => {
-      const selected = bookSelect.value;
-      showBookOptions();
-      // Filtering is NOT a book switch; the dropdown change event is.
-      if (selected && [...bookSelect.options].some(opt => opt.value === selected)) {
-        bookSelect.value = selected;
-      }
+    bookFilter.addEventListener('input', showBookOptions);
+    bookSelect.addEventListener('change', () => {
+      if (!bookSelect.value) return;
+      activeBookId = bookSelect.value;
+      setActiveBook();
     });
-    bookSelect.addEventListener('change', () => setActiveBook());
     searchScope.addEventListener('change', () => setActiveBook());
 
     function makeDiagnosticSummary(data) {
@@ -1287,7 +1296,7 @@
               const response = await fetch('/api/chat', {
                 method:'POST',
                 headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({question:prompt, history:[], book_id:bookSelect.value, scope:searchScope.value, model, pipeline, diagnostics:true})
+                body:JSON.stringify({question:prompt, history:[], book_id:activeBookId, scope:searchScope.value, model, pipeline, diagnostics:true})
               });
               const data = await response.json();
               entry.http_status = response.status;
@@ -1426,7 +1435,7 @@
           body: JSON.stringify({
             question:text,
             scope:searchScope.value,
-            book_id:bookSelect.value,
+            book_id:activeBookId,
             history:history.slice(-6),
             model:modelSelect.value,
             pipeline:pipelineSelect.value,
