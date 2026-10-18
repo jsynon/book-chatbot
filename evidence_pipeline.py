@@ -23,6 +23,7 @@ from retrieval_relevance import refers_to_previous_question
 from passage_quality import source_form, source_kind, discourse_cues, curate_candidates
 from evidence_coverage import recover_gap_evidence
 from quote_audit import audit_quotes
+from evidence_structure import reserve_question_parts, final_part_coverage
 
 
 CANDIDATE_LIMIT = 24
@@ -392,6 +393,25 @@ def choose_evidence(question, history, index, facets, provider, log,
         finally:
             stage["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
 
+    # v1.4.6 release-gate improvement: deterministic source coverage of
+    # the reader's distinct question parts. No model is asked whether to
+    # initiate this retrieval. It uses only already-indexed original pages,
+    # bounded to two extra source anchors within the same six-slot budget.
+    # Explicit author coverage still runs immediately afterward.
+    if len(facets) > 1 and hasattr(index, "rank"):
+        candidates, anchors, facet_audit = reserve_question_parts(
+            index, facets, candidates, anchors,
+            max_primary=PRIMARY_LIMIT
+        )
+        stage["question_part_coverage"] = facet_audit
+        stage["selected_ids"] = [p["source_id"] for p in anchors]
+    else:
+        stage["question_part_coverage"] = {
+            "status": "not_applicable",
+            "parts": [], "added": [], "replaced_source_ids": [],
+            "model_calls_added": 0,
+        }
+
     # Source coverage belongs to a PERSON, not whichever particular volume
     # was highest-ranked. A citation from Aristotle's Ethics satisfies an
     # Aristotle requirement even if the Works anthology was also selected.
@@ -454,6 +474,10 @@ def choose_evidence(question, history, index, facets, provider, log,
         stage["reason"] = "No complete selected passage fits the evidence budget"
     selected, added = select_neighbor_context(index, bounded, candidates)
     stage["bounded_ids"] = [p["source_id"] for p in bounded]
+    stage["final_facet_evidence"] = (
+        final_part_coverage(index, facets, bounded) if len(facets) > 1
+        else []
+    )
     stage["added_context"] = added
     return candidates, selected, bounded, stage
 
@@ -609,6 +633,11 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             "of the cited original passages. Do not lightly edit grammar, "
             "change words, or combine distant pieces into a supposed "
             "literal quotation. Never invent quotation wording. "
+            "For a multi-part question, address EACH distinct part, "
+            "rather than repeating the first part with different citations. "
+            "Use the supplied question-part source map as a retrieval hint, "
+            "not as a verdict that the answer is supported. If a part has "
+            "no defensible evidence, state the limitation directly. "
             "When the evidence is incomplete, say 'these passages do not "
             "establish...' rather than pretending the whole book is silent. "
             "Return JSON with 'paragraphs', each having 'text' and 1 to 4 "
@@ -654,8 +683,15 @@ def answer_evidence_first(question, history, index, facets, provider, build,
         if (getattr(index, "is_cross_library", False)
                 and not refers_to_previous_question(question, index.tokenize)):
             conversation = []
+        # These are lexical source maps, not determinations of whether
+        # a claim has been proved. The model must either address each part
+        # from the available originals or acknowledge insufficient evidence.
+        coverage_map = stage.get("final_facet_evidence", [])
         user = (
             "Reader's question:\n" + question
+            + "\n\nQuestion-part source map (lexical evidence only; "
+              "NOT semantic verification):\n"
+            + json.dumps(coverage_map, ensure_ascii=False)
             + "\n\nRecent conversation:\n"
             + json.dumps(conversation, ensure_ascii=False)
             + "\n\nSelected original-source arguments. Inside each section, "
