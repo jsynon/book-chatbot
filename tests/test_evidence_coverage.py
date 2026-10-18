@@ -29,10 +29,13 @@ CAUSE = ("A long conflict arose from the growing strength of one group and "
          "underlying reason from the diplomatic quarrels that followed.")
 EXAMPLE = ("An account of the Epidamnus dispute explains the competing "
            "interests of the settlers, neighbors and their respective "
-           "allies before the larger struggle began.")
+           "allies before the larger struggle began. It traces the stated "
+           "complaints to their first diplomatic confrontation.")
 EXAMPLE_TWO = ("The Potidaea dispute developed when the local authorities "
                "and the powerful maritime city demanded incompatible "
-               "allegiances and military preparations.")
+               "allegiances and military preparations. This immediate "
+               "quarrel preceded the broad military struggle between the "
+               "two rival powers.")
 DEFENSE = ("The investigator described another person's argument as if it "
            "granted unlimited permission to break the law. That formulation "
            "was explicitly challenged and qualified by the thinker.")
