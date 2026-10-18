@@ -147,6 +147,44 @@ class EvidenceFirstTests(unittest.TestCase):
         self.assertTrue(all(p["id"].startswith("S") for p in result["sources"]))
         self.assertEqual(len(provider.calls), 2)
 
+    def test_selector_can_choose_decisive_evidence_outside_old_top_eight(self):
+        pages = [
+            {"page": page, "text": (
+                "Calibration requires a comparison with a reference instrument. "
+                "The subsequent measurement varies with the individual case "
+                "and the measurement conditions in the laboratory. "
+                + " ".join(["Additional explanatory context"] * 3)
+            )}
+            for page in range(1, 13)
+        ]
+        index = PassageIndex([(BOOK, pages)], app.tokenize)
+        candidates = index.search("calibration", ["calibration"], limit=24)
+        self.assertGreater(len(candidates), 8)
+        decisive = candidates[9]
+        source_id = decisive["source_id"]
+        provider = StubProvider(
+            selected_ids=[source_id],
+            output={
+                "paragraphs": [{
+                    "text": ANSWER_TEXT,
+                    "source_ids": [source_id],
+                }],
+                "follow_up_questions": [],
+            }
+        )
+        result = answer_evidence_first(
+            "calibration", [], index, ["calibration"], provider, "v1.2-test"
+        )
+        self.assertEqual(result["outcome"], "draft")
+        self.assertIn("[" + source_id + "]", result["answer"])
+        self.assertIn(decisive["pages"][0], [
+            page for source in result["sources"] for page in source["pages"]
+        ])
+        self.assertEqual(
+            result["diagnostics"]["retrieval"]["evidence_selection"]["selected_ids"],
+            [source_id]
+        )
+
     def test_selector_exception_reverts_to_ranked_evidence(self):
         provider = StubProvider(selector_error="Invalid selection JSON")
         result, _ = self.run_evidence(provider)
