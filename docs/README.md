@@ -2,7 +2,7 @@
 
 The [Antilogicalism](https://jsynon.github.io/antilogicalism/) Reading Companion is a primary-source-grounded local reading assistant. It is intended to cover the full digital library, not only the current Aristotle pilot. The application deliberately separates bibliographic metadata, indexed PDF text, retrieval, answer composition and verification of citation identities.
 
-## Architecture in v1.4
+## Architecture in v1.4.1
 
 The library now has **two supported retrieval scopes** sharing the same answer pipeline.
 
@@ -20,12 +20,12 @@ The manifest maps each global page ID to a book ID. Each two-character term part
 
 ### Query flow
 
-1. **Scope and topic.** In one-book mode, use the v1.3 cached passage index. In across-library mode, normalize the reader's meaningful words, exclude generic question framing, and detect any explicitly named authors from real catalog metadata. No model call is needed for discovery.
+1. **Scope and topic.** In one-book mode, use the established cached passage index. In across-library mode, separate subject terms from question framing such as "different authors," "library," or "question." Normalize possessives and exclude generic catalog bylines (including "Various authors") from named-person detection. Group all catalog works by each actually named author. This deterministic extraction supports any topic words; it is not an encyclopedia of philosophy or a paid semantic search call.
 2. **Find global page matches.** Read delta postings for at most eight query words, validate page IDs against the versioned manifest and aggregate evidence strength for each page. Words appearing on fewer pages get more weight. A malformed manifest or broken postings fails with an actionable error rather than fake evidence.
-3. **Choose bounded books and pages.** Prefer books with strong multi-term pages and respect explicitly named author groups; if a requested author lacks matching indexed passages, report that limitation. Open no more than **four compressed book shards**, retain no more than **nine original PDF pages per book**, and diversify similarly scored pages across the book so later arguments are not systematically excluded. The global mode doesn't add these full-book indexes to the one-book cache.
-4. **Retrieve passages with book diversity.** Reconstruct original passages from just those source pages and their immediate neighbors. The 24-candidate pool alternates relevant passages across selected books. Every passage includes its own book ID, title, PDF identity, data version, physical pages and deterministic passage ID.
-5. **Choose evidence.** One local Ollama call selects up to six decisive candidates. For a specifically named author comparison, deterministic selection coverage preserves at least one *real retrieved source* per represented author if the model tries to omit it. This protects coverage, not interpretive correctness.
-6. **Read the argument, then compose.** Preceding or following argument-dependent passages are arranged **in original reading order** with distinct citations. The second Ollama call writes an explanation grounded in the selected sections, maintaining which writer claims what. There is **no model reviewer or automatic rewrite loop**.
+3. **Choose bounded books and pages.** Prefer books with multiple subject terms on the same page, strong topic density, and title/subject metadata matches; discourage incidental matches in giant collections without excluding collections altogether. Explicit named-author comparisons allocate coverage by *person*, with up to two works per author when space permits. General surveys prioritize distinct individually attributed authors over four generic anthology bylines. If a requested author's matched books are unavailable, report that limitation. Open no more than **four compressed book shards**, retain no more than **nine original PDF pages per book**, and diversify similarly scored pages across the argument. The global mode doesn't add full-book indexes to the one-book cache.
+4. **Retrieve passages with book diversity.** Reconstruct original passages from just those source pages and their immediate neighbors. Rerank original passages by coverage of the reader's *subject terms* and their proximity in the actual text, rather than accepting results that happen to mention "library" or "question." The 24-candidate pool alternates across selected books. Every passage includes its own book ID, title, author metadata (when available), PDF identity, data version, physical pages and deterministic passage ID.
+5. **Choose evidence.** One local Ollama call selects up to six decisive candidates. For a specifically named comparison, deterministic selection coverage preserves at least one *real retrieved source* from any of the author's selected works if the model tries to omit that **author**. Citation coverage is checked the same way: a citation to Aristotle's *Ethics* satisfies Aristotle, even if an Aristotle anthology also ranked highly. No arbitrary specific volume is required. This protects representation, not interpretive correctness.
+6. **Read the argument, then compose.** Preceding or following argument-dependent passages are arranged **in original reading order** with distinct citations. The model sees author and subject metadata and is reminded to distinguish a fictional character's speech or an anthology excerpt from an author's own endorsed view. The second Ollama call writes the explanation. There is **no model reviewer or automatic rewrite loop**, and those reminders cannot guarantee literary or philosophical accuracy.
 7. **Validate citation identity.** The shared Python binder checks every output source ID, including optional inline or grouped references, against the passages actually supplied. Unknown, conflicting or excessive references fail closed. The browser makes source links with the correct **individual book's PDF file ID**, and displays its title alongside the citation.
 
 Source excerpts and page links come from the compressed texts and verified metadata, never from the model's own assertion of provenance. Book prose is treated as untrusted data and rendered as text, not as executable HTML.
@@ -41,6 +41,12 @@ Source excerpts and page links come from the compressed texts and verified metad
 
 The browser defaults to **One selected book**, preserving the usable Aristotle demo; the **Across library (experimental)** scope is opt-in. It resets conversation history when switching scopes, disables the single-book picker in global mode and labels all cited books clearly. The old comparison controls remain collapsed and optional; Gemma3:12b is the primary local development model.
 
+## What v1.4.1 changed on real v47 data
+
+The real library smoke now extracts only **happiness, good, life** from the Aristotle/Tolstoy question and retrieves candidates from Aristotle's *Nicomachean Ethics* and *Politics* plus Tolstoy's *A Confession* and *War and Peace*. In particular, it no longer gives three of four selected book slots to Aristotle.
+
+For the broad meaning-of-life question it extracts only **life, meaning**, recognizes **zero** named authors (correctly ignoring the words "different authors"), and selects *Man's Search for Meaning* (Frankl), *A Confession* (Tolstoy), *Man Has No Nature* (Ortega), and *How to Make Our Ideas Clear* (Peirce). Some of those passages may still be tangential. The smoke validates **retrieval**, not Gemma's eventual answer.
+
 ## Verified behavior and remaining limits
 
 The v47 manifest, postings encoding and matching page IDs were inspected against the **actual public library-data repository**. A read-only smoke fetched just the manifest, relevant compressed partitions, Aristotle's *Nicomachean Ethics* and Tolstoy's *A Confession*. It confirmed both named works appear in the result pool, with correct original PDF IDs and pages, without loading the other 642 book shards. Offline fixtures exercise equivalent data structures with deterministic test providers.
@@ -51,7 +57,7 @@ The library ranking currently relies on lexical term matches and page-level pres
 
 ## Testing and future work
 
-Run the Python synthetic contract suites for the pipeline, catalog and global index. The GitHub Actions workflow checks Python imports/compilation, browser script syntax and those offline contracts. For a manually requested compatibility check against the public v47 data, run **python scripts/audit_library_index.py --remote** or **python scripts/smoke_global_retrieval.py**. The real-data smoke makes public file downloads but **does not send requests to Ollama** or modify source data. A local question using Gemma3:12b is still necessary to test answer quality and latency.
+Run the Python synthetic contract suites for the pipeline, catalog, global index and intent-aware author/topic retrieval. The GitHub Actions workflow checks Python imports/compilation, browser script syntax and those offline contracts. For a manually requested compatibility check against the public v47 data, run **python scripts/audit_library_index.py --remote** or **python scripts/smoke_relevance_v141.py**. The real-data smoke makes public file downloads but **does not send requests to Ollama** or modify source data. A local question using Gemma3:12b is still necessary to test answer quality and latency.
 
 Near-term goals:
 
