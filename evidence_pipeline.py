@@ -205,7 +205,34 @@ def render_argument_context(index, anchors, selected):
             if passage.get("context_for") == anchor["source_id"]
         ]
         block.sort(key=lambda p: positions.get(p["passage_id"], float("inf")))
+        # Core excerpts often belong to ONE continuing dialogue but were
+        # independently selected and displayed as separate sections. Connect
+        # them by actual original passage position, without duplicating texts
+        # or speculating about the speaker: source S17 on PDF 464 can provide
+        # vital context for source S8 on PDF 465.
+        at = positions.get(anchor["passage_id"])
+        near = []
+        for other in anchors:
+            if other["passage_id"] == anchor["passage_id"]:
+                continue
+            op = positions.get(other["passage_id"])
+            if (at is None or op is None or not 0 < abs(at - op) <= 8
+                    or other["book_id"] != anchor["book_id"]
+                    or other["corpus_version"] != anchor["corpus_version"]
+                    or min(abs(a - b) for a in anchor["pages"]
+                           for b in other["pages"]) > 1):
+                continue
+            near.append({
+                "source_id": other["source_id"], "pages": other["pages"],
+                "reading_relation": "earlier" if op < at else "later",
+                "source_kind": "other_selected_original_passage",
+            })
+        near.sort(key=lambda item: positions.get(
+            next(p["passage_id"] for p in anchors
+                 if p["source_id"] == item["source_id"]), 10**9
+        ))
         sections.append({
+            "nearby_selected_evidence": near,
             "book_id": anchor["book_id"],
             "book_title": anchor["title"],
             "book_author": anchor.get("author", ""),
@@ -632,6 +659,10 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             "is the retrieved core, other entries clarify its logical role. "
             "Each entry's quotation, report, and opening-fragment flags "
             "describe visible textual form, NOT authoritative attributions. "
+            "Nearby selected evidence links point to OTHER original passages "
+            "in the same work, in source-page order. Check those linked "
+            "sections to resolve which speaker is reporting whose thesis; "
+            "mere proximity cannot prove the speaker or endorsement. "
             "Use original reading order for local context; distant excerpts "
             "are separate scenes or arguments unless the text links them. "
             "When several books appear, identify whose text supports "
