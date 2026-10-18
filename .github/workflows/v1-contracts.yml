@@ -47,11 +47,6 @@ jobs:
           }
           console.log('Browser script syntax and comparison controls OK.');
           JS
-      - name: Check real v47 book/page compatibility (temporary audit)
-        env:
-          BOOK_CHATBOT_BOOK_FILE: ${{ runner.temp }}/book-7.json.gz
-        run: |
-          python scripts/smoke_global_retrieval.py
       - name: Test bounded library retrieval and evidence pipeline contracts
         env:
           BOOK_CHATBOT_BOOK_FILE: ${{ runner.temp }}/book-7.json.gz
