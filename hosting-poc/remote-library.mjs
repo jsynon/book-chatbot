@@ -27,6 +27,31 @@ export function previewAtWordBoundary(text, max = 550) {
   const lastSpace = before.lastIndexOf(' ');
   return (lastSpace > max / 2 ? before.slice(0, lastSpace) : before) + '…';
 }
+// This is only a source-form check, not a test of historical truth.
+// A long alphabetical index has many page locators but few real sentences.
+export function isNavigationPage(text) {
+  const raw = String(text || '').trim();
+  if (/^(?:(?:\d{1,4}|[ivxlc]+)\s+)?(?:index|table of contents|contents)\b/i.test(raw)) return true;
+  const words = raw.match(/[a-z]+/gi) || [];
+  const refs = raw.match(/\b\d{1,4}(?:[-–]\d{1,4})?\b/g) || [];
+  const sentences = (raw.match(/[.!?]["')\]]?\s+(?=[A-Z])/g) || []).length;
+  return words.length >= 20 && refs.length >= 10 &&
+    refs.length / words.length >= 0.12 &&
+    (raw.split(',').length >= 16 || raw.split(';').length >= 4) &&
+    sentences <= 2;
+}
+function pageProseScore(text, terms) {
+  if (isNavigationPage(text)) return -Infinity;
+  const words = new Set(String(text || '').toLowerCase().match(/[a-z0-9]+/g) || []);
+  const matched = terms.filter(term => words.has(term)).length;
+  if (!matched) return -Infinity;
+  const sentenceBoundaries = (text.match(/[.!?]["')\]]?\s+(?=[A-Z])/g) || []).length;
+  // A genuine multi-sentence explanation is preferable to a list, header
+  // or isolated quoted name. Never fabricate an answer from raw page hits.
+  return 4 * matched + Math.min(4, sentenceBoundaries) +
+    (words.size >= 40 ? 1 : 0);
+}
+
 export class RemoteLibrary {
   // Call window.fetch through its owning global object. Storing the bare
   // browser method and later invoking it as this.fetcher() can throw
@@ -87,8 +112,17 @@ export class RemoteLibrary {
     const prefixes = [...new Set(terms.map(t => t.slice(0,2)))];
     const data = new Map(await Promise.all(prefixes.map(async p => [p, await this.partition(p)])));
     const scores = new Map();
+    let anchorTerm = '', anchorCount = Infinity, anchorPages = [];
     for (const term of terms) {
       const list = decodeDeltas(data.get(term.slice(0, 2))[term] || [], manifest.page_books.length);
+      if (!list.length) continue;
+      // Most distinctive actually indexed query term, not general "war"
+      // or "life". Prefer the longer term for equally frequent postings.
+      if (list.length < anchorCount || (list.length === anchorCount && term.length > anchorTerm.length)) {
+        anchorCount = list.length;
+        anchorTerm = term;
+        anchorPages = list;
+      }
       const idf = Math.log1p(manifest.page_books.length / (list.length + 1));
       for (const id of list) {
         const record = scores.get(id) || {score:0, matched:0};
@@ -97,35 +131,64 @@ export class RemoteLibrary {
         scores.set(id, record);
       }
     }
+    const anchorSet = new Set(anchorPages);
     const ranked = new Map();
     for (const [pageId, score] of scores) {
+      // Do not fill scarce book slots with works that only happen to
+      // mention generic companion terms while omitting the topic anchor.
+      if (anchorTerm && !anchorSet.has(pageId)) continue;
       const id = String(manifest.page_books[pageId]);
       if (bookId && id !== String(bookId)) continue;
       if (!manifest.books[id] || !PDF.test(manifest.books[id].drive_url || '')) continue;
       if (!ranked.has(id)) ranked.set(id, []);
       ranked.get(id).push({id:pageId, ...score});
     }
-    const books = [...ranked].map(([id, hits]) => {
+    let books = [...ranked].map(([id, hits]) => {
       hits.sort((a,b) => b.matched - a.matched || b.score - a.score || a.id - b.id);
-      return {id, hits, score:hits[0].score + 3 * hits[0].matched + Math.log1p(hits.length)};
-    }).sort((a,b) => b.score - a.score || Number(a.id) - Number(b.id));
+      const titleTokens = new Set(String(manifest.books[id].title || '').toLowerCase().match(/[a-z0-9]+/g) || []);
+      const overlap = terms.filter(term => titleTokens.has(term)).length;
+      return {id, hits, score:hits[0].score + 3 * hits[0].matched +
+        Math.log1p(hits.length) + 10 * overlap};
+    });
+    // If some books have joint topic terms, don't force single-term
+    // incidental mentions into the limited set of cited books.
+    if (books.some(book => book.hits[0].matched >= 2)) {
+      books = books.filter(book => book.hits[0].matched >= 2);
+    }
+    books.sort((a,b) => b.score - a.score || Number(a.id) - Number(b.id));
     const sources = [];
-    for (const book of books.slice(0, Math.min(maxBooks, 3))) {
+    let booksScanned = 0, discardedNavigation = 0;
+    const bookLimit = Math.max(1, Math.min(maxBooks, 3));
+    const pageLimit = Math.max(1, Math.min(pagesPerBook, 3));
+    // A small reserve of candidate works allows replacement of an index-
+    // only book, without downloading all 644 book shards.
+    for (const book of books.slice(0, Math.max(bookLimit, Math.min(6, books.length)))) {
+      if (new Set(sources.map(source => source.bookId)).size >= bookLimit) break;
       const meta = manifest.books[book.id];
       const pdfId = PDF.exec(meta.drive_url)[1];
       const shard = await this.jsonGzip('book-' + book.id + '.json');
+      booksScanned++;
       if (!Array.isArray(shard.pages)) throw new Error('Invalid source shard for ' + book.id);
-      const sought = new Set(book.hits.slice(0, Math.min(pagesPerBook, 3)).map(hit => hit.id));
+      // Inspect multiple ranked hits; index pages must not exhaust the two
+      // visible slots before we have considered the actual main text.
+      const relevant = new Map(book.hits.slice(0, 60).map(hit => [hit.id, hit]));
+      const candidates = [];
       for (const item of shard.pages) {
-        if (!sought.has(item.id) || !Number.isSafeInteger(item.page) || item.page <= 0 ||
+        const hit = relevant.get(item.id);
+        if (!hit || !Number.isSafeInteger(item.page) || item.page <= 0 ||
             typeof item.text !== 'string' || !item.text.trim()) continue;
+        const prose = pageProseScore(item.text, terms);
+        if (!Number.isFinite(prose)) { discardedNavigation++; continue; }
+        candidates.push({item, rank:prose + hit.score + 2 * hit.matched});
+      }
+      candidates.sort((a,b) => b.rank - a.rank || a.item.page - b.item.page);
+      for (const {item} of candidates.slice(0, pageLimit)) {
         const url = 'https://drive.google.com/file/d/' + pdfId + '/view?usp=sharing#page=' + item.page;
         sources.push({bookId:book.id, title:meta.title, page:item.page, globalPageId:item.id,
           url, preview:previewAtWordBoundary(item.text), textLength:item.text.length});
-        if (sources.length >= Math.min(maxBooks, 3) * Math.min(pagesPerBook, 3)) break;
       }
     }
-    return {terms, sources:sources.map((item,i) => ({id:'S'+(i+1),...item})),
-      booksScanned:books.length, elapsedMs:Math.round(performance.now() - started)};
+    return {terms, anchorTerm, sources:sources.map((item,i) => ({id:'S'+(i+1),...item})),
+      booksScanned, discardedNavigation, elapsedMs:Math.round(performance.now() - started)};
   }
 }
