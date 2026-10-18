@@ -434,6 +434,12 @@ class WholeLibraryLocator:
             scored, terms, author_groups = self._rank_page_candidates(
                 question, manifest
             )
+            if len(author_groups) > MAX_BOOKS:
+                raise LibrarySearchError(
+                    "Across-library comparison currently supports at most "
+                    "four named authors per question. Narrow the comparison "
+                    "so every requested author can be represented."
+                )
             chosen, required = self._select_books(
                 scored, author_groups, max(1, min(MAX_BOOKS, max_books))
             )
