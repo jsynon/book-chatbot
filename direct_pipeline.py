@@ -19,9 +19,12 @@ MAX_CONTEXT_CHARS = 19000
 MAX_ANSWER_CHARS = 6500
 MAX_PARAGRAPHS = 6
 MAX_REFERENCES_PER_PARAGRAPH = 4
+# Citation recovery can preserve a few extra *already retrieved* IDs when a
+# model cites them in prose but omits them from the structured ID list.
+MAX_RECOVERED_REFERENCES_PER_PARAGRAPH = 6
 
 
-INLINE_CITATION = re.compile(r"\[(S\d+)\]")
+INLINE_CITATION = re.compile(r"\[\s*(S\d+(?:\s*,\s*S\d+)*)\s*\]")
 
 
 def validate_paragraphs(result, allowed_ids, reconciliation_log=None):
@@ -35,9 +38,11 @@ def validate_paragraphs(result, allowed_ids, reconciliation_log=None):
     - Every structured and inline ID must name a SUPPLIED passage.
     - If both sets are nonempty but disjoint, the paragraph is ambiguous:
       refuse it instead of guessing which citation the author intended.
+    - Handle both individual [S1] and grouped [S1, S2] citation markers.
     - Merge partially overlapping sets; retain source-list order and append
       previously omitted inline IDs in first-appearance order.
-    - Never exceed the existing per-paragraph source limit.
+    - Structured citations remain bounded to four. Up to six unique, known
+      IDs can be retained ONLY during reconciliation, never invented.
     - Strip ONLY valid marker tokens; keep the actual prose unchanged.
     - Optionally document recoveries/disagreements in troubleshooting JSON.
 
@@ -68,7 +73,13 @@ def validate_paragraphs(result, allowed_ids, reconciliation_log=None):
         if len(structured) != len(set(structured)):
             raise CompletionError(f"Paragraph {position} repeats a structured source ID")
 
-        inline = list(dict.fromkeys(INLINE_CITATION.findall(raw_text)))
+        markers = list(INLINE_CITATION.finditer(raw_text))
+        inline = list(dict.fromkeys(
+            sid
+            for marker in markers
+            for sid in re.findall(r"S\d+", marker.group(1))
+        ))
+        grouped_markers = sum("," in marker.group(1) for marker in markers)
         structured_set = set(structured)
         inline_set = set(inline)
 
@@ -98,19 +109,26 @@ def validate_paragraphs(result, allowed_ids, reconciliation_log=None):
             )
 
         ids = list(structured) + [sid for sid in inline if sid not in structured_set]
-        if not 1 <= len(ids) <= MAX_REFERENCES_PER_PARAGRAPH:
+        # The structured model contract remains 1..4 IDs. If its citation
+        # groups point to one or two *additional existing* passages, keep
+        # those references instead of discarding the entire useful answer.
+        # Never silently drop an extra inline reference to meet the limit.
+        bound = (MAX_RECOVERED_REFERENCES_PER_PARAGRAPH if markers
+                 else MAX_REFERENCES_PER_PARAGRAPH)
+        if (len(structured) > MAX_REFERENCES_PER_PARAGRAPH
+                or not 1 <= len(ids) <= bound):
             if reconciliation_log is not None:
                 reconciliation_log.append({
                     "paragraph": position, "status": "rejected_count",
                     "structured_ids": list(structured), "inline_ids": inline,
-                    "combined_ids": ids,
+                    "combined_ids": ids, "source_limit": bound,
                 })
             raise CompletionError(
-                f"Paragraph {position} needs one to four source IDs (distinct and known)"
+                f"Paragraph {position} exceeds the safe citation limit"
             )
 
-        # Do not accidentally pass malformed source notation such as [S1,S2]
-        # to the reader as if it were a valid citation.
+        # Do not accidentally pass malformed source notation (such as
+        # [S1 and S2] or [S1, S2, S999x]) as if it were a citation.
         text = INLINE_CITATION.sub("", raw_text).strip()
         if re.search(r"\[S\d[^\]]*\]", text):
             raise CompletionError(
@@ -128,7 +146,8 @@ def validate_paragraphs(result, allowed_ids, reconciliation_log=None):
                 "structured_ids": list(structured), "inline_ids": inline,
                 "added_ids": [sid for sid in inline if sid not in structured_set],
                 "combined_ids": ids,
-                "markers_removed": len(INLINE_CITATION.findall(raw_text)),
+                "markers_removed": len(markers),
+                "grouped_markers_recovered": grouped_markers,
             })
         used_ids.update(ids)
         rendered.append(text + " " + " ".join(f"[{sid}]" for sid in ids))
