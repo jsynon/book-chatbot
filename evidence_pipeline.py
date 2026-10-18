@@ -19,6 +19,7 @@ from direct_pipeline import (
 )
 from grounded_pipeline import object_schema, render_passages, source_payload
 from inference import CompletionError, OllamaProvider
+from retrieval_relevance import refers_to_previous_question
 
 
 CANDIDATE_LIMIT = 24
@@ -482,6 +483,12 @@ def answer_evidence_first(question, history, index, facets, provider, build):
             for m in history[-4:]
             if m.get("role") in {"user", "assistant"}
         ]
+        # Broad, self-contained library questions should not inherit a
+        # previous comparison's authors as if they were asked again.
+        # Elliptical follow-ups still receive history for pronoun resolution.
+        if (getattr(index, "is_cross_library", False)
+                and not refers_to_previous_question(question, index.tokenize)):
+            conversation = []
         user = (
             "Reader's question:\n" + question
             + "\n\nRecent conversation:\n"
