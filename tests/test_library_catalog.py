@@ -95,6 +95,19 @@ class MultiBookTests(unittest.TestCase):
         self.assertTrue(next(b for b in descriptions if b["book_id"] == "2")["available"])
         self.assertFalse(next(b for b in descriptions if b["book_id"] == "3")["available"])
 
+    def test_catalog_author_surname_and_natural_volume_sort(self):
+        from library_catalog import catalog_sort_key
+        entries = [
+            {"book_id":"1", "author":"George Orwell", "work_title":"1984"},
+            {"book_id":"2", "author":"Aristotle", "work_title":"Nicomachean Ethics"},
+            {"book_id":"3", "author":"Various authors", "work_title":"Sacred Books of the East, Volume 10"},
+            {"book_id":"4", "author":"Various authors", "work_title":"Sacred Books of the East, Volume 2"},
+            {"book_id":"5", "author":"Julius Eggeling (translator)", "work_title":"Sacred Books of the East, Volume 3"},
+            {"book_id":"6", "author":"Jane Austen", "work_title":"Persuasion"},
+        ]
+        ordered = sorted(entries, key=catalog_sort_key)
+        self.assertEqual([x["book_id"] for x in ordered], ["2", "6", "1", "4", "5", "3"])
+
     def test_lazy_selected_book_cites_its_own_pdf_not_aristotle(self):
         index = self.registry.get_index("2")
         self.assertEqual(self.registry.cached_ids(), ["7", "2"])
