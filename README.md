@@ -2,81 +2,83 @@
 
 **A conversational way into the books, not a replacement for reading them.**
 
-The Reading Companion is part of [Antilogicalism](https://jsynon.github.io/antilogicalism/), a personal project devoted to making philosophical, literary, religious, historical, and scientific texts easier to discover and explore. Antilogicalism brings together writing, reading resources, a curated **Bookshelf**, and a searchable **Digital Library** of primary sources. The companion adds a different way to engage with that material: ask a question in ordinary language, follow an explanation, and return to the actual pages that informed it.
+The Reading Companion is one part of [Antilogicalism](https://jsynon.github.io/antilogicalism/), a project dedicated to independent reading and inquiry across philosophy, literature, religion, history, science, and related fields. The site brings together writing, a curated **Bookshelf**, and a full-text searchable **Digital Library** of primary sources. The Reading Companion adds conversation to that experience: ask a question, encounter a useful explanation, and follow the citations back to the author's own words.
 
-The long-term aim is to make **the entire Antilogicalism library available for source-grounded conversation**. Readers should eventually be able to investigate an argument, compare authors and traditions, follow a question across books, and inspect the evidence rather than trusting an unsupported AI summary.
+**Our long-term goal is to make the entire Antilogicalism digital library available for source-grounded conversation.** Readers should eventually be able to trace arguments across works and authors, compare interpretations, discover books worth reading, and check the underlying text—not merely accept a fluent AI summary.
 
-## Where the project stands
+## Current state: Version 1.2
 
-**Version 1** is a local, single-book prototype using Aristotle's *Nicomachean Ethics*. It is designed to establish a useful reading experience before expanding retrieval to the full library.
+The running prototype uses **Aristotle's *Nicomachean Ethics*** as its first book. It is local, free of hosted inference API dependencies, and meant to become a useful one-book demo before expanding to the full collection.
 
-- **Default: direct synthesis.** A local model receives relevant passages and writes a coherent explanation as cited paragraphs. Each paragraph carries separate source IDs; Python renders the visible citation markers and binds them to real passages and pages. This validates source **identity**, not the interpretation's truth.
-- **Comparison mode: historical claim/review pipeline.** The same question and model can also run through the earlier multi-stage composer, model reviewer, and bounded repair system. That path is retained for evaluation, not treated as an authoritative judge.
-- **Models:** Ollama detects installed local models automatically. The comparison UI prioritizes Qwen3:14b, Gemma3:12b, and Qwen3:8b when available; other installed models can be selected.
-- **Repeatable tests:** Six questions can be run across either or both pipelines. A downloadable JSON report keeps full answers, selected passages, model timings, and available diagnostics. The server's console shows progress through each stage.
+Version 1.2's default is **evidence-first answering**:
 
-This is an **experimental reading assistant**, not a production service or a guarantee of scholarly accuracy. A cited response can still misinterpret a passage. The source text and page links are part of the answer precisely so that readers can check it.
+1. Search a wider pool of passages from the book, retaining book IDs and physical PDF pages.
+2. Ask the local model to choose the most decisive passages for the question—especially definitions, relationships, contrasts, and evidence covering multiple parts.
+3. Include neighboring source passages when a selected quotation is too isolated to understand reliably. Keep each neighbor's citation identity separate.
+4. Ask the model for a **direct, coherent explanation** with paragraph-level source IDs. The application—not the model—places inline citation links.
+5. Display verbatim, short **key passages** with PDF page links and, when useful, one or two natural follow-up questions that the reader can pursue.
 
-**Version 1.1** uses application-bound citations per paragraph instead of asking the model to position [S#] markers correctly. Failed direct answers retain their unvalidated generation in the opt-in troubleshooting report, making model behavior visible even when the response falls back. This is an output-format improvement, not a guarantee that an answer is philosophically correct.
+The default uses **two local Ollama calls**: evidence selection and answer synthesis. There is **no model-generated grade, claim-by-claim reviewer, or automatic rewriting loop**. Responses are labeled **drafts**, because valid citation IDs do not establish that a philosophical interpretation is correct.
 
-## Try it locally
+The previous **direct v1.1** (one call, first eight ranked passages) and the older **claim/review** route remain available for controlled comparisons. Neither is the default. The interface can compare v1.2 and v1.1 on the same questions, or run any of the three methods individually.
 
-You need Python 3.10+ and [Ollama](https://ollama.com/) running on your own computer.
+## Run it on your computer
 
-1. Clone **both** this repository and **antilogicalism-library-data** into the same parent directory (or configure the book text path described below).
-2. Install a model, for example with the command **ollama pull qwen3:14b**. Smaller models are supported; performance and available context depend on your hardware.
-3. On Windows, double-click **start.bat** in the project folder. Alternatively, run **python app.py**.
-4. Open **http://127.0.0.1:8765** if the browser does not open automatically.
-5. Select a model and ask a question. The default answering method is **Direct synthesis (Version 1)**.
+You'll need Python 3.10+ and a local [Ollama](https://ollama.com/) installation, plus the source texts in [jsynon/antilogicalism-library-data](https://github.com/jsynon/antilogicalism-library-data).
 
-For a reproducible comparison, choose a question set in **Compare installed Ollama models**, select the models you want, optionally check **Compare both answering methods**, click **Run test set**, and download the combined report. Requests run sequentially so local models do not compete for GPU memory. The CMD window shows each question's retrieval, model calls, timings, and outcome.
+1. Clone **book-chatbot** and **antilogicalism-library-data** as sibling folders, or configure an explicit path to the book shard.
+2. Install an Ollama model, for example: **ollama pull qwen3:14b**. Other installed models are detected automatically.
+3. On Windows, double-click **start.bat**. Alternatively run **python app.py**.
+4. Open **http://127.0.0.1:8765** and ask about *Nicomachean Ethics*. The default method is **Evidence-first answers (v1.2)**.
+5. To evaluate it, use **Compare installed Ollama models**, select the original five regression questions, the synthesis question, or both. The optional checkbox runs **v1.2 versus v1.1** on the same models and questions. Download the resulting JSON for full answers, chosen passages, timings, and diagnostics.
 
-No extra Python packages or hosted AI API keys are needed. The application sends prompts only to your configured **local Ollama endpoint**. Opening an external source PDF uses Google Drive.
+All requests run sequentially so large local models do not compete for GPU memory. The CMD window prints stage-by-stage progress, including which evidence was selected. Qwen3:14b, Gemma3:12b, and Qwen3:8b are convenient comparison models; actual speed and quality depend on hardware and Ollama configuration.
 
-### Source texts and configuration
+**Inference stays local:** the application calls Ollama over localhost and does not send prompts to a hosted AI service. Opening source PDFs uses Google Drive. No additional Python packages or API keys are needed.
 
-The authoritative extracted and repaired corpus is kept in [jsynon/antilogicalism-library-data](https://github.com/jsynon/antilogicalism-library-data), separate from the chatbot's code. With the repositories side by side, this project automatically looks for the configured book shard in that data repository. **This GitHub repository does not include book-text shards.** The alternate local data/book-7.json.gz path is a fallback only if you supply that file yourself. Without either a matching shared shard or a configured explicit file, the application cannot load the pilot book.
+## Books and configuration
 
-| Environment variable | Default | Purpose |
+The original and repaired full-text data live in the separate **antilogicalism-library-data** repository, not in this code repository. Source files are not bundled with this GitHub checkout. The application looks for the shared compressed book shard and will fail to start if neither it nor an explicitly supplied shard is available.
+
+| Setting | Default | Meaning |
 | --- | --- | --- |
-| BOOK_CHATBOT_LIBRARY_DATA | Sibling antilogicalism-library-data directory | Shared corpus location |
-| BOOK_CHATBOT_DATA_VERSION | v47 | Selects the data-v47 corpus snapshot |
-| BOOK_CHATBOT_BOOK_ID | 7 | Current pilot book shard, book-7.json.gz |
-| BOOK_CHATBOT_BOOK_FILE | Not set | Override with an explicit shard path |
-| BOOK_CHATBOT_BOOK_TITLE | Nicomachean Ethics — Aristotle | Book label for passage provenance |
-| BOOK_CHATBOT_PDF_FILE_ID | Pilot PDF's Google Drive file ID | Source-page links |
-| OLLAMA_URL | http://127.0.0.1:11434 | Local inference service |
-| OLLAMA_MODEL | qwen3:14b | Initial model selection |
-| BOOK_CHATBOT_PORT | 8765 | Local web server |
-| BOOK_CHATBOT_PIPELINE | direct | Initial answering method (direct or grounded) |
-| BOOK_CHATBOT_CONTEXT_TOKENS | 8192 | Ollama context length; may affect VRAM |
-| BOOK_CHATBOT_PROGRESS | 1 | Set to 0 to silence additional CMD progress logs |
+| BOOK_CHATBOT_LIBRARY_DATA | Sibling antilogicalism-library-data directory | Where to find the shared corpus |
+| BOOK_CHATBOT_DATA_VERSION | v47 | Corpus snapshot (data-v47) |
+| BOOK_CHATBOT_BOOK_ID | 7 | Pilot book shard (book-7.json.gz) |
+| BOOK_CHATBOT_BOOK_FILE | Not set | Optional explicit compressed book file |
+| BOOK_CHATBOT_BOOK_TITLE | Nicomachean Ethics — Aristotle | Display and citation title |
+| BOOK_CHATBOT_PDF_FILE_ID | Configured Aristotle PDF ID | Link to source pages |
+| OLLAMA_URL | http://127.0.0.1:11434 | Local inference endpoint |
+| OLLAMA_MODEL | qwen3:14b | Initial selected model |
+| BOOK_CHATBOT_PORT | 8765 | Local website port |
+| BOOK_CHATBOT_PIPELINE | evidence | Default method: evidence, direct, or grounded |
+| BOOK_CHATBOT_CONTEXT_TOKENS | 8192 | Ollama context window; larger windows may increase VRAM use |
+| BOOK_CHATBOT_PROGRESS | 1 | Set to 0 to silence progress in CMD |
 
-The pilot's title and PDF identity **do not automatically update** when changing its book ID. Multi-book metadata resolution is part of the next development phase.
+Changing book IDs does **not** automatically update the title or Google Drive PDF identity. Correct multi-book metadata resolution is part of the planned full-library architecture.
 
-## How it works
+## Reading with evidence
 
-The user asks a question; the application searches the loaded book, finds contiguous source passages, and assigns IDs linked to their book and physical PDF pages. Direct synthesis gives a bounded set of those passages to a local model and requests a readable, cited explanation. Python checks that citations belong to passages actually supplied. The companion then shows the response and links back to the source pages.
+Source excerpts and citations originate in the indexed primary texts. Passage IDs include their book, corpus version, and original page provenance; they are never inferred from an AI-generated answer. When the model returns cited paragraphs, Python checks every ID against the passages actually supplied and renders the citation links itself.
 
-The default route is intentionally **one model call after retrieval**. It avoids using a model to certify its own writing, a process that can mistakenly approve false claims or reject valid ones. The historical multi-stage pipeline is still selectable for controlled comparisons.
+**A real citation may still accompany a false interpretation.** The system does not currently certify whether the explanation follows from the cited passages. The **Key passages** section provides short, exact excerpts, with the full context and PDF pages available for readers to inspect. The original five regression questions and synthesis question are preserved to support reproducible evaluation, but a successful automated request is not the same as a correct answer.
 
-The application can currently index only **one configured book at startup**. It does not yet provide a whole-library book catalog, persistent multi-book search, cross-book synthesis, user accounts, or a hosted public inference service. Some Google Drive PDF previews ignore page anchors; the displayed physical page number remains the reference in that case.
+The prototype currently loads **one configured book at startup**. There is no whole-library question routing, multi-book index, persistent semantic search, account system, or public Ollama host yet. Some Google Drive previews ignore PDF page fragments; use the displayed physical page number if necessary.
 
-## Development and direction
+## Repository structure and direction
 
-This repository separates the book corpus, retrieval, local inference, answering logic, and browser experience. The important modules are:
+- **app.py** — local HTTP server, corpus configuration, API routing, and historical compatibility code.
+- **grounded_pipeline.py** — passage index, book/page provenance, and optional older claim/review pipeline.
+- **evidence_pipeline.py** — Version 1.2 evidence selection, adjacent context, coherent answers, and extractive source spotlights.
+- **direct_pipeline.py** — retained Version 1.1 single-call baseline and deterministic paragraph citation binding shared with v1.2.
+- **inference.py** — Ollama request boundary, structured output, token counts, and elapsed times.
+- **index.html** — reading interface, linked source excerpts, follow-ups, and repeatable test runner.
+- **tests/** — synthetic-data and HTTP contract tests. These do not replace human review of interpretation.
+- **docs/README.md** — architecture, design limits, and the path to the complete library.
+- **docs/evaluation.md** — repeatable human quality checks for comparing answer methods.
 
-- **app.py** — local HTTP server, corpus configuration, API routing, and older compatibility functions.
-- **grounded_pipeline.py** — shared passage index/provenance and the optional multi-stage comparison pipeline.
-- **direct_pipeline.py** — Version 1's simple, citation-bound synthesis.
-- **inference.py** — Ollama structured-completion boundary and call timings.
-- **index.html** — reading/chat interface and repeatable model/pipeline comparison.
-- **tests/** — automated contract and HTTP tests, separate from human assessments of answer quality.
+Run the automated tests with **python -m unittest discover -s tests -v**. GitHub Actions also tests the v1.2 contract using synthetic book text.
 
-Read [docs/README.md](docs/README.md) for architecture and the path to the full library. Run unit tests with:
+**Next milestones:** evaluate v1.2 against v1.1 for accuracy, evidence use, clarity, completeness, and latency; establish a usable Aristotle demo; add reliable catalog metadata and indexed retrieval across the whole Antilogicalism corpus; then design and host a public inference backend. The GitHub Pages website can host a frontend, but it cannot run Python or Ollama itself.
 
-    python -m unittest discover -s tests -v
-
-**Next milestones:** evaluate the two answering approaches against actual passage interpretations; refine the simplest working one-book demo; add a catalog and efficient indexing across the full Antilogicalism corpus; and finally provide a publicly accessible backend. GitHub Pages can host the website and frontend, but cannot itself execute Ollama or a Python inference server.
-
-The project is meant to encourage reading, questioning, and intellectual exploration. Its success will depend less on whether an internal checker says “verified” and more on whether a reader can learn something useful, see where it came from, and continue investigating independently.
+Antilogicalism's aim is to encourage thinking and reading. A worthwhile companion should bring readers **closer to the texts** and open further questions, not obscure the texts behind confident-sounding automation.

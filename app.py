@@ -1,8 +1,9 @@
 """Local HTTP application for the Antilogicalism Reading Companion.
 
-Version 1 defaults to direct passage-grounded synthesis. The earlier
-claim-by-claim reviewer remains accessible as a comparison mode while we
-evaluate output quality. Both paths use the same source-text repository and
+Version 1.2 defaults to evidence-first synthesis: a model selects decisive
+source passages, then a second call explains them with deterministic citations.
+The v1.1 direct mode and the historical claim/review mode remain available
+as baselines while we evaluate output quality. Both paths use the same source-text repository and
 Ollama installation. No hosted model provider is required.
 
 Older validation helpers still live in this module for historical comparison.
@@ -37,6 +38,7 @@ if str(ROOT) not in sys.path:
 from inference import OllamaProvider
 from grounded_pipeline import PassageIndex, answer_question
 from direct_pipeline import answer_direct
+from evidence_pipeline import answer_evidence_first
 # Keep source text in the Antilogicalism library-data repository, not in this
 # chatbot's code repository. In the usual Downloads layout, that repository is
 # a sibling of this project; environment variables allow another location or
@@ -90,10 +92,10 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:14b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "reading-companion-v1.1.0"
-PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "direct").lower()
-if PIPELINE_MODE not in {"direct", "grounded", "legacy"}:
-    raise ValueError("BOOK_CHATBOT_PIPELINE must be direct, grounded, or legacy")
+BUILD_ID = "reading-companion-v1.2.0"
+PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "evidence").lower()
+if PIPELINE_MODE not in {"evidence", "direct", "grounded", "legacy"}:
+    raise ValueError("BOOK_CHATBOT_PIPELINE must be evidence, direct, grounded, or legacy")
 CONTEXT_TOKENS = int(os.environ.get("BOOK_CHATBOT_CONTEXT_TOKENS", "8192"))
 PDF_FILE_ID = os.environ.get("BOOK_CHATBOT_PDF_FILE_ID", "1XVInAFS2zutV8PDp8A3DirUrW6nLLfvY")
 BOOK_TITLE = os.environ.get("BOOK_CHATBOT_BOOK_TITLE", "Nicomachean Ethics — Aristotle")
@@ -7024,7 +7026,7 @@ class Handler(BaseHTTPRequestHandler):
         """Handle health/build metadata, Ollama model discovery, and the UI page."""
         if self.path == "/api/health":
             self._json(200, {"ok": True, "book": BOOK_TITLE, "pages": len(PAGES), "build": BUILD_ID,
-                             "pipeline": PIPELINE_MODE, "pipelines": ["direct", "grounded"]})
+                             "pipeline": PIPELINE_MODE, "pipelines": ["evidence", "direct", "grounded"]})
             return
         if self.path == "/api/models":
             try:
@@ -7068,8 +7070,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             include_diagnostics = data.get("diagnostics") is True
             request_pipeline = str(data.get("pipeline", PIPELINE_MODE)).strip().lower()
-            if request_pipeline not in {"direct", "grounded", "legacy"}:
-                self._json(400, {"error": "Unknown pipeline. Use direct or grounded."})
+            if request_pipeline not in {"evidence", "direct", "grounded", "legacy"}:
+                self._json(400, {"error": "Unknown pipeline. Use evidence, direct, or grounded."})
+                return
+            if request_pipeline == "evidence":
+                # v1.2: select decisive primary evidence, then explain it.
+                # No model-as-judge review or automatic answer repair.
+                provider = OllamaProvider(OLLAMA_URL, model, CONTEXT_TOKENS)
+                payload = answer_evidence_first(
+                    question, history, GROUNDED_INDEX, question_facets(question), provider, BUILD_ID
+                )
+                trace = payload["diagnostics"]
+                trace["model"] = model
+                if not include_diagnostics:
+                    payload.pop("diagnostics")
+                self._json(200, payload)
                 return
             if request_pipeline == "direct":
                 # Version 1: one passage-grounded answer, deterministic citation
