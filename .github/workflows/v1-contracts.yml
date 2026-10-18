@@ -30,6 +30,9 @@ jobs:
                   {"page": 2, "text": "Scholarly questions call for evidence. A citation gives a reader an opportunity to verify a claim."}
               ]}, file)
           PY
+      - name: Audit public v47 index structure (temporary development check)
+        run: |
+          python scripts/audit_library_index.py --remote
       - name: Compile reading and library modules
         run: |
           python -m compileall -q app.py library_catalog.py evidence_pipeline.py direct_pipeline.py grounded_pipeline.py inference.py tests
