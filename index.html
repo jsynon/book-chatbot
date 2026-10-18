@@ -62,6 +62,11 @@
     .suggestion-label { margin:0 0 7px; color:var(--muted); font:12px system-ui,sans-serif; }
     .suggestions button { max-width:100%; white-space:normal; text-align:left; background:transparent; border:1px solid var(--line); color:var(--accent); font:13px system-ui,sans-serif; padding:7px 10px; }
     /* Keep repeated model checks together so one test run yields one report. */
+    .discipline-picker { display:flex; flex-wrap:wrap; gap:9px; align-items:center; margin-top:10px; }
+    .discipline-picker select { flex:1 1 240px; min-width:0; }
+    .discipline-picker button { flex:0 0 auto; }
+    .discipline-review { margin-top:8px; color:var(--muted); font:13px/1.5 system-ui,sans-serif; overflow-wrap:anywhere; }
+    #book-filter { max-width:100%; min-height:40px; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:#fff; }
     .batch-runner { margin:15px 0 20px; padding:13px 15px; border:1px solid var(--line); border-radius:7px; background:#f6f2eb; font:13px/1.5 system-ui,sans-serif; }
     .batch-runner p { margin:0 0 8px; }
     .batch-model-options { display:flex; flex-wrap:wrap; gap:8px 18px; margin:8px 0 12px; }
@@ -142,6 +147,16 @@
       </div>
       <p class="suggestion-label">Results are drawn from a few matched books, not an exhaustive survey of the library.</p>
     </section>
+    <details id="discipline-tests" class="batch-runner">
+      <summary>Try questions from science, history, literature, and philosophy</summary>
+      <p>Select a research question to open its source book and fill the composer. Nothing is submitted until you click Ask.</p>
+      <div class="discipline-picker">
+        <label for="discipline-case">Question</label>
+        <select id="discipline-case" aria-describedby="discipline-review"><option value="">Loading benchmark questions…</option></select>
+        <button id="use-discipline-case" type="button" disabled>Load question</button>
+      </div>
+      <p id="discipline-review" class="discipline-review" aria-live="polite"></p>
+    </details>
     <details id="developer-tests" class="batch-runner"><summary>Development tests and model comparisons (optional)</summary><section aria-label="Automated regression test run">
       <p><strong>Compare installed Ollama models</strong></p>
       <p>Run the same questions through evidence-first v1.2, direct v1.1, or the historical reviewer. Compare v1.2 against v1.1 in one report, including passages, timings, and full answers. Citations do not certify philosophical accuracy.</p>
@@ -192,6 +207,10 @@
     const readingIntro = document.getElementById('reading-intro');
     const aristotlePrompts = document.getElementById('aristotle-prompts');
     const developerTests = document.getElementById('developer-tests');
+    const disciplineCaseSelect = document.getElementById('discipline-case');
+    const disciplineReview = document.getElementById('discipline-review');
+    const useDisciplineCaseButton = document.getElementById('use-discipline-case');
+    let disciplineCases = [];
     const coverage = document.getElementById('book-coverage');
     let libraryBooks = [];
     let defaultBookId = '7';
@@ -296,6 +315,73 @@
       setActiveBook(false);
       loadLibraryStatus();
     }
+
+    async function loadDisciplineCases() {
+      try {
+        const response = await fetch('/api/benchmarks/cross-disciplinary',
+          {cache:'no-store'});
+        if (!response.ok) throw Error('Cross-disciplinary benchmark unavailable');
+        const data = await response.json();
+        disciplineCases = Array.isArray(data.cases) ? data.cases : [];
+        disciplineCaseSelect.replaceChildren();
+        const heading = document.createElement('option');
+        heading.value = '';
+        heading.textContent = 'Choose a question…';
+        disciplineCaseSelect.append(heading);
+        for (const item of disciplineCases) {
+          const option = document.createElement('option');
+          option.value = item.id;
+          option.textContent = item.discipline[0].toUpperCase() +
+            item.discipline.slice(1) + ' · ' + item.question;
+          disciplineCaseSelect.append(option);
+        }
+        disciplineReview.textContent =
+          'Eight fixed questions. Source checks are automated; interpretations need human review.';
+      } catch (error) {
+        disciplineReview.textContent = error.message;
+      }
+    }
+
+    function loadSelectedDisciplineCase() {
+      const chosen = disciplineCases.find(item =>
+        item.id === disciplineCaseSelect.value);
+      if (!chosen) return;
+      if (chosen.scope === 'library') {
+        const option = searchScope.querySelector('option[value="library"]');
+        if (!option || option.disabled) {
+          disciplineReview.textContent =
+            'Across-library mode needs the local v47 full-text index.';
+          return;
+        }
+        searchScope.value = 'library';
+      } else {
+        const book = libraryBooks.find(item =>
+          item.book_id === chosen.book_id);
+        if (!book || !book.available) {
+          disciplineReview.textContent =
+            'This test requires the source book to be installed locally.';
+          return;
+        }
+        searchScope.value = 'book';
+        // Narrow the catalog listing before changing the selection, so the
+        // desired book remains a selectable option even with 643 entries.
+        bookFilter.value = book.title;
+        showBookOptions();
+        bookSelect.value = book.book_id;
+      }
+      pipelineSelect.value = 'evidence';
+      setActiveBook(); // Reset conversations when changing works or scopes.
+      question.value = chosen.question;
+      disciplineReview.textContent =
+        'Loaded ' + chosen.discipline + ' question. Review focus: ' +
+        (chosen.review_focus || []).join(' ');
+      question.focus();
+    }
+
+    disciplineCaseSelect.addEventListener('change', () => {
+      useDisciplineCaseButton.disabled = !disciplineCaseSelect.value;
+    });
+    useDisciplineCaseButton.addEventListener('click', loadSelectedDisciplineCase);
 
     function setActiveBook(resetConversation = true) {
       const acrossLibrary = searchScope.value === 'library';
@@ -852,6 +938,7 @@
     });
     loadModels();
     loadBooks();
+    loadDisciplineCases();
   </script>
 </body>
 </html>
