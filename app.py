@@ -90,7 +90,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:14b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "reading-companion-v1.0.0"
+BUILD_ID = "reading-companion-v1.1.0"
 PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "direct").lower()
 if PIPELINE_MODE not in {"direct", "grounded", "legacy"}:
     raise ValueError("BOOK_CHATBOT_PIPELINE must be direct, grounded, or legacy")

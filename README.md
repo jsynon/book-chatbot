@@ -10,12 +10,14 @@ The long-term aim is to make **the entire Antilogicalism library available for s
 
 **Version 1** is a local, single-book prototype using Aristotle's *Nicomachean Ethics*. It is designed to establish a useful reading experience before expanding retrieval to the full library.
 
-- **Default: direct synthesis.** A local model receives relevant book passages and writes one coherent answer citing passage IDs. The application validates the citation IDs against the supplied passages; it does **not** claim to have independently proved every interpretation.
+- **Default: direct synthesis.** A local model receives relevant passages and writes a coherent explanation as cited paragraphs. Each paragraph carries separate source IDs; Python renders the visible citation markers and binds them to real passages and pages. This validates source **identity**, not the interpretation's truth.
 - **Comparison mode: historical claim/review pipeline.** The same question and model can also run through the earlier multi-stage composer, model reviewer, and bounded repair system. That path is retained for evaluation, not treated as an authoritative judge.
 - **Models:** Ollama detects installed local models automatically. The comparison UI prioritizes Qwen3:14b, Gemma3:12b, and Qwen3:8b when available; other installed models can be selected.
 - **Repeatable tests:** Six questions can be run across either or both pipelines. A downloadable JSON report keeps full answers, selected passages, model timings, and available diagnostics. The server's console shows progress through each stage.
 
 This is an **experimental reading assistant**, not a production service or a guarantee of scholarly accuracy. A cited response can still misinterpret a passage. The source text and page links are part of the answer precisely so that readers can check it.
+
+**Version 1.1** uses application-bound citations per paragraph instead of asking the model to position [S#] markers correctly. Failed direct answers retain their unvalidated generation in the opt-in troubleshooting report, making model behavior visible even when the response falls back. This is an output-format improvement, not a guarantee that an answer is philosophically correct.
 
 ## Try it locally
 

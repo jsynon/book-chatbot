@@ -13,8 +13,8 @@ Eventually the same core should support questions involving multiple books and a
 1. **Corpus resolution:** app.py resolves a compressed book shard from antilogicalism-library-data (or a bundled pilot fallback), using a configurable book ID, version, title, and PDF identity.
 2. **Passage index:** grounded_pipeline.PassageIndex creates source windows from page text and indexes them with a lightweight BM25-style lexical search. A passage retains its book ID, version, page range, immutable content identity, and the source page(s) it spans.
 3. **Question retrieval:** the server searches the loaded book. In Version 1's direct mode, up to eight top-ranked passages are included within a bounded context budget; the source content is treated as untrusted data, not as model instructions.
-4. **Local synthesis:** direct_pipeline.answer_direct asks the chosen local Ollama model for one coherent explanation using only those passages, with [S#] citation markers.
-5. **Provenance validation:** deterministic code rejects missing and unknown citation IDs and substantial uncited paragraphs. It binds accepted markers back to real passage metadata and PDF pages. This establishes source identity, **not** the truth of the model's interpretation.
+4. **Local synthesis:** direct_pipeline.answer_direct asks the chosen Ollama model for coherent paragraphs, each with natural-language text and separate source IDs. The model never needs to place citation markers inside its prose.
+5. **Provenance validation:** Python checks the ID arrays, binds only known passages, and displays the paragraphs with application-generated [S#] citation markers. If output fails structural validation, the unvalidated response is preserved in opt-in diagnostics. These checks establish source identity, **not** that an interpretation is true.
 6. **Presentation and evaluation:** index.html shows the readable answer and page links. The test runner executes the same prompts and models with one or both pipelines and exports source passages and call timings.
 
 The browser calls a local Python HTTP service. The Python application calls a local Ollama installation. The companion does not send book text to a hosted AI API. Opening Drive source links takes the reader to the book PDF.
@@ -31,7 +31,7 @@ The two routes share the same index and source identity. They need not select ex
 
 Success is judged by **correctness, completeness, thoughtful explanation, genuine passage support, readability, and responsiveness**. Automatic citation validation is useful but cannot replace direct human evaluation.
 
-A repeatable test should record: the exact question, selected model, pipeline, full answer, selected and cited passage text, physical page numbers, response time, provider token counts where available, and any failure reason. An answer with nonexistent sources must fail provenance checks; an answer with real sources can still be wrong. Do not optimize solely for the older checker's approval rate.
+A repeatable test should record: the exact question, selected model, pipeline, full answer, selected and cited passage text, physical page numbers, response time, provider token counts where available, and any failure reason. Starting with Version 1.1, the direct route also records the structured paragraph output even when citation binding fails, so the raw model response remains available for debugging without being shown as a trusted answer. An answer with nonexistent sources must fail provenance checks; an answer with real sources can still be wrong. Do not optimize solely for the older checker's approval rate.
 
 The pilot includes five fixed regression prompts and one synthesis prompt. More varied questions and independently reviewed examples will be needed before a public demo is treated as trustworthy.
 
