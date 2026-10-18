@@ -34,6 +34,7 @@
     .sources a { color:var(--accent); margin-right:8px; }
     .body a.citation { color:var(--accent); text-decoration:underline; white-space:nowrap; }
     .highlights { margin:14px 0 0; padding:12px; border-left:3px solid var(--line); background:#fbf9f4; }
+    .coverage-note { padding:10px 12px; border-left:3px solid #9b7c46; background:#fbf8f0; color:#51412d; font:13px/1.5 system-ui,sans-serif; }
     .highlights strong { font:600 13px system-ui,sans-serif; }
     .highlights blockquote { margin:9px 0; padding:0 0 0 12px; border-left:1px solid var(--line); font-size:14px; }
     .highlights a { color:var(--accent); font:12px system-ui,sans-serif; margin-left:5px; }
@@ -92,6 +93,12 @@
     </header>
     <!-- The model list is filled from the Ollama API when the page loads. -->
     <div class="controls">
+      <label for="search-scope">What would you like to search?</label>
+      <select id="search-scope">
+        <option value="book">One selected book</option>
+        <option value="library">Across the Antilogicalism library (experimental)</option>
+      </select>
+      <span id="scope-status" aria-live="polite"></span>
       <label for="book-filter">Find a book or author in the Antilogicalism library</label>
       <input id="book-filter" type="search" placeholder="Search titles and authors" autocomplete="off">
       <label for="book">Book to read</label>
@@ -127,6 +134,14 @@
     </section>
     <!-- The original five tests remain unchanged. The new synthesis comparison
          follows the same /api/chat pipeline, including grounding and review. -->
+    <section id="library-prompts" aria-label="Across-library questions" hidden>
+      <p class="suggestion-label">Explore connections across books</p>
+      <div class="suggestions">
+        <button type="button">How do Aristotle and Tolstoy understand happiness and the good life?</button>
+        <button type="button">How do different authors in the library approach the question of life's meaning?</button>
+      </div>
+      <p class="suggestion-label">Results are drawn from a few matched books, not an exhaustive survey of the library.</p>
+    </section>
     <details id="developer-tests" class="batch-runner"><summary>Development tests and model comparisons (optional)</summary><section aria-label="Automated regression test run">
       <p><strong>Compare installed Ollama models</strong></p>
       <p>Run the same questions through evidence-first v1.2, direct v1.1, or the historical reviewer. Compare v1.2 against v1.1 in one report, including passages, timings, and full answers. Citations do not certify philosophical accuracy.</p>
@@ -152,11 +167,11 @@
     <form id="chat-form">
       <label for="question">Your question</label>
       <textarea id="question" placeholder="Ask a question about the book…" required></textarea>
-      <div class="submit-row"><span id="book-coverage">One selected book per conversation; cross-book search is coming next.</span><button id="send" type="submit">Ask the book</button></div>
+      <div class="submit-row"><span id="book-coverage">Select one book or search for passages across several books.</span><button id="send" type="submit">Ask the book</button></div>
     </form>
     <div id="status" role="status"></div>
     <!-- Explain where processing happens and display the running server build. -->
-    <footer>This Version 1.3 local demo runs on Ollama, with on-demand retrieval from other books in the catalog. Source excerpts are exact quotations; citations lead to their pages, but neither certifies an interpretation's correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
+    <footer>Version 1.4 runs Ollama locally and retrieves from the shared v47 full-text index. Across-library responses consult a bounded selection of books, not the entire corpus at once. Source excerpts are exact quotations; citations lead to their pages, but neither certifies an interpretation's correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
   </main>
   <script>
     // Cache the UI elements used by the event handlers so they can be updated
@@ -167,6 +182,9 @@
     const status = document.getElementById('status');
     const send = document.getElementById('send');
     const modelSelect = document.getElementById('model');
+    const searchScope = document.getElementById('search-scope');
+    const scopeStatus = document.getElementById('scope-status');
+    const libraryPrompts = document.getElementById('library-prompts');
     const bookSelect = document.getElementById('book');
     const bookFilter = document.getElementById('book-filter');
     const bookStatus = document.getElementById('book-status');
@@ -239,6 +257,25 @@
         : libraryBooks.length + ' catalog entries; choose a title or search by author';
     }
 
+    async function loadLibraryStatus() {
+      try {
+        const response = await fetch('/api/library/status', {cache:'no-store'});
+        if (!response.ok) throw Error('Library search endpoint unavailable');
+        const result = await response.json();
+        if (!result.available) {
+          const option = searchScope.querySelector('option[value="library"]');
+          option.disabled = true;
+          scopeStatus.textContent = 'Full-text manifest missing from local ' +
+            'antilogicalism-library-data/data-' + result.corpus_version;
+        } else {
+          scopeStatus.textContent = 'Uses existing indexed pages; only matching books are loaded';
+        }
+      } catch (error) {
+        searchScope.querySelector('option[value="library"]').disabled = true;
+        scopeStatus.textContent = 'Whole-library search unavailable: ' + error.message;
+      }
+    }
+
     async function loadBooks() {
       try {
         const response = await fetch('/api/books', {cache:'no-store'});
@@ -257,21 +294,39 @@
         bookStatus.textContent = 'Library catalog unavailable: ' + error.message;
       }
       setActiveBook(false);
+      loadLibraryStatus();
     }
 
     function setActiveBook(resetConversation = true) {
+      const acrossLibrary = searchScope.value === 'library';
       const book = libraryBooks.find(item => item.book_id === bookSelect.value);
-      if (!book) return;
-      const isPilot = book.book_id === defaultBookId;
-      readingTitle.textContent = isPilot ? 'Read with Aristotle' :
-        'Read ' + (book.work_title || book.title);
-      readingIntro.textContent = 'Ask a question about ' + book.title +
-        '. Explanations link back to original PDF pages.';
-      aristotlePrompts.hidden = !isPilot;
-      developerTests.hidden = !isPilot;
-      coverage.textContent = isPilot
-        ? 'Aristotle is the pilot; select another book to explore the larger library.'
-        : 'This chat searches only the selected work; cross-book retrieval is a future milestone.';
+      if (acrossLibrary && !['evidence', 'direct'].includes(pipelineSelect.value)) {
+        pipelineSelect.value = 'evidence';
+      }
+      const groundedOption = pipelineSelect.querySelector('option[value="grounded"]');
+      if (groundedOption) groundedOption.disabled = acrossLibrary;
+      bookSelect.disabled = acrossLibrary;
+      bookFilter.disabled = acrossLibrary;
+      if (acrossLibrary) {
+        readingTitle.textContent = 'Read across the Antilogicalism Library';
+        readingIntro.textContent = 'Compare ideas and authors using passages from several indexed books, with source-specific PDF citations.';
+        aristotlePrompts.hidden = true;
+        libraryPrompts.hidden = false;
+        developerTests.hidden = true;
+        coverage.textContent = 'Experimental: retrieves selected passages from up to four books for each question.';
+      } else if (book) {
+        const isPilot = book.book_id === defaultBookId;
+        readingTitle.textContent = isPilot ? 'Read with Aristotle' :
+          'Read ' + (book.work_title || book.title);
+        readingIntro.textContent = 'Ask a question about ' + book.title +
+          '. Explanations link back to original PDF pages.';
+        aristotlePrompts.hidden = !isPilot;
+        libraryPrompts.hidden = true;
+        developerTests.hidden = !isPilot;
+        coverage.textContent = isPilot
+          ? 'Aristotle is the pilot; select another book to explore the larger library.'
+          : 'This chat searches only the selected work; choose Across library to compare works.';
+      }
       if (resetConversation) {
         history.length = 0; // Never mix conversation history across authors.
         thread.replaceChildren();
@@ -289,6 +344,7 @@
       }
     });
     bookSelect.addEventListener('change', () => setActiveBook());
+    searchScope.addEventListener('change', () => setActiveBook());
 
     function makeDiagnosticSummary(data) {
       // Use the server's final-outcome summary instead of searching every
@@ -402,7 +458,7 @@
       batchResults.append(table);
     }
 
-    function addTurn(kind, text, sources = [], diagnostics = null, highlights = [], followUps = []) {
+    function addTurn(kind, text, sources = [], diagnostics = null, highlights = [], followUps = [], coverageNotice = '') {
       // Build nodes with textContent (rather than interpolated HTML) so model
       // output is displayed as text and cannot inject markup into the page.
       const article = document.createElement('article');
@@ -436,18 +492,24 @@
         body.textContent = text;
       }
       article.append(speaker, body);
+      if (kind === 'assistant' && coverageNotice) {
+        const note = document.createElement('p');
+        note.className = 'coverage-note';
+        note.textContent = coverageNotice;
+        article.append(note);
+      }
       if (kind === 'assistant' && Array.isArray(highlights) && highlights.length) {
         const section = document.createElement('div');
         section.className = 'highlights';
         const heading = document.createElement('strong');
-        heading.textContent = 'Key passages from the book';
+        heading.textContent = 'Key passages from the source books';
         section.append(heading);
         for (const item of highlights) {
           if (!item || !item.quote || !item.url) continue;
           const quote = document.createElement('blockquote');
           quote.textContent = item.quote;
           const link = document.createElement('a');
-          link.textContent = '[' + item.source_id + '] PDF p. ' + item.page;
+          link.textContent = '[' + item.source_id + '] ' + (item.title || 'Source') + ' · PDF p. ' + item.page;
           link.href = item.url;
           link.target = '_blank';
           link.rel = 'noopener noreferrer';
@@ -491,11 +553,11 @@
             a.href = pageLinks[0].url;
             a.target = '_blank';
             a.rel = 'noopener noreferrer';
-            a.textContent = `[${source.id}] PDF page ${pageLinks[0].page}`;
+            a.textContent = `[${source.id}] ${source.title || 'Source'} · PDF page ${pageLinks[0].page}`;
             list.append(a);
           } else {
             const prefix = document.createElement('span');
-            prefix.textContent = `[${source.id}] PDF pages `;
+            prefix.textContent = `[${source.id}] ${source.title || 'Source'} · PDF pages `;
             list.append(prefix);
             pageLinks.forEach((pageLink, index) => {
               const a = document.createElement('a');
@@ -664,7 +726,7 @@
               const response = await fetch('/api/chat', {
                 method:'POST',
                 headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({question:prompt, history:[], book_id:bookSelect.value, model, pipeline, diagnostics:true})
+                body:JSON.stringify({question:prompt, history:[], book_id:bookSelect.value, scope:searchScope.value, model, pipeline, diagnostics:true})
               });
               const data = await response.json();
               entry.http_status = response.status;
@@ -756,6 +818,7 @@
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({
             question:text,
+            scope:searchScope.value,
             book_id:bookSelect.value,
             history:history.slice(-6),
             model:modelSelect.value,
@@ -772,7 +835,8 @@
           return;
         }
         addTurn('assistant', data.answer || data.error, data.sources || [], data.diagnostics || null,
-          data.evidence_highlights || [], data.follow_up_questions || []);
+          data.evidence_highlights || [], data.follow_up_questions || [],
+          data.coverage_notice || '');
         history.push({role:'user',content:text},{role:'assistant',content:data.answer});
         status.textContent = '';
       } catch (error) {

@@ -1,4 +1,4 @@
-name: Reading Companion v1.3 contracts
+name: Reading Companion v1.4 contracts
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
           PY
       - name: Compile reading and library modules
         run: |
-          python -m compileall -q app.py library_catalog.py evidence_pipeline.py direct_pipeline.py grounded_pipeline.py inference.py tests
+          python -m compileall -q app.py whole_library.py library_catalog.py evidence_pipeline.py direct_pipeline.py grounded_pipeline.py inference.py scripts tests
       - name: Check browser script syntax and controls
         run: |
           node - <<'JS'
@@ -42,14 +42,15 @@ jobs:
           const match = html.match(/<script>([\s\S]*?)<\/script>/);
           if (!match) throw new Error('Expected inline application script');
           new vm.Script(match[1], {filename: 'index.html'});
-          for (const name of ['id="pipeline"', 'id="compare-pipelines"', 'id="test-suite"', 'Key passages from the book', "['evidence', 'direct']", 'id="book"', 'id="book-filter"']) {
+          for (const name of ['id="pipeline"', 'id="compare-pipelines"', 'id="test-suite"', 'Key passages from the source books', "['evidence', 'direct']", 'id="book"', 'id="book-filter"', 'id="search-scope"', 'id="library-prompts"']) {
             if (!html.includes(name)) throw new Error('Missing model-comparison control: ' + name);
           }
           console.log('Browser script syntax and comparison controls OK.');
           JS
-      - name: Test library selection, evidence and historical pipeline contracts
+      - name: Test bounded library retrieval and evidence pipeline contracts
         env:
           BOOK_CHATBOT_BOOK_FILE: ${{ runner.temp }}/book-7.json.gz
         run: |
           python -m unittest discover -s tests -p 'test_*pipeline.py' -v
           python -m unittest discover -s tests -p 'test_library_catalog.py' -v
+          python -m unittest discover -s tests -p 'test_whole_library.py' -v
