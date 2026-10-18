@@ -70,6 +70,7 @@ def _selection_preview(passage, question, tokenize):
     return {"source_id": passage["source_id"], "title": passage["title"],
             "author": passage.get("author", ""),
             "subjects": passage.get("subjects", []),
+            "edited_collection": passage.get("edited_collection", False),
             "pages": passage["pages"], "preview": excerpt,
             "preview_truncated": excerpt != text}
 
@@ -186,6 +187,7 @@ def render_argument_context(index, anchors, selected):
             "book_id": anchor["book_id"],
             "book_title": anchor["title"],
             "book_author": anchor.get("author", ""),
+            "edited_collection": anchor.get("edited_collection", False),
             "subjects": anchor.get("subjects", []),
             "core_source_id": anchor["source_id"],
             "reading_sequence": [
@@ -506,6 +508,9 @@ def answer_evidence_first(question, history, index, facets, provider, build,
         if selection_mode == "ranked":
             system += (
                 " The question requests a HYPOTHETICAL intellectual response. "
+                "Edited collections can contain a translator's introduction "
+                "or historical commentary; do not confuse editorial narration "
+                "with an author's directly expressed views. "
                 "No historical exchange between the named writers has been "
                 "established. Their source passages show actual positions, "
                 "but a proposed response from one to the other is YOUR "
