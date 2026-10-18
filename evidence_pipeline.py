@@ -192,71 +192,115 @@ def select_neighbor_context(index, anchors, candidates, budget=MAX_EVIDENCE_CHAR
 
 
 def render_argument_context(index, anchors, selected):
-    """Group each core excerpt with its actual neighbors IN READING ORDER.
+    """Present nearby ORIGINAL arguments as coherent, citable source scenes.
 
-    The model sees source order and separate roles, preventing a nearby
-    objection or qualification from becoming an isolated freestanding claim.
-    All entries are the untouched source text and retain independent IDs.
-    This is formatting, not a fabricated machine summary of the argument.
+    Earlier versions showed selected adjacent passages as separate evidence
+    sections linked only by metadata, so a narrator quoting a protagonist
+    could be mistaken for the protagonist speaking. This version groups up
+    to THREE nearby real source passages from one work, orders their actual
+    texts as written, and keeps each original source ID intact. It does not
+    invent speaker identities or infer chronology across distant scenes.
+    Context passages are included ONCE, not duplicated in each core block.
     """
     positions = {p["passage_id"]: i for i, p in enumerate(index.passages)}
-    sections = []
+    groups = []
+    def neighbor(a, b):
+        ia = positions.get(a["passage_id"])
+        ib = positions.get(b["passage_id"])
+        if ia is None or ib is None:
+            return False
+        if a["book_id"] != b["book_id"] or (
+                a["corpus_version"] != b["corpus_version"]):
+            return False
+        if abs(ia - ib) > 4:
+            return False
+        if min(abs(x - y) for x in a["pages"] for y in b["pages"]) > 1:
+            return False
+        # Adjacent paragraphs may be the very same argumentative exchange.
+        # Looser connections need an observable dialogue/reporting flag,
+        # not just the occurrence of the same philosophical word.
+        if abs(ia - ib) <= 1:
+            return True
+        for passage in (a, b):
+            cues = discourse_cues(passage["text"])
+            if (cues["reported_speech_present"] or cues["opening_fragment"]
+                    or cues["opening_quotation_without_attribution"]):
+                return True
+        return False
+
     for anchor in anchors:
-        block = [anchor] + [
-            passage for passage in selected
-            if passage.get("context_for") == anchor["source_id"]
-        ]
-        block.sort(key=lambda p: positions.get(p["passage_id"], float("inf")))
-        # Core excerpts often belong to ONE continuing dialogue but were
-        # independently selected and displayed as separate sections. Connect
-        # them by actual original passage position, without duplicating texts
-        # or speculating about the speaker: source S17 on PDF 464 can provide
-        # vital context for source S8 on PDF 465.
-        at = positions.get(anchor["passage_id"])
-        near = []
-        for other in anchors:
-            if other["passage_id"] == anchor["passage_id"]:
-                continue
-            op = positions.get(other["passage_id"])
-            if (at is None or op is None or not 0 < abs(at - op) <= 8
-                    or other["book_id"] != anchor["book_id"]
-                    or other["corpus_version"] != anchor["corpus_version"]
-                    or min(abs(a - b) for a in anchor["pages"]
-                           for b in other["pages"]) > 1):
-                continue
-            near.append({
+        match = next((
+            group for group in groups
+            if len(group) < 3 and any(neighbor(anchor, p) for p in group)
+        ), None)
+        if match is None:
+            groups.append([anchor])
+        else:
+            match.append(anchor)
+
+    sections = []
+    for members in groups:
+        ids = {p["source_id"] for p in members}
+        passages = list(members)
+        passages.extend(
+            p for p in selected
+            if p.get("context_for") in ids
+        )
+        unique = {}
+        for p in passages:
+            unique.setdefault(p["passage_id"], p)
+        ordered = sorted(
+            unique.values(),
+            key=lambda p: positions.get(p["passage_id"], 10**9),
+        )
+        first = members[0]
+        center = positions.get(first["passage_id"])
+        links = []
+        for other in members[1:]:
+            at = positions.get(other["passage_id"])
+            links.append({
                 "source_id": other["source_id"], "pages": other["pages"],
-                "reading_relation": "earlier" if op < at else "later",
+                "reading_relation": (
+                    "earlier" if center is not None and at is not None
+                    and at < center else "later"
+                ),
                 "source_kind": "other_selected_original_passage",
             })
-        near.sort(key=lambda item: positions.get(
-            next(p["passage_id"] for p in anchors
-                 if p["source_id"] == item["source_id"]), 10**9
+        links.sort(key=lambda item: next(
+            (positions.get(p["passage_id"], 10**9) for p in members
+             if p["source_id"] == item["source_id"]), 10**9
         ))
         sections.append({
-            "nearby_selected_evidence": near,
-            "book_id": anchor["book_id"],
-            "book_title": anchor["title"],
-            "book_author": anchor.get("author", ""),
-            "edited_collection": anchor.get("edited_collection", False),
-            "subjects": anchor.get("subjects", []),
-            "core_source_id": anchor["source_id"],
-            "core_original_position": positions.get(anchor["passage_id"]),
+            "scene_type": (
+                "adjacent_original_argument" if len(members) > 1
+                else "individual_original_argument"
+            ),
+            "source_order_verified": True,
+            "speaker_identity_verified": False,
+            "nearby_selected_evidence": links,
+            "book_id": first["book_id"],
+            "book_title": first["title"],
+            "book_author": first.get("author", ""),
+            "edited_collection": first.get("edited_collection", False),
+            "subjects": first.get("subjects", []),
+            "core_source_id": first["source_id"],
+            "core_source_ids": [p["source_id"] for p in members],
+            "core_original_position": center,
             "reading_sequence": [
                 {
-                    "source_id": p["source_id"],
-                    "pages": p["pages"],
-                    "role": ("central_evidence" if p["source_id"] ==
-                             anchor["source_id"]
-                             else p.get("context_role", "related_context")),
+                    "source_id": p["source_id"], "pages": p["pages"],
+                    "role": (
+                        "central_evidence" if p["source_id"] in ids
+                        else p.get("context_role", "related_context")
+                    ),
                     "source_form": source_kind(p),
                     "discourse_cues": discourse_cues(p["text"]),
                     "text": p["text"],
-                } for p in block
-            ]
+                }
+                for p in ordered
+            ],
         })
     return json.dumps(sections, ensure_ascii=False)
-
 
 def choose_evidence(question, history, index, facets, provider, log,
                     selection_mode="model"):
