@@ -825,6 +825,23 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             "cited_book_ids": sorted(cited_books),
             "missing_authors": missing_authors,
         }
+    # A lexical evidence check is intentionally weaker than a semantic
+    # reviewer. When it cannot even establish that some question vocabulary
+    # is represented, disclose the gap to the reader instead of silently
+    # treating the cited draft as a complete answer.
+    coverage = stage.get("final_facet_evidence", [])
+    unresolved = [
+        p["part"] for p in coverage
+        if not p.get("lexical_evidence_present", False)
+    ]
+    if outcome == "draft" and unresolved:
+        trace["evidence_check"]["unresolved_question_parts"] = unresolved
+        notice = (
+            "The selected passages did not clearly cover every part of "
+            "your question in the source search. Some parts of this "
+            "answer may be incomplete; consult the linked originals."
+        )
+        coverage_notice = (coverage_notice + " " + notice).strip()
     quotes = trace["evidence_check"].get("quotation_precision", {})
     if outcome == "draft" and quotes.get("unmatched_count", 0):
         quote_note = (
