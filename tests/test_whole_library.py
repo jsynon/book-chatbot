@@ -286,6 +286,30 @@ class CrossLibraryFixture(unittest.TestCase):
             if p["source_id"] in model.last_ids
         }), 2)
 
+    def test_cross_author_answer_reports_uncited_requested_book(self):
+        class Provider:
+            def complete(self, stage, system, user, schema, max_tokens):
+                if stage == "evidence_selection":
+                    return {"source_ids": ["S1"]}
+                return {"paragraphs": [{
+                    "text": "A single retrieved source offers an account of "
+                            "happiness through meaningful human activity.",
+                    "source_ids": ["S1"],
+                }], "follow_up_questions": []}
+        index, _ = self.locator.search(
+            "How do Aristotle and Tolstoy understand happiness?"
+        )
+        output = answer_evidence_first(
+            "How do Aristotle and Tolstoy understand happiness?", [],
+            index, ["happiness"], Provider(), "test-v1.4"
+        )
+        self.assertEqual(output["outcome"], "draft")
+        self.assertIn("does not cite evidence", output["coverage_notice"])
+        self.assertEqual(
+            len(output["diagnostics"]["evidence_check"]
+                ["named_author_citation_coverage"]["missing_book_ids"]), 1
+        )
+
     def test_http_scope_uses_two_calls_and_correct_library_book_labels(self):
         class Provider:
             def __init__(self):
