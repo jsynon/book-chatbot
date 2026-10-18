@@ -223,7 +223,7 @@ class PassageQualityTests(unittest.TestCase):
     def test_composer_has_explicit_attribution_and_chronology_constraints(self):
         idx = index_of([HISTORY_REPORT, NOVEL_DIALOGUE, DARWIN_CORE])
         provider = Provider()
-        q = "What does the passage say about claims and arguments?"
+        q = "How do extraordinary people transgress the law?"
         result = answer_evidence_first(
             q, [], idx, [q], provider, "reading-companion-v1.4.4"
         )
