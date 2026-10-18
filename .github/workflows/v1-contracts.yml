@@ -1,4 +1,4 @@
-name: Reading Companion v1.4.2 contracts
+name: Reading Companion v1.4.3 contracts
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
           PY
       - name: Compile reading and library modules
         run: |
-          python -m compileall -q app.py whole_library.py retrieval_relevance.py conceptual_retrieval.py library_catalog.py evidence_pipeline.py direct_pipeline.py grounded_pipeline.py inference.py scripts tests
+          python -m compileall -q app.py benchmark_suite.py whole_library.py retrieval_relevance.py conceptual_retrieval.py library_catalog.py evidence_pipeline.py direct_pipeline.py grounded_pipeline.py inference.py scripts tests
       - name: Check browser script syntax and controls
         run: |
           node - <<'JS'
@@ -42,7 +42,7 @@ jobs:
           const match = html.match(/<script>([\s\S]*?)<\/script>/);
           if (!match) throw new Error('Expected inline application script');
           new vm.Script(match[1], {filename: 'index.html'});
-          for (const name of ['id="pipeline"', 'id="compare-pipelines"', 'id="test-suite"', 'Key passages from the source books', "['evidence', 'direct']", 'id="book"', 'id="book-filter"', 'id="search-scope"', 'id="library-prompts"']) {
+          for (const name of ['id="pipeline"', 'id="compare-pipelines"', 'id="test-suite"', 'Key passages from the source books', "['evidence', 'direct']", 'id="book"', 'id="book-filter"', 'id="search-scope"', 'id="library-prompts"', 'id="discipline-tests"', 'id="discipline-case"']) {
             if (!html.includes(name)) throw new Error('Missing model-comparison control: ' + name);
           }
           console.log('Browser script syntax and comparison controls OK.');
@@ -56,3 +56,5 @@ jobs:
           python -m unittest discover -s tests -p 'test_whole_library.py' -v
           python -m unittest discover -s tests -p 'test_retrieval_relevance.py' -v
           python -m unittest discover -s tests -p 'test_conceptual_retrieval.py' -v
+          python -m unittest discover -s tests -p 'test_cross_discipline_benchmark.py' -v
+          python scripts/run_cross_discipline.py --list
