@@ -144,10 +144,7 @@ class FacetEvidenceContracts(unittest.TestCase):
         self.assertEqual(len(set(p["source_id"] for p in candidates)),
                          len(candidates))
         self.assertTrue({"epidamnus", "potidaea"}.issubset(
-            " ".join(p["text"].lower() for p in selected).split()
-            if False else set(app.tokenize(
-                " ".join(p["text"] for p in selected)
-            ))
+            set(app.tokenize(" ".join(p["text"] for p in selected)))
         ))
         self.assertTrue(all(
             entry["origin"] == "actual_indexed_source"
