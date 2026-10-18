@@ -7,8 +7,8 @@ const manifest={version:47,postings_encoding:'delta-json-v1',prefix_length:2,pag
   7:{title:'Ethics — Aristotle',drive_url:`https://drive.google.com/file/d/${pdfId}/view`},
   152:{title:'History — Thucydides',drive_url:`https://drive.google.com/file/d/${pdfId}/view`}
 }};
-const files={'manifest.json':manifest,'terms-pe.json':{peloponnesian:[2,1]},'terms-wa.json':{war:[2,1]},'terms-ca.json':{caused:[2]},
-  'book-152.json':{pages:[{id:2,page:27,text:'Thucydides discusses the causes of the conflict and its underlying historical circumstances.'},{id:3,page:28,text:'Both cities exchanged demands and threatened to go to war.'}]},
+const files={'manifest.json':manifest,'terms-pe.json':{peloponnesian:[2,1]},'terms-wa.json':{war:[2,1]},'terms-ca.json':{caused:[2,1]},
+  'book-152.json':{pages:[{id:2,page:27,text:'Thucydides discusses what caused the Peloponnesian War and its underlying historical circumstances.'},{id:3,page:28,text:'Both cities exchanged demands and the tensions caused the Peloponnesian War.'}]},
   'book-7.json':{pages:[{id:0,page:1,text:'Another argument unrelated to this historical question.'}]}};
 function fakeFetch(url){const file=String(url).split('/').pop().replace(/\.gz$/,'');if(!(file in files))return Promise.resolve(new Response('missing',{status:404}));return Promise.resolve(new Response(gzipSync(JSON.stringify(files[file])),{status:200}));}
 test('query terms exclude framing without hardcoding an answer',()=>{assert.deepEqual(queryTerms('What caused the Peloponnesian War?'),['caused','peloponnesian','war']);});
@@ -56,11 +56,11 @@ test('does not rank unrelated single-word matches over a multi-term history book
  data['manifest.json'].books['89']={title:'An Epic — Homer',drive_url:`https://drive.google.com/file/d/${pdfId}/view`};
  data['terms-pe.json'].peloponnesian=[2,1];
  data['terms-wa.json'].war=[2,1,2];
- data['terms-ca.json'].caused=[2];
+ data['terms-ca.json'].caused=[2,1];
  data['book-152.json'].pages=[
   {id:2,page:656,text:'638 INDEX - Athenian 221, Peithias, leader, 338; 191 at Mytilene, 222 at 252; Peloponnesians, their colonies, 594; Athens, 439, 440; allies 493, 494; assembly 503, 504; position 105, 106; ships 290, 291; book 110, 111; war 455, 456'},
-  {id:3,page:27,text:'The Peloponnesian War followed disputes between two city alliances. The historian distinguishes immediate causes from deeper fears. The conflict developed over several negotiations.'},
-  {id:4,page:28,text:'The fighting arose from growing tension between the leading city powers. Their alliances clashed and the war continued.'}
+  {id:3,page:27,text:'The disputes caused the Peloponnesian War between two city alliances. The historian distinguishes immediate causes from deeper fears. The conflict developed over several negotiations.'},
+  {id:4,page:28,text:'These disputes caused the Peloponnesian War as tensions grew between the city powers. Their alliances clashed and the war continued.'}
  ];
  data['book-89.json']={pages:[{id:5,page:12,text:'The warriors gathered for war. Ancient heroes exchanged words and fought their enemies.'}]};
  const fetcher=url=>{const filename=String(url).split('/').pop().replace(/\\.gz$/,'');return Promise.resolve(filename in data ? new Response(gzipSync(JSON.stringify(data[filename])),{status:200}) : new Response('',{status:404}));};
