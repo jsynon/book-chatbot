@@ -206,6 +206,24 @@ class CrossLibraryFixture(unittest.TestCase):
         self.assertEqual(source["book_id"], "99")
         self.assertIn(DRIVE99, source["url"])
 
+    def test_named_comparison_without_one_authors_topic_fails_closed(self):
+        # The astronomy fixture has text in book 9, but neither Aristotle nor
+        # Tolstoy has astronomy-matching pages in the synthetic inverted index.
+        with self.assertRaisesRegex(LibrarySearchError, "named author's works"):
+            self.locator.search(
+                "How do Aristotle and Tolstoy approach astronomy?"
+            )
+
+    def test_equal_score_pages_span_an_argument_instead_of_first_pages(self):
+        hits = [(i, 4.0, 1) for i in range(20)]
+        chosen = WholeLibraryLocator._diverse_page_hints(hits, 5)
+        ids = [p[0] for p in chosen]
+        self.assertEqual(len(ids), 5)
+        self.assertEqual(len(set(ids)), 5)
+        self.assertEqual(ids[0], 0)
+        self.assertIn(19, ids)
+        self.assertTrue(any(7 <= pos <= 12 for pos in ids))
+
     def test_no_manifest_fails_with_actionable_error(self):
         (self.corpus / "manifest.json.gz").unlink()
         with self.assertRaisesRegex(LibrarySearchError, "manifest"):
