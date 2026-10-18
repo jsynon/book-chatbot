@@ -1,0 +1,1423 @@
+/* Book Lite theme stylesheet copied from jsynon/antilogicalism at v1.5.1.
+   Original Book Lite license and authorship retained below.
+   Only root-relative WordPress asset URLs were made absolute for localhost preview.
+   Update this copy if the site's Book Lite stylesheet changes.
+*/
+/*
+Theme Name: Book Lite
+Theme URI: https://wordpress.com/themes/book-lite/
+Author: Chandra Maharzan
+Author URI: http://www.wpshoppe.com/
+Description: A classic, book-style blog theme with large fonts. Clean and minimalist design puts the focus entirely on your content.
+Version: 109.0.1-wpcom
+License: GNU General Public License
+License URI: license.txt
+Text Domain: book-lite
+Tags: black, blog, classic-menu, clean, conservative, contemporary, custom-background, custom-colors, custom-header, custom-menu, education, elegant, featured-image-header, featured-images, fixed-layout, formal, gray, infinite-scroll, journal, lifestream, light, minimal, one-column, post-formats, professional, responsive-layout, rtl-language-support, school, simple, translation-ready, tumblelog, white
+Status: inactive
+
+This theme, like WordPress, is licensed under the GPL.
+Use it to make something cool, have fun, and share what you've learned with others.
+
+Resetting and rebuilding styles have been helped along thanks to the fine work of
+Eric Meyer http://meyerweb.com/eric/tools/css/reset/index.html
+along with Nicolas Gallagher and Jonathan Neal http://necolas.github.com/normalize.css/
+and Blueprint http://www.blueprintcss.org/
+*/
+
+
+/* =Reset
+-------------------------------------------------------------- */
+
+html, body, div, span, applet, object, iframe,
+h1, h2, h3, h4, h5, h6, p, blockquote, pre,
+a, abbr, acronym, address, big, cite, code,
+del, dfn, em, font, ins, kbd, q, s, samp,
+small, strike, strong, sub, sup, tt, var,
+dl, dt, dd, ol, ul, li,
+fieldset, form, label, legend,
+table, caption, tbody, tfoot, thead, tr, th, td {
+	border: 0;
+	font-family: inherit;
+	font-size: 100%;
+	font-style: inherit;
+	font-weight: inherit;
+	margin: 0;
+	outline: 0;
+	padding: 0;
+	vertical-align: baseline;
+}
+html {
+	font-size: 62.5%; /* Corrects text resizing oddly in IE6/7 when body font-size is set using em units http://clagnut.com/blog/348/#c790 */
+	overflow-y: scroll; /* Keeps page centred in all browsers regardless of content height */
+	-webkit-text-size-adjust: 100%; /* Prevents iOS text size adjust after orientation change, without disabling user zoom */
+	-ms-text-size-adjust: 100%; /* www.456bereastreet.com/archive/201012/controlling_text_size_in_safari_for_ios_without_disabling_user_zoom/ */
+}
+body {
+	background: #fff;
+}
+article,
+aside,
+details,
+figcaption,
+figure,
+footer,
+header,
+hgroup,
+nav,
+section {
+	display: block;
+}
+ol, ul {
+	list-style: none;
+}
+table { /* tables still need 'cellspacing="0"' in the markup */
+	border-collapse: separate;
+	border-spacing: 0;
+}
+caption, th, td {
+	font-weight: normal;
+	text-align: left;
+}
+blockquote:before, blockquote:after,
+q:before, q:after {
+	content: "";
+}
+blockquote, q {
+	quotes: "" "";
+}
+a:focus {
+	outline: thin dotted;
+}
+a:hover,
+a:active { /* Improves readability when focused and also mouse hovered in all browsers people.opera.com/patrickl/experiments/keyboard/test */
+	outline: 0;
+}
+a img {
+	border: 0;
+}
+
+
+/* =Global
+----------------------------------------------- */
+
+body,
+button,
+input,
+select,
+textarea {
+	color: #111;
+	font-family: "Century Schoolbook", Century, Garamond, serif;
+	font-size: 19px;
+	font-size: 1.9rem;
+	line-height: 1.8;
+}
+.custom-background #main,
+.custom-background #masthead,
+.custom-background #colophon {
+	background-color: #fff;
+	padding-left: 1.8em;
+	padding-right: 1.8em;
+}
+.custom-background.custom-header #masthead {
+	background-color: transparent;
+	padding-left: 0;
+	padding-right: 0;
+}
+.custom-background #page {
+	max-width: 818.375px; /* Increase page width to account for padding */
+}
+.custom-background.custom-header #page {
+	max-width: 100%;
+}
+
+/* Headings */
+h1,h2,h3,h4,h5,h6 {
+	clear: both;
+	font-family: "Century Schoolbook", Century, Garamond, serif;
+}
+h1 a,
+h2 a,
+h3 a,
+h4 a,
+nav a {
+	text-decoration: none;
+}
+h1, h2, h3, h4, h5, h6 {
+	text-align: center;
+	font-style: italic;
+	margin-bottom: .8em;
+	margin-top: 1em;
+}
+h1 {
+	font-size: 34px;
+	font-size: 3.4rem;
+	text-transform: uppercase;
+	text-align: center;
+}
+h2 {
+	font-size: 30px;
+	font-size: 3.0rem;
+}
+h3 {
+	font-size: 26px;
+	font-size: 2.6rem;
+}
+h4, h5, h6 {
+	font-size: 23px;
+	font-size: 2.3rem;
+	text-transform: uppercase;
+	font-style: normal;
+}
+h5 {
+	font-size: 19px;
+	font-size: 1.9rem;
+}
+h6 {
+	font-size: 17px;
+	font-size: 1.7rem;
+}
+hr {
+	background-color: #ccc;
+	border: 0;
+	height: 1px;
+	margin-bottom: 1.8em;
+}
+
+/* Text elements */
+p {
+	margin-bottom: 1.8em;
+}
+ul, ol {
+	margin: 0 0 1.8em 3em;
+}
+ul {
+	list-style: disc;
+}
+ol {
+	list-style: decimal;
+}
+ul ul, ol ol, ul ol, ol ul {
+	margin-bottom: 0;
+	margin-left: 1.8em;
+}
+dt {
+	font-weight: bold;
+}
+dd {
+	margin: 0 1.8em 1.8em;
+}
+b, strong {
+	font-weight: bold;
+}
+dfn, cite, em, i {
+	font-style: italic;
+}
+cite {
+	font-weight: bold;
+}
+blockquote {
+	padding: 0 0 0 4em;
+	position: relative;
+}
+blockquote:before {
+	color: #ccc;
+	content: "\201C";
+	font-family: "Times New Roman", Times, sans-serif;
+	font-size: 60px;
+	font-size: 6.0rem;
+	font-weight: bold;
+	line-height: 1;
+	height: 20px;
+	position: absolute;
+		top: 0;
+		left: 5%;
+	width: 24px;
+}
+address {
+	font-style: italic;
+	margin: 0 0 1.8em;
+}
+pre {
+	background: #eee;
+	font-family: "Courier 10 Pitch", Courier, monospace;
+	font-size: 16px;
+	font-size: 1.6rem;
+	line-height: 1.5;
+	margin-bottom: 1.8em;
+	padding: 1.8em;
+	overflow: auto;
+	max-width: 100%;
+}
+code, kbd, tt, var {
+	font: 15px Monaco, Consolas, "Andale Mono", "DejaVu Sans Mono", monospace;
+}
+abbr, acronym {
+	border-bottom: 1px dotted #666;
+	cursor: help;
+}
+mark, ins {
+	background: #fff9c0;
+	text-decoration: none;
+}
+sup,
+sub {
+	font-size: 75%;
+	height: 0;
+	line-height: 0;
+	position: relative;
+	vertical-align: baseline;
+}
+sup {
+	bottom: 1ex;
+}
+sub {
+	top: .5ex;
+}
+small {
+	font-size: 75%;
+}
+big {
+	font-size: 125%;
+}
+figure {
+	margin: 0;
+}
+table {
+	margin: 0 0 1.8em;
+	width: 100%;
+	border: 1px solid #000;
+}
+th {
+	font-weight: bold;
+	background: #333;
+	color: #fff;
+	padding: 5px 10px;
+	border: 1px solid #000;
+}
+td {
+	border: 1px solid #000;
+	padding: 5px 10px;
+}
+button,
+input,
+select,
+textarea {
+	font-size: 100%; /* Corrects font size not being inherited in all browsers */
+	margin: 0 0 0 1px; /* Addresses margins set differently in IE6/7, F3/4, S5, Chrome */
+	vertical-align: baseline; /* Improves appearance and consistency in all browsers */
+	*vertical-align: middle; /* Improves appearance and consistency in all browsers */
+}
+button,
+input {
+	line-height: normal; /* Addresses FF3/4 setting line-height using !important in the UA stylesheet */
+	*overflow: visible;  /* Corrects inner spacing displayed oddly in IE6/7 */
+	border: 2px solid #000;
+}
+button,
+html input[type="button"],
+input[type="reset"],
+input[type="submit"] {
+	background: #111;
+	color: #fff;
+	cursor: pointer; /* Improves usability and consistency of cursor style between image-type 'input' and others */
+	padding: 0.3em 1em;
+	border: none;
+}
+button:hover,
+html input[type="button"]:hover,
+input[type="reset"]:hover,
+input[type="submit"]:hover {
+	background: #222;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+	box-sizing: border-box; /* Addresses box sizing set to content-box in IE8/9 */
+	padding: 0; /* Addresses excess padding in IE8/9 */
+}
+input[type="search"] {
+	-webkit-appearance: textfield; /* Addresses appearance set to searchfield in S5, Chrome */
+	-moz-box-sizing: content-box;
+	-webkit-box-sizing: content-box; /* Addresses box sizing set to border-box in S5, Chrome (include -moz to future-proof) */
+	box-sizing: content-box;
+}
+input[type="search"]::-webkit-search-decoration { /* Corrects inner padding displayed oddly in S5, Chrome on OSX */
+	-webkit-appearance: none;
+}
+button::-moz-focus-inner,
+input::-moz-focus-inner { /* Corrects inner padding and border displayed oddly in FF3/4 www.sitepen.com/blog/2008/05/14/the-devils-in-the-details-fixing-dojos-toolbar-buttons/ */
+	border: 0;
+	padding: 0;
+}
+input[type="text"],
+input[type="password"],
+textarea {
+	border: 2px solid #000;
+}
+input[type="text"]:focus,
+input[type="password"]:focus,
+textarea:focus {
+	color: #111;
+}
+input[type="text"],
+input[type="password"] {
+	padding: 3px;
+}
+textarea {
+	overflow: auto; /* Removes default vertical scrollbar in IE6/7/8/9 */
+	padding-left: 3px;
+	vertical-align: top; /* Improves readability and alignment in all browsers */
+	width: 98%;
+}
+
+/* Links */
+a {
+	color: #000;
+	text-decoration: underline;
+}
+a:hover,
+a:focus,
+a:active {
+	color: #666;
+}
+
+/* Alignment */
+.alignleft {
+	display: inline;
+	float: left;
+	margin: .9em 1.8em .9em 0;
+}
+.alignright {
+	display: inline;
+	float: right;
+	margin: .9em 0 .9em 1.8em;
+}
+.aligncenter {
+	clear: both;
+	display: block;
+	margin: .9em auto;
+}
+
+/* Text meant only for screen readers */
+.assistive-text {
+	clip: rect(1px 1px 1px 1px); /* IE6, IE7 */
+	clip: rect(1px, 1px, 1px, 1px);
+	position: absolute !important;
+}
+
+
+/* =Structure
+----------------------------------------------- */
+
+#page {
+	max-width: 750px;
+	margin: auto;
+}
+#main {
+	padding-top: 4em;
+}
+
+
+/* =Header
+----------------------------------------------- */
+
+#masthead {
+	margin-bottom: 0;
+	margin-top: 0;
+	padding-bottom: 1.4em;
+	background: url('https://jsynon.github.io/antilogicalism/wp-content/themes/book-lite/images/header-divider.png') bottom center no-repeat;
+	position: relative;
+}
+#masthead:before,
+#masthead:after {
+	content: "";
+	display: table;
+}
+#masthead:after {
+	clear: both;
+}
+.site-title {
+	font-size: 48px;
+	font-size: 4.8rem;
+	font-style: normal;
+	padding: 0 0 0.6em;
+	text-align: center;
+	font-weight: bold;
+	line-height: 1.2;
+	position: relative;
+	text-transform: uppercase;
+}
+.site-title a,
+.site-title a:hover,
+.site-title a:visited,
+.site-description {
+	color: inherit;
+}
+.site-title a:hover {
+	opacity: 0.7;
+}
+.site-description {
+	font-style: italic;
+	padding: 0 0 1.8em;
+	max-width: 70%;
+	margin: 0 auto;
+	text-align: center;
+	font-size: 17px;
+	font-size: 1.7rem;
+}
+
+
+/* =Menu
+----------------------------------------------- */
+
+#main-menu {
+	max-width: 750px;
+	margin: auto;
+}
+.main-navigation {
+	display: block;
+	float: left;
+	font-size: 16px;
+	font-size: 1.6rem;
+	text-align: center;
+	width: 100%;
+}
+.main-navigation ul {
+	float: right;
+	list-style: none;
+	margin: 0;
+	padding-left: 0;
+	position: relative;
+	right: 50%;
+}
+.main-navigation ul li {
+	display: inline-block;
+	position: relative;
+	left: 50%;
+}
+.main-navigation ul li:after {
+	color: #000;
+	content: "\2666";
+	display: inline;
+	font-size: 12px;
+	font-size: 1.2rem;
+	margin: 0 0 0 17px;
+}
+.main-navigation ul li:last-child:after {
+	content: normal;
+	margin: 0;
+}
+.main-navigation ul ul li {
+	float: left;
+	left: auto;
+}
+.main-navigation ul a {
+	display: inline-block;
+	text-decoration: none;
+	padding: 10px 6px 10px 21px;
+}
+.main-navigation ul ul a {
+	border-bottom: 1px dotted #eee;
+	color: #666;
+}
+.main-navigation ul ul {
+	border-top: 2px solid #000;
+	-moz-box-shadow: 0 1px 1px rgba(0,0,0,0.2);
+	-webkit-box-shadow: 0 1px 1px rgba(0,0,0,0.2);
+	box-shadow: 0 1px 1px rgba(0,0,0,0.2);
+	background: #fff;
+	display: none;
+	float: left;
+	position: absolute;
+		top: auto;
+		left: 10px;
+		right: auto;
+	text-align: left;
+	z-index: 99999;
+}
+.main-navigation ul ul:before {
+	border-bottom: 7px solid #000;
+	border-left: 7px solid transparent;
+	border-right: 7px solid transparent;
+	content: "";
+	display: block;
+	height: 0;
+	position: absolute;
+		top: -7px;
+		left: 10%;
+	width: 0;
+}
+.main-navigation ul ul ul:before {
+	border-right: 7px solid #000;
+	border-top: 7px solid transparent;
+	border-bottom: 7px solid transparent;
+	content: "";
+	display: block;
+	height: 0;
+	position: absolute;
+		top: 17px;
+		left: -14px;
+	width: 0;
+}
+.main-navigation ul ul ul {
+	left: 100%;
+	top: -2px;
+}
+.main-navigation ul ul a {
+	width: 150px;
+	font-size: 15px;
+	font-size: 1.5rem;
+	padding: 7px 15px;
+}
+.main-navigation ul ul li:after {
+	content: "";
+	margin: 0;
+	padding: 0;
+}
+.main-navigation li:hover > a {
+	color: #999;
+}
+.main-navigation ul ul :hover > a {
+	color: #111;
+}
+.main-navigation ul ul a:hover {
+}
+.main-navigation ul li:hover > ul,
+.main-navigation ul li.focus > ul {
+	display: block;
+}
+.main-navigation li.current_page_item a,
+.main-navigation li.current-menu-item a {
+	color: #666;
+}
+
+/* Small menu */
+.menu-toggle {
+	background: rgba(0,0,0,.7);
+	color: #fff;
+	cursor: pointer;
+	margin-top: 0;
+}
+.main-small-navigation .menu {
+	background: #fff;
+	display: none;
+	position: relative;
+	z-index: 9999;
+}
+
+
+/* =Content
+----------------------------------------------- */
+
+article {
+	background: url('https://jsynon.github.io/antilogicalism/wp-content/themes/book-lite/images/break.png') bottom center no-repeat;
+	padding-bottom: 5em;
+}
+h1.entry-title {
+	text-transform: uppercase;
+	font-size: 38px;
+	font-size: 3.8rem;
+	font-style: normal;
+	line-height: 1.2;
+	margin: 1em 0 0.8em;
+	text-align: center;
+	word-wrap: break-word;
+}
+.entry-content h1 {
+	font-size: 34px;
+	font-size: 3.4rem;
+	text-transform: uppercase;
+	text-align: center;
+	margin-bottom: 1.3em;
+	margin-top: 2.3em;
+}
+.bypostauthor {
+}
+.entry-content > p:first-child:first-line {
+	letter-spacing: 0.05em;
+	font-variant: small-caps;
+}
+.format-standard .entry-content > p:first-child:first-letter,
+.page .entry-content > p:first-child:first-letter {
+	color: #000;
+	float: left;
+	font-size: 70.3px;
+	font-size: 7.03rem;
+	line-height: 43px;
+	margin: 9px 5px 0 0;
+}
+.sticky {
+}
+.hentry {
+	margin: 0 0 3.6em;
+}
+.hentry:last-of-type {
+	margin: 0;
+}
+.entry-meta {
+	clear: both;
+	text-align: center;
+	font-style: italic;
+	font-size: 17px;
+	font-size: 1.7rem;
+}
+footer.entry-meta {
+	margin: 1.8em 0 0;
+}
+.entry-caption {
+	text-align: center;
+}
+.byline {
+	display: none;
+}
+.single .byline,
+.group-blog .byline {
+	display: inline;
+}
+.entry-content,
+.entry-summary {
+	margin: 1.8em 0 0;
+	-ms-word-wrap: break-word;
+	word-wrap: break-word;
+}
+.page-links {
+	clear: both;
+	margin: 0 0 1.8em;
+	text-align: center;
+}
+.page-title {
+	text-align: center;
+	font-size: 34px;
+	font-size: 3.4rem;
+	font-style: italic;
+	margin-bottom: 1em;
+	margin-top: 2em;
+}
+.post-format-title {
+	clear: both;
+	display: inline;
+	font-size: 17px;
+	font-size: 1.7rem;
+}
+
+/* Keep reblogging styles from breaking the quotes */
+body .wpcom-reblog-snapshot .reblogger-note-content blockquote {
+	padding-left: 4em !important;
+}
+
+
+/* =Post Formats
+----------------------------------------------- */
+
+.entry-format-link {
+	display: block;
+	font-size: 21px;
+	font-size: 2.1rem;
+	font-variant: small-caps;
+	margin: 0 0 -1.5em;
+	text-align: center;
+	text-decoration: none;
+}
+.entry-format-link:before,
+.entry-format-link:after {
+	content: "~";
+	display: inline-block;
+	font-size: 18px;
+	font-size: 1.8rem;
+	margin: 0 5px;
+}
+.format-aside .entry-content {
+	font-size: 24px;
+	font-size: 2.4rem;
+	font-style: italic;
+}
+.format-link .entry-title {
+	display: none;
+}
+
+
+/* =Media
+----------------------------------------------- */
+
+img.size-full,
+img.size-large,
+.header-image img,
+img.wp-post-image,
+.site-header img,
+.entry-content img,
+.entry-summary img,
+.comment-content img,
+.widget img {
+	height: auto;
+	max-width: 100%; /* Fluid images for posts, comments, and widgets */
+}
+img.size-full,
+img.size-large,
+.header-image img,
+.comment-content img,
+img.wp-post-image,
+img[class*="align"],
+img[class*="wp-image-"],
+img[class*="attachment-"] {
+	height: auto; /* Make sure images with WordPress-added height and width attributes are scaled correctly */
+}
+.site-header img,
+.entry-content img,
+img.size-full {
+	max-width: 100%;
+}
+img.alignnone,
+img.aligncenter,
+img.alignright,
+img.alignleft {
+	margin: .9em 0;
+}
+img.alignright {
+	margin-left: 20px;
+}
+img.alignleft {
+	margin-right: 20px;
+}
+img.aligncenter {
+	margin-right: auto;
+	margin-left: auto;
+}
+.entry-content img.wp-smiley,
+.comment-content img.wp-smiley {
+	border: none;
+	display: inline-block;
+	margin-bottom: 0;
+	margin-top: 0;
+	padding: 0;
+}
+.wp-caption {
+	max-width: 100%;
+}
+.wp-caption.aligncenter,
+.wp-caption.alignleft,
+.wp-caption.alignright {
+	margin-top: .9em;
+	margin-bottom: .9em;
+}
+.wp-caption img {
+	display: block;
+	margin: 0 auto;
+	max-width: 100%;
+}
+.wp-caption-text {
+	font-size: 0.8em;
+	font-style: italic;
+	text-align: center;
+}
+.wp-caption .wp-caption-text {
+	margin: 0.9em 0.5em;
+	line-height: 1.4;
+}
+#main .gallery {
+	margin-bottom: 1.8em;
+
+}
+.gallery-caption {
+	line-height: 1.3;
+	z-index: -1;
+	position: absolute;
+	bottom: 0;
+	left: 0;
+	padding: 10px;
+	background: #fff;
+	display: none;
+}
+#main .gallery a img {
+	border: none;
+	height: auto;
+	max-width: 100%;
+	z-index: 1;
+}
+#main .gallery a:hover img {
+	opacity: 0.3;
+}
+#main .gallery .gallery-item:hover {
+	z-index: 2;
+}
+#main .gallery dd {
+	margin: 0;
+}
+.gallery-item {
+	float: left;
+	border: 2px solid #fff;
+	border-width: 2px 1px 0px 1px;
+	position: relative;
+}
+.gallery-columns-2 .gallery-item {
+	max-width: 49.7%;
+}
+.gallery-columns-4 .gallery-item {
+	max-width: 24.7%;
+}
+.gallery-columns-5 .gallery-item {
+	max-width: 19.7%;
+}
+.gallery-columns-9 .gallery-item {
+	max-width: 10.8%;
+}
+.gallery-icon {
+	line-height: 0;
+}
+#image-navigation .next-image {
+	float: right;
+}
+div.attachment {
+	text-align: center;
+}
+/* Make sure embeds and iframes fit their containers */
+embed,
+iframe,
+object {
+	max-width: 100%;
+}
+
+
+/* =Navigation
+----------------------------------------------- */
+
+#nav-above {
+	display: none;
+}
+#main .site-navigation {
+	margin: 0 0 1.8em;
+	overflow: hidden;
+}
+#nav-below {
+	overflow: hidden;
+}
+#main .nav-previous {
+	float: left;
+	width: 50%;
+}
+#main .nav-next {
+	float: right;
+	text-align: right;
+	width: 50%;
+}
+
+/* =Comments
+----------------------------------------------- */
+#comments {
+	clear: both;
+}
+h2.comments-title {
+	text-align: left;
+}
+ol.commentlist {
+	background: url('https://jsynon.github.io/antilogicalism/wp-content/themes/book-lite/images/comment-divider.png') no-repeat center top;
+	list-style:none;
+	margin: 0 0 1.8em;
+	padding:0;
+	text-indent: 0;
+}
+ol.commentlist li {
+	margin: 0;
+	padding: 1.8em 0 0;
+	position: relative;
+}
+ol.commentlist li article li {
+	margin: 0;
+	padding: 0;
+}
+ol.commentlist li div.vcard cite.fn {
+	font-style:normal;
+	font-style: italic;
+}
+ol.commentlist li div.vcard cite.fn a.url {
+	color: #333;
+	text-decoration: none;
+}
+ol.commentlist li div.vcard cite.fn a.url:hover {
+	color:#000;
+}
+ol.commentlist li div.vcard img.avatar {
+	border: none;
+	float:left;
+	margin-right:10px;
+}
+ol.commentlist li div.comment-meta {
+	font-size: 0.8em;
+	font-style: italic;
+	line-height: 1.4;
+}
+ol.commentlist li div.comment-meta a {
+	color:#aaa;
+	text-decoration:none;
+}
+ol.commentlist li div.comment-meta a:hover {
+	color:#000;
+}
+ol.commentlist li div.commentbody {
+	margin-top: 1.8em;
+	font-size: 14px;
+	font-size: 1.4rem;
+}
+ol.commentlist li p {
+	margin: 0 0 1.8em;
+}
+ol.commentlist li ul {
+	list-style:square;
+	padding:0;
+	text-indent:0;
+}
+ol.commentlist li div.reply {
+	margin-bottom: 20px;
+}
+ol.commentlist li div.reply a {
+	font-size: 0.85em;
+	font-style: italic;
+}
+ol.commentlist li ul.children {
+	list-style:none;
+	margin-left: 1.8em;
+}
+ol.commentlist li ul.children li.depth-2,
+ol.commentlist li ul.children li.depth-3,
+ol.commentlist li ul.children li.depth-4,
+ol.commentlist li ul.children li.depth-5 {
+	margin: 0 0 .18em;
+}
+ol.commentlist li.pingback {
+	background: url("https://jsynon.github.io/antilogicalism/wp-content/themes/book-lite/images/comment-divider.png") no-repeat center bottom;
+	padding-bottom: 1.8em;
+}
+ol.commentlist li.pingback div.vcard {
+	padding:0 170px 0 0;
+}
+ol.commentlist article {
+	padding-bottom: 1.8em;
+	background: url("https://jsynon.github.io/antilogicalism/wp-content/themes/book-lite/images/comment-divider.png") no-repeat center bottom;
+}
+ol.commentlist .comment-content {
+	clear:both;
+	padding-top: 1.8em;
+}
+p.nocomments {
+	font-style: italic;
+	font-size: 14px;
+	font-size: 1.4rem;
+	color: #aaa;
+	text-align: center;
+}
+#reply-title small {
+	padding: 0;
+	float: none;
+}
+
+/* Comment Form */
+#respond {
+	margin: 0 auto !important;
+	padding: 0;
+	position: relative;
+}
+#respond input[type="text"],
+#respond textarea {
+	background: #fff;
+	border: 2px solid #000;
+	position: relative;
+	padding: 5px;
+}
+#respond h3 {
+	text-align: left;
+	font-weight: normal;
+}
+#respond .logged-in-as {
+	font-style: italic;
+}
+#respond .comment-form-author,
+#respond .comment-form-email,
+#respond .comment-form-url,
+#respond .comment-form-comment {
+	position: relative;
+}
+#respond .comment-form-author label,
+#respond .comment-form-email label,
+#respond .comment-form-url label,
+#respond .comment-form-comment label {
+	display: inline-block;
+	min-width: 60px;
+	padding: 0px .9em;
+	position: absolute;
+		top: -2px;
+		left: 0;
+	z-index: 1;
+	font-style: italic;
+}
+#respond .comment-form-comment label {
+	top: 2.4px;
+	border-radius: 0;
+}
+#respond input[type="text"]:focus,
+#respond textarea:focus {
+	text-indent: 0;
+	z-index: 1;
+}
+#respond textarea {
+	resize: vertical;
+	width: 95%;
+}
+#respond .comment-form-author .required,
+#respond .comment-form-email .required {
+	color: #c00;
+	font-size: 17px;
+	font-size: 1.7rem;
+	font-weight: bold;
+	left: 65.5%;
+	position: absolute;
+	top: 4px;
+	z-index: 1;
+}
+.comment-notes {
+	font-size: 0.8em;
+}
+.comment-notes .required {
+	color: #c00;
+}
+
+#respond p {
+	margin: 1.8em 0;
+}
+
+#respond #cancel-comment-reply-link {
+	color: #666;
+	margin-left: 10px;
+	text-decoration: none;
+}
+#respond .logged-in-as a:hover,
+#respond #cancel-comment-reply-link:hover {
+	text-decoration: underline;
+}
+.commentlist #respond {
+	margin: 1.8em 0 0;
+	width: auto;
+}
+#reply-title {
+	color: #373737;
+	font-size: 24px;
+	font-size: 2.4rem;
+	font-weight: bold;
+	line-height: 30px;
+}
+#cancel-comment-reply-link {
+	color: #888;
+	display: block;
+	font-size: 10px;
+	font-size: 1.0rem;
+	font-weight: normal;
+	line-height: 2.2em;
+	letter-spacing: 0.05em;
+	position: absolute;
+		top: 1.8em;
+		right: 1.8em;
+	text-decoration: none;
+	text-transform: uppercase;
+}
+#cancel-comment-reply-link:focus,
+#cancel-comment-reply-link:active,
+#cancel-comment-reply-link:hover {
+	color: #ff4b33;
+}
+#respond label {
+	line-height: 2.2em;
+}
+#respond input[type=text] {
+	width: 66%;
+}
+
+p.comment-form-comment {
+	margin: 0;
+}
+.form-allowed-tags {
+	display: none;
+}
+
+
+/* =Infinite Scroll
+----------------------------------------------- */
+
+/**
+ * Globally hidden elements when IS is supported and in use.
+ */
+.infinite-scroll #nav-below, /* Older / Newer Posts Navigation (always hidden) */
+.infinite-scroll.neverending #colophon { /* Theme Footer (when set to scrolling) */
+	display: none;
+}
+
+/**
+ * When IS has reached its end we need to re-display elements that were hidden (via .neverending) before
+ */
+.infinity-end.neverending #colophon {
+	display: block;
+}
+
+/**
+ * Global style tweaks when IS is supported and in use
+ */
+.infinite-scroll .infinite-wrap, /* Each IS loop content wrapper (multiple instances) */
+.infinite-scroll .infinite-loader, /* Each IS loading spinner (multiple instances) */
+.infinite-scroll #infinite-handle /* The Load more posts button */ {
+	clear: both;
+}
+.infinite-scroll .infinite-wrap {
+	border-top: none;
+	padding: 3.6em 0 0;
+}
+.infinite-scroll #infinite-footer .container { /* IS border */
+	border-color: #ccc;
+}
+
+/**
+ * Make sure that clicking Load more posts doesn't cause any jarringness.
+ */
+.infinite-scroll #infinite-handle {
+	height: 52px;
+	padding-top: 1.8em;
+}
+.infinite-scroll #infinite-handle span {
+	background: #111;
+	border-radius: 0;
+	color: #fff;
+	display: block;
+	font-size: 19px;
+	font-size: 1.9rem;
+	margin: 0 auto;
+	text-align: center;
+	width: 150px;
+}
+.infinite-scroll #infinite-handle span:hover {
+	background: #222;
+}
+.infinite-scroll .infinite-loader {
+	margin: 0 auto;
+	padding: 0 0 62px;
+	width: 28px;
+}
+
+
+/* =Widgets
+----------------------------------------------- */
+
+.widget {
+	margin: 0 0 1.8em;
+	overflow: hidden;
+}
+.widget-area {
+	float: left;
+	font-size: 0.85em;
+	margin-left: 2%;
+}
+.widget-area:first-child {
+	margin-left: 0;
+}
+h1.widget-title {
+	font-size: 19px;
+	font-size: 1.9rem;
+	text-transform: uppercase;
+	font-weight: bold;
+}
+.widget ul, .widget ol {
+	margin-left: 0;
+	list-style: none;
+}
+#secondary {
+	clear: both;
+	overflow: hidden;
+	padding: 3.6em 0;
+	margin-top: 3.6em;
+	background: url("https://jsynon.github.io/antilogicalism/wp-content/themes/book-lite/images/header-divider.png") no-repeat top center;
+}
+footer {
+	clear: both;
+}
+#wp-calendar th,
+#wp-calendar td {
+	padding: 0 6px;
+	text-align: center;
+}
+
+
+/* WordPress.com Styles
+----------------------------------------------- */
+
+#flickr_badge_wrapper {
+	background: transparent;
+	border: 0 none;
+}
+#flickr_badge_uber_wrapper {
+	margin: 0 auto;
+}
+#flickr_badge_uber_wrapper a:hover,
+#flickr_badge_uber_wrapper a:link,
+#flickr_badge_uber_wrapper a:active,
+#flickr_badge_uber_wrapper a:visited {
+	color: #000;
+}
+.widget_recent_comments td {
+	padding: .8em 5px 1em 5px;
+	vertical-align: top;
+}
+.widget_authors ul,
+.widget_author_grid ul {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.widget_authors img {
+	vertical-align: middle;
+}
+.widget_authors li {
+	margin-bottom: 1.8em;
+}
+div.sharedaddy h3,
+#content div.sharedaddy h3,
+#main div.sharedaddy h3,
+#primary div.sharedaddy h3,
+h3.sd-title {
+	font-style: normal;
+	text-align: left;
+}
+h3.sd-title {
+	font-size: 19px;
+	font-size: 1.9rem;
+}
+.twitter-tweet-rendered blockquote:before {
+	display: none;
+}
+
+
+/* =Footer
+----------------------------------------------- */
+
+.site-info {
+	text-align: center;
+	padding: 3.1em 0 4.1em;
+	font-size: 0.85em;
+	clear: both;
+}
+.site-info .italic {
+	font-style: italic;
+}
+
+
+/* =Responsive Structure
+----------------------------------------------- */
+
+@media ( max-width: 818.375px ) {
+	.custom-background #masthead {
+		padding-left: 0;
+		padding-right: 0;
+	}
+	#main,
+	#colophon,
+	.custom-background #main,
+	.custom-background #colophon {
+		padding: .9em;
+	}
+	img {
+		margin-left: 0;
+		margin-right: 0;
+	}
+}
+
+@media ( max-width: 480px ) {
+	.site-navigation {
+		position: relative;
+	}
+	#masthead {
+		margin-top: 0;
+	}
+	#masthead nav h1 {
+		width: 100%;
+		border-bottom: 2px solid #000;
+		text-align: center;
+	}
+	#masthead ul {
+		padding-top: .9em;
+	}
+	.widget-area {
+		width: 100%;
+	}
+	#main-menu {
+		background: #fff;
+		position: relative;
+		z-index: 9999;
+	}
+	#masthead .main-small-navigation ul.menu {
+		padding-top: .9em;
+		padding-bottom: 1.8em;
+		list-style: none;
+		text-align: center;
+		margin: 0;
+	}
+	#masthead .main-small-navigation ul.menu ul {
+		padding: 0;
+		margin: 0;
+		list-style: none;
+	}
+}
+
+/* =Retina/Hi-DPI Graphics
+-----------------------------------------*/
+
+@media 	only screen and (-moz-min-device-pixel-ratio: 1.5),
+		only screen and (-o-min-device-pixel-ratio: 3/2),
+		only screen and (-webkit-min-device-pixel-ratio: 1.5),
+		only screen and (min-device-pixel-ratio: 1.5) {
+
+	ol.commentlist,
+	ol.commentlist article,
+	ol.commentlist li.pingback {
+		background-image: url('https://jsynon.github.io/antilogicalism/wp-content/themes/book-lite/images/comment-divider-2x.png');
+		background-size: 77px auto;
+	}
+	#masthead,
+	#secondary {
+		background-image: url('https://jsynon.github.io/antilogicalism/wp-content/themes/book-lite/images/header-divider-2x.png');
+		background-size: 50px auto;
+	}
+	.custom-header #masthead {
+		background-size: auto;
+	}
+	article {
+		background-image: url('https://jsynon.github.io/antilogicalism/wp-content/themes/book-lite/images/break-2x.png');
+		background-size: 125px auto;
+	}
+
+
+}
+
+/* Mobile layout fix for Antilogicalism */
+@media screen and (max-width: 480px) {
+    .site-title {
+        font-size: 2rem;
+        font-size: clamp(1.5rem, 7vw, 2rem);
+        line-height: 1.2;
+        overflow-wrap: anywhere;
+        word-wrap: break-word;
+    }
+
+    .site-description {
+        max-width: 100%;
+        padding-left: 0.5em;
+        padding-right: 0.5em;
+        box-sizing: border-box;
+    }
+
+    #masthead,
+    #masthead nav,
+    #masthead nav h1 {
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+}
+
+html,
+body {
+    max-width: 100%;
+}
