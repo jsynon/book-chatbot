@@ -336,6 +336,22 @@ export async function composeVerifiedAnswer(question,sources,ai) {
     notice:'Exact indexed page text verified against owner-published SHA-256. Individual AI claims still require assessment.'};
 }
 
+// Log only non-sensitive rejection reasons. Never log token, site secret,
+// remote IP, response body, or arbitrary attacker-controlled metadata.
+// The public response remains generic and every failure still rejects AI.
+export function turnstileRejection(verification) {
+  if(verification?.success!==true) {
+    const codes=Array.isArray(verification?.['error-codes'])?
+      verification['error-codes'].filter(value=>typeof value==='string' &&
+        /^[a-z-]{1,48}$/.test(value)).slice(0,4):[];
+    return {reason:'siteverify-rejected',codes};
+  }
+  if(verification.hostname!==EXPECTED_TURNSTILE_HOST)
+    return {reason:'hostname-mismatch'};
+  if(verification.action!==TURNSTILE_ACTION)
+    return {reason:'action-mismatch'};
+  return null;
+}
 async function verifyTurnstile(token,ip,secret,fetcher) {
   const form=new URLSearchParams({secret,response:token,remoteip:ip});
   let verification;
@@ -344,12 +360,23 @@ async function verifyTurnstile(token,ip,secret,fetcher) {
       method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body:form,
     });
-    if(!r.ok)return false;
+    if(!r.ok){
+      console.warn('Reading Companion Turnstile verification failed',
+        {reason:'siteverify-http-failure',httpStatus:r.status});
+      return false;
+    }
     verification=await r.json();
-  }catch{return false;}
-  return verification?.success===true &&
-    verification.hostname===EXPECTED_TURNSTILE_HOST &&
-    verification.action===TURNSTILE_ACTION;
+  }catch{
+    console.warn('Reading Companion Turnstile verification failed',
+      {reason:'siteverify-unavailable'});
+    return false;
+  }
+  const rejection=turnstileRejection(verification);
+  if(rejection){
+    console.warn('Reading Companion Turnstile verification failed',rejection);
+    return false;
+  }
+  return true;
 }
 export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.fetch(url,opts)) {
   const origin=request.headers.get('Origin')||'';
