@@ -6,7 +6,7 @@ The Reading Companion is one part of [Antilogicalism](https://jsynon.github.io/a
 
 **Our long-term goal is to make the entire Antilogicalism digital library available for source-grounded conversation.** Readers should eventually be able to trace arguments across works and authors, compare interpretations, discover books worth reading, and check the underlying text—not merely accept a fluent AI summary.
 
-## Current state: Version 1.2
+## Current state: Version 1.2.1
 
 The running prototype uses **Aristotle's *Nicomachean Ethics*** as its first book. It is local, free of hosted inference API dependencies, and meant to become a useful one-book demo before expanding to the full collection.
 
@@ -17,6 +17,8 @@ Version 1.2's default is **evidence-first answering**:
 3. Include neighboring source passages when a selected quotation is too isolated to understand reliably. Keep each neighbor's citation identity separate.
 4. Ask the model for a **direct, coherent explanation** with paragraph-level source IDs. The application—not the model—places inline citation links.
 5. Display verbatim, short **key passages** with PDF page links and, when useful, one or two natural follow-up questions that the reader can pursue.
+
+**Version 1.2.1 citation recovery:** some models place `[S#]` markers directly in the prose, even when source IDs are also returned separately. The application now reconciles known, overlapping references, preserves any valid additional sources, removes duplicate inline markers, and renders its own citation links. Unknown, disjoint/conflicting, or excessive references are still rejected. Opt-in diagnostics record any recovery or rejection; no extra model call is made. This fixes a formatting failure, **not** an interpretive error.
 
 The default uses **two local Ollama calls**: evidence selection and answer synthesis. There is **no model-generated grade, claim-by-claim reviewer, or automatic rewriting loop**. Responses are labeled **drafts**, because valid citation IDs do not establish that a philosophical interpretation is correct.
 
@@ -59,7 +61,7 @@ Changing book IDs does **not** automatically update the title or Google Drive PD
 
 ## Reading with evidence
 
-Source excerpts and citations originate in the indexed primary texts. Passage IDs include their book, corpus version, and original page provenance; they are never inferred from an AI-generated answer. When the model returns cited paragraphs, Python checks every ID against the passages actually supplied and renders the citation links itself.
+Source excerpts and citations originate in the indexed primary texts. Passage IDs include their book, corpus version, and original page provenance; they are never inferred from an AI-generated answer. When the model returns cited paragraphs, Python checks **both the structured source-ID arrays and any inline markers** against passages actually supplied. It reconciles valid overlap and renders the citation links itself. Disagreements and recoveries are visible in the diagnostic JSON.
 
 **A real citation may still accompany a false interpretation.** The system does not currently certify whether the explanation follows from the cited passages. The **Key passages** section provides short, exact excerpts, with the full context and PDF pages available for readers to inspect. The original five regression questions and synthesis question are preserved to support reproducible evaluation, but a successful automated request is not the same as a correct answer.
 

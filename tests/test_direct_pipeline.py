@@ -145,15 +145,102 @@ class DirectPipelineTests(unittest.TestCase):
             {p["page"] for p in result["sources"]}, {1, 2}
         )
 
-    def test_model_written_citation_in_prose_rejected_not_silently_rewritten(self):
+    def test_inline_citation_recovery_without_another_model_call(self):
         generated = {
-            "paragraphs": [
-                {"text": GOOD_PROSE + " [S1]", "source_ids": ["S1"]}
-            ]
+            "paragraphs": [{
+                "text": GOOD_PROSE[:-1] + " [S1]. A further explanatory " 
+                        "sentence uses this source again [S1].",
+                "source_ids": ["S1"]
+            }]
         }
+        result, provider = self.run_direct(generated)
+        self.assertEqual(result["outcome"], "draft")
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(result["answer"].count("[S1]"), 1)
+        self.assertIn("adjustment. A further", result["answer"])
+        log = result["diagnostics"]["draft"]["citation_reconciliation"]
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]["markers_removed"], 2)
+        self.assertEqual(log[0]["added_ids"], [])
+        self.assertEqual(result["diagnostics"]["draft"]["raw_response"], generated)
+
+    def test_merge_known_inline_reference_omitted_from_structured_ids(self):
+        audit = []
+        generated = {"paragraphs": [{
+            "text": GOOD_PROSE + " [S1]. Other context explains " 
+                    "how the work is documented [S2].",
+            "source_ids": ["S1"]
+        }]}
+        rendered, used_ids = validate_paragraphs(
+            generated, {"S1", "S2"}, audit
+        )
+        self.assertEqual(used_ids, {"S1", "S2"})
+        self.assertEqual(rendered.count("[S1]"), 1)
+        self.assertEqual(rendered.count("[S2]"), 1)
+        self.assertIn("documented. [S1] [S2]", rendered)
+        self.assertEqual(audit[0]["added_ids"], ["S2"])
+        self.assertEqual(audit[0]["combined_ids"], ["S1", "S2"])
+
+    def test_gemma_style_references_are_reconciled_per_paragraph(self):
+        # Actual Gemma reports repeated inline IDs, omitted inline IDs,
+        # and structured-only IDs, including four sources in one paragraph.
+        generated = {"paragraphs": [
+            {"text": GOOD_PROSE + " [S1].", "source_ids": ["S1"]},
+            {"text": GOOD_PROSE + " [S2]. Further details [S3].",
+             "source_ids": ["S2", "S3"]},
+            {"text": GOOD_PROSE + " [S2] and related context [S4].",
+             "source_ids": ["S2", "S5"]},
+            {"text": GOOD_PROSE + " [S6]. Additional support [S7].",
+             "source_ids": ["S6", "S7", "S8", "S9"]},
+        ]}
+        audit = []
+        rendered, used = validate_paragraphs(
+            generated, {f"S{i}" for i in range(1, 10)}, audit
+        )
+        self.assertEqual(len(rendered.split("\n\n")), 4)
+        self.assertEqual(used, {f"S{i}" for i in range(1, 10)})
+        self.assertEqual(audit[2]["added_ids"], ["S4"])
+        self.assertEqual(audit[3]["combined_ids"], ["S6", "S7", "S8", "S9"])
+        self.assertEqual(len(audit), 4)
+
+    def test_reject_unknown_inline_citation_and_preserve_diagnostics(self):
+        generated = {"paragraphs": [{
+            "text": GOOD_PROSE + " [S999]", "source_ids": ["S1"]
+        }]}
         result, _ = self.run_direct(generated)
         self.assertEqual(result["outcome"], "fallback")
-        self.assertIn("hand-written", result["diagnostics"]["draft"]["reason"])
+        self.assertIn("unknown source", result["diagnostics"]["draft"]["reason"])
+        self.assertEqual(
+            result["diagnostics"]["draft"]["citation_reconciliation"][0]["status"],
+            "rejected_unknown",
+        )
+        self.assertEqual(result["diagnostics"]["draft"]["raw_response"], generated)
+
+    def test_reject_disjoint_valid_inline_and_structured_citations(self):
+        audit = []
+        generated = {"paragraphs": [{
+            "text": GOOD_PROSE + " [S2]", "source_ids": ["S1"]
+        }]}
+        with self.assertRaisesRegex(CompletionError, "disjoint"):
+            validate_paragraphs(generated, {"S1", "S2"}, audit)
+        self.assertEqual(audit[0]["status"], "rejected_conflict")
+        self.assertEqual(audit[0]["inline_ids"], ["S2"])
+
+    def test_reject_unsupported_fifth_source_and_malformed_markers(self):
+        for generated in [
+            {"paragraphs": [{
+                "text": GOOD_PROSE + " [S2] [S3] [S4] [S5]",
+                "source_ids": ["S1", "S2", "S3", "S4"],
+            }]},
+            {"paragraphs": [{
+                "text": GOOD_PROSE + " [S1,S2]", "source_ids": ["S1"]
+            }]},
+        ]:
+            with self.subTest(generated=generated):
+                with self.assertRaises(CompletionError):
+                    validate_paragraphs(
+                        generated, {"S1", "S2", "S3", "S4", "S5"}
+                    )
 
     def test_duplicate_references_and_missing_paragraphs_rejected(self):
         for generated in [

@@ -106,6 +106,47 @@ class EvidenceFirstTests(unittest.TestCase):
         self.assertEqual(result["diagnostics"]["summary"]["outcome"], "draft")
         self.assertNotEqual(result["diagnostics"]["summary"]["outcome"], "verified")
 
+    def test_evidence_first_recovers_known_inline_markers(self):
+        generated = {
+            "paragraphs": [{
+                "text": ANSWER_TEXT + " [S1]. The original evidence also "
+                        "explains why a suitable reference is important [S1].",
+                "source_ids": ["S1"],
+            }],
+            "follow_up_questions": [FOLLOW_UP],
+        }
+        result, provider = self.run_evidence(StubProvider(output=generated))
+        self.assertEqual(result["outcome"], "draft")
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(result["answer"].count("[S1]"), 1)
+        self.assertEqual(result["follow_up_questions"], [FOLLOW_UP])
+        self.assertEqual(
+            result["diagnostics"]["draft"]["citation_reconciliation"][0]["status"],
+            "reconciled",
+        )
+        self.assertEqual(
+            result["diagnostics"]["draft"]["raw_response"], generated
+        )
+        self.assertEqual(len(result["sources"]), 1)
+
+    def test_evidence_first_rejects_unknown_inline_reference(self):
+        generated = {
+            "paragraphs": [{
+                "text": ANSWER_TEXT + " [S999]",
+                "source_ids": ["S1"],
+            }],
+            "follow_up_questions": [],
+        }
+        result, _ = self.run_evidence(StubProvider(output=generated))
+        self.assertEqual(result["outcome"], "fallback")
+        self.assertIn(
+            "unknown source", result["diagnostics"]["draft"]["reason"]
+        )
+        self.assertEqual(
+            result["diagnostics"]["draft"]["citation_reconciliation"][0]["status"],
+            "rejected_unknown",
+        )
+
     def test_spotlights_are_verbatim_source_sentences(self):
         result, _ = self.run_evidence()
         self.assertTrue(result["evidence_highlights"])
