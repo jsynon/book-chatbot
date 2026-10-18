@@ -133,6 +133,8 @@ jobs:
           }
           console.log('Browser script syntax and comparison controls OK.');
           JS
+      - name: Test remote corpus retrieval proof of concept
+        run: node --test hosting-poc/remote-library.test.mjs
       - name: Test bounded library retrieval and evidence pipeline contracts
         env:
           BOOK_CHATBOT_BOOK_FILE: ${{ runner.temp }}/book-7.json.gz

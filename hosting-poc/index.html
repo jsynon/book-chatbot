@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reading Companion — Remote library retrieval smoke test</title>
+<style>body{font:17px/1.65 Georgia,serif;color:#202020;background:white;max-width:780px;margin:2rem auto;padding:0 1rem}h1{font-weight:normal}form{display:flex;gap:8px;flex-wrap:wrap}input{flex:1;min-width:220px}input,button{font:15px system-ui,sans-serif;padding:10px;border:1px solid #555;background:white;color:#111}button{cursor:pointer}article{border-top:1px solid #ddd;padding:16px 0}p.preview{white-space:pre-wrap}small{color:#555}a{color:#111}#status{margin:1rem 0}</style>
+</head><body><main><h1>Remote Library Retrieval — v1.8.1</h1>
+<p><strong>Development-only smoke test.</strong> This retrieves original indexed pages from the public Antilogicalism library data on GitHub Pages. It does <em>not</em> call a hosted AI, generate an answer, or verify scholarly interpretation.</p>
+<form id="test"><input id="question" value="What caused the Peloponnesian War?" aria-label="Research question" required><button id="run">Find passages</button></form>
+<p><label for="book">Optional numeric book ID for focused tests:</label> <input id="book" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="All books" style="max-width:170px;min-width:140px"></p>
+<div id="status" role="status" aria-live="polite"></div><div id="results"></div>
+<p><small>The original page number is shown alongside the verified Google Drive PDF link. The selected pages are a bounded, lexical sample—not an exhaustive survey, trustworthy answer, or certified evidence selection.</small></p></main>
+<script type="module">
+import {RemoteLibrary} from './remote-library.mjs';
+const library = new RemoteLibrary();
+const form = document.getElementById('test');const status = document.getElementById('status');const results=document.getElementById('results');const button=document.getElementById('run');
+form.addEventListener('submit',async event=>{
+ event.preventDefault();button.disabled=true;status.textContent='Fetching published v47 pages…';results.replaceChildren();
+ try{const data=await library.search(document.getElementById('question').value,{bookId:document.getElementById('book').value.trim()});
+ status.textContent=`Found ${data.sources.length} indexed pages from ${new Set(data.sources.map(x=>x.bookId)).size} books in ${data.elapsedMs} ms; query terms: ${data.terms.join(', ') || 'none'}.`;
+ for(const source of data.sources){const article=document.createElement('article');const heading=document.createElement('h2');heading.textContent=`[${source.id}] ${source.title} · PDF page ${source.page}`;const p=document.createElement('p');p.className='preview';p.textContent=source.preview;const a=document.createElement('a');a.href=source.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='Open original PDF';article.append(heading,p,a);results.append(article);}
+ if(!data.sources.length)status.textContent+=' No usable indexed pages in this bounded sample.';
+ }catch(error){status.textContent='Retrieval failed: '+error.message;}finally{button.disabled=false;}
+});
+</script></body></html>
