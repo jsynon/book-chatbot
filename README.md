@@ -29,6 +29,10 @@ A `verified` report status means the application's checks and model review accep
 
 No additional Python packages are required. The app contacts the configured local Ollama service for inference. It does not contact a hosted model provider. Opening a PDF source link contacts Google Drive.
 
+### Live console progress
+
+While the local server is running, its CMD window now prints time-stamped progress for each Ollama question: model and question, retrieval candidate count, selected evidence IDs and page numbers, the start and duration of each inference stage, token counts when Ollama provides them, claim counts, review verdicts, reasons for repairs, and the final verified/partial/fallback status. This output is informational only and does not change the answer pipeline or the downloaded diagnostic report. The normal HTTP request line still appears at the end of each request. Set `BOOK_CHATBOT_PROGRESS=0` before launching `python app.py` to silence the additional console progress. Unit tests using fake inference providers remain quiet.
+
 ### Configuration
 
 The existing corpus configuration remains available. Selecting a different shard also requires its correct title and PDF identity; those are not automatically inferred from a catalog.
