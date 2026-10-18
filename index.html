@@ -464,7 +464,7 @@
       sourceReaderText.classList.toggle('original-ocr', original);
       const paragraphs = original ? [currentPageText] :
         ReadingSourceText.readableParagraphs(currentPageText);
-      const separator = original ? '' : '\\n\\n';
+      const separator = original ? '' : '\n\n';
       const displayed = paragraphs.join(separator);
       const applicable = activeSource && activeSource.source &&
         Array.isArray(activeSource.source.pages) &&
