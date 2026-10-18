@@ -88,6 +88,17 @@ jobs:
           if (!html.includes('cited-highlight') || !html.includes('appendMarkedText')) {
             throw new Error('Missing source reader highlight rendering');
           }
+          if (!html.includes("location.pathname === '/developer'") ||
+              !html.includes('body:not(.developer-mode) #reader-options') ||
+              !html.includes('body:not(.developer-mode) #developer-tests') ||
+              !html.includes('if (DEVELOPER_MODE) loadDisciplineCases();') ||
+              !html.includes('diagnostics:DEVELOPER_MODE && diagnosticsToggle.checked')) {
+            throw new Error('Reader/developer modes must be separated without removing test controls');
+          }
+          if (!html.includes('AI-generated explanations may contain mistakes.') ||
+              !html.includes('class="developer-footnote"')) {
+            throw new Error('Missing reader-facing explanation or development detail');
+          }
           console.log('Browser script syntax and comparison controls OK.');
           JS
       - name: Test bounded library retrieval and evidence pipeline contracts
