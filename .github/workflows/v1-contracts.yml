@@ -122,6 +122,15 @@ jobs:
               !html.includes('const selected = activeBookId;')) {
             throw new Error('Missing library default or strict book-filter behavior');
           }
+          const scopeStart = html.indexOf('function setActiveBook(resetConversation = true) {');
+          const scopeEnd = html.indexOf("bookFilter.addEventListener('input'", scopeStart);
+          if (scopeStart < 0 || scopeEnd < 0) throw new Error('Missing scope handler');
+          const scopeCode = html.slice(scopeStart, scopeEnd);
+          if (!scopeCode.includes("if (acrossLibrary && bookFilter.value) {") ||
+              !scopeCode.includes("bookFilter.value = '';") ||
+              !scopeCode.includes('showBookOptions();')) {
+            throw new Error('Returning to library must clear title filter and rerender catalog count');
+          }
           console.log('Browser script syntax and comparison controls OK.');
           JS
       - name: Test bounded library retrieval and evidence pipeline contracts
