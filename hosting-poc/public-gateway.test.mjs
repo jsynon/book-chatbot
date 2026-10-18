@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,parseReview,sourceExcerpt} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,sourceExcerpt} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -234,4 +234,91 @@ test('forged packet metadata and duplicate claimed physical pages fail closed',a
   mock({...original,pdfDriveId:'file/abc'})),/Invalid trusted packet format/);
  await assert.rejects(trustedPacketSources(question,[{bookId:'152',page:38}],
   mock({...original,pages:[...original.pages,...original.pages]})),/Requested page not found/);
+});
+
+
+test('native SHA-256 accepts exact UTF-8 and binds original PDF metadata',async()=>{
+ const content='The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes.';
+ const raw=new TextEncoder().encode(content);
+ const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',raw)),x=>x.toString(16).padStart(2,'0')).join('');
+ const canonical={
+   schema:'antilogicalism-reader-fingerprints-v1',hashAlgorithm:'SHA-256-utf8-exact',
+   libraryVersion:47,bookId:'152',chunk:1,firstPage:33,lastPage:64,
+   title:'Canonical History — Thucydides',pdfDriveId:PDF,
+   pages:[{page:38,globalPageId:34403,utf8Bytes:raw.byteLength,sha256:hash}]
+ };
+ const fetcher=async(url)=>{
+   assert.equal(url,'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/books/152/1.json');
+   return Response.json(canonical);
+ };
+ const sources=await verifiedFingerprintSources(question,[{bookId:'152',page:38,text:content,
+    title:'Forged Title',url:'https://attacker.example/forged.pdf'}],fetcher);
+ assert.equal(sources.length,1);
+ assert.equal(sources[0].title,canonical.title);
+ assert.equal(sources[0].globalPageId,34403);
+ assert(sources[0].url.includes(PDF));
+ assert(!sources[0].url.includes('attacker'));
+ assert(sources[0].preview.includes('real cause'));
+ await assert.rejects(verifiedFingerprintSources(question,[{
+   bookId:'152',page:38,text:content.replace('real','fake')
+ }],fetcher),/SHA-256 mismatch/);
+ await assert.rejects(verifiedFingerprintSources(question,[{
+   bookId:'152',page:38,text:content+' '
+ }],fetcher),/length mismatch/);
+});
+test('one-byte tamper is rejected before AI even when request is authenticated',async()=>{
+ const content='The original source passage is entirely different from text invented by the visitor. Its claim is grounded in this book page.';
+ const textBytes=new TextEncoder().encode(content);
+ const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',textBytes)),b=>b.toString(16).padStart(2,'0')).join('');
+ const meta={schema:'antilogicalism-reader-fingerprints-v1',hashAlgorithm:'SHA-256-utf8-exact',
+    libraryVersion:47,bookId:'152',title:'A Trusted Book',pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
+    pages:[{page:38,globalPageId:34403,utf8Bytes:textBytes.length,sha256:digest}]};
+ const url=HOST+'/internal/fingerprint-probe',secret='valid-long-local-fingerprint-test-secret-123';
+ let aiCalls=0,remoteFetches=0;
+ const environment=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:secret,AI:{run:async()=>{aiCalls++;}}});
+ const fetcher=async()=>{remoteFetches++;return Response.json(meta);};
+ const original=new Request(url,{method:'POST',headers:{
+    Origin:'http://127.0.0.1:8766',Authorization:'Bearer '+secret,
+    'Content-Type':'application/json'},
+    body:JSON.stringify({question,sources:[{bookId:'152',page:38,text:content}]})});
+ const accepted=await handleRequest(original,environment,fetcher);
+ assert.equal(accepted.status,200);
+ const acceptedData=await accepted.json();
+ assert.equal(acceptedData.status,'verified');
+ assert.equal(acceptedData.sources[0].globalPageId,34403);
+ assert.equal(accepted.headers.get('Access-Control-Allow-Origin'),'http://127.0.0.1:8766');
+ const tampered=new Request(url,{method:'POST',headers:{
+    Origin:'http://127.0.0.1:8766',Authorization:'Bearer '+secret,
+    'Content-Type':'application/json'},
+    body:JSON.stringify({question,sources:[{bookId:'152',page:38,text:content.replace('original','altered ')}]})});
+ const rejected=await handleRequest(tampered,environment,fetcher);
+ assert.equal(rejected.status,422);
+ assert.equal(aiCalls,0);
+ assert.equal(remoteFetches,2);
+});
+test('fingerprint route denies missing token and forbidden origins before fetching',async()=>{
+ let fetched=0;
+ const url=HOST+'/internal/fingerprint-probe';
+ const sent={question,sources:[{bookId:'152',page:38,text:'Original historical passage describes causes and consequences of conflict between cities.'}]};
+ const fetcher=async()=>{fetched++;throw Error('Must not fetch');};
+ const response=await handleRequest(new Request(url,{method:'POST',headers:{
+    Origin:'https://untrusted.invalid',Authorization:'Bearer test'},
+    body:JSON.stringify(sent)}),env(),fetcher);
+ assert.equal(response.status,403);
+ const absent=await handleRequest(new Request(url,{method:'POST',body:JSON.stringify(sent)}),env(),fetcher);
+ assert.equal(absent.status,503);
+ assert.equal(fetched,0);
+ const token='valid-long-local-fingerprint-test-secret-123';
+ const wrong=await handleRequest(new Request(url,{method:'POST',
+   headers:{Authorization:'Bearer not-the-secret'},body:JSON.stringify(sent)}),
+   env({SOURCE_PROBE_TOKEN:token}),fetcher);
+ assert.equal(wrong.status,401);
+ assert.equal(fetched,0);
+});
+test('fingerprint route supports local CORS preflight without touching AI',async()=>{
+ const response=await handleRequest(new Request(HOST+'/internal/fingerprint-probe',
+ {method:'OPTIONS',headers:{Origin:'http://127.0.0.1:8766'}}),
+ env({PUBLIC_ENABLED:'false'}),async()=>{throw Error('No network');});
+ assert.equal(response.status,204);
+ assert.equal(response.headers.get('Access-Control-Allow-Origin'),'http://127.0.0.1:8766');
 });
