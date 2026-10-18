@@ -182,6 +182,10 @@ class FacetEvidenceContracts(unittest.TestCase):
         self.assertEqual(len(selected), 6)
         self.assertEqual(len(trace["admitted"]), 2)
         self.assertEqual(len(trace["replaced_source_ids"]), 2)
+        self.assertEqual(
+            {e["source_id"] for e in trace["admitted"]},
+            {p["source_id"] for p in selected[4:]}
+        )
         self.assertEqual([p["source_id"] for p in selected[:4]],
                          originals[:4])
         self.assertLessEqual(len(candidates), 8)
