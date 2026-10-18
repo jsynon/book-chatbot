@@ -139,6 +139,8 @@ jobs:
         run: node --test hosting-poc/worker-grounded-test.test.mjs
       - name: Test fail-closed public gateway and trusted source contracts
         run: node --test hosting-poc/public-gateway.test.mjs
+      - name: Test AI-assisted source retrieval planning security and schema
+        run: node --test hosting-poc/search-planner.test.mjs
       - name: Test bounded library retrieval and evidence pipeline contracts
         env:
           BOOK_CHATBOT_BOOK_FILE: ${{ runner.temp }}/book-7.json.gz
