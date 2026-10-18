@@ -23,7 +23,7 @@ from grounded_pipeline import PassageIndex
 from library_catalog import DRIVE_FILE
 from retrieval_relevance import (
     canonical_author, content_terms, named_author_groups,
-    passage_topic_score,
+    passage_topic_score, is_edited_collection,
 )
 
 
@@ -303,6 +303,7 @@ class WholeLibraryLocator:
             title_matches = len(set(self.tokenize(" ".join(terms)))
                                 & title_terms)
             author = canonical_author(book["author"])
+            collection = is_edited_collection(book["title"])
             # Distinguish *subject concentration* from the volume of incidental
             # hits in a giant anthology. Explicit author comparisons still get
             # the requested author's works regardless of collection status.
@@ -313,7 +314,9 @@ class WholeLibraryLocator:
                           + math.log1p(60 * fraction) * 3.2
                           + title_matches * 1.8
                           - math.log1p(size) * .65
-                          - (2.8 if not author else 0.0)),
+                          - (2.8 if not author else 0.0))
+                          * (0.82 if collection else 1.0),
+                "edited_collection": collection,
                 "pages": top, "matches": len(hits),
                 "max_concepts": best_concepts,
                 "multi_term_pages": cooccurring,
@@ -522,6 +525,7 @@ class WholeLibraryLocator:
                     "topic_density": scored[book_id]["topic_density"],
                     "title_overlap": scored[book_id]["title_overlap"],
                     "author": scored[book_id]["meta"]["author"],
+                    "edited_collection": scored[book_id]["edited_collection"],
                     "opened_pages": [p["page"] for p in pages],
                     "top_global_page_ids": [
                         hit[0] for hit in scored[book_id]["pages"]
