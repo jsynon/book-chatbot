@@ -99,6 +99,21 @@ jobs:
               !html.includes('class="developer-footnote"')) {
             throw new Error('Missing reader-facing explanation or development detail');
           }
+          // v1.7.1: recovery is a reader flow contract, not a prompt-tuning gate.
+          const rememberStart = html.indexOf('function shouldRememberAssistant(data) {');
+          const rememberEnd = html.indexOf("form.addEventListener('submit'", rememberStart);
+          if (rememberStart < 0 || rememberEnd < 0) throw new Error('Missing safe conversation-history policy');
+          const remember = vm.runInNewContext(html.slice(rememberStart, rememberEnd) + '; shouldRememberAssistant;');
+          if (remember({answer:'A cited explanation.',outcome:'draft'}) !== true ||
+              remember({answer:'Unavailable.',outcome:'fallback'}) !== false ||
+              remember({error:'Service unavailable'}) !== false) {
+            throw new Error('Fallback or failed replies would pollute conversation history');
+          }
+          if (!html.includes('pendingTurn.remove();') ||
+              !html.includes('question.value = text;') ||
+              !html.includes('const restoreFailedQuestion =')) {
+            throw new Error('Missing retry recovery for failed questions');
+          }
           console.log('Browser script syntax and comparison controls OK.');
           JS
       - name: Test bounded library retrieval and evidence pipeline contracts
