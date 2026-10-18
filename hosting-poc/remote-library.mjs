@@ -167,7 +167,7 @@ export class RemoteLibrary {
     }
     return this.partitions.get(prefix);
   }
-  async search(question, {bookId = '', maxBooks = 2, pagesPerBook = 2} = {}) {
+  async search(question, {bookId = '', allowedBookIds = null, maxBooks = 2, pagesPerBook = 2} = {}) {
     const started = performance.now();
     const manifest = await this.manifest();
     const terms = queryTerms(question).filter(t => manifest.partitions.includes(t.slice(0, 2)));
@@ -202,6 +202,7 @@ export class RemoteLibrary {
       if (anchorTerm && !anchorSet.has(pageId)) continue;
       const id = String(manifest.page_books[pageId]);
       if (bookId && id !== String(bookId)) continue;
+      if (allowedBookIds && !allowedBookIds.has(id)) continue;
       if (!manifest.books[id] || !PDF.test(manifest.books[id].drive_url || '')) continue;
       if (!ranked.has(id)) ranked.set(id, []);
       ranked.get(id).push({id:pageId, ...score});

@@ -17,6 +17,9 @@ export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/
 const FRONTEND_ORIGIN = 'https://jsynon.github.io';
 const EXPECTED_TURNSTILE_HOST = 'jsynon.github.io';
 const TURNSTILE_ACTION = 'companion_ask';
+// v1.10 explicitly limited to four benchmark books until whole-library coverage is ready.
+export const PILOT_BOOK_IDS = Object.freeze(['7','114','152','529']);
+const PILOT_BOOK_SET = new Set(PILOT_BOOK_IDS);
 const MODEL = '@cf/google/gemma-4-26b-a4b-it';
 const PDF = /^https:\/\/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]{10,})\/(?:view|preview)/;
 const STOP = new Set('a an and are as at be by can do does for from how i in is it of on or our the their these this to was were what when where who why with would'.split(' '));
@@ -398,8 +401,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     return json({status:'ready',service:'Antilogicalism Reading Companion',
       publicEnabled:env.PUBLIC_ENABLED==='true',mode:'public-foundation'},200,origin);
   }
-  // v1.9.5 public, SMALL PILOT only. The only supported corpus is the
-  // Thucydides v47 fingerprint chunk (book 152, physical pages 33–64).
+  // v1.10 public, LIMITED interdisciplinary pilot: Aristotle, Dostoevsky,
+  // Thucydides, Darwin. All accepted pages MUST pass original v47 hashes.
   // Public enablement requires explicit opt-in AND every safety binding.
   const pilotReady=env.PUBLIC_PILOT_ENABLED==='true' &&
     env.PUBLIC_ENABLED!=='true' && typeof env.TURNSTILE_SITE_KEY==='string' &&
@@ -413,7 +416,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       return json({error:'Origin not allowed'},403,origin);
     return json({enabled:pilotReady,bookId:'152',firstPage:33,lastPage:64,
       turnstileSiteKey:pilotReady?env.TURNSTILE_SITE_KEY:null,
-      scope:'limited-reader-pilot'},200,origin);
+      pilotBookIds:PILOT_BOOK_IDS,
+      scope:'interdisciplinary-reader-pilot'},200,origin);
   }
   if(url.pathname==='/api/pilot-answer'){
     if(origin!==FRONTEND_ORIGIN)
@@ -446,8 +450,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       data.turnstileToken.length<5||data.turnstileToken.length>2048||
       !Array.isArray(data.sources)||data.sources.length<1||
       data.sources.length>2||
-      !data.sources.every(s=>s && String(s.bookId)==='152' &&
-        Number.isSafeInteger(s.page) && s.page>=33 && s.page<=64 &&
+      !data.sources.every(s=>s && PILOT_BOOK_SET.has(String(s.bookId)) &&
+        Number.isSafeInteger(s.page) && s.page>=1 && s.page<=10000 &&
         typeof s.text==='string'))
       return json({error:'Invalid question or unsupported pilot pages'},400,origin);
     if(!await verifyTurnstile(data.turnstileToken,ip,env.TURNSTILE_SECRET,fetcher))
@@ -463,7 +467,20 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       console.error('Reader pilot AI failed:',String(error?.message||error));
       return json({error:'AI answer or citations unavailable; please try again later'},502,origin);
     }
-    return json({...output,verifiedPages:sourcePages.length,pilot:true},200,origin);
+    // Highlight original source excerpts, not fabricated model quotations.
+    // The exact page text was independently fingerprint-verified above.
+    const evidenceHighlights=(output.citations||[]).slice(0,3).map(s=>({
+      source_id:s.id,title:s.title,page:s.page,url:s.url,
+      quote:sourceExcerpt(s.preview,data.question,320)
+    }));
+    // Suggestions only populate the next question; they are not model claims
+    // or an implicit extra billable AI call. Fresh retrieval occurs each turn.
+    const followUpQuestions=output.outcome==='verified-source-draft'?[
+      'What evidence in these passages supports this explanation?',
+      'How does this account compare with other works in the collection?'
+    ]:[];
+    return json({...output,verifiedPages:sourcePages.length,pilot:true,
+      evidenceHighlights,followUpQuestions},200,origin);
   }
   // Opt-in local test only; public AI remains disabled. This path accepts
   // client-submitted full-page text solely to validate its exact SHA-256
