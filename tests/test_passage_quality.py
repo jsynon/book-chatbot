@@ -206,6 +206,24 @@ class PassageQualityTests(unittest.TestCase):
         self.assertTrue(seq[1]["discourse_cues"]["opening_fragment"])
         self.assertIsInstance(sections[0]["core_original_position"], int)
 
+    def test_context_citation_ids_never_reuse_gaps_after_navigation_filter(self):
+        idx = index_of([
+            "The speaker explained the original premise and its limits.",
+            "But this later statement directly questions that premise "
+            "and requires the earlier paragraph for interpretation.",
+        ])
+        q = "How does the later statement question the premise?"
+        # A real filter can retain S24 while dropping S22 and S23.
+        original = next(p for p in idx.search(q, [q])
+                        if p["page"] == 2)
+        anchor = {**original, "source_id": "S24"}
+        selected, added = select_neighbor_context(idx, [anchor], [anchor])
+        self.assertEqual(len(added), 1)
+        self.assertEqual(added[0]["source_id"], "S25")
+        self.assertEqual({p["source_id"] for p in selected},
+                         {"S24", "S25"})
+        self.assertEqual(len({p["source_id"] for p in selected}), len(selected))
+
     def test_model_selection_excludes_contents_entries_and_remains_two_calls(self):
         idx = index_of([
             CONTENTS, HEADING, DARWIN_CORE, COMPLETE_PROSE,
