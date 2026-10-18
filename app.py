@@ -39,6 +39,7 @@ from inference import OllamaProvider
 from grounded_pipeline import PassageIndex, answer_question
 from direct_pipeline import answer_direct
 from evidence_pipeline import answer_evidence_first
+from whole_library import WholeLibraryLocator, LibrarySearchError
 from library_catalog import (BookSelectionError, LibraryIndexRegistry,
                              resolve_catalog_path)
 # Keep source text in the Antilogicalism library-data repository, not in this
@@ -94,7 +95,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "reading-companion-v1.3.0"
+BUILD_ID = "reading-companion-v1.4.0"
 PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "evidence").lower()
 if PIPELINE_MODE not in {"evidence", "direct", "grounded", "legacy"}:
     raise ValueError("BOOK_CHATBOT_PIPELINE must be evidence, direct, grounded, or legacy")
@@ -909,6 +910,15 @@ LIBRARY_REGISTRY = LibraryIndexRegistry(
     tokenize=tokenize,
     continuation=likely_page_continuation,
     max_cached=int(os.environ.get("BOOK_CHATBOT_CACHED_BOOKS", "2")),
+)
+
+# Global v47 search manifest is loaded lazily only when a reader selects
+# "Across library"; the original Aristotle and single-book paths remain intact.
+WHOLE_LIBRARY = WholeLibraryLocator(
+    LIBRARY_REGISTRY, tokenize, likely_page_continuation,
+    partition_cache_size=int(os.environ.get(
+        "BOOK_CHATBOT_PARTITION_CACHE", "8"
+    )),
 )
 
 
@@ -7048,6 +7058,7 @@ class Handler(BaseHTTPRequestHandler):
                              "pages": len(PAGES), "build": BUILD_ID,
                              "catalog_entries": len(LIBRARY_REGISTRY.entries),
                              "catalog_available": LIBRARY_REGISTRY.catalog_path.is_file(),
+                             "full_library_available": WHOLE_LIBRARY.status()["available"],
                              "pipeline": PIPELINE_MODE,
                              "pipelines": ["evidence", "direct", "grounded"]})
             return
@@ -7058,6 +7069,9 @@ class Handler(BaseHTTPRequestHandler):
                 "catalog_available": LIBRARY_REGISTRY.catalog_path.is_file(),
                 "corpus_version": DATA_VERSION,
             })
+            return
+        if self.path == "/api/library/status":
+            self._json(200, WHOLE_LIBRARY.status())
             return
         if self.path == "/api/models":
             try:
@@ -7104,24 +7118,42 @@ class Handler(BaseHTTPRequestHandler):
             if request_pipeline not in {"evidence", "direct", "grounded", "legacy"}:
                 self._json(400, {"error": "Unknown pipeline. Use evidence, direct, or grounded."})
                 return
-            # Book IDs are catalog keys, not user-supplied filenames or URLs.
-            # The old one-book global index is retained for compatibility;
-            # switching to another title builds only that book's index.
+            scope = str(data.get("scope", "book")).strip().lower()
+            if scope not in {"book", "library"}:
+                self._json(400, {"error": "Choose scope 'book' or 'library'."})
+                return
             request_book_id = str(
                 data.get("book_id") or GROUNDED_BOOK["book_id"]
             ).strip()
-            try:
-                current_book = LIBRARY_REGISTRY.description(request_book_id)
-                if request_book_id == GROUNDED_BOOK["book_id"]:
-                    current_index = GROUNDED_INDEX
-                else:
-                    current_index = LIBRARY_REGISTRY.get_index(request_book_id)
-            except BookSelectionError as error:
-                self._json(400, {"error": str(error)})
-                return
-            if request_pipeline == "legacy" and request_book_id != GROUNDED_BOOK["book_id"]:
-                self._json(400, {"error": "The historical legacy mode supports only the pilot book."})
-                return
+            if scope == "library":
+                if request_pipeline in {"grounded", "legacy"}:
+                    self._json(400, {"error":
+                        "Across-library mode supports evidence-first or direct synthesis."})
+                    return
+                try:
+                    current_index, discovery = WHOLE_LIBRARY.search(question)
+                except LibrarySearchError as error:
+                    self._json(400, {"error": str(error)})
+                    return
+                current_book = {"book_id": "library",
+                                "title": "Across the Antilogicalism Library"}
+                request_book_id = "library"
+            else:
+                # Numeric catalog keys rather than unchecked filenames/URLs.
+                try:
+                    current_book = LIBRARY_REGISTRY.description(request_book_id)
+                    if request_book_id == GROUNDED_BOOK["book_id"]:
+                        current_index = GROUNDED_INDEX
+                    else:
+                        current_index = LIBRARY_REGISTRY.get_index(request_book_id)
+                except BookSelectionError as error:
+                    self._json(400, {"error": str(error)})
+                    return
+                if (request_pipeline == "legacy"
+                        and request_book_id != GROUNDED_BOOK["book_id"]):
+                    self._json(400, {"error":
+                        "The historical legacy mode supports only the pilot book."})
+                    return
             if request_pipeline == "evidence":
                 # v1.3: argument-ordered primary evidence from the chosen book.
                 # No model-as-judge review or automatic answer repair.
@@ -7135,6 +7167,10 @@ class Handler(BaseHTTPRequestHandler):
                                  "title": current_book["title"]}
                 payload["book"] = {"book_id": request_book_id,
                                    "title": current_book["title"]}
+                payload["scope"] = scope
+                if scope == "library":
+                    payload["library_discovery"] = discovery
+                    trace["library_discovery"] = discovery
                 if not include_diagnostics:
                     payload.pop("diagnostics")
                 self._json(200, payload)
@@ -7152,6 +7188,10 @@ class Handler(BaseHTTPRequestHandler):
                                  "title": current_book["title"]}
                 payload["book"] = {"book_id": request_book_id,
                                    "title": current_book["title"]}
+                payload["scope"] = scope
+                if scope == "library":
+                    payload["library_discovery"] = discovery
+                    trace["library_discovery"] = discovery
                 if not include_diagnostics:
                     payload.pop("diagnostics")
                 self._json(200, payload)
@@ -7335,7 +7375,7 @@ class Handler(BaseHTTPRequestHandler):
                 trace["summary"] = summarize_diagnostics(trace)
                 payload["diagnostics"] = trace
             self._json(200, payload)
-        except BookSelectionError as e:
+        except (BookSelectionError, LibrarySearchError) as e:
             self._json(400, {"error": str(e)})
         except urllib.error.URLError as e:
             payload = {"error": "I couldn't reach Ollama on this computer. Open the Ollama app and try again. Details: " + str(e.reason)}
