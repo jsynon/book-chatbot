@@ -1,8 +1,7 @@
-"""Version 1 source provenance and API tests.
+"""Direct pipeline contract and provenance tests (not philosophical scoring).
 
-These tests validate trustworthy citation *identities*, not whether a model's
-philosophical interpretation is correct. A wrong claim with a real citation is
-intentionally only a draft, never 'verified' by this pipeline.
+A real citation still can support a false interpretation; direct mode is a
+single-call *draft* pipeline, never a truth-certified 'verified' result.
 """
 import json
 import sys
@@ -16,7 +15,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app
-from direct_pipeline import answer_direct, validate_answer
+from direct_pipeline import answer_direct, validate_paragraphs
 from grounded_pipeline import PassageIndex
 from inference import CompletionError
 
@@ -29,15 +28,22 @@ TEXT = (
     "Calibration compares the instrument against a known reference. "
     "This identifies an offset so the instrument can be adjusted."
 )
-GOOD_ANSWER = (
-    "Calibration compares an instrument with a reference and uses the "
-    "difference to identify an error that needs adjustment. [S1]"
+TEXT_OTHER = (
+    "Record the measurement after adjustment to document the new reading."
 )
+GOOD_PROSE = (
+    "Calibration compares an instrument with a reference and uses the "
+    "difference to identify a measurement offset that needs adjustment."
+)
+GOOD_OUTPUT = {
+    "paragraphs": [{"text": GOOD_PROSE, "source_ids": ["S1"]}]
+}
+GOOD_ANSWER = GOOD_PROSE + " [S1]"
 
 
 class StubProvider:
-    def __init__(self, answer):
-        self.answer = answer
+    def __init__(self, output=None):
+        self.output = GOOD_OUTPUT if output is None else output
         self.calls = []
 
     def complete(self, stage, system, user, schema, max_tokens):
@@ -45,7 +51,7 @@ class StubProvider:
             "stage": stage, "system": system, "user": user,
             "schema": schema, "max_tokens": max_tokens,
         })
-        return {"answer": self.answer}
+        return self.output
 
 
 class DirectPipelineTests(unittest.TestCase):
@@ -54,8 +60,8 @@ class DirectPipelineTests(unittest.TestCase):
             [(BOOK, [{"page": 1, "text": TEXT}])], app.tokenize
         )
 
-    def run_direct(self, answer=GOOD_ANSWER, question="What is calibration?"):
-        provider = StubProvider(answer)
+    def run_direct(self, output=None, question="What is calibration?"):
+        provider = StubProvider(output)
         result = answer_direct(question, [], self.index, [question], provider, "v1-test")
         return result, provider
 
@@ -70,40 +76,97 @@ class DirectPipelineTests(unittest.TestCase):
         self.assertIn("test-drive-id", result["sources"][0]["url"])
         self.assertEqual(result["sources"][0]["pages"], [1])
         self.assertEqual(result["diagnostics"]["summary"]["outcome"], "draft")
+        self.assertEqual(result["diagnostics"]["draft"]["raw_response"], GOOD_OUTPUT)
 
     def test_provenance_is_not_a_truth_verifier(self):
-        # A citation can point to a real passage while its associated claim
-        # is false. The pipeline must never call this 'verified'.
         incorrect = (
             "Calibration is unnecessary because instruments never drift; "
-            "therefore no comparison to a reference is needed. [S1]"
+            "therefore no comparison to a reference is needed."
         )
-        result, _ = self.run_direct(incorrect)
+        output = {"paragraphs": [{"text": incorrect, "source_ids": ["S1"]}]}
+        result, _ = self.run_direct(output)
         self.assertEqual(result["outcome"], "draft")
-        self.assertIn("not_semantically_reviewed", result["diagnostics"]["evidence_check"]["status"])
         self.assertIn("Calibration is unnecessary", result["answer"])
-
-    def test_rejects_invented_citations_and_exposes_passages(self):
-        result, _ = self.run_direct(
-            "Calibration uses a reference to measure drift and errors, "
-            "according to an unknown book passage. [S999]"
+        self.assertEqual(
+            result["diagnostics"]["evidence_check"]["status"],
+            "not_semantically_reviewed"
         )
+
+    def test_unknown_citation_rejected_and_raw_output_preserved(self):
+        generated = {
+            "paragraphs": [{"text": GOOD_PROSE, "source_ids": ["S999"]}]
+        }
+        result, _ = self.run_direct(generated)
         self.assertEqual(result["outcome"], "fallback")
         self.assertNotIn("[S999]", result["answer"])
         self.assertEqual(result["sources"][0]["excerpt"], TEXT)
         self.assertTrue(result["sources"][0]["expanded"])
+        self.assertEqual(
+            result["diagnostics"]["draft"]["raw_response"], generated
+        )
+        self.assertEqual(result["diagnostics"]["draft"]["status"], "invalid_output")
+        self.assertIn("unknown source", result["diagnostics"]["draft"]["reason"])
 
-    def test_rejects_uncited_or_partly_uncited_text(self):
-        for answer in [
-            "Calibration compares an instrument against a reference and "
-            "detects an offset that needs adjustment.",
-            GOOD_ANSWER + "\n\nAnother full paragraph explains that "
-            "instruments never need adjustment because they are perfect "
-            "forever and always operate without calibration.",
+    def test_missing_source_ids_rejected_even_with_good_prose(self):
+        output = {"paragraphs": [{"text": GOOD_PROSE, "source_ids": []}]}
+        result, _ = self.run_direct(output)
+        self.assertEqual(result["outcome"], "fallback")
+        self.assertIn("one to four source IDs", result["diagnostics"]["draft"]["reason"])
+
+    def test_multiple_paragraphs_cite_correct_individual_sources(self):
+        index = PassageIndex(
+            [(BOOK, [
+                {"page": 1, "text": TEXT},
+                {"page": 2, "text": TEXT_OTHER},
+            ])], app.tokenize
+        )
+        candidates = index.search("measurement adjustment reference", [
+            "measurement adjustment reference"
+        ])
+        self.assertEqual(len(candidates), 2)
+        id_by_page = {p["page"]: p["source_id"] for p in candidates}
+        generated = {"paragraphs": [
+            {"text": GOOD_PROSE, "source_ids": [id_by_page[1]]},
+            {
+                "text": "After calibration, the adjusted measurement can be "
+                        "recorded so the outcome is documented clearly.",
+                "source_ids": [id_by_page[2]],
+            },
+        ]}
+        provider = StubProvider(generated)
+        result = answer_direct(
+            "measurement adjustment reference", [], index,
+            ["measurement adjustment reference"], provider, "v1-test"
+        )
+        self.assertEqual(result["outcome"], "draft")
+        self.assertIn("[" + id_by_page[1] + "]", result["answer"])
+        self.assertIn("[" + id_by_page[2] + "]", result["answer"])
+        self.assertEqual(
+            {p["page"] for p in result["sources"]}, {1, 2}
+        )
+
+    def test_model_written_citation_in_prose_rejected_not_silently_rewritten(self):
+        generated = {
+            "paragraphs": [
+                {"text": GOOD_PROSE + " [S1]", "source_ids": ["S1"]}
+            ]
+        }
+        result, _ = self.run_direct(generated)
+        self.assertEqual(result["outcome"], "fallback")
+        self.assertIn("hand-written", result["diagnostics"]["draft"]["reason"])
+
+    def test_duplicate_references_and_missing_paragraphs_rejected(self):
+        for generated in [
+            {"paragraphs": [{"text": GOOD_PROSE, "source_ids": ["S1", "S1"]}]},
+            {"paragraphs": []},
+            {"paragraphs": [{"text": "Too short", "source_ids": ["S1"]}]},
         ]:
-            with self.subTest(answer=answer):
-                result, _ = self.run_direct(answer)
+            with self.subTest(generated=generated):
+                result, _ = self.run_direct(generated)
                 self.assertEqual(result["outcome"], "fallback")
+                self.assertEqual(
+                    result["diagnostics"]["draft"]["raw_response"], generated
+                )
 
     def test_no_retrieval_does_not_call_model(self):
         result, provider = self.run_direct(question="uniquenevermentionedterm")
@@ -112,10 +175,16 @@ class DirectPipelineTests(unittest.TestCase):
 
     def test_validator_rejects_model_reasoning_markup(self):
         with self.assertRaises(CompletionError):
-            validate_answer("<think>reasoning</think> Calibration is useful. [S1]", {"S1"})
+            validate_paragraphs(
+                {"paragraphs": [{
+                    "text": "<think>hidden reasoning</think> " + GOOD_PROSE,
+                    "source_ids": ["S1"],
+                }]},
+                {"S1"}
+            )
 
     def test_http_route_uses_selected_direct_pipeline(self):
-        provider = StubProvider(GOOD_ANSWER)
+        provider = StubProvider()
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -136,6 +205,7 @@ class DirectPipelineTests(unittest.TestCase):
             self.assertEqual(payload["diagnostics"]["pipeline"], "direct")
             self.assertEqual(payload["diagnostics"]["model"], "test-model")
             self.assertEqual(len(provider.calls), 1)
+            self.assertEqual(payload["answer"], GOOD_ANSWER)
         finally:
             server.shutdown()
             server.server_close()
