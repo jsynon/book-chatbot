@@ -118,8 +118,13 @@ def main():
                 assert all(p["book_id"] == "152" for p in expanded)
                 assert len(set(p["source_id"] for p in expanded)) == len(expanded)
                 for source in report["admitted"]:
+                    excerpt = next(
+                        p["text"] for p in expanded
+                        if p["source_id"] == source["source_id"]
+                    )
                     print("  NEW ORIGINAL", source["source_id"],
-                          source["pages"], source["query"], flush=True)
+                          source["pages"], source["query"],
+                          repr(excerpt[:400]), flush=True)
 
             if bid == "114":
                 # Check that two REAL selected fragments of the Porfiry
