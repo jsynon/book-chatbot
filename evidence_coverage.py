@@ -101,9 +101,9 @@ def recover_gap_evidence(index, original_candidates, anchors, raw_queries,
         if scored:
             winner = scored[0][2]
             if winner["passage_id"] not in {
-                x["passage_id"] for x in gap_hits
+                hit["passage_id"] for _, hit in gap_hits
             }:
-                gap_hits.append(winner)
+                gap_hits.append((query, winner))
         if len(gap_hits) >= MAX_ADDED_ANCHORS:
             break
 
@@ -111,7 +111,7 @@ def recover_gap_evidence(index, original_candidates, anchors, raw_queries,
         audit["reason"] = "no_matching_original_prose"
         return candidates, selected, audit
 
-    for hit in gap_hits:
+    for query, hit in gap_hits:
         original = by_passage.get(hit["passage_id"])
         if original is None:
             original = {**hit, "source_id": f"S{next_number}"}
@@ -128,7 +128,7 @@ def recover_gap_evidence(index, original_candidates, anchors, raw_queries,
         primary_passages.add(hit["passage_id"])
         audit["admitted"].append({
             "source_id": original["source_id"], "book_id": original["book_id"],
-            "pages": original["pages"], "query": queries[len(audit["admitted"])],
+            "pages": original["pages"], "query": query,
             "origin": "actual_indexed_source",
         })
     audit["reason"] = "original_evidence_added"
