@@ -109,3 +109,16 @@ test('third evidence slot preserves adjacent-page narrative over a distant scatt
  // Exact ordering can depend on scoring, so sort the physical pages to verify.
  assert(result.sources.some(source=>source.page===39));
 });
+
+
+test('v1.10 search only returns sources from fingerprint-ready book allowlist',async()=>{
+ const result=await new RemoteLibrary('https://example.test/v47/',fakeFetch)
+   .search('What caused the Peloponnesian War?',{
+      allowedBookIds:new Set(['7']),maxBooks:2,pagesPerBook:1});
+ assert.equal(result.sources.length,0);
+ const accepted=await new RemoteLibrary('https://example.test/v47/',fakeFetch)
+   .search('What caused the Peloponnesian War?',{
+      allowedBookIds:new Set(['152']),maxBooks:2,pagesPerBook:1});
+ assert(accepted.sources.length>0);
+ assert(accepted.sources.every(s=>s.bookId==='152'));
+});
