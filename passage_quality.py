@@ -27,7 +27,10 @@ _REPORTING = re.compile(
     r"spoke|the speaker|the narrator|the author|the historian)\b",
     flags=re.I,
 )
-_SPEECH_QUOTES = re.compile(r"[\u201c\u201d\u2018\u2019]|(?:^|\s)[\"'](?=\w)")
+_SPEECH_QUOTES = re.compile(
+    r"[\u201c\u201d\u2018]|\u2019(?=\s|[.,!?;:\)\]])|"
+    r"(?:^|\s)[\"'](?=\w)"
+)
 # An explicit TOC listing often joins many unrelated headings by dashes.
 # Require *multiple* list boundaries and a lack of ordinary sentences:
 # a scientific paragraph with an em dash must not become "navigation".
