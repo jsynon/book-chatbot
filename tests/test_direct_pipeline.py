@@ -148,7 +148,7 @@ class DirectPipelineTests(unittest.TestCase):
     def test_inline_citation_recovery_without_another_model_call(self):
         generated = {
             "paragraphs": [{
-                "text": GOOD_PROSE + " [S1]. A further explanatory " 
+                "text": GOOD_PROSE[:-1] + " [S1]. A further explanatory " 
                         "sentence uses this source again [S1].",
                 "source_ids": ["S1"]
             }]
