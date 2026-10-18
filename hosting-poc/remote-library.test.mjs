@@ -69,3 +69,12 @@ test('does not rank unrelated single-word matches over a multi-term history book
  assert(result.sources.every(source=>source.bookId==='152'));
  assert(result.sources.every(source=>source.page!==656));
 });
+
+test('publication metadata and index pages are not offered as evidence', async()=>{
+ const {isPublicationPage,substantivePageEvidence} = await import('./remote-library.mjs');
+ const copyright='This book is protected by International Copyright. It may not be reproduced in whole or in part without written permission. All rights reserved. New introduction for Peloponnesian War.';
+ assert.equal(isPublicationPage(copyright),true);
+ assert.equal(substantivePageEvidence(copyright,['peloponnesian','war']),null);
+ const prose='The war was caused by a growing rivalry between two powers. Their alliances suffered mutual suspicion and the disputes led toward violence. The historian attributes the deepest cause to fear of increasing power.';
+ assert(substantivePageEvidence(prose,['caused','war']));
+});
