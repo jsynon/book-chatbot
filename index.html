@@ -1180,6 +1180,7 @@
       }
       thread.append(article);
       article.scrollIntoView({behavior:'smooth', block:'start'});
+      return article;
     }
 
     async function loadModels() {
@@ -1386,15 +1387,35 @@
         if (!send.disabled) form.requestSubmit();
       }
     });
+    // A fallback explains a limitation, but is not a grounded answer that
+    // should influence the next turn. Other supported methods may not use
+    // an 'outcome' field, so preserve those successful exchanges.
+    function shouldRememberAssistant(data) {
+      return Boolean(data && typeof data.answer === 'string' &&
+        data.answer.trim() && data.outcome !== 'fallback');
+    }
     form.addEventListener('submit', async (event) => {
       // One request handles the full turn. The server searches, drafts, checks,
       // and returns citations; this browser code only presents the result.
       event.preventDefault();
       const text = question.value.trim();
       if (!text || send.disabled) return;
-      addTurn('user', text);
+      const pendingTurn = addTurn('user', text);
       question.value = '';
       setRequestBusy(true);
+      const restoreFailedQuestion = (message, diagnostics = null) => {
+        // Failed HTTP/inference attempts are not conversation turns. Keep the
+        // original question available for editing or retrying.
+        pendingTurn.remove();
+        question.value = text;
+        status.textContent = (message || 'The request failed.') +
+          ' Your question has been restored so you can try again.';
+        if (DEVELOPER_MODE && diagnostics) {
+          addTurn('assistant', 'Local request failed. See troubleshooting details.',
+            [], diagnostics);
+        }
+        question.focus();
+      };
       status.textContent = 'Searching source passages and composing your answer locally. This may take a little while…';
       try {
         const response = await fetch('/api/chat', {
@@ -1410,21 +1431,24 @@
           })
         });
         const data = await response.json();
-        if (!response.ok || data.error) {
-          // Server-side failures can include an opt-in trace showing which
-          // pipeline stage failed, so render that trace before ending the turn.
-          addTurn('assistant', data.error || 'The request failed.', [], data.diagnostics || null);
-          status.textContent = 'Check that Ollama is running and the selected model is installed.';
+        if (!response.ok || data.error || !data.answer) {
+          restoreFailedQuestion(data.error || 'The request did not return an answer.',
+            data.diagnostics || null);
           return;
         }
-        addTurn('assistant', data.answer || data.error, data.sources || [], data.diagnostics || null,
+        addTurn('assistant', data.answer, data.sources || [], data.diagnostics || null,
           data.evidence_highlights || [], data.follow_up_questions || [],
           data.coverage_notice || '');
-        history.push({role:'user',content:text},{role:'assistant',content:data.answer});
-        status.textContent = '';
+        if (shouldRememberAssistant(data)) {
+          history.push({role:'user',content:text},{role:'assistant',content:data.answer});
+          status.textContent = '';
+        } else {
+          status.textContent = 'A fully source-grounded answer was not available. ' +
+            'Try rephrasing your question or choosing another book.';
+        }
       } catch (error) {
-        addTurn('assistant', error.message);
-        status.textContent = 'Check that Ollama is running and the selected model is installed.';
+        restoreFailedQuestion('The local model request failed: ' +
+          (error.message || 'Please check Ollama.'));
       } finally { setRequestBusy(false); }
     });
 
