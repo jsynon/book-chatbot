@@ -35,3 +35,16 @@ This is a **manual, private-token smoke test**, not a public chat service. Its W
 The request is capped to four excerpts of at most 1,200 characters each; currently the browser sends two. CORS allows only the **local test origin** on port 8766, and the Worker requires the private token. Neither CORS nor a manually shared token constitutes public deployment security. No paid services are required for this experiment. Run the offline checks with `node --test hosting-poc/worker-grounded-test.test.mjs`.
 
 **Expected limitation:** Gemma may still invent, omit, or misattribute claims. The presence of valid `[S1]` syntax alone is not evidence entailment. This POC is only intended to measure whether a remote library passage can flow into free hosted inference and return a checkable answer.
+
+## v1.8.3 — Two-call evidence-first private test
+
+The previous hosted response had a valid Thucydides page-38 citation, but the retrieved short previews did not adequately explain the deeper cause. This experiment fetches up to three pages of the best-ranked book (rather than two) and asks the Cloudflare model to perform **two separate, bounded inferences**.
+
+- Call 1: assess full/partial/no evidence coverage and select at most four *verbatim quotations* from the retrieved excerpts. The Worker accepts a quotation only if it is a contiguous text match in the supplied excerpt after whitespace normalization. Failed or unparseable evidence review stops the synthesis rather than pretending validation succeeded.
+- Call 2: compose the answer from the selected pages and matching quotations, explicitly reporting missing evidence when partial. The local page displays coverage, rejected quotations, finish reasons, and total neuron usage.
+
+This is **not** the full local two-call pipeline, and it does not prove semantic correctness. A quote may match perfectly while still being irrelevant to a claim; browser-provided excerpts and metadata are still unverified against trusted v47 data. Neither a valid citation ID nor a validated quote is sufficient to establish that the answer is correct.
+
+After merging the PR, replace the Cloudflare Worker's editor code using `hosting-poc/worker-grounded-test.mjs`, deploy, then reload the previously working **http://127.0.0.1:8766/hosting-poc/grounded-test.html** (hard-refresh if cached). Keep the `AI` binding and private `TEST_TOKEN` secret unchanged. Never put the secret in GitHub, code, screenshots, or a public page.
+
+**Success criteria:** The hosted run performs at most two calls, cites only source IDs with verified quotations, explains the limits of an incomplete passage set, and exposes combined neurons. For this particular history question, do not claim complete success unless the actual excerpts substantiate both the immediate events and the deeper explanation. Stop and inspect results before expanding to the public site. Run contract tests with `node --test hosting-poc/worker-grounded-test.test.mjs`.
