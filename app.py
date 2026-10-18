@@ -98,7 +98,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "reading-companion-v1.6.1"
+BUILD_ID = "reading-companion-v1.6.2"
 PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "evidence").lower()
 if PIPELINE_MODE not in {"evidence", "direct", "grounded", "legacy"}:
     raise ValueError("BOOK_CHATBOT_PIPELINE must be evidence, direct, grounded, or legacy")
@@ -7112,6 +7112,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"models": names, "default": DEFAULT_MODEL})
             except Exception as e:
                 self._json(200, {"models": [], "default": DEFAULT_MODEL, "error": str(e)})
+            return
+        if self.path == "/source_text_format.js":
+            # Presentation-only OCR line-wrap formatting for the local reader.
+            body = (ROOT / "source_text_format.js").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
         if self.path == "/book-lite.css":
             # Local copy of the main site's Book Lite CSS for a faithful preview.
