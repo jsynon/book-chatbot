@@ -70,6 +70,20 @@ class QueryRelevanceTests(unittest.TestCase):
         self.assertEqual({x["author"] for x in result},
                          {"john smith", "mary smith"})
 
+    def test_distinctive_short_surnames_are_recognized(self):
+        entries = {
+            "40": book(40, "Immanuel Kant", "Critique of Pure Reason"),
+            "41": book(41, "David Hume", "An Enquiry Concerning Human Understanding"),
+            "42": book(42, "Simone Weil", "Gravity and Grace"),
+            "43": book(43, "John Stuart Mill", "Utilitarianism"),
+        }
+        groups = named_author_groups(
+            "Compare Kant, Hume, Weil and Mill on moral knowledge.", entries
+        )
+        self.assertEqual({g["author"] for g in groups},
+                         {"immanuel kant", "david hume", "simone weil",
+                          "john stuart mill"})
+
     def test_new_topic_is_not_limited_to_philosophy_keyword_list(self):
         self.assertEqual(
             content_terms("What do the books say about photosynthesis?",
