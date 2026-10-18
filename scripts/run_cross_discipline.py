@@ -17,6 +17,8 @@ cases can be resumed. --rerun is required to overwrite a previous report.
 import argparse
 from datetime import datetime, timezone
 import json
+from collections import defaultdict
+from statistics import mean
 from pathlib import Path
 import sys
 import time
@@ -95,6 +97,33 @@ def summarize(directory):
               f"{entry.get('wall_seconds', 0):.1f}s — {verdict}; "
               f"{'human-reviewed' if manually_reviewed else 'UNREVIEWED'}"
               + ("; " + ", ".join(issues) if issues else ""))
+    groups = defaultdict(list)
+    for entry in records:
+        groups[(entry.get("build", "?"), entry.get("discipline", "?"))].append(entry)
+    print("\nBreakdown by build and discipline:")
+    for (build, discipline), entries in sorted(groups.items()):
+        passed = sum(
+            bool(e.get("structural_checks", {}).get("provenance_pass"))
+            for e in entries
+        )
+        human = [e for e in entries if e.get("human_review", {}).get("reviewed")
+                 is True]
+        average = mean(e.get("wall_seconds", 0) for e in entries)
+        print(f"  {build} / {discipline}: {len(entries)} cases; "
+              f"{passed} passed source checks; {average:.1f}s mean; "
+              f"{len(human)} manually reviewed")
+        if human:
+            from benchmark_suite import SCORE_DIMENSIONS
+            for dimension in SCORE_DIMENSIONS:
+                scores = [
+                    e.get("human_review", {}).get("scores_0_to_3", {}).get(dimension)
+                    for e in human
+                ]
+                valid = [value for value in scores
+                         if isinstance(value, int) and 0 <= value <= 3]
+                if valid:
+                    print(f"    {dimension}: {mean(valid):.2f}/3 "
+                          f"({len(valid)} human scores)")
     print("Structural success does NOT score historical, scientific or literary "
           "truth; manually inspect the cited excerpts and enter the rubric.")
     return records
