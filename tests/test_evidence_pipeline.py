@@ -221,7 +221,7 @@ class EvidenceFirstTests(unittest.TestCase):
     def test_following_text_restores_unfinished_sentence(self):
         from grounded_pipeline import PassageIndex
         index = PassageIndex([(BOOK, [
-            {"page": 1, "text": "We can illustrate this distinction by considering e.g."},
+            {"page": 1, "text": "We can illustrate this distinction by considering the measurements recorded during calibration, e.g."},
             {"page": 2, "text": "Several changes in the instrument are tested under controlled conditions."}
         ])], app.tokenize)
         anchor = next(p for p in index.search(
