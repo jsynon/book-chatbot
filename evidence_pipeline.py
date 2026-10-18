@@ -452,6 +452,15 @@ def answer_evidence_first(question, history, index, facets, provider, build):
             "If no good follow-up is supported, return an empty list. "
             "Do not make up historical facts or philosophical positions."
         )
+        if getattr(index, "is_cross_library", False):
+            system += (
+                " This is a NONEXHAUSTIVE retrieval of only a few works from "
+                "a much larger digital library. Identify writers whose "
+                "passages you use; never imply these are the only relevant "
+                "works or that you surveyed the entire collection. For a "
+                "named comparison, give grounded treatment to each named "
+                "author and state where the evidence is incomplete."
+            )
         conversation = [
             {"role": m.get("role"), "content": str(m.get("content", ""))[:800]}
             for m in history[-4:]
@@ -509,6 +518,28 @@ def answer_evidence_first(question, history, index, facets, provider, build):
         error_reason = stage.get("reason") or "No usable primary-source passages"
 
     cited = [p for p in selected if p["source_id"] in used_ids]
+    coverage_notice = ""
+    if outcome == "draft" and getattr(index, "is_cross_library", False):
+        required = set(getattr(index, "discovery", {})
+                       .get("required_book_ids", []))
+        cited_books = {str(p["book_id"]) for p in cited}
+        missing = required - cited_books
+        if missing:
+            titles = list(dict.fromkeys(
+                p["title"] for p in selected
+                if str(p["book_id"]) in missing
+            ))
+            coverage_notice = (
+                "This answer does not cite evidence from "
+                + ", ".join(titles or ["every requested book"])
+                + ". It may be incomplete; inspect the original passages "
+                  "or ask about the missing work separately."
+            )
+        trace["evidence_check"]["named_author_citation_coverage"] = {
+            "required_book_ids": sorted(required),
+            "cited_book_ids": sorted(cited_books),
+            "missing_book_ids": sorted(missing),
+        }
     if outcome != "draft":
         answer = ("I couldn't prepare a properly cited explanation from the "
                   "available passages. You can inspect the source text below.")
@@ -559,5 +590,6 @@ def answer_evidence_first(question, history, index, facets, provider, build):
                     for p in cited],
         "evidence_highlights": highlights,
         "follow_up_questions": follow_ups,
+        "coverage_notice": coverage_notice,
         "diagnostics": trace,
     }
