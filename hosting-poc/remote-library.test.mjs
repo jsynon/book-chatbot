@@ -28,3 +28,18 @@ test('optional book selection and no random nonmatching book retention',async()=
  const out=await library.search('What caused the Peloponnesian War?',{bookId:'7'});
  assert.equal(out.sources.length,0);
 });
+test('default browser fetch preserves its global receiver',async()=>{
+ const original=globalThis.fetch;
+ const calls=[];
+ globalThis.fetch=function(url,options){
+   assert.equal(this,globalThis);
+   calls.push(url);
+   return fakeFetch(url,options);
+ };
+ try{
+   const retriever=new RemoteLibrary('https://example.test/data-v47/');
+   const result=await retriever.search('What caused the Peloponnesian War?');
+   assert.equal(result.sources.length,2);
+   assert(calls.some(url=>url.endsWith('/manifest.json.gz')));
+ }finally{globalThis.fetch=original;}
+});
