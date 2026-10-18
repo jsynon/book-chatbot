@@ -161,3 +161,23 @@ def passage_topic_score(text, topic_terms, tokenize):
                 left += 1
         score += .75 / (1 + gap / 7.0)
     return round(score, 5), coverage
+
+
+def refers_to_previous_question(question, tokenize):
+    """Keep conversation context only when a cross-library question needs it.
+
+    A new, self-contained question should not inherit the last question's
+    authors or conclusions. Conversely, 'How about Tolstoy?' and 'What does
+    that mean?' are genuine follow-ups that need earlier context.
+    """
+    q = " ".join(WORDS.findall(question.lower()))
+    if re.match(r"^(?:and |also |what about |how about |but |then )", q):
+        return True
+    if re.search(
+        r"\b(?:earlier|previous|above|aforementioned|those|these|"
+        r"this|that|they|them|their|same|it|its|he|she|his|her)\b",
+        q
+    ):
+        return True
+    # Very short elliptical queries generally lack a self-contained subject.
+    return len(set(tokenize(question))) <= 2
