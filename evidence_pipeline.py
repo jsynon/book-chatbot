@@ -19,6 +19,7 @@ from direct_pipeline import (
 )
 from grounded_pipeline import object_schema, render_passages, source_payload
 from inference import CompletionError, OllamaProvider
+from retrieval_relevance import refers_to_previous_question
 
 
 CANDIDATE_LIMIT = 24
@@ -67,6 +68,8 @@ def _selection_preview(passage, question, tokenize):
         # passages during synthesis, and quotes shown to readers are complete.
         excerpt = " ".join(spotlight.split()[:95])
     return {"source_id": passage["source_id"], "title": passage["title"],
+            "author": passage.get("author", ""),
+            "subjects": passage.get("subjects", []),
             "pages": passage["pages"], "preview": excerpt,
             "preview_truncated": excerpt != text}
 
@@ -182,6 +185,8 @@ def render_argument_context(index, anchors, selected):
         sections.append({
             "book_id": anchor["book_id"],
             "book_title": anchor["title"],
+            "book_author": anchor.get("author", ""),
+            "subjects": anchor.get("subjects", []),
             "core_source_id": anchor["source_id"],
             "reading_sequence": [
                 {
@@ -223,11 +228,12 @@ def choose_evidence(question, history, index, facets, provider, log):
     })
     selector_system = (
         "You are choosing PRIMARY-SOURCE evidence for a reading companion. "
-        "Select up to six passages that will best help answer the reader, "
-        "For an explicit comparison of named authors or works, select "
-        "evidence from each requested source; do not treat an author "
-        "mentioned inside another work as that author's own claim. "
-        "not merely passages that repeat question words. Favor explicit "
+        "Select up to six passages that best address the question, "
+        "not merely passages that repeat question words. For an explicit "
+        "comparison of named authors or works, select evidence from each "
+        "requested author; do not treat a quotation or character's speech "
+        "as necessarily the author's own philosophical position. "
+        "Favor explicit "
         "definitions, decisive distinctions, relationships, and worked "
         "examples over vague related mentions. Cover each genuinely separate "
         "part of the question, but prioritize passages that CONNECT the parts. "
@@ -263,44 +269,55 @@ def choose_evidence(question, history, index, facets, provider, log):
     finally:
         stage["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
 
-    # A question explicitly naming two authors must not lose one of them
-    # merely because the selector focused on the other author's passages.
-    # This is a deterministic coverage safeguard over REAL retrieved sources;
-    # it does not adjudicate truth or add another inference call.
-    required_books = getattr(index, "discovery", {}).get("required_book_ids", [])
-    present = {str(p["book_id"]) for p in anchors}
+    # Source coverage belongs to a PERSON, not whichever particular volume
+    # was highest-ranked. A citation from Aristotle's Ethics satisfies an
+    # Aristotle requirement even if the Works anthology was also selected.
+    # Only citations from actual retrieved works can satisfy this.
+    author_groups = getattr(index, "discovery", {}).get(
+        "required_author_groups", []
+    )
     coverage_added = []
-    for book_id in required_books:
-        if str(book_id) in present:
+    for group in author_groups:
+        eligible = set(map(str, group["book_ids"]))
+        if any(str(p["book_id"]) in eligible for p in anchors):
             continue
         candidate = next((p for p in candidates
-                          if str(p["book_id"]) == str(book_id)), None)
+                          if str(p["book_id"]) in eligible), None)
         if candidate is None:
-            stage.setdefault("missing_required_books", []).append(str(book_id))
+            stage.setdefault("missing_required_authors", []).append(
+                group["author"]
+            )
             continue
         if len(anchors) < PRIMARY_LIMIT:
             anchors.append(candidate)
         else:
-            # Only replace a source from a book already represented more than
-            # once; never eliminate an explicitly requested other author.
-            counts = {}
-            for passage in anchors:
-                key = str(passage["book_id"])
-                counts[key] = counts.get(key, 0) + 1
-            disposable = next((
-                pos for pos in range(len(anchors) - 1, -1, -1)
-                if counts[str(anchors[pos]["book_id"])] > 1
-            ), None)
-            if disposable is None:
-                stage.setdefault("missing_required_books", []).append(str(book_id))
+            # Keep at least one existing source for every already represented
+            # requested author; otherwise replace the last lower-priority
+            # duplicate. Never erase a sole necessary author citation.
+            def is_disposable(position):
+                source = anchors[position]
+                for other_group in author_groups:
+                    target = set(map(str, other_group["book_ids"]))
+                    if str(source["book_id"]) in target and not any(
+                        str(other["book_id"]) in target
+                        for at, other in enumerate(anchors) if at != position
+                    ):
+                        return False
+                return True
+            at = next((i for i in range(len(anchors)-1, -1, -1)
+                       if is_disposable(i)), None)
+            if at is None:
+                stage.setdefault("missing_required_authors", []).append(
+                    group["author"]
+                )
                 continue
-            anchors[disposable] = candidate
-        present.add(str(book_id))
+            anchors[at] = candidate
         coverage_added.append({
-            "book_id": str(book_id), "source_id": candidate["source_id"]
+            "author": group["author"], "source_id": candidate["source_id"],
+            "book_id": candidate["book_id"]
         })
     if coverage_added:
-        stage["required_book_coverage"] = coverage_added
+        stage["required_author_coverage"] = coverage_added
         stage["selected_ids"] = [p["source_id"] for p in anchors]
 
     # Keep entire primary passages. If their combined size exceeds the
@@ -466,6 +483,12 @@ def answer_evidence_first(question, history, index, facets, provider, build):
             for m in history[-4:]
             if m.get("role") in {"user", "assistant"}
         ]
+        # Broad, self-contained library questions should not inherit a
+        # previous comparison's authors as if they were asked again.
+        # Elliptical follow-ups still receive history for pronoun resolution.
+        if (getattr(index, "is_cross_library", False)
+                and not refers_to_previous_question(question, index.tokenize)):
+            conversation = []
         user = (
             "Reader's question:\n" + question
             + "\n\nRecent conversation:\n"
@@ -474,8 +497,12 @@ def answer_evidence_first(question, history, index, facets, provider, build):
             "read the passages in original book order; 'central_evidence' "
             "is the retrieved core, other entries clarify its logical role. "
             "When several books appear, identify whose text supports "
-            "each conclusion, and compare authors explicitly without "
-            "attributing one writer's views to another. "
+            "each conclusion. Narrative fiction can depict a character's "
+            "mistaken or ironic claim: identify the SPEAKER, and avoid "
+            "attributing that character's claim to the author. An edited "
+            "anthology is not a single thinker; distinguish a volume's "
+            "sources when the passage makes them identifiable. Compare "
+            "writers explicitly without attributing one to another. "
             "Separate sections are distinct, even when discussing related "
             "themes. Do not mistake an example or an objection for the "
             "author's conclusion:\n"
@@ -520,25 +547,25 @@ def answer_evidence_first(question, history, index, facets, provider, build):
     cited = [p for p in selected if p["source_id"] in used_ids]
     coverage_notice = ""
     if outcome == "draft" and getattr(index, "is_cross_library", False):
-        required = set(getattr(index, "discovery", {})
-                       .get("required_book_ids", []))
+        groups = getattr(index, "discovery", {}).get(
+            "required_author_groups", []
+        )
         cited_books = {str(p["book_id"]) for p in cited}
-        missing = required - cited_books
-        if missing:
-            titles = list(dict.fromkeys(
-                p["title"] for p in selected
-                if str(p["book_id"]) in missing
-            ))
+        missing_authors = [
+            group["author"] for group in groups
+            if not (cited_books & set(map(str, group["book_ids"])))
+        ]
+        if missing_authors:
             coverage_notice = (
-                "This answer does not cite evidence from "
-                + ", ".join(titles or ["every requested book"])
+                "This answer does not cite evidence by "
+                + ", ".join(missing_authors)
                 + ". It may be incomplete; inspect the original passages "
-                  "or ask about the missing work separately."
+                  "or ask about the missing author separately."
             )
         trace["evidence_check"]["named_author_citation_coverage"] = {
-            "required_book_ids": sorted(required),
+            "required_author_groups": groups,
             "cited_book_ids": sorted(cited_books),
-            "missing_book_ids": sorted(missing),
+            "missing_authors": missing_authors,
         }
     if outcome != "draft":
         answer = ("I couldn't prepare a properly cited explanation from the "

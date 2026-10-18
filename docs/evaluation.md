@@ -43,9 +43,40 @@ The global retrieval mode is deliberately bounded. Evaluate both **which books a
 
 A **real-index compatibility smoke** tests source mappings but not interpretation: it downloads v47 metadata, the happiness/virtue/meaning partitions, and Aristotle's and Tolstoy's shards, then reports selected original pages. A live Gemma answer is still required to judge the explanatory quality and latency of a cross-book conversation.
 
+## v1.4.1 source relevance: two real acceptance questions
+
+These are the actual live v1.4 failures. Evaluate the *retrieval* before
+asking Gemma to interpret it; keep Gemma3:12b as the fixed baseline.
+
+**Aristotle and Tolstoy on happiness and the good life.** The v47 retrieval
+should include real works from both authors, and allow an author's different
+works to satisfy the same author citation requirement. The new index-only
+audit includes Aristotle's *Ethics* and *Politics*, Tolstoy's *A Confession*
+and *War and Peace*. Distinguish a fictional character's view from Tolstoy's
+own philosophical commitments.
+
+**Different authors on life's meaning.** Expected topical search words:
+**life, meaning**, not *authors, library, question*. Generic bylines such
+as "Various authors" must NOT be treated as people explicitly named by
+the reader. The real-v47 audit now selects Frankl's *Man's Search for Meaning*,
+Tolstoy's *A Confession*, Ortega's *Man Has No Nature*, and Peirce's
+*How to Make Our Ideas Clear*. Inspect all passages for relevance even if the
+selected titles sound promising. A new independent question must not carry
+over named authors merely because they appeared in earlier chat history.
+
+The system must still open no more than four books and nine pages per
+book, preserve each PDF's identity, and distinguish a cited draft from a
+factually faithful interpretation. Genuine follow-ups such as "How about
+Tolstoy?" should retain conversation history for context resolution.
+
+The optional real-index-only smoke uses the command:
+    python scripts/smoke_relevance_v141.py
+This downloads only selected public v47 data into a temporary directory
+and does not invoke Ollama.
+
 ## Failure analysis
 
-For v1.4, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see grouped citation markers, any added source IDs, and rejected conflicts. This recovery supports at most six unique, existing source IDs per paragraph and does not grade whether the cited passage supports each claim. Preserve the same philosophical scoring rubric after a format-only recovery.
+For v1.4.1, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see grouped citation markers, any added source IDs, and rejected conflicts. This recovery supports at most six unique, existing source IDs per paragraph and does not grade whether the cited passage supports each claim. Preserve the same philosophical scoring rubric after a format-only recovery.
 
 For a poor answer, separate **retrieval** (the needed passage never appeared), **selection** (it was retrieved but not supplied), **interpretation** (it was supplied but the model got the meaning wrong), **citation** (the answer points at an irrelevant/unknown passage), and **presentation** (repetition or poor organization). These failures need different solutions. Do not conflate a successful JSON format with philosophical correctness.
 

@@ -158,6 +158,9 @@ class CrossLibraryFixture(unittest.TestCase):
         self.assertEqual(metadata["book_shards_opened"], 2)
         self.assertTrue(metadata["page_count"] <= 2 * 9)
         self.assertEqual(set(metadata["required_book_ids"]), ids)
+        self.assertEqual({
+            group["author"] for group in metadata["required_author_groups"]
+        }, {"aristotle", "leo tolstoy"})
         self.assertEqual(set(b["book_id"] for b in metadata["candidate_books"]), ids)
         self.assertTrue(all(p["pages"][0] in (10, 11, 12, 20, 21, 22)
                             for p in index.passages))
@@ -280,7 +283,7 @@ class CrossLibraryFixture(unittest.TestCase):
             "evidence_selection", "evidence_grounded_synthesis"
         ])
         self.assertTrue(result["diagnostics"]["retrieval"]
-                        ["evidence_selection"].get("required_book_coverage"))
+                        ["evidence_selection"].get("required_author_coverage"))
         self.assertEqual(len({
             p["book_id"] for p in result["diagnostics"]["retrieval"]["merged"]
             if p["source_id"] in model.last_ids
@@ -307,8 +310,79 @@ class CrossLibraryFixture(unittest.TestCase):
         self.assertIn("does not cite evidence", output["coverage_notice"])
         self.assertEqual(
             len(output["diagnostics"]["evidence_check"]
-                ["named_author_citation_coverage"]["missing_book_ids"]), 1
+                ["named_author_citation_coverage"]["missing_authors"]), 1
         )
+
+    def test_citing_another_work_by_same_author_satisfies_coverage(self):
+        # Regression: v1.4 mistakenly REQUIRED Aristotle's multi-volume Works
+        # even when the answer properly cited the Ethics. The requirement
+        # belongs to the person, not whichever work ranked first.
+        index, _ = self.locator.search(
+            "How do Aristotle and Tolstoy understand happiness?"
+        )
+        by_author = {
+            g["author"]: g for g in
+            index.discovery["required_author_groups"]
+        }
+        by_author["aristotle"]["book_ids"].append("293")
+        candidates = index.search("happiness", ["happiness"])
+        ethics = next(x for x in candidates if x["book_id"] == "7")
+        confession = next(x for x in candidates if x["book_id"] == "88")
+        wanted = [ethics["source_id"], confession["source_id"]]
+
+        class Provider:
+            def complete(self, stage, system, user, schema, max_tokens):
+                if stage == "evidence_selection":
+                    return {"source_ids": wanted}
+                return {"paragraphs": [{
+                    "text": "These two primary texts offer different ways "
+                            "to understand happiness and lived meaning.",
+                    "source_ids": wanted
+                }], "follow_up_questions": []}
+
+        result = answer_evidence_first(
+            "How do Aristotle and Tolstoy understand happiness?", [],
+            index, ["happiness"], Provider(), "test-v1.4.1"
+        )
+        self.assertEqual(result["outcome"], "draft")
+        self.assertEqual(result["coverage_notice"], "")
+        coverage = result["diagnostics"]["evidence_check"][
+            "named_author_citation_coverage"
+        ]
+        self.assertEqual(coverage["missing_authors"], [])
+        self.assertEqual(set(coverage["cited_book_ids"]), {"7", "88"})
+
+    def test_self_contained_library_question_does_not_inherit_prior_authors(self):
+        index, _ = self.locator.search(
+            "How do different authors approach the meaning of life?"
+        )
+        class Provider:
+            def __init__(self):
+                self.compose_user = ""
+            def complete(self, stage, system, user, schema, max_tokens):
+                if stage == "evidence_selection":
+                    return {"source_ids": ["S1"]}
+                self.compose_user = user
+                return {"paragraphs": [{
+                    "text": "One original text presents a reflective view of "
+                            "life and the search for enduring meaning.",
+                    "source_ids": ["S1"]
+                }], "follow_up_questions": []}
+
+        model = Provider()
+        result = answer_evidence_first(
+            "How do different authors approach the meaning of life?",
+            [
+                {"role": "user", "content":
+                 "Compare Aristotle and Tolstoy on happiness."},
+                {"role": "assistant", "content":
+                 "Earlier answer about the comparison."}
+            ], index, ["meaning", "life"], model, "test-v1.4.1"
+        )
+        self.assertEqual(result["outcome"], "draft")
+        self.assertIn("Recent conversation:\n[]", model.compose_user)
+        self.assertNotIn("Earlier answer about the comparison.",
+                         model.compose_user)
 
     def test_http_scope_uses_two_calls_and_correct_library_book_labels(self):
         class Provider:
