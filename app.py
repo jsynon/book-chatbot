@@ -39,6 +39,8 @@ from inference import OllamaProvider
 from grounded_pipeline import PassageIndex, answer_question
 from direct_pipeline import answer_direct
 from evidence_pipeline import answer_evidence_first
+from library_catalog import (BookSelectionError, LibraryIndexRegistry,
+                             resolve_catalog_path)
 # Keep source text in the Antilogicalism library-data repository, not in this
 # chatbot's code repository. In the usual Downloads layout, that repository is
 # a sibling of this project; environment variables allow another location or
@@ -89,10 +91,10 @@ BOOK_FILE = resolve_book_file()
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("BOOK_CHATBOT_PORT", "8765"))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:14b")
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "reading-companion-v1.2.2"
+BUILD_ID = "reading-companion-v1.3.0"
 PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "evidence").lower()
 if PIPELINE_MODE not in {"evidence", "direct", "grounded", "legacy"}:
     raise ValueError("BOOK_CHATBOT_PIPELINE must be evidence, direct, grounded, or legacy")
@@ -891,6 +893,22 @@ GROUNDED_BOOK = {
 }
 GROUNDED_INDEX = PassageIndex(
     [(GROUNDED_BOOK, PAGES)], tokenize, likely_page_continuation
+)
+
+# Keep the pilot index for old tests and historical comparisons. Optional
+# additional books are indexed only when selected by a reader.
+LIBRARY_REGISTRY = LibraryIndexRegistry(
+    catalog_path=resolve_catalog_path(
+        ROOT, os.environ.get("BOOK_CHATBOT_CATALOG")
+    ),
+    corpus_root=LIBRARY_DATA_ROOT,
+    corpus_version=DATA_VERSION,
+    default_book=GROUNDED_BOOK,
+    default_index=GROUNDED_INDEX,
+    default_file=BOOK_FILE,
+    tokenize=tokenize,
+    continuation=likely_page_continuation,
+    max_cached=int(os.environ.get("BOOK_CHATBOT_CACHED_BOOKS", "2")),
 )
 
 
@@ -7025,8 +7043,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         """Handle health/build metadata, Ollama model discovery, and the UI page."""
         if self.path == "/api/health":
-            self._json(200, {"ok": True, "book": BOOK_TITLE, "pages": len(PAGES), "build": BUILD_ID,
-                             "pipeline": PIPELINE_MODE, "pipelines": ["evidence", "direct", "grounded"]})
+            self._json(200, {"ok": True, "book": BOOK_TITLE,
+                             "book_id": GROUNDED_BOOK["book_id"],
+                             "pages": len(PAGES), "build": BUILD_ID,
+                             "catalog_entries": len(LIBRARY_REGISTRY.entries),
+                             "catalog_available": LIBRARY_REGISTRY.catalog_path.is_file(),
+                             "pipeline": PIPELINE_MODE,
+                             "pipelines": ["evidence", "direct", "grounded"]})
+            return
+        if self.path == "/api/books":
+            self._json(200, {
+                "books": LIBRARY_REGISTRY.list_books(),
+                "default_book_id": GROUNDED_BOOK["book_id"],
+                "catalog_available": LIBRARY_REGISTRY.catalog_path.is_file(),
+                "corpus_version": DATA_VERSION,
+            })
             return
         if self.path == "/api/models":
             try:
@@ -7073,15 +7104,37 @@ class Handler(BaseHTTPRequestHandler):
             if request_pipeline not in {"evidence", "direct", "grounded", "legacy"}:
                 self._json(400, {"error": "Unknown pipeline. Use evidence, direct, or grounded."})
                 return
+            # Book IDs are catalog keys, not user-supplied filenames or URLs.
+            # The old one-book global index is retained for compatibility;
+            # switching to another title builds only that book's index.
+            request_book_id = str(
+                data.get("book_id") or GROUNDED_BOOK["book_id"]
+            ).strip()
+            try:
+                current_book = LIBRARY_REGISTRY.description(request_book_id)
+                if request_book_id == GROUNDED_BOOK["book_id"]:
+                    current_index = GROUNDED_INDEX
+                else:
+                    current_index = LIBRARY_REGISTRY.get_index(request_book_id)
+            except BookSelectionError as error:
+                self._json(400, {"error": str(error)})
+                return
+            if request_pipeline == "legacy" and request_book_id != GROUNDED_BOOK["book_id"]:
+                self._json(400, {"error": "The historical legacy mode supports only the pilot book."})
+                return
             if request_pipeline == "evidence":
-                # v1.2: select decisive primary evidence, then explain it.
+                # v1.3: argument-ordered primary evidence from the chosen book.
                 # No model-as-judge review or automatic answer repair.
                 provider = OllamaProvider(OLLAMA_URL, model, CONTEXT_TOKENS)
                 payload = answer_evidence_first(
-                    question, history, GROUNDED_INDEX, question_facets(question), provider, BUILD_ID
+                    question, history, current_index, question_facets(question), provider, BUILD_ID
                 )
                 trace = payload["diagnostics"]
                 trace["model"] = model
+                trace["book"] = {"book_id": request_book_id,
+                                 "title": current_book["title"]}
+                payload["book"] = {"book_id": request_book_id,
+                                   "title": current_book["title"]}
                 if not include_diagnostics:
                     payload.pop("diagnostics")
                 self._json(200, payload)
@@ -7091,10 +7144,14 @@ class Handler(BaseHTTPRequestHandler):
                 # validation, no model-generated claim adjudication or rewrite.
                 provider = OllamaProvider(OLLAMA_URL, model, CONTEXT_TOKENS)
                 payload = answer_direct(
-                    question, history, GROUNDED_INDEX, question_facets(question), provider, BUILD_ID
+                    question, history, current_index, question_facets(question), provider, BUILD_ID
                 )
                 trace = payload["diagnostics"]
                 trace["model"] = model
+                trace["book"] = {"book_id": request_book_id,
+                                 "title": current_book["title"]}
+                payload["book"] = {"book_id": request_book_id,
+                                   "title": current_book["title"]}
                 if not include_diagnostics:
                     payload.pop("diagnostics")
                 self._json(200, payload)
@@ -7104,10 +7161,14 @@ class Handler(BaseHTTPRequestHandler):
                 # The provider only transports structured model requests.
                 provider = OllamaProvider(OLLAMA_URL, model, CONTEXT_TOKENS)
                 payload = answer_question(
-                    question, history, GROUNDED_INDEX, question_facets(question), provider, BUILD_ID
+                    question, history, current_index, question_facets(question), provider, BUILD_ID
                 )
                 trace = payload["diagnostics"]
                 trace["model"] = model
+                trace["book"] = {"book_id": request_book_id,
+                                 "title": current_book["title"]}
+                payload["book"] = {"book_id": request_book_id,
+                                   "title": current_book["title"]}
                 trace["summary"] = summarize_diagnostics(trace)
                 # The new stages distinguish evidence absence, model support
                 # judgments, incomplete coverage, and malformed structures.
@@ -7274,6 +7335,8 @@ class Handler(BaseHTTPRequestHandler):
                 trace["summary"] = summarize_diagnostics(trace)
                 payload["diagnostics"] = trace
             self._json(200, payload)
+        except BookSelectionError as e:
+            self._json(400, {"error": str(e)})
         except urllib.error.URLError as e:
             payload = {"error": "I couldn't reach Ollama on this computer. Open the Ollama app and try again. Details: " + str(e.reason)}
             if trace is None and provider is not None and include_diagnostics:
