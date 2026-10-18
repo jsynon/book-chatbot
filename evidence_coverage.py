@@ -23,7 +23,7 @@ _FRAMING = {
     "what", "how", "why", "when", "where", "who", "which", "explain",
     "summarize", "describe", "compare", "contrast", "author", "writer",
     "question", "book", "chapter", "passage", "text", "source", "quote",
-    "think", "thought", "meaning", "answer",
+    "think", "thinks", "thought", "meaning", "answer",
 }
 
 
