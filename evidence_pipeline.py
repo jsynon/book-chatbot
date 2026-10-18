@@ -9,7 +9,6 @@ not a model-as-judge review/rewrite loop.
 Citation integrity is deterministic. A real citation does NOT certify a
 model's interpretation, so accepted responses are explicitly called drafts.
 """
-from collections import Counter
 import json
 import os
 import re
@@ -214,16 +213,17 @@ def choose_evidence(question, history, index, facets, provider, log):
 
 
 def _follow_up_questions(output):
+    # Suggested next questions are supplemental, and should never cause a
+    # properly sourced main answer to be discarded for a formatting mistake.
     questions = output.get("follow_up_questions", [])
-    if not isinstance(questions, list) or len(questions) > 2:
-        raise CompletionError("Invalid follow-up question list")
+    if not isinstance(questions, list):
+        return []
     clean = []
-    for question in questions:
-        if not isinstance(question, str) or not 12 <= len(question.strip()) <= 160:
-            raise CompletionError("Invalid suggested follow-up")
-        text = question.strip()
-        if text not in clean:
-            clean.append(text)
+    for question in questions[:2]:
+        if isinstance(question, str) and 12 <= len(question.strip()) <= 160:
+            text = question.strip()
+            if text not in clean:
+                clean.append(text)
     return clean
 
 
@@ -376,12 +376,19 @@ def answer_evidence_first(question, history, index, facets, provider, build):
                          {a["source_id"] for a in anchors}]
     if not spotlight_sources:
         spotlight_sources = cited
-    highlights = [
-        {"source_id": p["source_id"], "title": p["title"],
-         "page": p["pages"][0], "url": source_payload(p)["url"],
-         "quote": passage_spotlight(p, question, index.tokenize)}
-        for p in spotlight_sources[:3]
-    ]
+    highlights = []
+    for passage in spotlight_sources:
+        quote = passage_spotlight(passage, question, index.tokenize)
+        # Avoid a wall of text masquerading as a short pull quote. Show the
+        # complete sentence or omit the highlight; never silently truncate.
+        if 7 <= len(quote.split()) <= 75:
+            highlights.append({
+                "source_id": passage["source_id"], "title": passage["title"],
+                "page": passage["pages"][0],
+                "url": source_payload(passage)["url"], "quote": quote
+            })
+        if len(highlights) == 3:
+            break
     trace["evidence_check"]["reason"] = (
         "Displayed citations and quoted spotlights refer to actual book "
         "passages; philosophical accuracy is not independently verified."
