@@ -501,6 +501,7 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
  assert.equal(details.bookId,'152');
  assert.equal(details.firstPage,33);
  assert.equal(details.lastPage,64);
+ assert.deepEqual(details.pilotBookIds,['7','114','152','529']);
  assert.equal(details.turnstileSiteKey,pilotBaseEnv.TURNSTILE_SITE_KEY);
  assert.equal(JSON.stringify(details).includes(pilotBaseEnv.TURNSTILE_SECRET),false);
 });
@@ -511,6 +512,11 @@ test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounde
  const data=await result.json();
  assert.equal(data.outcome,'verified-source-draft');
  assert.equal(data.pilot,true);
+ assert.equal(data.evidenceHighlights.length,1);
+ assert.equal(data.evidenceHighlights[0].source_id,'S1');
+ assert(data.evidenceHighlights[0].quote.includes('growing power'));
+ assert.equal(data.followUpQuestions.length,2);
+ assert(data.followUpQuestions.every(q=>q.endsWith('?')));
  assert.equal(data.verifiedPages,1);
  assert.equal(data.citations[0].page,38);
  assert.equal(data.citations[0].globalPageId,34403);
@@ -521,7 +527,7 @@ test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounde
 test('v1.9.5 public pilot rejects unknown book/page, tampered text, and bad Turnstile',async()=>{
  const pilot=await pilotScenario();
  const source=pilot.fixture.body.sources[0];
- const unsupported=await pilot.post({body:{sources:[{...source,page:70}]}});
+ const unsupported=await pilot.post({body:{sources:[{...source,bookId:'800'}]}});
  assert.equal(unsupported.status,400);
  assert.equal(pilot.stats().calls,0);
  const corrupted=await pilot.post({body:{sources:[{...source,text:source.text.replace('power','xxxxx')}] }});
@@ -621,4 +627,38 @@ test('siteverify HTTP 400 reports only known rejection code and still blocks AI'
  assert.deepEqual(warnings[0][1],{
    reason:'siteverify-http-failure',httpStatus:400,codes:['invalid-input-secret']});
  assert.equal(JSON.stringify(warnings).includes('must-not-appear'),false);
+});
+
+
+test('v1.10 allows any fingerprint-verified page from additional approved books',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const source=fixture.body.sources[0];
+ const alt={...source,bookId:'7',page:4};
+ const original=fixture.fetcher;
+ let fetches=0,calls=0;
+ const fetched=await original('https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/books/152/1.json');
+ const fp=await fetched.json();
+ fp.bookId='7';fp.chunk=0;fp.firstPage=1;fp.lastPage=32;fp.pages[0].page=4;
+ const environment=env({...pilotBaseEnv,AI:{run:async(_m,input)=>{
+   calls++;return {choices:[{finish_reason:'stop',message:{content:input.max_completion_tokens===320?
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]})
+     :'The cited source passage explains its subject [S1].'}}],usage:{neurons:4}};
+ }}});
+ const request=new Request(HOST+'/api/pilot-answer',{method:'POST',
+  headers:{Origin:'https://jsynon.github.io',
+     'CF-Connecting-IP':'198.51.100.22','Content-Type':'application/json'},
+  body:JSON.stringify({...fixture.body,turnstileToken:'one-time-challenge',sources:[alt]})});
+ const result=await handleRequest(request,environment,async url=>{
+   fetches++;
+   if(String(url).endsWith('siteverify'))return Response.json({success:true,
+       hostname:'jsynon.github.io',action:'companion_ask'});
+   assert(String(url).endsWith('/books/7/0.json'));
+   return Response.json(fp);
+ });
+ assert.equal(result.status,200);
+ const answer=await result.json();
+ assert.equal(answer.citations[0].bookId,'7');
+ assert.equal(answer.citations[0].page,4);
+ assert.equal(calls,2);
+ assert.equal(fetches,2);
 });
