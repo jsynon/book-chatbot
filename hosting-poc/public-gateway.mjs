@@ -361,8 +361,21 @@ async function verifyTurnstile(token,ip,secret,fetcher) {
       body:form,
     });
     if(!r.ok){
+      // Siteverify may send structured error codes even for a non-2xx HTTP
+      // response. Extract only known provider codes, never a raw body, token,
+      // secret, IP address, or arbitrary server error text.
+      let codes=[];
+      try{
+        const body=await r.json();
+        const rejected=turnstileRejection(body);
+        codes=(rejected?.codes||[]).filter(code=>[
+          'missing-input-secret','invalid-input-secret','missing-input-response',
+          'invalid-input-response','bad-request','timeout-or-duplicate',
+          'internal-error'
+        ].includes(code));
+      }catch{ /* Non-JSON errors retain status-only diagnostic. */ }
       console.warn('Reading Companion Turnstile verification failed',
-        {reason:'siteverify-http-failure',httpStatus:r.status});
+        {reason:'siteverify-http-failure',httpStatus:r.status,codes});
       return false;
     }
     verification=await r.json();
