@@ -66,6 +66,9 @@
     .batch-results th, .batch-results td { padding:7px 8px; border:1px solid var(--line); text-align:left; vertical-align:top; }
     .batch-results th { background:#eee7dc; }
     .batch-results td.question-cell { min-width:230px; }
+    .batch-results td.answer-cell { min-width:200px; }
+    .batch-results td.answer-cell summary { cursor:pointer; color:var(--accent); }
+    .batch-results td.answer-cell pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:400px; overflow:auto; font:12px/1.5 Georgia,serif; }
     footer { margin-top:24px; color:var(--muted); font:12px/1.5 system-ui,sans-serif; }
     /* Reduce margins on phones while retaining the distinction between turns. */
     @media (max-width:600px) { main { margin-top:22px; } .turn { padding:14px; } .turn.user { margin-left:4%; } }
@@ -98,15 +101,25 @@
         <button type="button">What are the three kinds of friendship Aristotle describes?</button>
         <button type="button">What does Aristotle mean by magnificence?</button>
       </div>
-      <p class="suggestion-label">Click a question to fill the prompt box, then submit it yourself.</p>
+      <p class="suggestion-label">Philosophical synthesis comparison question</p>
+      <div class="suggestions"><button type="button" id="synthesis-prompt">In Aristotle's Nicomachean Ethics, what is the relationship between moral virtue, practical wisdom (phronesis), and happiness (eudaimonia)? Explain how these concepts fit together, rather than simply defining each one separately.</button></div>
+      <p class="suggestion-label">Click any question to fill the prompt box, then submit it yourself.</p>
     </section>
-    <!-- The batch runner reuses these five buttons and the normal /api/chat
-         endpoint, so a paired evaluation follows the same live pipeline. -->
+    <!-- The original five tests remain unchanged. The new synthesis comparison
+         follows the same /api/chat pipeline, including grounding and review. -->
     <section class="batch-runner" aria-label="Automated regression test run">
-      <p><strong>Run all five questions across models</strong></p>
-      <p>Select the installed Ollama models to compare. They run one at a time. The results table shows each final outcome and main issue, while the downloaded JSON keeps the retry history and full diagnostics.</p>
+      <p><strong>Compare installed Ollama models</strong></p>
+      <p>Choose a question set and models. Tests run one at a time through the Reading Companion pipeline. Expand answers below to read them; download the JSON for full answers, sources, timings, and diagnostic traces. The original five regression questions are unchanged.</p>
+      <label for="test-suite">Question set</label>
+      <select id="test-suite">
+        <option value="synthesis">Philosophical synthesis (1 question)</option>
+        <option value="regression">Original regression set (5 questions)</option>
+        <option value="combined">Both sets (6 questions)</option>
+      </select>
       <div id="batch-model-options" class="batch-model-options" aria-live="polite">Loading installed models…</div>
       <div class="batch-actions">
+        <button type="button" id="select-recommended-models" class="secondary">Select three larger models</button>
+        <button type="button" id="select-all-models" class="secondary">Select all installed</button>
         <button type="button" id="run-regression">Run test set</button>
         <button type="button" id="download-regression" class="secondary" disabled>Download combined report</button>
       </div>
@@ -137,12 +150,16 @@
     const buildStatus = document.getElementById('build-id');
     const diagnosticsToggle = document.getElementById('diagnostics-toggle');
     const batchModelOptions = document.getElementById('batch-model-options');
+    const testSuiteSelect = document.getElementById('test-suite');
+    const synthesisPromptButton = document.getElementById('synthesis-prompt');
+    const recommendedModelNames = ['qwen3:14b', 'gemma3:12b', 'qwen3:8b'];
     const runRegressionButton = document.getElementById('run-regression');
     const downloadRegressionButton = document.getElementById('download-regression');
     const batchStatus = document.getElementById('batch-status');
     const batchResults = document.getElementById('batch-results');
     const history = [];
     let currentBuild = 'unknown';
+    let currentPipeline = 'unknown';
     let latestRegressionReport = null;
 
     // Reading the health endpoint confirms which local build served this page.
@@ -150,6 +167,7 @@
       .then(response => response.json())
       .then(data => {
         currentBuild = data.build || 'unknown';
+        currentPipeline = data.pipeline || 'unknown';
         buildStatus.textContent = `Local app build: ${currentBuild}${data.pipeline ? ` (${data.pipeline})` : ''}`;
       })
       .catch(() => { buildStatus.textContent = 'Local app build: unavailable'; });
@@ -219,7 +237,7 @@
       table.append(caption);
       const head = document.createElement('thead');
       const headerRow = document.createElement('tr');
-      for (const label of ['Model', 'Question', 'Outcome', 'Main issue', 'Attempt history']) {
+      for (const label of ['Model', 'Question', 'Outcome', 'Main issue', 'Time', 'Answer', 'Attempt history']) {
         const cell = document.createElement('th');
         cell.scope = 'col';
         cell.textContent = label;
@@ -236,13 +254,26 @@
           result.question || '',
           result.error ? 'request error' : summary.outcome || 'not recorded',
           summary.final_issue || (summary.outcome === 'verified' ? 'None; answer passed.' : result.error || 'No final finding recorded.'),
+          result.elapsed_ms == null ? '—' : `${(result.elapsed_ms / 1000).toFixed(1)} s`,
+          '',
           (summary.attempt_history || []).map(attempt =>
             `#${attempt.attempt} ${attempt.status}: ${attempt.issue}`
           ).join('\n') || 'No checker attempts recorded.',
         ];
         values.forEach((value, index) => {
           const cell = document.createElement('td');
-          cell.textContent = value;
+          if (index === 5) {
+            cell.className = 'answer-cell';
+            const details = document.createElement('details');
+            const title = document.createElement('summary');
+            title.textContent = result.answer ? 'Read full answer' : 'No answer';
+            const answerText = document.createElement('pre');
+            answerText.textContent = result.answer || result.error || 'No answer was returned.';
+            details.append(title, answerText);
+            cell.append(details);
+          } else {
+            cell.textContent = value;
+          }
           if (index === 1) cell.className = 'question-cell';
           row.append(cell);
         });
@@ -380,11 +411,8 @@
     }
 
     function populateBatchModels(models) {
-      // Prefer the two established baseline models when both are installed.
-      // The user can still select any installed model, so new Ollama models do
-      // not require code changes and missing baselines never block a test run.
-      const preferred = ['qwen3:4b', 'llama3.2:3b'];
-      const defaults = preferred.filter(name => models.includes(name));
+      // Prefer the new comparison candidates, retaining smaller models as opt-in.
+      const defaults = recommendedModelNames.filter(name => models.includes(name));
       const selected = defaults.length ? defaults : models.slice(0, 1);
       batchModelOptions.replaceChildren();
       if (!models.length) {
@@ -403,11 +431,27 @@
       }
     }
 
+    function setBatchModelSelection(allInstalled) {
+      const checkboxes = [...batchModelOptions.querySelectorAll('input[name="regression-model"]')];
+      const recommended = recommendedModelNames.filter(name =>
+        checkboxes.some(input => input.value === name)
+      );
+      const selected = allInstalled ? checkboxes.map(input => input.value)
+        : (recommended.length ? recommended : checkboxes.slice(0, 1).map(input => input.value));
+      for (const input of checkboxes) input.checked = selected.includes(input.value);
+    }
+
     async function runRegressionSet() {
       const models = [...batchModelOptions.querySelectorAll('input[name="regression-model"]:checked')]
         .map(input => input.value);
-      const prompts = [...document.querySelectorAll('.suggestions button')]
+      // The five original questions remain a fixed historical baseline.
+      const baselinePrompts = [...document.querySelectorAll('.suggestions')[0].querySelectorAll('button')]
         .map(button => button.textContent.trim()).filter(Boolean);
+      const synthesisPrompt = synthesisPromptButton.textContent.trim();
+      const suite = testSuiteSelect.value;
+      const prompts = suite === 'synthesis' ? [synthesisPrompt]
+        : suite === 'regression' ? baselinePrompts
+        : [...baselinePrompts, synthesisPrompt];
       if (!models.length) {
         batchStatus.textContent = 'Select at least one installed model.';
         return;
@@ -432,6 +476,7 @@
           for (const prompt of prompts) {
             batchStatus.textContent = `Running ${results.length + 1}/${total}: ${model} · ${prompt}`;
             const entry = {model, question:prompt};
+            const requestStarted = performance.now();
             try {
               const response = await fetch('/api/chat', {
                 method:'POST',
@@ -452,6 +497,9 @@
                 final_issue:entry.error, final_reason:entry.error, attempt_history:[],
                 retrieval:{expansion_triggered:false, direct_pages:[], final_pages:[]}
               };
+            } finally {
+              // End-to-end wall time also includes retrieval, load, and review.
+              entry.elapsed_ms = Math.round(performance.now() - requestStarted);
             }
             if (!entry.summary && entry.error) {
               entry.summary = {
@@ -468,6 +516,8 @@
           report_type:'antilogicalism-reading-companion-regression',
           schema_version:2,
           build:currentBuild,
+          pipeline:currentPipeline,
+          test_suite:suite,
           started_at:startedAt,
           completed_at:new Date().toISOString(),
           models,
@@ -494,12 +544,14 @@
       const link = document.createElement('a');
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       link.href = objectUrl;
-      link.download = `reading-companion-${latestRegressionReport.build}-${timestamp}.json`;
+      link.download = `reading-companion-${latestRegressionReport.test_suite}-${latestRegressionReport.build}-${timestamp}.json`;
       link.click();
       URL.revokeObjectURL(objectUrl);
     }
 
     runRegressionButton.addEventListener('click', runRegressionSet);
+    document.getElementById('select-recommended-models').addEventListener('click', () => setBatchModelSelection(false));
+    document.getElementById('select-all-models').addEventListener('click', () => setBatchModelSelection(true));
     downloadRegressionButton.addEventListener('click', downloadRegressionReport);
 
     form.addEventListener('submit', async (event) => {
