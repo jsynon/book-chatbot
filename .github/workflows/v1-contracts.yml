@@ -114,6 +114,14 @@ jobs:
               !html.includes('const restoreFailedQuestion =')) {
             throw new Error('Missing retry recovery for failed questions');
           }
+          if (!html.includes('<option value="library" selected>') ||
+              !html.includes('Ask the Companion') ||
+              !html.includes('Ask about a book, author, or idea…') ||
+              !html.includes('bookSelect.selectedIndex = -1;') ||
+              html.includes('visible.unshift(current)') ||
+              !html.includes('const selected = activeBookId;')) {
+            throw new Error('Missing library default or strict book-filter behavior');
+          }
           console.log('Browser script syntax and comparison controls OK.');
           JS
       - name: Test bounded library retrieval and evidence pipeline contracts
