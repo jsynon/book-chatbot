@@ -35,6 +35,11 @@ _SPEECH_QUOTES = re.compile(
 # Require *multiple* list boundaries and a lack of ordinary sentences:
 # a scientific paragraph with an em dash must not become "navigation".
 _LIST_BOUNDARIES = re.compile(r"(?:\s[—–]\s*|\w[—–](?=[A-Z]))")
+# Back-of-book indexes often OCR as a continuous string of names and page
+# locators. Count only NUMERIC page references and require enough density to
+# avoid misclassifying historical prose that mentions occasional dates.
+_PAGE_LOCATOR = re.compile(r"(?<![A-Za-z])\d{1,4}(?:\s*[-–]\s*\d{1,4})?(?![A-Za-z])")
+
 
 
 def source_form(text):
@@ -71,6 +76,16 @@ def source_form(text):
         list_separators >= 3 and internal_sentences == 0
         and (count >= 15 or list_separators >= 5)
     )
+    # An alphabetical INDEX may have no surviving heading in the OCR page.
+    # Repeated numeric locators separated by commas/semicolons, with almost
+    # no prose sentences, distinguish it from an actual historical account.
+    locators = _PAGE_LOCATOR.findall(plain)
+    reference_index = bool(
+        count >= 20 and len(locators) >= 10 and
+        len(locators) / max(count, 1) >= .12 and
+        (plain.count(";") >= 3 or plain.count(",") >= 15) and
+        internal_sentences <= 2
+    )
     # OCR can scatter punctuation through a table-of-contents line:
     # "STRUGGLE FOR ExIstENCE . . «6 6 + +e ... CHAPTER IV".
     # An explicit chapter numeral in a short NONSENTENCE record is strong
@@ -91,16 +106,18 @@ def source_form(text):
         )
     )
     navigation = (explicit_contents_page or heading
-                  or page_furniture or multi_item_contents)
+                  or page_furniture or multi_item_contents or reference_index)
     reason = (
         "contents_page" if explicit_contents_page
+        else "back_of_book_index" if reference_index
         else "contents_list" if multi_item_contents
         else "heading_or_page_furniture" if navigation else "original_prose"
     )
     return {
         "kind": "navigation" if navigation else "prose",
         "reason": reason,
-        "ranking_multiplier": 0.06 if navigation else 1.0,
+        "ranking_multiplier": 0.01 if reference_index else
+                              (0.06 if navigation else 1.0),
         "word_count": count,
     }
 

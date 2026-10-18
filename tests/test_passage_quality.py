@@ -113,6 +113,27 @@ class PassageQualityTests(unittest.TestCase):
         self.assertEqual(source_form(CONTENTS)["reason"], "contents_list")
         self.assertEqual(source_form(THUCYDIDES_HEADING)["kind"], "navigation")
 
+    def test_dense_back_of_book_locator_page_is_navigation(self):
+        # Generic OCR index-like text, not a Thucydides-specific exception.
+        index_text = ("Athenian leaders, 221, 338; ships 191, 192; colonies 594, "
+                      "595; at cities 47, 78, 79, 361; relations 439, 440; "
+                      "strong feeling 105, 316; at Samos 564, 568; "
+                      "trade 297, 298; in assembly 408, 409; military 553, 554; "
+                      "customs 421, 422; at temples 41, 42; settlement 99, 100; "
+                      "alliances 212, 214; under generals 311, 312; "
+                      "expedition 502, 503; defeat 601, 602.")
+        result = source_form(index_text)
+        self.assertEqual(result["kind"], "navigation")
+        self.assertEqual(result["reason"], "back_of_book_index")
+
+    def test_historical_prose_with_dates_is_not_navigation(self):
+        paragraph = ("In 431 the opposing states entered a wider conflict. "
+                     "The city strengthened its alliances, while the neighboring "
+                     "communities debated their position. The historian describes "
+                     "the causes of these disagreements and explains why earlier "
+                     "negotiations did not resolve them.")
+        self.assertEqual(source_form(paragraph)["kind"], "prose")
+
     def test_full_original_argument_and_short_definition_remain_eligible(self):
         self.assertEqual(source_form(DARWIN_CORE)["kind"], "prose")
         self.assertEqual(source_form(HISTORY_REPORT)["kind"], "prose")

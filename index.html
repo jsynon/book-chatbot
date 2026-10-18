@@ -93,7 +93,10 @@
     .reader-panel .field { display:flex; flex-direction:column; gap:6px; min-width:0; }
     .reader-panel label { font:600 13px/1.4 system-ui,sans-serif; color:var(--ink); }
     .reader-panel select, .reader-panel input { width:100%; max-width:100%; min-height:44px; font:15px system-ui,sans-serif; }
-    .book-picker { margin-top:12px; display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:12px; }
+    .book-picker { margin-top:12px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; min-width:0; }
+    .book-picker > .field { min-width:0; }
+    .book-picker input, .book-picker select { display:block; width:100%; min-width:0; box-sizing:border-box; }
+    .reader-panel { min-width:0; }
     .reader-note { color:var(--muted); font:12px/1.5 system-ui,sans-serif; margin:8px 0 0; }
     .reader-options { margin:0 0 20px; padding:0 4px; color:var(--muted); font:13px system-ui,sans-serif; }
     .reader-options summary, .example-questions summary { cursor:pointer; padding:8px 0; }
@@ -663,7 +666,7 @@
         book.title.toLocaleLowerCase().includes(term) ||
         (book.author || '').toLocaleLowerCase().includes(term)
       );
-      const visible = term ? choices.slice(0, 80) : choices.slice(0, 60);
+      const visible = choices; // All catalog entries are accessible; search narrows them.
       const current = libraryBooks.find(book => book.book_id === selected);
       if (current && !visible.some(book => book.book_id === current.book_id)) {
         visible.unshift(current);
@@ -683,7 +686,7 @@
         bookSelect.value = visible.find(book => book.available).book_id;
       }
       bookStatus.textContent = term
-        ? choices.length + ' matching titles (showing at most 80)'
+        ? choices.length + ' matching titles'
         : libraryBooks.length + ' catalog entries; choose a title or search by author';
     }
 
