@@ -46,7 +46,12 @@ class PlannerProvider:
         raise AssertionError("Unexpected EXTRA inference stage " + stage)
 
 
-class ConceptPlanContracts(CrossLibraryFixture):
+class ConceptPlanContracts(unittest.TestCase):
+    # Reuse the fixture builders but do not inherit and rerun the entire
+    # independent whole-library regression suite a second time.
+    setUp = CrossLibraryFixture.setUp
+    _serve = CrossLibraryFixture._serve
+
     def test_detect_hypothetical_interpretation_without_forcing_normal_comparison(self):
         group = needs_concept_plan(
             "What would Aristotle think about Tolstoy's thought?",
