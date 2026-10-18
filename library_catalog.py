@@ -91,12 +91,12 @@ def _author_sort_name(author, work_title):
     authors' rather than scattering individual volumes by translators.
     This grouping is for browsing only; original metadata is unchanged.
     """
-    if re.match(r"^Sacred Books of the East(?:,|\\b)", work_title, re.I):
+    if re.match(r"^Sacred Books of the East(?:,|\b)", work_title, re.I):
         return ("various", "various authors")
     name = str(author or "").strip()
-    name = re.sub(r"^Translated by\\s+", "", name, flags=re.I)
-    name = re.sub(r"\\([^)]*\\)", "", name).strip()
-    name = re.split(r"\\s+(?:and|&)\\s+|,\\s+(?=[A-Z])", name, maxsplit=1)[0].strip()
+    name = re.sub(r"^Translated by\s+", "", name, flags=re.I)
+    name = re.sub(r"\([^)]*\)", "", name).strip()
+    name = re.split(r"\s+(?:and|&)\s+|,\s+(?=[A-Z])", name, maxsplit=1)[0].strip()
     if not name:
         return ("zzzz", "")
     if name.casefold().startswith(("various", "anonymous", "traditional")):
@@ -109,7 +109,7 @@ def _author_sort_name(author, work_title):
 
 def _natural_title(title):
     """Sort numbered volume titles numerically, not Volume 1, 10, 11, 2."""
-    parts = re.split(r"(\\d+)", str(title or "").casefold())
+    parts = re.split(r"(\d+)", str(title or "").casefold())
     return tuple((1, int(part)) if part.isdecimal() else (0, part)
                  for part in parts if part)
 
