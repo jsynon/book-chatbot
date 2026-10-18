@@ -93,13 +93,17 @@ def main():
                 # The v1.4.4 model found the hidden underlying cause on page
                 # 38 but lacked detailed prewar dispute passages. Show what
                 # subject-directed supplemental search can find in the book.
-                toc = [p for p in retrieved if 19 in p["pages"]]
-                print("  PDF 19 original candidates:", [
-                    (p["source_id"], source_kind(p)) for p in toc
+                toc = [p for p in idx.passages if 19 in p["pages"]]
+                print("  PDF 19 original source fragments:", [
+                    (p["passage_id"], source_kind(p),
+                     p["text"][:65]) for p in toc[:5]
                 ], flush=True)
-                assert toc, "Thucydides contents page fixture not retrieved"
+                assert toc, "Thucydides PDF contents page not indexed"
                 assert all(source_kind(p) == "navigation" for p in toc), (
                     "Original PDF contents page 19 must be navigational"
+                )
+                assert not any(19 in p["pages"] for p in kept), (
+                    "Navigation-only page 19 must not reach model selector"
                 )
                 expanded, anchors, report = recover_gap_evidence(
                     idx, kept, kept[:6], ["Epidamnus", "Potidaea"]
