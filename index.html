@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Reading Companion | Antilogicalism</title>
   <link rel="stylesheet" href="/book-lite.css">
+  <script src="/source_text_format.js"></script>
   <style>
     /*
       The page is intentionally self-contained: keeping these styles in the
@@ -140,7 +141,10 @@
     .source-reader h2 { font-size:23px; font-style:normal; text-align:left; margin:0 0 8px; }
     .source-reader .source-meta { font:13px/1.6 system-ui,sans-serif; color:#555; }
     .source-reader .source-quote { padding:12px; border-left:3px solid #888; background:#f5f5f5; margin:12px 0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:15px; }
-    .source-reader .source-page-text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.7; font-size:17px; max-height:65vh; overflow-y:auto; border-top:1px solid #ddd; padding-top:14px; }
+    .source-reader .source-page-text { white-space:normal; overflow-wrap:anywhere; line-height:1.7; font-size:17px; max-height:65vh; overflow-y:auto; border-top:1px solid #ddd; padding-top:14px; }
+    .source-reader .source-page-text p { margin:0 0 1em; text-indent:0; }
+    .source-reader .source-page-text.original-ocr { white-space:pre-wrap; }
+    .source-reader .source-page-text.original-ocr p { margin:0; }
     .source-reader .source-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:14px 0; }
     .source-reader .source-actions button { min-height:40px; }
     .source-reader .source-actions a { color:#222; font:14px system-ui,sans-serif; }
@@ -370,6 +374,7 @@
         <button type="button" id="source-next" class="secondary-action">Next page →</button>
         <a id="source-original" target="_blank" rel="noopener noreferrer">Open original PDF</a>
       </div>
+      <div class="source-actions"><label for="source-layout">Text display</label><select id="source-layout"><option value="readable">Readable paragraphs</option><option value="original">Original OCR layout</option></select></div>
       <div id="source-reader-text" class="source-page-text"></div>
       <p class="source-meta">This is indexed source text, which may contain OCR errors. Page numbers refer to physical PDF pages. Google Drive may ignore the requested starting page.</p>
     </section>
@@ -435,6 +440,24 @@
     const sourcePrev = document.getElementById('source-prev');
     const sourceNext = document.getElementById('source-next');
     const sourceOriginal = document.getElementById('source-original');
+    const sourceLayout = document.getElementById('source-layout');
+    let currentPageText = '';
+    function displaySourceText() {
+      sourceReaderText.replaceChildren();
+      const original = sourceLayout.value === 'original';
+      sourceReaderText.classList.toggle('original-ocr', original);
+      if (original) {
+        sourceReaderText.textContent = currentPageText;
+      } else {
+        for (const paragraphText of ReadingSourceText.readableParagraphs(currentPageText)) {
+          const paragraph = document.createElement('p');
+          paragraph.textContent = paragraphText;
+          sourceReaderText.append(paragraph);
+        }
+      }
+      sourceReaderText.scrollTop = 0;
+    }
+    sourceLayout.addEventListener('change', displaySourceText);
     let activeSource = null;
     let sourceRequest = 0;
     let sourceReturnTarget = null;
@@ -469,7 +492,8 @@
       const request = ++sourceRequest;
       sourceReader.hidden = false;
       sourceReaderStatus.textContent = 'Loading original indexed page…';
-      sourceReaderText.textContent = '';
+      currentPageText = '';
+      sourceReaderText.replaceChildren();
       sourcePrev.disabled = true;
       sourceNext.disabled = true;
       sourceOriginal.removeAttribute('href');
@@ -490,7 +514,8 @@
           sourceReaderQuote.textContent = source.excerpt;
           sourceReaderQuote.hidden = false;
         }
-        sourceReaderText.textContent = data.text;
+        currentPageText = data.text;
+        displaySourceText();
         sourceReaderStatus.textContent = data.truncated ? 'Very long page: showing the first 50,000 characters.' : '';
         sourcePrev.disabled = data.previous_page == null;
         sourceNext.disabled = data.next_page == null;
