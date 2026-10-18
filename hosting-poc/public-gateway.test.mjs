@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{validRequest,trustedSources,parseReview,sourceExcerpt} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,parseReview,sourceExcerpt} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -48,20 +48,20 @@ function env(overrides={}){
 test('public endpoint fails closed by default and does not call AI',async()=>{
  let touched=0;
  const e=env({PUBLIC_ENABLED:'false',AI:{run:async()=>{touched++;}}});
- const response=await gateway.fetch(request(),e,fetcher);
+ const response=await handleRequest(request(),e,fetcher);
  assert.equal(response.status,503);assert.equal(touched,0);
 });
 test('rejects missing rate limiter even when PUBLIC_ENABLED=true',async()=>{
- const response=await gateway.fetch(request(),env({GLOBAL_RATE_LIMITER:undefined}),fetcher);
+ const response=await handleRequest(request(),env({GLOBAL_RATE_LIMITER:undefined}),fetcher);
  assert.equal(response.status,503);
 });
 test('strict browser origin and missing connecting identity rejected',async()=>{
- assert.equal((await gateway.fetch(request(payload,'https://malicious.invalid'),env(),fetcher)).status,403);
- assert.equal((await gateway.fetch(request(payload,'https://jsynon.github.io',{'CF-Connecting-IP':''}),env(),fetcher)).status,403);
+ assert.equal((await handleRequest(request(payload,'https://malicious.invalid'),env(),fetcher)).status,403);
+ assert.equal((await handleRequest(request(payload,'https://jsynon.github.io',{'CF-Connecting-IP':''}),env(),fetcher)).status,403);
 });
 test('rate limiter rejects requests before Turnstile or AI is called',async()=>{
  let external=0;
- const response=await gateway.fetch(request(),env({
+ const response=await handleRequest(request(),env({
  AI_RATE_LIMITER:{limit:async()=>({success:false})}
  }),()=>{external++;throw Error('Must not fetch');});
  assert.equal(response.status,429);assert.equal(external,0);
@@ -75,7 +75,7 @@ test('request format contains only locators, not client-supplied evidence',()=>{
 test('Turnstile denial prevents any trusted corpus retrieval and AI',async()=>{
  let corpus=0;
  const bad={...payload,turnstileToken:'invalid'};
- const result=await gateway.fetch(request(bad),env(),(url,opts)=>{if(String(url).includes('data-v47'))corpus++;return fetcher(url,opts);});
+ const result=await handleRequest(request(bad),env(),(url,opts)=>{if(String(url).includes('data-v47'))corpus++;return fetcher(url,opts);});
  assert.equal(result.status,403);assert.equal(corpus,0);
 });
 test('trusted corpus provides the page content and PDF link, not untrusted client fields',async()=>{
@@ -103,7 +103,7 @@ test('authentic sources flow through two calls and yield the canonical URL',asyn
   '{"coverage":"full","missing":"","evidence":[{"id":"S1"}]}' :
   'The dispute and growth of power both matter [S1].'}}],usage:{neurons:6}};
  }}});
- const response=await gateway.fetch(request(),e,fetcher);
+ const response=await handleRequest(request(),e,fetcher);
  assert.equal(response.status,200);
  const data=await response.json();
  assert.equal(runs,2);
@@ -123,7 +123,7 @@ test('truncated retrieved passage retains causal sentence rather than a short ke
 test('source probe fails closed when token binding is missing',async()=>{
  let fetched=0,models=0;
  const e=env({PUBLIC_ENABLED:'false',AI:{run:async()=>{models++;}}});
- const response=await gateway.fetch(
+ const response=await handleRequest(
    new Request(HOST+'/internal/source-probe',{method:'POST'}),
    e,()=>{fetched++;return fetcher(...arguments);}
  );
@@ -134,7 +134,7 @@ test('source probe fails closed when token binding is missing',async()=>{
 test('source probe rejects incorrect credentials before any corpus fetch',async()=>{
  let fetched=0;
  const e=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:'x'.repeat(40)});
- const response=await gateway.fetch(
+ const response=await handleRequest(
    new Request(HOST+'/internal/source-probe',{method:'POST',headers:{Authorization:'Bearer wrong'}}),
    e,()=>{fetched++;throw Error('No fetch should be made');}
  );
@@ -146,7 +146,7 @@ test('source probe uses actual trustedSources under disabled public mode with no
  const token='protected-test-token-not-for-production-123456';
  const e=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:token,
   AI:{run:async()=>{runs++;throw Error('No AI should run');}}});
- const response=await gateway.fetch(
+ const response=await handleRequest(
    new Request(HOST+'/internal/source-probe',{method:'POST',
      headers:{Authorization:'Bearer '+token}}),
    e,fetcher
@@ -161,4 +161,29 @@ test('source probe uses actual trustedSources under disabled public mode with no
  assert(result.sourceUrl.includes(PDF));
  assert(result.excerptLength>30);
  assert.equal(runs,0);
+});
+
+test('Cloudflare fetch(request,env,ctx) does not mistake ctx for a network fetcher',async()=>{
+ const saved=globalThis.fetch;
+ const token='protected-test-token-not-for-production-123456';
+ let fetched=0;
+ globalThis.fetch=(url,options)=>{
+   assert.equal(typeof url,'string');
+   fetched++;
+   return fetcher(url,options);
+ };
+ try{
+   const result=await gateway.fetch(
+     new Request(HOST+'/internal/source-probe',{method:'POST',headers:{
+       Authorization:'Bearer '+token
+     }}),
+     env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:token}),
+     {waitUntil:()=>{},passThroughOnException:()=>{}}
+   );
+   assert.equal(result.status,200);
+   assert.equal((await result.json()).page,38);
+   assert.equal(fetched,2);
+ }finally{
+   globalThis.fetch=saved;
+ }
 });
