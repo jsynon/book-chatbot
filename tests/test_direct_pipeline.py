@@ -81,7 +81,7 @@ class DirectPipelineTests(unittest.TestCase):
         result, _ = self.run_direct(incorrect)
         self.assertEqual(result["outcome"], "draft")
         self.assertIn("not_semantically_reviewed", result["diagnostics"]["evidence_check"]["status"])
-        self.assertIn("incorrect", "incorrect")  # Explicitly documents the limitation.
+        self.assertIn("Calibration is unnecessary", result["answer"])
 
     def test_rejects_invented_citations_and_exposes_passages(self):
         result, _ = self.run_direct(
