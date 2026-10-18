@@ -92,6 +92,37 @@ class EvidenceFirstTests(unittest.TestCase):
         )
         return result, provider
 
+    def test_incomplete_followups_are_filtered_without_affecting_answer(self):
+        from evidence_pipeline import _follow_up_questions
+        self.assertEqual(_follow_up_questions({
+            "follow_up_questions": [
+                "How might Tolstoy challenge or",
+                "How might Aristotle respond to this?",
+            ]
+        }), ["How might Aristotle respond to this?"])
+        self.assertEqual(_follow_up_questions({
+            "follow_up_questions": [
+                "How might Tolstoy challenge this view?",
+                "How might Tolstoy challenge this view?",
+            ]
+        }), ["How might Tolstoy challenge this view?"])
+        self.assertEqual(_follow_up_questions({
+            "follow_up_questions": [
+                "Aristotle discusses two kinds of life and",
+                "Why would ordinary people find contentment in",
+            ]
+        }), [])
+
+    def test_invalid_followups_do_not_discard_cited_answer(self):
+        generated = {
+            "paragraphs": [{"text": ANSWER_TEXT, "source_ids": ["S1"]}],
+            "follow_up_questions": ["Why would Aristotle reject or"],
+        }
+        result, provider = self.run_evidence(StubProvider(output=generated))
+        self.assertEqual(result["answer"], ANSWER_TEXT + " [S1]")
+        self.assertEqual(result["follow_up_questions"], [])
+        self.assertEqual(len(provider.calls), 2)
+
     def test_two_model_calls_and_source_bound_answer(self):
         result, provider = self.run_evidence()
         self.assertEqual(result["outcome"], "draft")
