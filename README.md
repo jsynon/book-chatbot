@@ -21,7 +21,7 @@ This is an **experimental reading assistant**, not a production service or a gua
 
 You need Python 3.10+ and [Ollama](https://ollama.com/) running on your own computer.
 
-1. Clone this repository, or download and extract its source.
+1. Clone **both** this repository and **antilogicalism-library-data** into the same parent directory (or configure the book text path described below).
 2. Install a model, for example with the command **ollama pull qwen3:14b**. Smaller models are supported; performance and available context depend on your hardware.
 3. On Windows, double-click **start.bat** in the project folder. Alternatively, run **python app.py**.
 4. Open **http://127.0.0.1:8765** if the browser does not open automatically.
@@ -33,7 +33,7 @@ No extra Python packages or hosted AI API keys are needed. The application sends
 
 ### Source texts and configuration
 
-The authoritative extracted and repaired corpus is kept in [jsynon/antilogicalism-library-data](https://github.com/jsynon/antilogicalism-library-data), separate from the chatbot's code. With the repositories side by side, this project automatically looks for the configured book shard in that data repository. A small bundled pilot shard provides a fallback for standalone testing.
+The authoritative extracted and repaired corpus is kept in [jsynon/antilogicalism-library-data](https://github.com/jsynon/antilogicalism-library-data), separate from the chatbot's code. With the repositories side by side, this project automatically looks for the configured book shard in that data repository. **This GitHub repository does not include book-text shards.** The alternate local data/book-7.json.gz path is a fallback only if you supply that file yourself. Without either a matching shared shard or a configured explicit file, the application cannot load the pilot book.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
