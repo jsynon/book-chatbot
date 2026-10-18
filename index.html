@@ -812,6 +812,13 @@
 
     function setActiveBook(resetConversation = true) {
       const acrossLibrary = searchScope.value === 'library';
+      // A title/author filter belongs to one-book browsing, not the
+      // library-wide scope. Clear stale matches and restore the full catalog
+      // count when the reader returns to the whole library.
+      if (acrossLibrary && bookFilter.value) {
+        bookFilter.value = '';
+        showBookOptions();
+      }
       const book = libraryBooks.find(item => item.book_id === activeBookId);
       if (acrossLibrary && !['evidence', 'direct'].includes(pipelineSelect.value)) {
         pipelineSelect.value = 'evidence';
