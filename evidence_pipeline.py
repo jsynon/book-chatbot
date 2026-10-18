@@ -22,6 +22,7 @@ from inference import CompletionError, OllamaProvider
 from retrieval_relevance import refers_to_previous_question
 from passage_quality import source_form, discourse_cues, curate_candidates
 from evidence_coverage import recover_gap_evidence
+from quote_audit import audit_quotes
 
 
 CANDIDATE_LIMIT = 24
@@ -603,8 +604,11 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             "their most relevant source IDs. Aim for 2 to 4 developed paragraphs "
             "for an ordinary question; give more depth for genuinely difficult "
             "or multi-part questions, never padded repetition. No arbitrary "
-            "length quota. You may incorporate brief EXACT quotations that "
-            "appear verbatim in the supplied passages; never invent wording. "
+            "length quota. Prefer cited paraphrase. Only use quotation "
+            "marks for a continuous exact phrase copied VERBATIM from one "
+            "of the cited original passages. Do not lightly edit grammar, "
+            "change words, or combine distant pieces into a supposed "
+            "literal quotation. Never invent quotation wording. "
             "When the evidence is incomplete, say 'these passages do not "
             "establish...' rather than pretending the whole book is silent. "
             "Return JSON with 'paragraphs', each having 'text' and 1 to 4 "
@@ -690,6 +694,11 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             answer, used_ids = validate_paragraphs(
                 output, set(allowed_ids), trace["draft"]["citation_reconciliation"]
             )
+            # Transparent mechanical quote audit, not an LLM judge. A
+            # corrected sentence still needs human semantic source review.
+            trace["evidence_check"]["quotation_precision"] = audit_quotes(
+                output, selected
+            )
             follow_ups = _follow_up_questions(output)
             trace["draft"].update(status="accepted", text=answer)
             if trace["draft"]["citation_reconciliation"]:
@@ -736,6 +745,16 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             "cited_book_ids": sorted(cited_books),
             "missing_authors": missing_authors,
         }
+    quotes = trace["evidence_check"].get("quotation_precision", {})
+    if outcome == "draft" and quotes.get("unmatched_count", 0):
+        quote_note = (
+            "Some wording shown as a direct quotation could not be "
+            "matched word-for-word to its cited excerpts. Please check "
+            "the original PDF before relying on those exact words."
+        )
+        coverage_notice = (
+            coverage_notice + " " + quote_note
+        ).strip()
     if outcome != "draft":
         answer = ("I couldn't prepare a properly cited explanation from the "
                   "available passages. You can inspect the source text below.")
