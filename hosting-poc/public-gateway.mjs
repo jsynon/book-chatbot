@@ -358,6 +358,73 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     return json({status:'ready',service:'Antilogicalism Reading Companion',
       publicEnabled:env.PUBLIC_ENABLED==='true',mode:'public-foundation'},200,origin);
   }
+  // v1.9.5 public, SMALL PILOT only. The only supported corpus is the
+  // Thucydides v47 fingerprint chunk (book 152, physical pages 33–64).
+  // Public enablement requires explicit opt-in AND every safety binding.
+  const pilotReady=env.PUBLIC_PILOT_ENABLED==='true' &&
+    env.PUBLIC_ENABLED!=='true' && typeof env.TURNSTILE_SITE_KEY==='string' &&
+    /^[A-Za-z0-9_-]{15,}$/.test(env.TURNSTILE_SITE_KEY) &&
+    typeof env.TURNSTILE_SECRET==='string' && env.TURNSTILE_SECRET.length>=15 &&
+    Boolean(env.AI?.run) && Boolean(env.AI_RATE_LIMITER?.limit) &&
+    Boolean(env.GLOBAL_RATE_LIMITER?.limit);
+  if(url.pathname==='/api/pilot-status'){
+    if(request.method!=='GET')return json({error:'Method not allowed'},405,origin);
+    if(origin&&origin!==FRONTEND_ORIGIN)
+      return json({error:'Origin not allowed'},403,origin);
+    return json({enabled:pilotReady,bookId:'152',firstPage:33,lastPage:64,
+      turnstileSiteKey:pilotReady?env.TURNSTILE_SITE_KEY:null,
+      scope:'limited-reader-pilot'},200,origin);
+  }
+  if(url.pathname==='/api/pilot-answer'){
+    if(origin!==FRONTEND_ORIGIN)
+      return json({error:'Origin not allowed'},403,origin);
+    if(request.method==='OPTIONS')
+      return new Response(null,{status:204,headers:headers(origin)});
+    if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
+    if(!pilotReady)return json({error:'AI answers are not yet enabled'},503,origin);
+    const ip=request.headers.get('CF-Connecting-IP');
+    if(!ip||ip.length>64)return json({error:'Request identity unavailable'},403,origin);
+    // Apply BOTH limits before Turnstile, source downloads or AI.
+    try{
+      const visitor=await env.AI_RATE_LIMITER.limit({key:'reading-pilot:visitor:'+ip});
+      const total=await env.GLOBAL_RATE_LIMITER.limit({key:'reading-pilot:global'});
+      if(!visitor.success||!total.success)
+        return json({error:'The demo is busy; please try again later'},429,origin);
+    }catch{return json({error:'Request limits unavailable'},503,origin);}
+    if(Number(request.headers.get('Content-Length'))>32000)
+      return json({error:'Request too large'},413,origin);
+    let data;
+    try{
+      const raw=await request.text();
+      if(new TextEncoder().encode(raw).byteLength>32000)
+        return json({error:'Request too large'},413,origin);
+      data=JSON.parse(raw);
+    }catch{return json({error:'Invalid JSON request'},400,origin);}
+    if(!data||Array.isArray(data)||typeof data!=='object'||
+      typeof data.question!=='string'||data.question.trim().length<5||
+      data.question.length>400||typeof data.turnstileToken!=='string'||
+      data.turnstileToken.length<5||data.turnstileToken.length>2048||
+      !Array.isArray(data.sources)||data.sources.length<1||
+      data.sources.length>2||
+      !data.sources.every(s=>s && String(s.bookId)==='152' &&
+        Number.isSafeInteger(s.page) && s.page>=33 && s.page<=64 &&
+        typeof s.text==='string'))
+      return json({error:'Invalid question or unsupported pilot pages'},400,origin);
+    if(!await verifyTurnstile(data.turnstileToken,ip,env.TURNSTILE_SECRET,fetcher))
+      return json({error:'Visitor verification failed; please retry the challenge'},403,origin);
+    let sourcePages;
+    try{sourcePages=await verifiedFingerprintSources(data.question,data.sources,fetcher);}
+    catch{
+      return json({error:'The selected passages could not be verified'},422,origin);
+    }
+    let output;
+    try{output=await composeVerifiedAnswer(data.question,sourcePages,env.AI);}
+    catch(error){
+      console.error('Reader pilot AI failed:',String(error?.message||error));
+      return json({error:'AI answer or citations unavailable; please try again later'},502,origin);
+    }
+    return json({...output,verifiedPages:sourcePages.length,pilot:true},200,origin);
+  }
   // Opt-in local test only; public AI remains disabled. This path accepts
   // client-submitted full-page text solely to validate its exact SHA-256
   // against trusted static metadata. It refuses missing/incorrect credentials.

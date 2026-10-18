@@ -448,3 +448,123 @@ test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
    'http://127.0.0.1:8766');
  assert.equal(fixture.stats().aiCount,0);
 });
+
+
+const pilotBaseEnv={
+ PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
+ TURNSTILE_SITE_KEY:'0x4AAAAAA-test-public-pilot',
+ TURNSTILE_SECRET:'a-long-private-turnstile-test-secret',
+ AI_RATE_LIMITER:{limit:async()=>({success:true})},
+ GLOBAL_RATE_LIMITER:{limit:async()=>({success:true})},
+};
+async function pilotScenario({config={},model,turnstileValid=true}={}) {
+ const fixture=await fingerprintTestFixture();
+ let calls=0,verifyCalls=0,limitCalls=0;
+ const validFetcher=async(url,init)=>{
+   if(String(url).includes('siteverify')){
+      verifyCalls++;
+      const params=new URLSearchParams(init.body);
+      return Response.json({success:turnstileValid&&params.get('response')==='one-time-challenge',
+          hostname:'jsynon.github.io',action:'companion_ask'});
+   }
+   return fixture.fetcher(url,init);
+ };
+ const ai={run:async(...args)=>{calls++;return (model||fixture.run)(...args);}};
+ const environment=env({...pilotBaseEnv, ...config,
+   AI:ai,
+   AI_RATE_LIMITER:{limit:async()=>{limitCalls++;return {success:true}}},
+   GLOBAL_RATE_LIMITER:{limit:async()=>{limitCalls++;return {success:true}}},
+ });
+ const post=async({body={},origin='https://jsynon.github.io',ip='198.51.100.42'}={})=>{
+   const merged={...fixture.body,turnstileToken:'one-time-challenge',...body};
+   const request=new Request(HOST+'/api/pilot-answer',{method:'POST',
+      headers:{Origin:origin,'Content-Type':'application/json',
+        'CF-Connecting-IP':ip},
+      body:JSON.stringify(merged)});
+   return handleRequest(request,environment,validFetcher);
+ };
+ return {post,environment,fixture,fetcher:validFetcher,
+   stats:()=>({calls,verifyCalls,limitCalls})};
+}
+test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every guard exists',async()=>{
+ const off=await handleRequest(new Request(HOST+'/api/pilot-status',{
+   headers:{Origin:'https://jsynon.github.io'}
+ }),env({PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'false'}));
+ assert.equal(off.status,200);
+ assert.equal((await off.json()).enabled,false);
+ const on=await pilotScenario();
+ const good=await handleRequest(new Request(HOST+'/api/pilot-status',{
+   headers:{Origin:'https://jsynon.github.io'}
+ }),on.environment);
+ const details=await good.json();
+ assert.equal(details.enabled,true);
+ assert.equal(details.bookId,'152');
+ assert.equal(details.firstPage,33);
+ assert.equal(details.lastPage,64);
+ assert.equal(details.turnstileSiteKey,pilotBaseEnv.TURNSTILE_SITE_KEY);
+ assert.equal(JSON.stringify(details).includes(pilotBaseEnv.TURNSTILE_SECRET),false);
+});
+test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounded AI',async()=>{
+ const pilot=await pilotScenario();
+ const result=await pilot.post();
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.equal(data.pilot,true);
+ assert.equal(data.verifiedPages,1);
+ assert.equal(data.citations[0].page,38);
+ assert.equal(data.citations[0].globalPageId,34403);
+ assert.equal(pilot.stats().limitCalls,2);
+ assert.equal(pilot.stats().verifyCalls,1);
+ assert.equal(pilot.stats().calls,2);
+});
+test('v1.9.5 public pilot rejects unknown book/page, tampered text, and bad Turnstile',async()=>{
+ const pilot=await pilotScenario();
+ const source=pilot.fixture.body.sources[0];
+ const unsupported=await pilot.post({body:{sources:[{...source,page:70}]}});
+ assert.equal(unsupported.status,400);
+ assert.equal(pilot.stats().calls,0);
+ const corrupted=await pilot.post({body:{sources:[{...source,text:source.text.replace('power','xxxxx')}] }});
+ assert.equal(corrupted.status,422);
+ assert.equal(pilot.stats().calls,0);
+ const invalid=await pilotScenario({turnstileValid:false});
+ assert.equal((await invalid.post()).status,403);
+ assert.equal(invalid.stats().calls,0);
+ assert.equal(invalid.fixture.stats().fetchCount,0);
+});
+test('v1.9.5 refuses public AI without configuration, approved Origin, limits or AI',async()=>{
+ const off=await pilotScenario({config:{PUBLIC_PILOT_ENABLED:'false'}});
+ assert.equal((await off.post()).status,503);
+ assert.equal(off.stats().calls,0);
+ const badOrigin=await pilotScenario();
+ assert.equal((await badOrigin.post({origin:'https://evil.invalid'})).status,403);
+ assert.equal(badOrigin.stats().calls,0);
+ const noLimit=await pilotScenario({config:{}});
+ noLimit.environment.AI_RATE_LIMITER=null;
+ assert.equal((await noLimit.post()).status,503);
+ assert.equal(noLimit.stats().calls,0);
+ const publicRoute=await handleRequest(request(payload),env({
+   PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
+ }),async()=>{throw Error('No public legacy source fetch')});
+ assert.equal(publicRoute.status,503);
+});
+test('v1.9.5 blocks requests before model when pilot rate limiter rejects',async()=>{
+ const pilot=await pilotScenario();
+ pilot.environment.AI_RATE_LIMITER={limit:async()=>({success:false})};
+ assert.equal((await pilot.post()).status,429);
+ assert.equal(pilot.stats().calls,0);
+ assert.equal(pilot.stats().verifyCalls,0);
+ assert.equal(pilot.fixture.stats().fetchCount,0);
+});
+test('v1.9.5 exposes only safe CORS preflight on public endpoint',async()=>{
+ const pilot=await pilotScenario();
+ const good=await handleRequest(new Request(HOST+'/api/pilot-answer',{
+   method:'OPTIONS',headers:{Origin:'https://jsynon.github.io'}
+ }),pilot.environment,pilot.fetcher);
+ assert.equal(good.status,204);
+ assert.equal(good.headers.get('Access-Control-Allow-Origin'),'https://jsynon.github.io');
+ const bad=await handleRequest(new Request(HOST+'/api/pilot-answer',{
+   method:'OPTIONS',headers:{Origin:'https://other.example'}
+ }),pilot.environment,pilot.fetcher);
+ assert.equal(bad.status,403);
+});

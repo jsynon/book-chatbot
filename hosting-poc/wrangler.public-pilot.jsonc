@@ -1,0 +1,33 @@
+{
+  // v1.9.5 limited public Reading Companion pilot (Thucydides pp. 33-64).
+  // Initial deployment stays DISABLED. The owner must explicitly configure
+  // free Turnstile, secret and rate limits before turning this on.
+  // This deploys the existing antilogicalism-companion-public Worker only.
+  // Original protected antilogicalism-companion-test is untouched.
+  "name": "antilogicalism-companion-public",
+  "main": "./public-gateway.mjs",
+  "compatibility_date": "2026-10-18",
+  "workers_dev": true,
+  "ai": { "binding": "AI" },
+  "vars": {
+    "PUBLIC_ENABLED": "false",
+    "PUBLIC_PILOT_ENABLED": "false",
+    "TURNSTILE_SITE_KEY": ""
+  },
+  "ratelimits": [
+    {
+      "name": "AI_RATE_LIMITER",
+      "namespace_id": "913711",
+      "simple": { "limit": 2, "period": 60 }
+    },
+    {
+      "name": "GLOBAL_RATE_LIMITER",
+      "namespace_id": "913712",
+      "simple": { "limit": 4, "period": 60 }
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {"invocation_logs":true}
+  }
+}
