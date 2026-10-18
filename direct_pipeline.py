@@ -106,7 +106,7 @@ def validate_paragraphs(result, allowed_ids, reconciliation_log=None):
                     "combined_ids": ids,
                 })
             raise CompletionError(
-                f"Paragraph {position} needs one to four distinct source IDs"
+                f"Paragraph {position} needs one to four source IDs (distinct and known)"
             )
 
         # Do not accidentally pass malformed source notation such as [S1,S2]
