@@ -64,7 +64,7 @@ function wordStem(word) {
 export function substantivePageEvidence(text, terms) {
   if (isNavigationPage(text) || isPublicationPage(text)) return null;
   const words = String(text || '').toLowerCase().match(/[a-z0-9]+/g) || [];
-  if (words.length < 24) return null;
+  if (words.length < 10) return null;
   const roots = [...new Set(terms.map(wordStem))];
   const wanted = new Set(roots);
   let hits = 0, best = {score:0, center:0}, unique = new Set();
