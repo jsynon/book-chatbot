@@ -109,9 +109,12 @@ def main():
                     idx, kept, kept[:6], ["Epidamnus", "Potidaea"]
                 )
                 print("  gap search:", report, flush=True)
-                assert report["admitted"], (
-                    "Real prewar disputes were not found in v47"
+                assert len(report["admitted"]) == 2, (
+                    "Both test-dispute topics should retrieve original text"
                 )
+                assert {p["source_id"] for p in anchors}.issuperset(
+                    {p["source_id"] for p in report["admitted"]}
+                ), "Recovered originals must remain after all slots are allocated"
                 assert all(p["book_id"] == "152" for p in expanded)
                 assert len(set(p["source_id"] for p in expanded)) == len(expanded)
                 for source in report["admitted"]:
