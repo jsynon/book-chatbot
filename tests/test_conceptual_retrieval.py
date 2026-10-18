@@ -14,7 +14,7 @@ from conceptual_retrieval import (
     conceptual_search_plan, needs_concept_plan, _validated_topic_words
 )
 from inference import CompletionError
-from tests.test_whole_library import CrossLibraryFixture
+from tests import test_whole_library as fixtures
 
 
 class PlannerProvider:
@@ -49,8 +49,8 @@ class PlannerProvider:
 class ConceptPlanContracts(unittest.TestCase):
     # Reuse the fixture builders but do not inherit and rerun the entire
     # independent whole-library regression suite a second time.
-    setUp = CrossLibraryFixture.setUp
-    _serve = CrossLibraryFixture._serve
+    setUp = fixtures.CrossLibraryFixture.setUp
+    _serve = fixtures.CrossLibraryFixture._serve
 
     def test_detect_hypothetical_interpretation_without_forcing_normal_comparison(self):
         group = needs_concept_plan(
