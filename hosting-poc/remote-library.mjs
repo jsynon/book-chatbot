@@ -28,7 +28,10 @@ export function previewAtWordBoundary(text, max = 550) {
   return (lastSpace > max / 2 ? before.slice(0, lastSpace) : before) + '…';
 }
 export class RemoteLibrary {
-  constructor(root = DEFAULT_INDEX_ROOT, fetcher = fetch) {
+  // Call window.fetch through its owning global object. Storing the bare
+  // browser method and later invoking it as this.fetcher() can throw
+  // "Illegal invocation" because its receiver is the RemoteLibrary object.
+  constructor(root = DEFAULT_INDEX_ROOT, fetcher = (url, options) => globalThis.fetch(url, options)) {
     this.root = String(root).replace(/\/?$/, '/');
     this.fetcher = fetcher;
     this.manifestPromise = null;
