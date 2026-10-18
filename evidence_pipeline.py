@@ -20,7 +20,7 @@ from direct_pipeline import (
 from grounded_pipeline import object_schema, render_passages, source_payload
 from inference import CompletionError, OllamaProvider
 from retrieval_relevance import refers_to_previous_question
-from passage_quality import source_form, discourse_cues, curate_candidates
+from passage_quality import source_form, source_kind, discourse_cues, curate_candidates
 from evidence_coverage import recover_gap_evidence
 from quote_audit import audit_quotes
 
@@ -71,7 +71,7 @@ def _selection_preview(passage, question, tokenize):
         # passages during synthesis, and quotes shown to readers are complete.
         excerpt = " ".join(spotlight.split()[:95])
     return {"source_id": passage["source_id"], "title": passage["title"],
-            "source_form": source_form(text)["kind"],
+            "source_form": source_kind(passage),
             "discourse_cues": discourse_cues(text),
             "author": passage.get("author", ""),
             "subjects": passage.get("subjects", []),
@@ -184,7 +184,7 @@ def select_neighbor_context(index, anchors, candidates, budget=MAX_EVIDENCE_CHAR
                 continue
             # A running header or contents fragment cannot resolve the
             # attribution of a nearby quoted statement.
-            if source_form(neighbor["text"])["kind"] == "navigation":
+            if source_kind(neighbor) == "navigation":
                 continue
             maybe_add(neighbor, anchor["source_id"], direction)
     return selected, added
@@ -248,7 +248,7 @@ def render_argument_context(index, anchors, selected):
                     "role": ("central_evidence" if p["source_id"] ==
                              anchor["source_id"]
                              else p.get("context_role", "related_context")),
-                    "source_form": source_form(p["text"])["kind"],
+                    "source_form": source_kind(p),
                     "discourse_cues": discourse_cues(p["text"]),
                     "text": p["text"],
                 } for p in block
