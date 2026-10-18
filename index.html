@@ -299,6 +299,11 @@
     function setActiveBook(resetConversation = true) {
       const acrossLibrary = searchScope.value === 'library';
       const book = libraryBooks.find(item => item.book_id === bookSelect.value);
+      if (acrossLibrary && !['evidence', 'direct'].includes(pipelineSelect.value)) {
+        pipelineSelect.value = 'evidence';
+      }
+      const groundedOption = pipelineSelect.querySelector('option[value="grounded"]');
+      if (groundedOption) groundedOption.disabled = acrossLibrary;
       bookSelect.disabled = acrossLibrary;
       bookFilter.disabled = acrossLibrary;
       if (acrossLibrary) {
