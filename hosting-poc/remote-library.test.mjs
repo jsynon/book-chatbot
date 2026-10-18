@@ -78,3 +78,34 @@ test('publication metadata and index pages are not offered as evidence', async()
  const prose='The war was caused by a growing rivalry between two powers. Their alliances suffered mutual suspicion and the disputes led toward violence. The historian attributes the deepest cause to fear of increasing power.';
  assert(substantivePageEvidence(prose,['caused','war']));
 });
+
+test('long excerpts retain causal explanation following an introductory mention',async()=>{
+ const {excerptAroundEvidence}=await import('./remote-library.mjs');
+ const page='Before the question came up, the cities discussed their reasons for conflict. '.repeat(8)+
+ 'The disputes were the immediately apparent reason for the war. '+
+ 'Yet this account distinguishes the much deeper cause from the disputes: mounting power and the fear it created among the rival city leaders. '+
+ 'The surrounding details help clarify the author\'s point.';
+ const clip=excerptAroundEvidence(page,['disputes','war'],1080);
+ assert(clip.includes('much deeper cause'));
+ assert(clip.length<=1090);
+});
+test('third evidence slot preserves adjacent-page narrative over a distant scattered hit',async()=>{
+ const data=structuredClone(files);
+ data['manifest.json'].pages=6;
+ data['manifest.json'].page_books=[7,7,152,152,152,152];
+ data['terms-pe.json'].peloponnesian=[2,1,1];
+ data['terms-wa.json'].war=[2,1,1];
+ data['terms-ca.json'].caused=[2,1,1];
+ data['book-152.json'].pages=[
+ {id:2,page:38,text:'The Peloponnesian War was caused in part by an immediate dispute between the allied cities. This account describes reasons and their historical background.'},
+ {id:3,page:39,text:'The deeper explanation is increasing power in one city and the corresponding fear in the other. The historian distinguishes this from more visible grievances.'},
+ {id:4,page:621,text:'The Peloponnesian War was caused by disagreements during the long conflict. A fleet took a defensive position near another island.'},
+ {id:5,page:622,text:'The Peloponnesian War was caused by the escalation of local warfare in several territories. Ships gathered near the coast.'}
+ ];
+ const fetcher=url=>{const file=String(url).split('/').pop().replace(/\.gz$/,'');return Promise.resolve(file in data ? new Response(gzipSync(JSON.stringify(data[file])),{status:200}) : new Response('',{status:404}));};
+ const result=await new RemoteLibrary('https://example.test/v47/',fetcher).search('What caused the Peloponnesian War?',{maxBooks:1,pagesPerBook:3});
+ assert.equal(result.sources.length,3);
+ // This asserts that contiguous page 39 is reserved when page 38 is a top hit.
+ // Exact ordering can depend on scoring, so sort the physical pages to verify.
+ assert(result.sources.some(source=>source.page===39));
+});
