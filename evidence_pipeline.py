@@ -224,6 +224,9 @@ def choose_evidence(question, history, index, facets, provider, log):
     selector_system = (
         "You are choosing PRIMARY-SOURCE evidence for a reading companion. "
         "Select up to six passages that will best help answer the reader, "
+        "For an explicit comparison of named authors or works, select "
+        "evidence from each requested source; do not treat an author "
+        "mentioned inside another work as that author's own claim. "
         "not merely passages that repeat question words. Favor explicit "
         "definitions, decisive distinctions, relationships, and worked "
         "examples over vague related mentions. Cover each genuinely separate "
@@ -259,6 +262,46 @@ def choose_evidence(question, history, index, facets, provider, log):
         log("Evidence selector invalid; preserving top-ranked source fallback.")
     finally:
         stage["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
+
+    # A question explicitly naming two authors must not lose one of them
+    # merely because the selector focused on the other author's passages.
+    # This is a deterministic coverage safeguard over REAL retrieved sources;
+    # it does not adjudicate truth or add another inference call.
+    required_books = getattr(index, "discovery", {}).get("required_book_ids", [])
+    present = {str(p["book_id"]) for p in anchors}
+    coverage_added = []
+    for book_id in required_books:
+        if str(book_id) in present:
+            continue
+        candidate = next((p for p in candidates
+                          if str(p["book_id"]) == str(book_id)), None)
+        if candidate is None:
+            stage.setdefault("missing_required_books", []).append(str(book_id))
+            continue
+        if len(anchors) < PRIMARY_LIMIT:
+            anchors.append(candidate)
+        else:
+            # Only replace a source from a book already represented more than
+            # once; never eliminate an explicitly requested other author.
+            counts = {}
+            for passage in anchors:
+                key = str(passage["book_id"])
+                counts[key] = counts.get(key, 0) + 1
+            disposable = next((
+                pos for pos in range(len(anchors) - 1, -1, -1)
+                if counts[str(anchors[pos]["book_id"])] > 1
+            ), None)
+            if disposable is None:
+                stage.setdefault("missing_required_books", []).append(str(book_id))
+                continue
+            anchors[disposable] = candidate
+        present.add(str(book_id))
+        coverage_added.append({
+            "book_id": str(book_id), "source_id": candidate["source_id"]
+        })
+    if coverage_added:
+        stage["required_book_coverage"] = coverage_added
+        stage["selected_ids"] = [p["source_id"] for p in anchors]
 
     # Keep entire primary passages. If their combined size exceeds the
     # available evidence budget, preserve higher-priority anchors first.
@@ -323,6 +366,7 @@ def answer_evidence_first(question, history, index, facets, provider, build):
             "primary": candidates, "merged": selected, "facets": facets,
             "selection_method": "model-selected evidence with argument dependencies",
             "evidence_selection": stage,
+            "library_discovery": getattr(index, "discovery", None),
             "argument_sections": [
                 {"core_source_id": a["source_id"],
                  "reading_order_ids": [
@@ -420,6 +464,9 @@ def answer_evidence_first(question, history, index, facets, provider, build):
             + "\n\nSelected original-source arguments. Inside each section, "
             "read the passages in original book order; 'central_evidence' "
             "is the retrieved core, other entries clarify its logical role. "
+            "When several books appear, identify whose text supports "
+            "each conclusion, and compare authors explicitly without "
+            "attributing one writer's views to another. "
             "Separate sections are distinct, even when discussing related "
             "themes. Do not mistake an example or an objection for the "
             "author's conclusion:\n"
