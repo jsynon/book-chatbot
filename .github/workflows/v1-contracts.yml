@@ -48,12 +48,12 @@ jobs:
           // Runtime locator smoke check: a wrongly escaped digit regex in
           // v1.6.0 silently disabled every in-page citation and Read button.
           const locatorStart = html.indexOf('function isReadableSourceLocator(source, page) {');
-          const locatorEnd = html.indexOf('\\n    async function openSourcePage', locatorStart);
+          const locatorEnd = html.indexOf('async function openSourcePage', locatorStart);
           if (locatorStart < 0 || locatorEnd < 0) {
             throw new Error('Missing source reader locator validation');
           }
           const locatorDefinition = html.slice(locatorStart, locatorEnd);
-          const isReadable = vm.runInNewContext(locatorDefinition + '\\nisReadableSourceLocator;');
+          const isReadable = vm.runInNewContext(locatorDefinition + '; isReadableSourceLocator;');
           if (!isReadable({book_id:'140'}, 179) || !isReadable({book_id:'7'}, '3')) {
             throw new Error('Valid numeric book/page citation does not open the source reader');
           }
