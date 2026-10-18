@@ -21,11 +21,28 @@ MAX_PARAGRAPHS = 6
 MAX_REFERENCES_PER_PARAGRAPH = 4
 
 
-def validate_paragraphs(result, allowed_ids):
-    """Check output shape and provenance; render citations without model markup.
+INLINE_CITATION = re.compile(r"\[S\d+\]")
 
-    No claim of semantic entailment is made. An answer can reference an actual
-    passage and still misrepresent it. Exact IDs are bound to original pages.
+
+def validate_paragraphs(result, allowed_ids, reconciliation_log=None):
+    """Bind citation IDs from structured lists and recover valid inline [S#].
+
+    Many local models put source markers directly in prose despite instructions
+    to keep the text clean. For a passage-grounded reading assistant this is a
+    formatting error, not necessarily a reason to discard the entire answer.
+
+    Safeguards:
+    - Every structured and inline ID must name a SUPPLIED passage.
+    - If both sets are nonempty but disjoint, the paragraph is ambiguous:
+      refuse it instead of guessing which citation the author intended.
+    - Merge partially overlapping sets; retain source-list order and append
+      previously omitted inline IDs in first-appearance order.
+    - Never exceed the existing per-paragraph source limit.
+    - Strip ONLY valid marker tokens; keep the actual prose unchanged.
+    - Optionally document recoveries/disagreements in troubleshooting JSON.
+
+    Source identity is not semantic verification. Even a reconciled citation
+    may be attached to an inaccurate interpretation of its source.
     """
     if not isinstance(result, dict):
         raise CompletionError("Direct synthesis did not return a JSON object")
@@ -39,22 +56,80 @@ def validate_paragraphs(result, allowed_ids):
         if not isinstance(paragraph, dict):
             raise CompletionError(f"Paragraph {position} is not an object")
         raw_text = paragraph.get("text")
-        ids = paragraph.get("source_ids")
+        structured = paragraph.get("source_ids")
         if not isinstance(raw_text, str):
             raise CompletionError(f"Paragraph {position} has no prose text")
-        text = raw_text.strip()
+        if re.search(r"</?think>|<\|", raw_text, re.I):
+            raise CompletionError(f"Paragraph {position} contains model reasoning markup")
+        if not isinstance(structured, list):
+            raise CompletionError(f"Paragraph {position} has no source ID array")
+        if any(not isinstance(sid, str) for sid in structured):
+            raise CompletionError(f"Paragraph {position} contains a non-text source ID")
+        if len(structured) != len(set(structured)):
+            raise CompletionError(f"Paragraph {position} repeats a structured source ID")
+
+        inline = list(dict.fromkeys(INLINE_CITATION.findall(raw_text)))
+        structured_set = set(structured)
+        inline_set = set(inline)
+
+        # Reject invalid IDs before attempting any reconciliation. This is
+        # critical: a made-up inline source must never be quietly removed.
+        unknown = [sid for sid in list(structured) + inline if sid not in allowed_ids]
+        if unknown:
+            if reconciliation_log is not None:
+                reconciliation_log.append({
+                    "paragraph": position, "status": "rejected_unknown",
+                    "unknown_ids": list(dict.fromkeys(unknown)),
+                    "structured_ids": list(structured), "inline_ids": inline,
+                })
+            raise CompletionError(
+                f"Paragraph {position} references an unknown source: "
+                + ", ".join(dict.fromkeys(unknown))
+            )
+
+        if inline_set and structured_set and not (inline_set & structured_set):
+            if reconciliation_log is not None:
+                reconciliation_log.append({
+                    "paragraph": position, "status": "rejected_conflict",
+                    "structured_ids": list(structured), "inline_ids": inline,
+                })
+            raise CompletionError(
+                f"Paragraph {position} has disjoint inline and structured citations"
+            )
+
+        ids = list(structured) + [sid for sid in inline if sid not in structured_set]
+        if not 1 <= len(ids) <= MAX_REFERENCES_PER_PARAGRAPH:
+            if reconciliation_log is not None:
+                reconciliation_log.append({
+                    "paragraph": position, "status": "rejected_count",
+                    "structured_ids": list(structured), "inline_ids": inline,
+                    "combined_ids": ids,
+                })
+            raise CompletionError(
+                f"Paragraph {position} needs one to four distinct source IDs"
+            )
+
+        # Do not accidentally pass malformed source notation such as [S1,S2]
+        # to the reader as if it were a valid citation.
+        text = INLINE_CITATION.sub("", raw_text).strip()
+        if re.search(r"\[S\d[^\]]*\]", text):
+            raise CompletionError(
+                f"Paragraph {position} contains malformed inline source markup"
+            )
+        # Removing citations often leaves a gap before punctuation.
+        text = re.sub(r" +([.,;:!?])", r"\1", text)
+        text = re.sub(r" {2,}", " ", text)
         if not 30 <= len(text) <= 1600:
             raise CompletionError(f"Paragraph {position} has an invalid text length")
-        if re.search(r"\[S\d+\]|</?think>|<\|", text, re.I):
-            raise CompletionError(
-                f"Paragraph {position} contains hand-written citations or model markup"
-            )
-        if not isinstance(ids, list) or not 1 <= len(ids) <= MAX_REFERENCES_PER_PARAGRAPH:
-            raise CompletionError(f"Paragraph {position} needs one to four source IDs")
-        if any(not isinstance(sid, str) or sid not in allowed_ids for sid in ids):
-            raise CompletionError(f"Paragraph {position} references an unknown source")
-        if len(set(ids)) != len(ids):
-            raise CompletionError(f"Paragraph {position} repeats a source ID")
+
+        if inline and reconciliation_log is not None:
+            reconciliation_log.append({
+                "paragraph": position, "status": "reconciled",
+                "structured_ids": list(structured), "inline_ids": inline,
+                "added_ids": [sid for sid in inline if sid not in structured_set],
+                "combined_ids": ids,
+                "markers_removed": len(INLINE_CITATION.findall(raw_text)),
+            })
         used_ids.update(ids)
         rendered.append(text + " " + " ".join(f"[{sid}]" for sid in ids))
 
@@ -62,7 +137,6 @@ def validate_paragraphs(result, allowed_ids):
     if len(answer) > MAX_ANSWER_CHARS:
         raise CompletionError("Direct synthesis exceeded the answer length limit")
     return answer, used_ids
-
 
 def answer_direct(question, history, index, facets, provider, build):
     """Retrieve the same book passages as comparison mode; synthesize once.
@@ -172,11 +246,17 @@ def answer_direct(question, history, index, facets, provider, build):
             # Preserve unvalidated model output in opt-in diagnostics, so
             # failed requests are inspectable rather than lost forever.
             trace["draft"] = {"status": "generated", "raw_response": result}
-            answer, used_ids = validate_paragraphs(result, allowed_ids)
+            trace["draft"]["citation_reconciliation"] = []
+            answer, used_ids = validate_paragraphs(
+                result, allowed_ids, trace["draft"]["citation_reconciliation"]
+            )
             trace["draft"]["status"] = "accepted"
             trace["draft"]["text"] = answer
             event["status"] = "complete"
             outcome = "draft"
+            if trace["draft"]["citation_reconciliation"]:
+                progress("Recovered inline citation markers in "
+                         f"{len(trace['draft']['citation_reconciliation'])} paragraph(s).")
             progress(f"Received cited answer, {len(answer.split())} words; "
                      f"{len(used_ids)} distinct sources.")
         except CompletionError as exc:
