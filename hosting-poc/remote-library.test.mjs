@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import {RemoteLibrary,decodeDeltas,previewAtWordBoundary,queryTerms} from './remote-library.mjs';
+import {RemoteLibrary,decodeDeltas,previewAtWordBoundary,queryTerms,isNavigationPage} from './remote-library.mjs';
 const pdfId='SomeRealFormatPdfId1234567';
 const manifest={version:47,postings_encoding:'delta-json-v1',prefix_length:2,pages:5,page_books:[7,7,152,152,152],partitions:['pe','wa','ca'],books:{
   7:{title:'Ethics — Aristotle',drive_url:`https://drive.google.com/file/d/${pdfId}/view`},
@@ -42,4 +42,30 @@ test('default browser fetch preserves its global receiver',async()=>{
    assert.equal(result.sources.length,2);
    assert(calls.some(url=>url.endsWith('/manifest.json.gz')));
  }finally{globalThis.fetch=original;}
+});
+
+test('detects index locator entries without rejecting historical prose', () => {
+ const index='638 INDEX - Athenian 221, Peithias, leader, 338; 191 at Mytilene, 222 at 252; Peloponnesians, their colonies, 594; Athens, 439, 440; allies 493, 494; assembly 503, 504; position 105, 106; ships 290, 291; book 110, 111; war 455, 456';
+ assert.equal(isNavigationPage(index),true);
+ assert.equal(isNavigationPage('The city feared the growing power of its opponent. The chronicler distinguishes immediate disputes from the deeper cause of the war.'),false);
+});
+test('does not rank unrelated single-word matches over a multi-term history book', async () => {
+ const data = structuredClone(files);
+ data['manifest.json'].pages=7;
+ data['manifest.json'].page_books=[7,7,152,152,152,89,89];
+ data['manifest.json'].books['89']={title:'An Epic — Homer',drive_url:`https://drive.google.com/file/d/${pdfId}/view`};
+ data['terms-pe.json'].peloponnesian=[2,1];
+ data['terms-wa.json'].war=[2,1,2];
+ data['terms-ca.json'].caused=[2];
+ data['book-152.json'].pages=[
+  {id:2,page:656,text:'638 INDEX - Athenian 221, Peithias, leader, 338; 191 at Mytilene, 222 at 252; Peloponnesians, their colonies, 594; Athens, 439, 440; allies 493, 494; assembly 503, 504; position 105, 106; ships 290, 291; book 110, 111; war 455, 456'},
+  {id:3,page:27,text:'The Peloponnesian War followed disputes between two city alliances. The historian distinguishes immediate causes from deeper fears. The conflict developed over several negotiations.'},
+  {id:4,page:28,text:'The fighting arose from growing tension between the leading city powers. Their alliances clashed and the war continued.'}
+ ];
+ data['book-89.json']={pages:[{id:5,page:12,text:'The warriors gathered for war. Ancient heroes exchanged words and fought their enemies.'}]};
+ const fetcher=url=>{const filename=String(url).split('/').pop().replace(/\\.gz$/,'');return Promise.resolve(filename in data ? new Response(gzipSync(JSON.stringify(data[filename])),{status:200}) : new Response('',{status:404}));};
+ const result=await new RemoteLibrary('https://example.test/v47/',fetcher).search('What caused the Peloponnesian War?');
+ assert(result.sources.length>0);
+ assert(result.sources.every(source=>source.bookId==='152'));
+ assert(result.sources.every(source=>source.page!==656));
 });
