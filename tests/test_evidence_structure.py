@@ -203,7 +203,9 @@ class SourceStructureTests(unittest.TestCase):
 
     def test_short_or_unrelated_text_does_not_manufacture_facet_coverage(self):
         idx = make_index([CORE, "A trading port.", REPORTED, REPLY])
-        original = numbered(idx, [0, 2, 3])
+        # The short "A trading port." fragment is correctly omitted
+        # by the underlying passage index's minimum-term threshold.
+        original = numbered(idx, [0, 1, 2])
         candidates, anchors, trace = reserve_question_parts(
             idx, [
                 "What caused the conflict?",
