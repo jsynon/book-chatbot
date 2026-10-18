@@ -111,6 +111,31 @@ Run python scripts/smoke_conceptual_v142.py for an optional read-only,
 index-only audit against the public v47 files without calling Ollama.
 Synthetic tests validate the strict two-call ceiling and original PDF identity.
 
+## v1.4.3: evaluate science, history, and literature
+
+The benchmark at [cross-disciplinary-v1.json](../benchmarks/cross-disciplinary-v1.json) preserves eight fixed questions from the actual book catalog: two each for science, history, literature, and philosophy. This is an evaluation tool, **not** a list of answers or author-specific retrieval rules. Scores must reflect the original source, not a model's apparent confidence.
+
+To run one local test without launching a long suite:
+
+```powershell
+python scripts\run_cross_discipline.py --case science-darwin-selection
+python scripts\run_cross_discipline.py --summary
+```
+
+The full question set requires explicit `--all`. Reports are saved individually to the gitignored reports/ directory with the original paragraphs, citations, stage traces, timings, and blank manual score fields. The local browser has a collapsed question picker which selects the appropriate original book and populates the composer; it does not automatically ask the model. The picker and source view are intended to remain usable at mobile widths.
+
+**Science:** Is the mechanism clear? Does the answer separate what Darwin or Hawking actually wrote from present-day knowledge? Does it distinguish observations, explanatory models, and speculative predictions?
+
+**History:** Does it keep an author's interpretation of causes distinct from events and chronology? Are speeches, reports, and traditions presented as claims made by sources rather than independently verified facts?
+
+**Literature:** Does it distinguish a character's position from the novelist's own commitments? Does it preserve narrative context when explaining a theme across distant scenes?
+
+**Philosophy controls:** Aristotle's virtues/practical wisdom/happiness synthesis and the Nietzsche–Kierkegaard hypothetical comparison remain available to detect regressions from the preceding builds.
+
+Automatic tests can verify only structural integrity: known source IDs, numeric book IDs, consistent PDF and page links, correct source-book identity, representation of named authors, and at most two model calls. A fully valid cited draft can still be false. Use the same 0–3 human rubric already defined above. See [benchmarks/README.md](../benchmarks/README.md) for details.
+
+For the first evaluation, try **one science, one history, and one literature case** (Darwin, Thucydides, Dostoevsky) before spending time on all eight. Categorize the actual failure as discovery, selection, interpretation, citation, or presentation. Prefer fixes that generalize across genres. Do not turn this into another model comparison.
+
 ## Failure analysis
 
 For v1.4.1, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see grouped citation markers, any added source IDs, and rejected conflicts. This recovery supports at most six unique, existing source IDs per paragraph and does not grade whether the cited passage supports each claim. Preserve the same philosophical scoring rubric after a format-only recovery.
