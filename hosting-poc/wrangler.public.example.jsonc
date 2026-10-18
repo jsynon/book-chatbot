@@ -1,0 +1,25 @@
+{
+  // EXAMPLE ONLY. Copy to wrangler.jsonc after reviewing instructions.
+  // Keep your EXISTING protected test Worker unchanged.
+  // Do not deploy a public Worker until the CPU/source integrity smoke is complete.
+  "name": "antilogicalism-companion-public",
+  "main": "./hosting-poc/public-gateway.mjs",
+  "compatibility_date": "2026-10-18",
+  "workers_dev": true,
+  "ai": { "binding": "AI" },
+  "vars": { "PUBLIC_ENABLED": "false" },
+  // Namespaces must be unique within your own Cloudflare account; replace
+  // these example namespace IDs with your own positive integer strings.
+  "ratelimits": [
+    {
+      "name": "AI_RATE_LIMITER",
+      "namespace_id": "913701",
+      "simple": { "limit": 2, "period": 60 }
+    },
+    {
+      "name": "GLOBAL_RATE_LIMITER",
+      "namespace_id": "913702",
+      "simple": { "limit": 5, "period": 60 }
+    }
+  ]
+}
