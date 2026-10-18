@@ -90,14 +90,15 @@ export function substantivePageEvidence(text, terms) {
   }
   return {score, unique:unique.size, center:best.center};
 }
-export function excerptAroundEvidence(text, terms, max = 550) {
+export function excerptAroundEvidence(text, terms, max = 1080) {
   const compact = String(text || '').replace(/\s+/g, ' ').trim();
   if (compact.length <= max) return compact;
   const roots = new Set(terms.map(wordStem));
   const matches = [...compact.matchAll(/[a-z0-9]+/gi)];
   let bestStart=0, bestScore=-1;
-  // A sliding 70-word snippet gives the reader the relevant context rather
-  // than always showing the first 550 characters of a long PDF page.
+  // Keep enough continuous prose after a question-matching passage for the
+  // author's explanation to finish. A short keyword-window can cut off the
+  // very next sentence (the reason for a claim) before the model sees it.
   for (let i=0;i<matches.length;i+=12) {
     const start = matches[i].index;
     const end = Math.min(compact.length, start+max);
@@ -243,18 +244,42 @@ export class RemoteLibrary {
       // main text, not just the first sixty lexical hits; morphological
       // variants and contextual discussion may lie outside that shortlist.
       const relevant = new Map(book.hits.map(hit => [hit.id, hit]));
-      const candidates = [];
+      const candidates = [], proseByPage = new Map();
       for (const item of shard.pages) {
         if (!Number.isSafeInteger(item.id) || String(manifest.page_books[item.id]) !== book.id ||
             !Number.isSafeInteger(item.page) || item.page <= 0 ||
             typeof item.text !== 'string' || !item.text.trim()) continue;
+        if (isNavigationPage(item.text) || isPublicationPage(item.text)) {
+          discardedNavigation++; continue;
+        }
+        if ((item.text.match(/[a-z]+/gi) || []).length >= 10 &&
+            !proseByPage.has(item.page)) proseByPage.set(item.page, item);
         const evidence = substantivePageEvidence(item.text, terms);
-        if (!evidence) { discardedNavigation++; continue; }
+        if (!evidence) continue;
         const hit = relevant.get(item.id);
         candidates.push({item, rank:evidence.score + (hit ? Math.min(8,hit.score) : 0)});
       }
       candidates.sort((a,b) => b.rank - a.rank || a.item.page - b.item.page);
-      for (const {item} of candidates.slice(0, pageLimit)) {
+      // When given a third page of budget, prefer the continuation of the
+      // strongest match to an unrelated distant keyword hit. This is generic
+      // paragraph continuity, not a book- or question-specific rule. Preserve
+      // the two best direct matches for relevance and source diversity.
+      const selected = candidates.slice(0, Math.min(pageLimit, 2));
+      if (pageLimit >= 3 && selected.length) {
+        const topPage = selected[0].item.page;
+        for (const adjacent of [topPage + 1, topPage - 1]) {
+          const item = proseByPage.get(adjacent);
+          if (item && !selected.some(entry => entry.item.page === item.page)) {
+            selected.push({item, rank:0, contextual:true});
+            break;
+          }
+        }
+      }
+      for (const entry of candidates) {
+        if (selected.length >= pageLimit) break;
+        if (!selected.some(existing => existing.item.id === entry.item.id)) selected.push(entry);
+      }
+      for (const {item} of selected) {
         const url = 'https://drive.google.com/file/d/' + pdfId + '/view?usp=sharing#page=' + item.page;
         sources.push({bookId:book.id, title:meta.title, page:item.page, globalPageId:item.id,
           url, preview:excerptAroundEvidence(item.text,terms), textLength:item.text.length});
