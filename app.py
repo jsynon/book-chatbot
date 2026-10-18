@@ -1,12 +1,12 @@
-"""Local, source-grounded reading companion for Aristotle's *Nicomachean Ethics*.
+"""Local HTTP application for the Antilogicalism Reading Companion.
 
-The default path retrieves paragraph contexts, selects evidence, composes cited
-claims, and reviews their meaning with at most one repair. Its implementation
-lives in grounded_pipeline.py behind the inference.py provider boundary. The
-earlier pipeline is retained here for an explicit environment-variable rollback
-and its existing regression tests. Both paths serve localhost and use Ollama;
-no hosted inference service is contacted. Source text remains in the separate
-library-data repository, with a bundled pilot shard for standalone use.
+Version 1 defaults to direct passage-grounded synthesis. The earlier
+claim-by-claim reviewer remains accessible as a comparison mode while we
+evaluate output quality. Both paths use the same source-text repository and
+Ollama installation. No hosted model provider is required.
+
+Older validation helpers still live in this module for historical comparison.
+The supported v1 path is implemented in direct_pipeline.py.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from inference import OllamaProvider
 from grounded_pipeline import PassageIndex, answer_question
+from direct_pipeline import answer_direct
 # Keep source text in the Antilogicalism library-data repository, not in this
 # chatbot's code repository. In the usual Downloads layout, that repository is
 # a sibling of this project; environment variables allow another location or
@@ -86,13 +87,13 @@ BOOK_FILE = resolve_book_file()
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("BOOK_CHATBOT_PORT", "8765"))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:14b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "passage-grounded-composition-2026-10-17-160"
-PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "grounded").lower()
-if PIPELINE_MODE not in {"grounded", "legacy"}:
-    raise ValueError("BOOK_CHATBOT_PIPELINE must be grounded or legacy")
+BUILD_ID = "reading-companion-v1.0.0"
+PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "direct").lower()
+if PIPELINE_MODE not in {"direct", "grounded", "legacy"}:
+    raise ValueError("BOOK_CHATBOT_PIPELINE must be direct, grounded, or legacy")
 CONTEXT_TOKENS = int(os.environ.get("BOOK_CHATBOT_CONTEXT_TOKENS", "8192"))
 PDF_FILE_ID = os.environ.get("BOOK_CHATBOT_PDF_FILE_ID", "1XVInAFS2zutV8PDp8A3DirUrW6nLLfvY")
 BOOK_TITLE = os.environ.get("BOOK_CHATBOT_BOOK_TITLE", "Nicomachean Ethics — Aristotle")
@@ -7023,7 +7024,7 @@ class Handler(BaseHTTPRequestHandler):
         """Handle health/build metadata, Ollama model discovery, and the UI page."""
         if self.path == "/api/health":
             self._json(200, {"ok": True, "book": BOOK_TITLE, "pages": len(PAGES), "build": BUILD_ID,
-                             "pipeline": PIPELINE_MODE})
+                             "pipeline": PIPELINE_MODE, "pipelines": ["direct", "grounded"]})
             return
         if self.path == "/api/models":
             try:
@@ -7066,7 +7067,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "Enter a question first."})
                 return
             include_diagnostics = data.get("diagnostics") is True
-            if PIPELINE_MODE == "grounded":
+            request_pipeline = str(data.get("pipeline", PIPELINE_MODE)).strip().lower()
+            if request_pipeline not in {"direct", "grounded", "legacy"}:
+                self._json(400, {"error": "Unknown pipeline. Use direct or grounded."})
+                return
+            if request_pipeline == "direct":
+                # Version 1: one passage-grounded answer, deterministic citation
+                # validation, no model-generated claim adjudication or rewrite.
+                provider = OllamaProvider(OLLAMA_URL, model, CONTEXT_TOKENS)
+                payload = answer_direct(
+                    question, history, GROUNDED_INDEX, question_facets(question), provider, BUILD_ID
+                )
+                trace = payload["diagnostics"]
+                trace["model"] = model
+                if not include_diagnostics:
+                    payload.pop("diagnostics")
+                self._json(200, payload)
+                return
+            if request_pipeline == "grounded":
                 # All models share this orchestrator and evidence contracts.
                 # The provider only transports structured model requests.
                 provider = OllamaProvider(OLLAMA_URL, model, CONTEXT_TOKENS)
