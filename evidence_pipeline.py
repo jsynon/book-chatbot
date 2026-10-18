@@ -527,19 +527,49 @@ def choose_evidence(question, history, index, facets, provider, log,
 
 
 def _follow_up_questions(output):
-    # Suggested next questions are supplemental, and should never cause a
-    # properly sourced main answer to be discarded for a formatting mistake.
+    """Keep only complete, standalone reader questions from model suggestions.
+
+    Ollama's structured-output limits constrain string length, not grammar.
+    Earlier builds displayed unfinished clauses such as "challenge or" as
+    clickable suggestions. Bad suggestions must NEVER invalidate a cited
+    answer; just omit them without another model call.
+    """
     questions = output.get("follow_up_questions", [])
     if not isinstance(questions, list):
         return []
     clean = []
+    seen = set()
     for question in questions[:2]:
-        if isinstance(question, str) and 12 <= len(question.strip()) <= 160:
-            text = question.strip()
-            if text not in clean:
-                clean.append(text)
+        if not isinstance(question, str):
+            continue
+        text = " ".join(question.split())
+        if not 24 <= len(text) <= 140:
+            continue
+        # A question mark appended to a broken fragment is insufficient.
+        if not text.endswith("?") or text.count("?") != 1:
+            continue
+        if "..." in text or "…" in text:
+            continue
+        # Standalone interrogatives only, not introductory statements that
+        # might themselves be truncated by the model's character budget.
+        if not re.match(
+            r"^(?:what|why|how|which|who|whose|where|when|can|could|would|"
+            r"should|will|does|do|did|is|are|was|were|has|have|had|might|"
+            r"may|in what|to what|under what|according to what)\\b",
+            text, flags=re.I,
+        ):
+            continue
+        if re.search(
+            r"\\b(?:and|or|but|because|although|if|even|of|to|the|"
+            r"a|an|with|in|on|at|for|by|about|from)\\s*\\?$",
+            text, flags=re.I,
+        ):
+            continue
+        key = text.casefold()
+        if key not in seen:
+            seen.add(key)
+            clean.append(text)
     return clean
-
 
 def answer_evidence_first(question, history, index, facets, provider, build,
                           *, selection_mode="model", pre_stage=None):
@@ -635,7 +665,7 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             },
             "follow_up_questions": {
                 "type": "array", "minItems": 0, "maxItems": 2,
-                "items": {"type": "string", "minLength": 12, "maxLength": 160},
+                "items": {"type": "string", "minLength": 24, "maxLength": 140},
             },
         })
         system = (
@@ -688,6 +718,11 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             "source_ids. Do not write [S#] tags in the text: the app adds them. "
             "Also give zero to two specific, genuinely useful follow-up "
             "questions suggested by these passages in 'follow_up_questions'. "
+            "Write each as ONE short, standalone question that begins with "
+            "a question word (e.g. How, What, Why) and ends in '?'. "
+            "Keep each suggestion under 100 characters, including the '?'. "
+            "Avoid long preambles, unfinished clauses and trailing connectors. "
+            "If a complete question will not fit, omit it. "
             "If no good follow-up is supported, return an empty list. "
             "Do not make up historical facts or philosophical positions."
         )
