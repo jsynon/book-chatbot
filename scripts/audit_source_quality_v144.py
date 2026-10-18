@@ -100,6 +100,21 @@ def main():
                   "navigation removed", len(removed), flush=True)
             assert len(original) > 8, "The real source index is unexpectedly empty"
             assert len(prose) >= 4, "Not enough meaningful prose reached the selector"
+            assert all(source_form(p["text"])["kind"] == "prose"
+                       for p in curated), (
+                "An index heading reached the model's source-candidate pool"
+            )
+            if book_id == "529":
+                damaged = [
+                    p for p in index.passages
+                    if "STRUGGLE FOR ExIstENCE" in p["text"]
+                    and "CHAPTER IV" in p["text"]
+                ]
+                assert damaged, "Expected v47 chapter-header OCR fixture absent"
+                assert all(source_form(p["text"])["kind"] == "navigation"
+                           for p in damaged), (
+                    "v47 Darwin chapter index was misclassified as prose"
+                )
             assert not removed or all(x["source_id"] not in {
                 p["source_id"] for p in curated
             } for x in removed)
