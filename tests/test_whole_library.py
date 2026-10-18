@@ -380,7 +380,7 @@ class CrossLibraryFixture(unittest.TestCase):
             ], index, ["meaning", "life"], model, "test-v1.4.1"
         )
         self.assertEqual(result["outcome"], "draft")
-        self.assertIn("Recent conversation:\\n[]", model.compose_user)
+        self.assertIn("Recent conversation:\n[]", model.compose_user)
         self.assertNotIn("Earlier answer about the comparison.",
                          model.compose_user)
 
