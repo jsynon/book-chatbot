@@ -134,6 +134,19 @@
       .composer-actions button { flex:1 1 auto; min-height:44px; }
       button { min-height:40px; }
     }
+    /* Source reader is contained in the same editorial column as the conversation. */
+    .source-reader[hidden] { display:none !important; }
+    .source-reader { margin:24px 0; padding:20px; background:#fff; border:1px solid #bbb; border-top:3px solid #111; }
+    .source-reader h2 { font-size:23px; font-style:normal; text-align:left; margin:0 0 8px; }
+    .source-reader .source-meta { font:13px/1.6 system-ui,sans-serif; color:#555; }
+    .source-reader .source-quote { padding:12px; border-left:3px solid #888; background:#f5f5f5; margin:12px 0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:15px; }
+    .source-reader .source-page-text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.7; font-size:17px; max-height:65vh; overflow-y:auto; border-top:1px solid #ddd; padding-top:14px; }
+    .source-reader .source-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:14px 0; }
+    .source-reader .source-actions button { min-height:40px; }
+    .source-reader .source-actions a { color:#222; font:14px system-ui,sans-serif; }
+    .source-reader .source-actions button:disabled { cursor:not-allowed; }
+    .sources .read-page { margin:4px 8px 5px 0; padding:6px 10px; background:#111; color:#fff; font:13px system-ui,sans-serif; }
+    @media(max-width:600px){ .source-reader { padding:14px; } .source-reader .source-page-text { max-height:55vh; } }
   /* Scoped Book Lite integration: retain the existing reader controls and safety UI.
    The site's actual theme CSS is served from book-lite.css. */
     :root { --ink:#111; --muted:#555; --line:#dedede; --paper:#fff; --accent:#111; --accent-soft:#f5f5f5; }
@@ -316,6 +329,20 @@
       <div id="batch-results" class="batch-results" aria-live="polite"></div>
     </section></details>
     <!-- JavaScript appends each submitted prompt and its answer to this thread. -->
+    <section id="source-reader" class="source-reader" aria-label="Read original source text" hidden>
+      <div class="source-actions"><button type="button" id="close-source-reader" class="secondary-action">← Return to conversation</button></div>
+      <h2 id="source-reader-title">Original source</h2>
+      <p id="source-reader-meta" class="source-meta"></p>
+      <blockquote id="source-reader-quote" class="source-quote" hidden></blockquote>
+      <p id="source-reader-status" role="status"></p>
+      <div class="source-actions">
+        <button type="button" id="source-prev" class="secondary-action">← Previous page</button>
+        <button type="button" id="source-next" class="secondary-action">Next page →</button>
+        <a id="source-original" target="_blank" rel="noopener noreferrer">Open original PDF</a>
+      </div>
+      <div id="source-reader-text" class="source-page-text"></div>
+      <p class="source-meta">This is indexed source text, which may contain OCR errors. Page numbers refer to physical PDF pages. Google Drive may ignore the requested starting page.</p>
+    </section>
     <section id="thread" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></section>
     <form id="chat-form">
       <label for="question">Your question</label>
@@ -369,6 +396,69 @@
     const thread = document.getElementById('thread');
     const status = document.getElementById('status');
     const send = document.getElementById('send');
+    const sourceReader = document.getElementById('source-reader');
+    const sourceReaderText = document.getElementById('source-reader-text');
+    const sourceReaderStatus = document.getElementById('source-reader-status');
+    const sourceReaderTitle = document.getElementById('source-reader-title');
+    const sourceReaderMeta = document.getElementById('source-reader-meta');
+    const sourceReaderQuote = document.getElementById('source-reader-quote');
+    const sourcePrev = document.getElementById('source-prev');
+    const sourceNext = document.getElementById('source-next');
+    const sourceOriginal = document.getElementById('source-original');
+    let activeSource = null;
+    let sourceRequest = 0;
+    let sourceReturnTarget = null;
+    function closeSourceReader() {
+      sourceRequest++;
+      sourceReader.hidden = true;
+      if (sourceReturnTarget && sourceReturnTarget.isConnected) sourceReturnTarget.focus();
+    }
+    document.getElementById('close-source-reader').addEventListener('click', closeSourceReader);
+    async function openSourcePage(source, page, trigger, keepQuote = false) {
+      if (!source || !/^\\d+$/.test(String(source.book_id)) || !/^\\d+$/.test(String(page))) return;
+      if (trigger) sourceReturnTarget = trigger;
+      const request = ++sourceRequest;
+      sourceReader.hidden = false;
+      sourceReaderStatus.textContent = 'Loading original indexed page…';
+      sourceReaderText.textContent = '';
+      sourcePrev.disabled = true;
+      sourceNext.disabled = true;
+      sourceOriginal.removeAttribute('href');
+      sourceReaderQuote.hidden = true;
+      sourceReaderTitle.textContent = source.title || 'Original source';
+      sourceReaderMeta.textContent = 'Physical PDF page ' + page;
+      sourceReader.scrollIntoView({behavior:'smooth',block:'start'});
+      try {
+        const params = new URLSearchParams({book_id:String(source.book_id), page:String(page)});
+        const response = await fetch('/api/source/page?' + params.toString(), {cache:'no-store'});
+        const data = await response.json();
+        if (request !== sourceRequest) return;
+        if (!response.ok || data.error) throw Error(data.error || 'Source page unavailable');
+        activeSource = {source, page:data.page, previous:data.previous_page, next:data.next_page};
+        sourceReaderTitle.textContent = data.title || source.title || 'Original source';
+        sourceReaderMeta.textContent = (data.author ? data.author + ' · ' : '') + 'Physical PDF page ' + data.page + ' · Indexed text ' + data.corpus_version;
+        if (!keepQuote && source.excerpt) {
+          sourceReaderQuote.textContent = source.excerpt;
+          sourceReaderQuote.hidden = false;
+        }
+        sourceReaderText.textContent = data.text;
+        sourceReaderStatus.textContent = data.truncated ? 'Very long page: showing the first 50,000 characters.' : '';
+        sourcePrev.disabled = data.previous_page == null;
+        sourceNext.disabled = data.next_page == null;
+        sourceOriginal.href = data.pdf_url;
+        document.getElementById('close-source-reader').focus();
+      } catch(error) {
+        if (request !== sourceRequest) return;
+        sourceReaderStatus.textContent = error.message;
+        activeSource = null;
+      }
+    }
+    sourcePrev.addEventListener('click',()=> {
+      if (activeSource && activeSource.previous != null) openSourcePage(activeSource.source,activeSource.previous,null,true);
+    });
+    sourceNext.addEventListener('click',()=> {
+      if (activeSource && activeSource.next != null) openSourcePage(activeSource.source,activeSource.next,null,true);
+    });
     const clearChat = document.getElementById('clear-chat');
     const bookPicker = document.getElementById('book-picker');
     const modelSelect = document.getElementById('model');
@@ -590,6 +680,7 @@
           : 'This chat searches only the selected work; choose Across library to compare works.';
       }
       if (resetConversation) {
+        closeSourceReader();
         history.length = 0; // Never mix conversation history across authors.
         thread.replaceChildren();
         question.value = '';
@@ -744,6 +835,14 @@
             link.textContent = token;
             link.title = (source.title || 'Book') + ' — physical PDF page ' + source.page;
             paragraph.append(link);
+            if (source.book_id) {
+              link.href = '#source-reader';
+              link.removeAttribute('target');
+              link.addEventListener('click', event => {
+                event.preventDefault();
+                openSourcePage(source, source.page, link);
+              });
+            }
           } else if (token.startsWith('**') && token.endsWith('**')) {
             const strong = document.createElement('strong');
             strong.textContent = token.slice(2, -2);
@@ -860,6 +959,14 @@
               list.append(a);
               if (index < pageLinks.length - 1) list.append(document.createTextNode(', '));
             });
+          }
+          if (source.book_id && pageLinks.length) {
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'read-page';
+            open.textContent = 'Read page ' + pageLinks[0].page + ' here';
+            open.addEventListener('click', () => openSourcePage(source, pageLinks[0].page, open));
+            list.append(open);
           }
           // Full context is available during ordinary reading, not only in
           // diagnostics. Treat extracted text as text, never as HTML. The
@@ -1108,6 +1215,7 @@
     }
 
     clearChat.addEventListener('click', () => {
+      closeSourceReader();
       history.length = 0;
       thread.replaceChildren();
       question.value = '';

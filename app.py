@@ -44,6 +44,7 @@ from conceptual_retrieval import needs_concept_plan, conceptual_search_plan
 from benchmark_suite import load_suite, InvalidBenchmark
 from library_catalog import (BookSelectionError, LibraryIndexRegistry,
                              resolve_catalog_path)
+from source_reader import SourcePageReader, SourceReaderError
 # Keep source text in the Antilogicalism library-data repository, not in this
 # chatbot's code repository. In the usual Downloads layout, that repository is
 # a sibling of this project; environment variables allow another location or
@@ -97,7 +98,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "reading-companion-v1.5.1"
+BUILD_ID = "reading-companion-v1.6.0"
 PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "evidence").lower()
 if PIPELINE_MODE not in {"evidence", "direct", "grounded", "legacy"}:
     raise ValueError("BOOK_CHATBOT_PIPELINE must be evidence, direct, grounded, or legacy")
@@ -922,6 +923,9 @@ WHOLE_LIBRARY = WholeLibraryLocator(
         "BOOK_CHATBOT_PARTITION_CACHE", "8"
     )),
 )
+
+
+SOURCE_READER = SourcePageReader(LIBRARY_REGISTRY, WHOLE_LIBRARY)
 
 
 def expand_query(question: str, history: list[dict], model: str) -> dict:
@@ -7077,6 +7081,17 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError, InvalidBenchmark) as error:
                 self._json(500, {"error":
                     "Cross-disciplinary benchmark unavailable: " + str(error)})
+            return
+        if self.path.startswith("/api/source/page?"):
+            from urllib.parse import parse_qs, urlsplit
+            params = parse_qs(urlsplit(self.path).query)
+            book_id = params.get("book_id", [""])[0]
+            page = params.get("page", [""])[0]
+            try:
+                source_page = SOURCE_READER.page(book_id, page)
+                self._json(200, source_page)
+            except SourceReaderError as error:
+                self._json(400, {"error": str(error)})
             return
         if self.path == "/api/books":
             self._json(200, {
