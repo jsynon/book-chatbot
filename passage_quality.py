@@ -38,7 +38,7 @@ _LIST_BOUNDARIES = re.compile(r"(?:\s[—–]\s*|\w[—–](?=[A-Z]))")
 # Back-of-book indexes often OCR as a continuous string of names and page
 # locators. Count only NUMERIC page references and require enough density to
 # avoid misclassifying historical prose that mentions occasional dates.
-_PAGE_LOCATOR = re.compile(r"(?<![A-Za-z])\\d{1,4}(?:\\s*[-–]\\s*\\d{1,4})?(?![A-Za-z])")
+_PAGE_LOCATOR = re.compile(r"(?<![A-Za-z])\d{1,4}(?:\s*[-–]\s*\d{1,4})?(?![A-Za-z])")
 
 
 
