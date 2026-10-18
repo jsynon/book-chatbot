@@ -33,7 +33,7 @@ These are **human review anchors**, not hardcoded answers or retrieval rules. Th
 
 ## Failure analysis
 
-For v1.2.1, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see any added source IDs or rejected conflicts. Preserve the same philosophical scoring rubric after a format-only recovery.
+For v1.2.2, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see grouped citation markers, any added source IDs, and rejected conflicts. This recovery supports at most six unique, existing source IDs per paragraph and does not grade whether the cited passage supports each claim. Preserve the same philosophical scoring rubric after a format-only recovery.
 
 For a poor answer, separate **retrieval** (the needed passage never appeared), **selection** (it was retrieved but not supplied), **interpretation** (it was supplied but the model got the meaning wrong), **citation** (the answer points at an irrelevant/unknown passage), and **presentation** (repetition or poor organization). These failures need different solutions. Do not conflate a successful JSON format with philosophical correctness.
 
