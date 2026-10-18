@@ -389,6 +389,12 @@ class WholeLibraryLocator:
             chosen, required = self._select_books(
                 scored, author_groups, max(1, min(MAX_BOOKS, max_books))
             )
+            if author_groups and len(required) != min(len(author_groups), MAX_BOOKS):
+                raise LibrarySearchError(
+                    "At least one explicitly named author's works had no "
+                    "matching indexed pages with verified source PDFs. "
+                    "Try a more specific topic, or search that author alone."
+                )
             if not chosen:
                 raise LibrarySearchError(
                     "No locally installed books with verified source PDFs "
