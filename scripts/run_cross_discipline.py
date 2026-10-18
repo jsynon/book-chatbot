@@ -211,7 +211,7 @@ def main(argv=None):
         except (OSError, URLError, ValueError) as exc:
             response = {"error": str(exc)}
         elapsed = round(time.perf_counter() - clock, 3)
-        checks = inspect_response(case, response)
+        checks = inspect_response(case, response, catalog=available_books)
         if status != 200:
             checks["issues"].append({
                 "level": "error", "code": "http_error",
