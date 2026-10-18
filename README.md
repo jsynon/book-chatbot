@@ -6,6 +6,14 @@
 
 **The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
+## Version 1.6.0: integrated original-source reader
+
+**Reader workflow:** Ask a question in one-book or across-library mode, click an inline [S#] citation to inspect the original indexed physical PDF page without leaving the chat, navigate to the previous or next **available indexed page**, and open the original Google Drive PDF separately. The source panel shows the work, author, physical page number, full indexed page text (capped at 50,000 characters per response), and the passage originally cited. "Return to conversation" restores the prior control; no conversation context is erased by opening source pages.
+
+**Implementation:** `source_reader.py` lazily reads the existing `data-v47/book-N.json.gz` shards through strictly validated numeric book/page IDs and verified catalog/manifest PDF identities, caches at most two book page sets, and never calls Ollama. `GET /api/source/page?book_id=N&page=P` supplies source text, adjacent indexed physical page numbers, and a PDF link. Blank/unindexed pages are reported as unavailable rather than silently replaced. Existing answer synthesis and retrieval are unchanged.
+
+**Release check:** local desktop and Chrome mobile simulation: ask one Aristotle question, open [S1], advance or retreat through indexed pages, return to the answer, and repeat with a cross-library comparison citing two different books. Automated `test_source_reader.py` checks safe IDs, original PDF identity, physical pagination and cache reuse. This is not a public-hosted service; the server remains on localhost.
+
 ## Version 1.5.1: Book Lite visual integration (local preview)
 
 The Reading Companion now shares the *appearance* of Antilogicalism's existing Book Lite website: the same theme CSS, photograph-backed site masthead and tagline, six-item navigation, Century Schoolbook typography, narrow editorial content column, and three-column footer arrangement. The actual stylesheet from `jsynon/antilogicalism/wp-content/themes/book-lite/style.css` is committed as `book-lite.css` and served locally. Asset references point to the public site's original decorative images; these visuals need network access to display. The footer feed areas link to the live Arts & Letters Daily and Quanta websites rather than pretending to have synchronized RSS content.
