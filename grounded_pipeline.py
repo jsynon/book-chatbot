@@ -9,10 +9,11 @@ from collections import Counter, defaultdict
 import hashlib
 import json
 import math
+import os
 import re
 import time
 
-from inference import CompletionError
+from inference import CompletionError, OllamaProvider
 
 
 def object_schema(properties):
@@ -220,6 +221,20 @@ def answer_question(question, history, index, facets, provider, build):
     confidence alone never overrides unknown citations or malformed output.
     """
     started = time.perf_counter()
+    # Progress logging is informational: no changes to model or review behavior.
+    # Mocked providers used in unit tests stay quiet. Disable with
+    # BOOK_CHATBOT_PROGRESS=0 if console logging is not wanted.
+    verbose = isinstance(provider, OllamaProvider) and os.environ.get(
+        "BOOK_CHATBOT_PROGRESS", "1"
+    ).strip().lower() not in {"0", "false", "off", "no"}
+
+    def progress(message):
+        if verbose:
+            seconds = time.perf_counter() - started
+            print(f"[Reading Companion {time.strftime('%H:%M:%S')}] "
+                  f"[{provider.model}] +{seconds:.1f}s {message}", flush=True)
+
+    progress("Question: " + " ".join(question.split())[:180])
     trace = {"build": build, "pipeline": "grounded", "question": question,
              "retrieval": {}, "draft": {}, "evidence_check": {"attempts": []},
              "stages": [], "skipped_oversized_passages": index.skipped_oversized}
@@ -228,6 +243,7 @@ def answer_question(question, history, index, facets, provider, build):
         before = time.perf_counter()
         event = {"stage": stage}
         trace["stages"].append(event)
+        progress(f"Starting {stage} (max {budget} output tokens)...")
         try:
             value = provider.complete(stage, system, user, schema, budget)
             if not isinstance(value, dict):
@@ -239,12 +255,25 @@ def answer_question(question, history, index, facets, provider, build):
             raise
         finally:
             event["elapsed_ms"] = round((time.perf_counter() - before) * 1000)
+            record = provider.calls[-1] if getattr(provider, "calls", []) else {}
+            usage = ""
+            if record.get("stage") == stage:
+                tokens_in, tokens_out = record.get("input_tokens"), record.get("output_tokens")
+                if tokens_in is not None or tokens_out is not None:
+                    usage = f"; tokens in/out {tokens_in}/{tokens_out}"
+            progress(f"{stage}: {event.get('status', 'error')} "
+                     f"({event['elapsed_ms'] / 1000:.1f}s{usage})")
 
+    progress("Searching passages...")
     retrieved_at = time.perf_counter()
     candidates = index.search(question, facets, history)
     trace["stages"].append({"stage": "retrieval", "status": "complete",
                             "elapsed_ms": round((time.perf_counter() - retrieved_at) * 1000)})
     trace["retrieval"] = {"primary": candidates, "merged": [], "facets": facets}
+    preview = ", ".join(
+        f"{p['source_id']} (p. {','.join(map(str, p['pages']))})" for p in candidates[:8]
+    )
+    progress(f"Retrieval: {len(candidates)} candidate(s); top: {preview or 'none'}")
     selected = []
     best_supported = []
     outcome, reason = "fallback", "No relevant passages were retrieved."
@@ -273,10 +302,15 @@ def answer_question(question, history, index, facets, provider, build):
             by_id = {p["source_id"]: p for p in candidates}
             selected = [by_id[s] for s in chosen]
             reason = "The evidence selection did not identify supporting passages."
+            chosen_pages = ", ".join(
+                f"{p['source_id']} (p. {','.join(map(str, p['pages']))})" for p in selected
+            )
+            progress(f"Selected {len(selected)} evidence passages: {chosen_pages or 'none'}")
         except CompletionError as error:
             reason = str(error)
             failure_category = "output_contract"
             trace["stages"][-1]["status"] = "invalid_output"
+            progress(f"Evidence selection invalid: {error}")
         trace["retrieval"]["merged"] = selected
 
     if selected:
@@ -303,6 +337,8 @@ def answer_question(question, history, index, facets, provider, build):
                 claims = check_claims(draft, allowed_ids)
                 trace["draft"] = {"status": "complete", "claims": claims}
                 event["claims"] = claims
+                cited = ", ".join(sorted({sid for claim in claims for sid in claim["source_ids"]}))
+                progress(f"Draft attempt {attempt}: {len(claims)} claims; citing {cited}")
                 review_schema = object_schema({
                     "reviews": {"type": "array", "minItems": len(claims), "maxItems": len(claims),
                         "items": object_schema({"claim_index": {"type": "integer", "minimum": 1,
@@ -332,22 +368,34 @@ def answer_question(question, history, index, facets, provider, build):
                     json.dumps(review_input, ensure_ascii=False), review_schema, 850)
                 supported = check_review(review, claims)
                 event["review"] = review
+                decisions = Counter(item["verdict"] for item in review["reviews"])
+                progress(f"Review {attempt}: supported={decisions.get('supported', 0)}, "
+                         f"unsupported={decisions.get('unsupported', 0)}, "
+                         f"uncertain={decisions.get('uncertain', 0)}, "
+                         f"complete={review['complete']}")
+                if not review["complete"] and review.get("missing"):
+                    progress("Missing coverage: " + " ".join(review["missing"].split())[:220])
                 if supported:
                     best_supported = supported
                 if len(supported) == len(claims) and review["complete"]:
                     outcome, reason = "verified", ""
                     failure_category = "none"
                     event["status"] = "accepted"
+                    progress(f"Attempt {attempt} accepted.")
                     break
                 reason = "Semantic support or question coverage remained incomplete."
                 failure_category = "semantic_support" if len(supported) < len(claims) else "question_coverage"
                 event.update(status="rejected", reason=reason, failure_category=failure_category)
+                progress(f"Attempt {attempt} rejected: {failure_category}"
+                         + ("; trying one repair" if attempt == 1 else ""))
                 feedback = "\nPrior claims: " + json.dumps(claims) + "\nReview findings: " + json.dumps(review)
             except CompletionError as error:
                 reason = str(error)
                 failure_category = "output_contract"
                 trace["stages"][-1]["status"] = "invalid_output"
                 event.update(status="rejected", reason=reason, failure_category=failure_category)
+                progress(f"Attempt {attempt} invalid: {reason}"
+                         + ("; trying one repair" if attempt == 1 else ""))
                 feedback = "\nPrior attempt failed its output contract: " + reason
         if outcome != "verified" and best_supported:
             outcome = "partial"
@@ -370,6 +418,8 @@ def answer_question(question, history, index, facets, provider, build):
                                    failure_category=failure_category)
     trace["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
     trace["provider_calls"] = getattr(provider, "calls", [])
+    progress(f"Finished: {outcome}; {len(best_supported)} supported claim(s), "
+             f"{len(visible)} citation(s), {trace['elapsed_ms'] / 1000:.1f}s total.")
     return {"answer": answer, "sources": [{**source_payload(p), "expanded": outcome == "fallback"}
                                           for p in visible],
             "outcome": outcome, "diagnostics": trace}
