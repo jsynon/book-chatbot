@@ -172,6 +172,14 @@ class PassageQualityTests(unittest.TestCase):
         self.assertTrue(flags["reported_speech_present"])
         self.assertFalse(flags["opening_fragment"])
 
+    def test_possessives_and_contractions_do_not_falsely_signal_quotation(self):
+        self.assertFalse(discourse_cues(
+            "Darwin’s explanation doesn’t require the narrator to speak."
+        )["quotation_present"])
+        self.assertTrue(discourse_cues(
+            "‘A reported claim is not automatically a historian's verdict.’"
+        )["quotation_present"])
+
     def test_dialogue_opening_fragment_not_claimed_to_be_author_view(self):
         flags = discourse_cues(NOVEL_DIALOGUE)
         self.assertTrue(flags["opening_fragment"])
