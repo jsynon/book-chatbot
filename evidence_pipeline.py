@@ -122,7 +122,16 @@ def select_neighbor_context(index, anchors, candidates, budget=MAX_EVIDENCE_CHAR
     seen = {p["passage_id"] for p in selected}
     by_id = {p["passage_id"]: p for p in candidates}
     positions = {p["passage_id"]: i for i, p in enumerate(index.passages)}
-    next_id = len(candidates) + 1
+    # Filtering a navigation candidate can leave IDs such as S1, S3, S24
+    # in the retained pool. Allocating based on list LENGTH would silently
+    # reuse S23 or S24 for newly appended neighbor context. IDs must remain
+    # unique even if the original retrieval set has gaps.
+    used_numbers = [
+        int(p["source_id"][1:])
+        for p in selected + candidates
+        if re.fullmatch(r"S[1-9]\d*", str(p.get("source_id", "")))
+    ]
+    next_id = max(used_numbers, default=0) + 1
     added = []
 
     def maybe_add(original, anchor_id, direction):
