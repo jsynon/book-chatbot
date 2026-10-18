@@ -250,7 +250,12 @@ class FacetEvidenceContracts(unittest.TestCase):
             "reading_relation": "earlier",
             "source_kind": "other_selected_original_passage"
         }])
-        self.assertEqual(first["reading_sequence"][0]["text"], AFTER)
+        self.assertEqual(
+            [p["text"] for p in first["reading_sequence"]],
+            [DEFENSE, AFTER]
+        )
+        self.assertEqual(set(first["core_source_ids"]), {"S8", "S17"})
+        self.assertEqual(first["scene_type"], "adjacent_original_argument")
 
     def test_unrelated_distant_parts_have_no_fake_dialogue_connection(self):
         idx = index_for([DEFENSE, CAUSE, AFTER])
