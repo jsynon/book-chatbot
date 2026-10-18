@@ -47,11 +47,6 @@ jobs:
           }
           console.log('Browser script syntax and comparison controls OK.');
           JS
-      - name: Audit real public v47 query relevance (temporary)
-        env:
-          BOOK_CHATBOT_BOOK_FILE: ${{ runner.temp }}/book-7.json.gz
-        run: |
-          python scripts/smoke_relevance_v141.py
       - name: Test bounded library retrieval and evidence pipeline contracts
         env:
           BOOK_CHATBOT_BOOK_FILE: ${{ runner.temp }}/book-7.json.gz
