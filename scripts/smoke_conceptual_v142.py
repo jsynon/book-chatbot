@@ -70,7 +70,7 @@ def main():
         # if it exists in the real v47 postings. Not installed in production.
         illustrative = {
             "nietzsche": ["christian", "morality", "ascetic", "guilt"],
-            "kierkegaard": ["faith", "paradox", "god", "religion"],
+            "kierkegaard": ["faith", "paradox", "divine", "religion"],
         }
         author_topics = {}
         for group in groups:
