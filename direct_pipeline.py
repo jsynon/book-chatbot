@@ -109,6 +109,10 @@ def validate_paragraphs(result, allowed_ids, reconciliation_log=None):
             )
 
         ids = list(structured) + [sid for sid in inline if sid not in structured_set]
+        if not ids:
+            raise CompletionError(
+                f"Paragraph {position} needs one to four source IDs"
+            )
         # The structured model contract remains 1..4 IDs. If its citation
         # groups point to one or two *additional existing* passages, keep
         # those references instead of discarding the entire useful answer.
