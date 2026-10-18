@@ -128,6 +128,57 @@ export async function trustedSources(question,locators,fetcher=(url,opt)=>global
   }
   return selected;
 }
+// v1.9.2: Consume a small precomputed static packet instead of unpacking
+// the full v47 global manifest and all pages of a book. These packets are
+// built offline from the canonical data repository and hosted on GitHub Pages.
+// This is a CPU experiment, not automatic public enablement.
+export const PACKET_ROOT='https://jsynon.github.io/antilogicalism-library-data/reader-packets-v1/';
+export async function trustedPacketSources(question,locators,fetcher=(url,options)=>globalThis.fetch(url,options)) {
+  const loaded=new Map();
+  const sources=[];
+  for(const item of locators) {
+    const id=String(item.bookId),page=item.page;
+    if(!/^[1-9]\d{0,3}$/.test(id) || !Number.isSafeInteger(page) ||
+        page<1||page>10000)throw new Error('Invalid source locator');
+    const chunk=Math.floor((page-1)/32);
+    const key=id+'/'+chunk;
+    if(!loaded.has(key)){
+      const response=await fetcher(PACKET_ROOT+'books/'+id+'/'+chunk+'.json',{cache:'no-store'});
+      if(!response.ok)throw new Error('Trusted packet unavailable');
+      const length=Number(response.headers.get('Content-Length'));
+      if(length>400000)throw new Error('Trusted packet too large');
+      const bytes=new Uint8Array(await response.arrayBuffer());
+      if(bytes.byteLength>400000)throw new Error('Trusted packet too large');
+      const decoded=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+      loaded.set(key,{packet:JSON.parse(decoded),byteLength:bytes.byteLength});
+    }
+    const {packet,byteLength}=loaded.get(key);
+    if(packet.schema!=='antilogicalism-reader-packet-v1'||
+        packet.libraryVersion!==47||packet.bookId!==id||
+        packet.chunk!==chunk||packet.firstPage!==chunk*32+1||
+        packet.lastPage!==chunk*32+32||
+        typeof packet.title!=='string'||!packet.title.trim()||
+        typeof packet.pdfDriveId!=='string'||
+        !/^[A-Za-z0-9_-]{10,}$/.test(packet.pdfDriveId)||
+        !Array.isArray(packet.pages)||packet.pages.length>32) {
+      throw new Error('Invalid trusted packet format');
+    }
+    const matches=packet.pages.filter(p=>p.page===page);
+    if(matches.length!==1)throw new Error('Requested page not found in trusted packet');
+    const p=matches[0];
+    if(!Number.isSafeInteger(p.globalPageId)||p.globalPageId<0||
+        typeof p.text!=='string'||p.text.trim().length<25)
+      throw new Error('Trusted packet page is invalid');
+    const excerpt=sourceExcerpt(p.text,question);
+    sources.push({id:'S'+(sources.length+1),bookId:id,title:packet.title,
+      page,globalPageId:p.globalPageId,
+      url:'https://drive.google.com/file/d/'+packet.pdfDriveId+
+        '/view?usp=sharing#page='+page,
+      preview:excerpt,packetBytes:byteLength});
+  }
+  return sources;
+}
+
 export function parseReview(raw,sources) {
   if(typeof raw!=='string')throw new Error('Missing evidence review');
   const a=raw.indexOf('{'),b=raw.lastIndexOf('}');
@@ -172,6 +223,37 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
   if(request.method==='GET'&&url.pathname==='/') {
     return json({status:'ready',service:'Antilogicalism Reading Companion',
       publicEnabled:env.PUBLIC_ENABLED==='true',mode:'public-foundation'},200,origin);
+  }
+  // Compare CPU time against /internal/source-probe with the same protected
+  // token and source locator. No AI, no public access, no need to enable
+  // Turnstile or billing; packet built offline from canonical v47 sources.
+  if(url.pathname==='/internal/packet-probe') {
+    if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
+    if(origin)return json({error:'Browser requests not supported'},403,origin);
+    if(typeof env.SOURCE_PROBE_TOKEN!=='string'||
+       env.SOURCE_PROBE_TOKEN.length<32) {
+      return json({error:'Private source diagnostic disabled'},503);
+    }
+    if(request.headers.get('Authorization')!=='Bearer '+env.SOURCE_PROBE_TOKEN)
+      return json({error:'Unauthorized'},401);
+    const start=performance.now();
+    try {
+      const sources=await trustedPacketSources(
+        'What caused the Peloponnesian War?',
+        [{bookId:'152',page:38}],fetcher
+      );
+      const s=sources[0];
+      return json({status:'retrieved',format:'static-packet-v1',
+        bookId:s.bookId,title:s.title,page:s.page,globalPageId:s.globalPageId,
+        sourceUrl:s.url,excerptLength:s.preview.length,
+        excerptSample:s.preview.slice(0,200),packetBytes:s.packetBytes,
+        wallElapsedMs:Math.round(performance.now()-start),cpuTimeMs:null,
+        interpretation:'Read Cloudflare CPU Time metrics; wall time is not CPU. No AI was run.'});
+    }catch(error){
+      console.error('Trusted packet probe failed:',String(error?.message||error));
+      return json({error:'Trusted packet retrieval failed',
+        wallElapsedMs:Math.round(performance.now()-start)},503);
+    }
   }
   // A manual CPU feasibility probe. This is a separate, secret-protected
   // diagnostic endpoint on the DISABLED new Worker, never the live site.

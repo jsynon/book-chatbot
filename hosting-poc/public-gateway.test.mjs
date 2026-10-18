@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,parseReview,sourceExcerpt} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,parseReview,sourceExcerpt} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -186,4 +186,52 @@ test('Cloudflare fetch(request,env,ctx) does not mistake ctx for a network fetch
  }finally{
    globalThis.fetch=saved;
  }
+});
+
+test('authenticated static packet is bound to canonical cited source metadata',async()=>{
+ const saved=globalThis.fetch;
+ const packet={
+  schema:'antilogicalism-reader-packet-v1',libraryVersion:47,
+  bookId:'152',title:'History of the Peloponnesian War — Thucydides',
+  pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
+  pages:[{page:38,globalPageId:34403,
+    text:'The real cause of the conflict was increasing strength in one city and fear among the rival city leaders. The immediate disputes were different.'}]
+ };
+ const fetchPacket=async url=>{
+  assert.equal(url,'https://jsynon.github.io/antilogicalism-library-data/reader-packets-v1/books/152/1.json');
+  return new Response(JSON.stringify(packet),{status:200,headers:{'Content-Type':'application/json'}});
+ };
+ const loaded=await trustedPacketSources(question,[{bookId:'152',page:38}],fetchPacket);
+ assert.equal(loaded[0].page,38);
+ assert.equal(loaded[0].globalPageId,34403);
+ assert(loaded[0].preview.includes('real cause'));
+ assert(loaded[0].url.includes(PDF));
+ const token='protected-test-token-not-for-production-123456';
+ const response=await handleRequest(new Request(HOST+'/internal/packet-probe',
+   {method:'POST',headers:{Authorization:'Bearer '+token}}),
+   env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:token,
+     AI:{run:async()=>{throw Error('No AI allowed');}}}),fetchPacket);
+ assert.equal(response.status,200);
+ assert.equal((await response.json()).format,'static-packet-v1');
+});
+test('packet probe fails closed before any network traffic when token absent',async()=>{
+ let fetchCount=0;
+ const e=env({PUBLIC_ENABLED:'false'});
+ const response=await handleRequest(new Request(HOST+'/internal/packet-probe',
+  {method:'POST'}),e,async()=>{fetchCount++;throw Error('Must not fetch');});
+ assert.equal(response.status,503);assert.equal(fetchCount,0);
+});
+test('forged packet metadata and duplicate claimed physical pages fail closed',async()=>{
+ const original={
+  schema:'antilogicalism-reader-packet-v1',libraryVersion:47,
+  bookId:'152',title:'A Book',pdfDriveId:PDF,
+  chunk:1,firstPage:33,lastPage:64,pages:[
+   {page:38,globalPageId:34403,text:'This is the original indexed text copied into the packet. It contains historical sources.'}
+  ]
+ };
+ const mock=packet=>async()=>Response.json(packet);
+ await assert.rejects(trustedPacketSources(question,[{bookId:'152',page:38}],
+  mock({...original,pdfDriveId:'file/abc'})),/Invalid trusted packet format/);
+ await assert.rejects(trustedPacketSources(question,[{bookId:'152',page:38}],
+  mock({...original,pages:[...original.pages,...original.pages]})),/Requested page not found/);
 });
