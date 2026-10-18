@@ -83,6 +83,44 @@ def read_catalog(path, fallback_book):
     return books
 
 
+def _author_sort_name(author, work_title):
+    """Use the primary contributor's surname, keeping multi-volume collections together.
+
+    A named translator of one Sacred Books of the East volume is not the
+    author of the whole series. Group that collective set under 'Various
+    authors' rather than scattering individual volumes by translators.
+    This grouping is for browsing only; original metadata is unchanged.
+    """
+    if re.match(r"^Sacred Books of the East(?:,|\\b)", work_title, re.I):
+        return ("various", "various authors")
+    name = str(author or "").strip()
+    name = re.sub(r"^Translated by\\s+", "", name, flags=re.I)
+    name = re.sub(r"\\([^)]*\\)", "", name).strip()
+    name = re.split(r"\\s+(?:and|&)\\s+|,\\s+(?=[A-Z])", name, maxsplit=1)[0].strip()
+    if not name:
+        return ("zzzz", "")
+    if name.casefold().startswith(("various", "anonymous", "traditional")):
+        return (name.casefold(), name.casefold())
+    parts = name.split()
+    # Last word is usually the surname; use the full name as a stable
+    # secondary key. Collective authorship cannot be inferred reliably.
+    return (parts[-1].casefold().strip("."), name.casefold())
+
+
+def _natural_title(title):
+    """Sort numbered volume titles numerically, not Volume 1, 10, 11, 2."""
+    parts = re.split(r"(\\d+)", str(title or "").casefold())
+    return tuple((1, int(part)) if part.isdecimal() else (0, part)
+                 for part in parts if part)
+
+
+def catalog_sort_key(book):
+    return (*_author_sort_name(book.get("author"), book.get("work_title") or
+                               book.get("title", "")),
+            _natural_title(book.get("work_title") or book.get("title")),
+            int(book["book_id"]))
+
+
 class LibraryIndexRegistry:
     """Bounded LRU index cache; all metadata is cheap, book text is loaded late.
 
@@ -122,9 +160,7 @@ class LibraryIndexRegistry:
     def list_books(self):
         """The full metadata catalog is cheap; never open a book text here."""
         return [self.description(entry["book_id"]) for entry in
-                sorted(self.entries.values(), key=lambda b: (
-                    b["title"].casefold(), int(b["book_id"])
-                ))]
+                sorted(self.entries.values(), key=catalog_sort_key)]
 
     def get_index(self, book_id):
         book_id = str(book_id).strip()
