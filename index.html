@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Antilogicalism Reading Companion</title>
+  <title>Reading Companion | Antilogicalism</title>
+  <link rel="stylesheet" href="/book-lite.css">
   <style>
     /*
       The page is intentionally self-contained: keeping these styles in the
@@ -133,10 +134,86 @@
       .composer-actions button { flex:1 1 auto; min-height:44px; }
       button { min-height:40px; }
     }
+  /* Scoped Book Lite integration: retain the existing reader controls and safety UI.
+   The site's actual theme CSS is served from book-lite.css. */
+    :root { --ink:#111; --muted:#555; --line:#dedede; --paper:#fff; --accent:#111; --accent-soft:#f5f5f5; }
+    html { font-size:10px; }
+    body.book-lite-companion { font:19px/1.8 "Century Schoolbook",Century,Garamond,serif; background:#fff; color:#111; }
+    body.book-lite-companion #page { max-width:100%; }
+    #masthead { background:#222 url("https://jsynon.github.io/antilogicalism/wp-content/uploads/2016/05/cropped-philcuk-12744385062.jpg") center top / cover no-repeat; height:500px; margin:0; padding:0; position:relative; color:#fff; }
+    #masthead .site-navigation { float:none; width:100%; background:rgba(0,0,0,.7); font:16px/1.5 "Century Schoolbook",Century,Garamond,serif; text-align:center; }
+    #masthead .menu-primary-container { max-width:900px; margin:auto; }
+    #masthead ul.menu { position:static; display:flex; justify-content:center; flex-wrap:wrap; float:none; list-style:none; padding:10px; margin:0; gap:0 5px; }
+    #masthead ul.menu li { left:auto; display:inline-block; margin:0; }
+    #masthead ul.menu li::after { content:"♦"; color:#ccc; padding:0 7px; font-size:11px; }
+    #masthead ul.menu li:last-child::after { content:none; }
+    #masthead ul.menu a { display:inline-block; color:#ddd; text-decoration:none; font-size:15px; padding:7px 3px; }
+    #masthead ul.menu a:hover,#masthead ul.menu a:focus-visible { color:white; text-decoration:underline; }
+    #masthead hgroup { position:absolute; bottom:50px; left:0; right:0; width:100%; text-align:center; }
+    #masthead .site-title { color:white; font-weight:700; font-size:clamp(25px,4.5vw,48px); line-height:1.25; margin:0 auto; text-transform:uppercase; padding:0 12px 10px; }
+    #masthead .site-title a { color:white; text-decoration:none; }
+    #masthead .site-description { color:white; margin:0 auto; max-width:550px; padding:0 12px; font-size:17px; font-style:italic; }
+    #main.site-main { width:min(750px,calc(100% - 40px)); max-width:750px; margin:0 auto; padding:45px 0 35px; background:white; }
+    #main.site-main > .companion-content { width:100%; margin:0; padding:0; }
+    .companion-content > header { border:0; text-align:center; margin:0 0 24px; padding:0; }
+    .companion-content .eyebrow { color:#555; }
+    .companion-content h1#reading-title { font:normal 32px/1.3 "Century Schoolbook",Century,Garamond,serif; margin:12px 0; text-transform:uppercase; letter-spacing:.015em; }
+    .companion-content .intro { margin:0 auto; max-width:670px; }
+    .companion-content .body { font:18px/1.75 "Century Schoolbook",Century,Garamond,serif; }
+    .companion-content textarea { font-family:"Century Schoolbook",Century,Garamond,serif; }
+    .companion-content button:not(.secondary-action) { background:#111; color:#fff; }
+    .companion-content .reader-panel,.companion-content .turn { border-radius:2px; }
+    .companion-content .turn.assistant { border-left-color:#111; }
+    .companion-content .turn.user { background:#f5f5f5; border-color:#e5e5e5; }
+    #secondary.companion-widgets { max-width:750px; margin:30px auto 0; padding-top:28px; border-top:1px solid #ddd; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; font:14px/1.6 "Century Schoolbook",Century,Garamond,serif; }
+    #secondary.companion-widgets .widget-area { width:auto; float:none; margin:0; }
+    #secondary.companion-widgets .widget-title { text-align:left; font-style:normal; font-size:17px; margin:0 0 12px; }
+    #secondary.companion-widgets ul { padding-left:18px; margin:0; }
+    #secondary.companion-widgets li { margin:0 0 8px; }
+    #secondary.companion-widgets a { color:#333; }
+    #secondary.companion-widgets .site-search input { width:100%; min-width:0; padding:8px; font-size:14px; border:1px solid #bbb; }
+    #secondary.companion-widgets .site-search button { margin-top:6px; padding:7px 12px; font-size:13px; color:#fff; background:#111; border:0; }
+    #secondary.companion-widgets p { margin:9px 0; }
+    #colophon.site-footer { max-width:750px; margin:0 auto; padding:15px 0 35px; font:12px/1.5 "Century Schoolbook",Century,Garamond,serif; }
+    .companion-content footer { font-size:12px; }
+    @media (max-width:600px) {
+      #masthead { height:310px; background-attachment:scroll; }
+      #masthead hgroup { bottom:35px; }
+      #masthead .site-title { font-size:clamp(25px,7vw,35px); }
+      #masthead .site-description { font-size:13px; }
+      #masthead .site-navigation { font-size:12px; }
+      #masthead ul.menu { padding:6px; }
+      #masthead ul.menu a { font-size:12px; padding:6px 2px; }
+      #masthead ul.menu li::after { padding:0 3px; font-size:9px; }
+      #main.site-main { width:calc(100% - 24px); padding:27px 0; }
+      .companion-content h1#reading-title { font-size:25px; }
+      #secondary.companion-widgets { padding:20px 12px; grid-template-columns:1fr; gap:22px; }
+      #colophon.site-footer { padding:12px; }
+    }
   </style>
 </head>
-<body>
-  <main>
+<body class="book-lite-companion custom-header">
+<div id="page" class="hfeed site">
+  <header id="masthead" class="site-header" role="banner">
+    <nav class="site-navigation main-navigation" aria-label="Antilogicalism navigation">
+      <div class="menu-primary-container">
+        <ul id="menu-primary" class="menu">
+          <li><a href="https://jsynon.github.io/antilogicalism/">Home</a></li>
+          <li><a href="https://jsynon.github.io/antilogicalism/primary-sources/">Bookshelf</a></li>
+          <li><a href="https://jsynon.github.io/antilogicalism/digital-library/">Library Search</a></li>
+          <li><a href="https://jsynon.github.io/antilogicalism/index/">Blog</a></li>
+          <li><a href="https://jsynon.github.io/antilogicalism/my-writings/">About</a></li>
+          <li><a href="https://jsynon.github.io/antilogicalism/links/">Links</a></li>
+        </ul>
+      </div>
+    </nav>
+    <hgroup>
+      <h1 class="site-title"><a href="https://jsynon.github.io/antilogicalism/" rel="home">Antilogicalism</a></h1>
+      <h2 class="site-description">The Starry Sky Above and the Moral Life Within</h2>
+    </hgroup>
+  </header>
+  <div id="main" class="site-main">
+  <main class="companion-content" id="content">
     <header>
       <div class="eyebrow">Antilogicalism · local reading companion</div>
       <h1 id="reading-title">Read with Aristotle</h1>
@@ -256,6 +333,34 @@
     <!-- Explain where processing happens and display the running server build. -->
     <footer>Version 1.5 demo runs Ollama locally and retrieves from the shared v47 full-text index. Across-library responses consult a bounded selection of books, not the entire corpus at once. Source excerpts are exact quotations; citations lead to their pages, but neither certifies an interpretation's correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
   </main>
+  <div id="secondary" class="companion-widgets" aria-label="Site footer links and feeds">
+    <div id="first" class="widget-area">
+      <aside class="widget widget_search">
+        <h2 class="widget-title">Search Posts</h2>
+        <form class="site-search" action="https://jsynon.github.io/antilogicalism/search.html" method="get" target="_blank">
+          <label for="site-blog-search">Search blog posts</label>
+          <input type="search" name="q" id="site-blog-search" placeholder="Search blog posts…" required>
+          <button type="submit">Search</button>
+        </form>
+        <p><a href="https://jsynon.github.io/antilogicalism/digital-library/">Library Search</a></p>
+        <p><a href="https://github.com/jsynon/antilogicalism" target="_blank" rel="noopener noreferrer">GitHub Repository</a></p>
+        <p><a href="https://www.facebook.com/antilogicalism" target="_blank" rel="noopener noreferrer">Facebook</a> | <a href="https://x.com/antilogicalism" target="_blank" rel="noopener noreferrer">Twitter / X</a></p>
+      </aside>
+    </div>
+    <div id="second" class="widget-area">
+      <aside class="widget"><h2 class="widget-title"><a href="https://www.aldaily.com/">Arts &amp; Letters Daily</a></h2>
+        <p>Visit the latest articles and essays from Arts &amp; Letters Daily.</p>
+      </aside>
+    </div>
+    <div id="third" class="widget-area">
+      <aside class="widget"><h2 class="widget-title"><a href="https://www.quantamagazine.org/">Quanta Magazine</a></h2>
+        <p>Explore mathematics and science reporting from Quanta Magazine.</p>
+      </aside>
+    </div>
+  </div>
+  </div>
+  <footer id="colophon" class="site-footer" role="contentinfo"></footer>
+</div>
   <script>
     // Cache the UI elements used by the event handlers so they can be updated
     // without repeatedly querying the document.
