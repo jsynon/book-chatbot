@@ -66,6 +66,31 @@ class ConceptPlanContracts(unittest.TestCase):
             "What does Aristotle mean by virtue?",
             self.registry.entries))
 
+    def test_original_nietzsche_kierkegaard_failure_triggers_planner(self):
+        entries = {
+            "140": {"book_id": "140",
+                    "author": "Søren Kierkegaard",
+                    "title": "Fear and Trembling"},
+            "144": {"book_id": "144",
+                    "author": "Friedrich Nietzsche",
+                    "title": "On the Genealogy of Morals"},
+        }
+        groups = needs_concept_plan(
+            "what would nietzsche think about kierkegaard's thought?",
+            entries
+        )
+        self.assertEqual(
+            {g["author"] for g in groups},
+            {"s ren kierkegaard", "friedrich nietzsche"}
+        )
+        self.assertEqual(
+            _validated_topic_words(
+                ["thought", "idea", "paradox", "religion", "faith"],
+                app.tokenize, groups
+            ),
+            ["paradox", "religion", "faith"],
+        )
+
     def test_plan_yields_independently_searchable_topics_for_each_real_author(self):
         names = needs_concept_plan(
             "What would Aristotle think about Tolstoy?", self.registry.entries
