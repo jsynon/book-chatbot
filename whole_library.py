@@ -516,7 +516,11 @@ class WholeLibraryLocator:
                 )
                 if not pages:
                     continue
-                books.append((scored[book_id]["meta"], pages))
+                books.append((
+                    {**scored[book_id]["meta"],
+                     "edited_collection": scored[book_id]["edited_collection"]},
+                    pages
+                ))
                 details.append({
                     "book_id": book_id,
                     "title": scored[book_id]["meta"]["title"],
