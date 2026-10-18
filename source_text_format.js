@@ -27,7 +27,7 @@
   // modifying source text or inventing any wording.
   function wordsAtOffsets(text) {
     const words = [];
-    for (const match of String(text).matchAll(/[\\p{L}\\p{N}]+/gu)) {
+    for (const match of String(text).matchAll(/[\p{L}\p{N}]+/gu)) {
       words.push({
         word: match[0].toLowerCase(),
         start: match.index,
