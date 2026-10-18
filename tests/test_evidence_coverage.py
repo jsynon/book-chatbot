@@ -213,6 +213,29 @@ class FacetEvidenceContracts(unittest.TestCase):
         ids = [p["id"] for p in result["sources"]]
         self.assertEqual(len(ids), len(set(ids)))
 
+    def test_unmatched_direct_quote_is_disclosed_in_user_facing_answer(self):
+        idx = index_for([CAUSE, DEFENSE, AFTER])
+        provider = StubProvider(
+            terms=[],
+            quote=("The account states “a completely invented sequence "
+                   "of ancient words repeated again today without any "
+                   "supporting original quotation” even though the original "
+                   "passage establishes something different.")
+        )
+        q = "What does the account explain about the conflict?"
+        result = answer_evidence_first(
+            q, [], idx, [q], provider, "reading-companion-v1.4.5"
+        )
+        self.assertEqual(result["outcome"], "draft")
+        self.assertIn("word-for-word", result["coverage_notice"])
+        self.assertGreater(
+            result["diagnostics"]["evidence_check"]
+            ["quotation_precision"]["unmatched_count"], 0
+        )
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(len({p["id"] for p in result["sources"]}),
+                         len(result["sources"]))
+
     def test_adjacent_original_anchors_share_citation_order_links(self):
         idx = index_for([DEFENSE, AFTER, CAUSE])
         p = list(idx.passages)
