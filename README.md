@@ -6,6 +6,12 @@
 
 **The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
+## Version 1.6.3: highlighted cited passages
+
+Clicking a citation now attempts to find its actual quoted word sequence within the indexed source page. The source reader highlights only a sufficiently long, distinctive contiguous match and scrolls the inner reader to that passage. OCR hard wraps and punctuation spacing do not prevent a match. A cross-page excerpt can highlight the portion present on each cited physical page. If the excerpt is too short, ambiguous, or unlocatable, the page remains readable without a potentially misleading highlight. The Readable paragraphs/Original OCR layout selector works with highlighting, and all source data, PDF provenance, and Ollama/retrieval behavior remain unchanged.
+
+**Smoke test:** Open an actual source citation, verify highlighted words really occur in the original page and that the reader scrolls to them. Toggle OCR view, navigate to adjacent pages, test a cross-page citation if available, and return to the conversation. No large inference benchmark is required.
+
 ## Version 1.6.2: readable OCR page layout
 
 The source reader now defaults to **Readable paragraphs**. It merges OCR hard-wrapped lines and removes indentation introduced by page extraction while keeping blank-line paragraph boundaries. A **Text display** selector switches instantly to **Original OCR layout** without fetching the page again. The stored v47 source text, source page numbers, citation identities, and model/retrieval code are unchanged. Reflow is only a visual aid; poetry, tables, columns and unusual OCR paragraph boundaries may need the original layout. No words are reconstructed or OCR corrections invented.
