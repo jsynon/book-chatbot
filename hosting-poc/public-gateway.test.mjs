@@ -119,3 +119,46 @@ test('truncated retrieved passage retains causal sentence rather than a short ke
  const preview=sourceExcerpt(text,'What were the disputes and deeper explanations?',1080);
  assert(preview.includes('deeper explanation'));
 });
+
+test('source probe fails closed when token binding is missing',async()=>{
+ let fetched=0,models=0;
+ const e=env({PUBLIC_ENABLED:'false',AI:{run:async()=>{models++;}}});
+ const response=await gateway.fetch(
+   new Request(HOST+'/internal/source-probe',{method:'POST'}),
+   e,()=>{fetched++;return fetcher(...arguments);}
+ );
+ assert.equal(response.status,503);
+ assert.equal(fetched,0);
+ assert.equal(models,0);
+});
+test('source probe rejects incorrect credentials before any corpus fetch',async()=>{
+ let fetched=0;
+ const e=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:'x'.repeat(40)});
+ const response=await gateway.fetch(
+   new Request(HOST+'/internal/source-probe',{method:'POST',headers:{Authorization:'Bearer wrong'}}),
+   e,()=>{fetched++;throw Error('No fetch should be made');}
+ );
+ assert.equal(response.status,401);
+ assert.equal(fetched,0);
+});
+test('source probe uses actual trustedSources under disabled public mode with no AI',async()=>{
+ let runs=0;
+ const token='protected-test-token-not-for-production-123456';
+ const e=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:token,
+  AI:{run:async()=>{runs++;throw Error('No AI should run');}}});
+ const response=await gateway.fetch(
+   new Request(HOST+'/internal/source-probe',{method:'POST',
+     headers:{Authorization:'Bearer '+token}}),
+   e,fetcher
+ );
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(result.status,'retrieved');
+ assert.equal(result.bookId,'152');
+ assert.equal(result.page,38);
+ assert.equal(result.globalPageId,0);
+ assert.equal(result.cpuTimeMs,null);
+ assert(result.sourceUrl.includes(PDF));
+ assert(result.excerptLength>30);
+ assert.equal(runs,0);
+});
