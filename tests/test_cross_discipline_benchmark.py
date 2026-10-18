@@ -121,6 +121,24 @@ class BenchManifestTests(unittest.TestCase):
         self.assertFalse(result["provenance_pass"])
         self.assertIn("wrong_book", [i["code"] for i in result["issues"]])
 
+    def test_catalog_pdf_identity_is_verified_not_just_internally_consistent(self):
+        case = self.cases["history-herodotus-reports"]
+        book = fake_source(book_id="149", pdf_id="IncorrectButWellFormedPDFId")
+        result = inspect_response(case, fake_result([book]), catalog={
+            "149": {"book_id": "149", "title": "Sample Primary Work",
+                    "pdf_file_id": "ActualBook149PdfDocumentId"},
+        })
+        self.assertFalse(result["provenance_pass"])
+        self.assertIn("wrong_book_pdf",
+                      [issue["code"] for issue in result["issues"]])
+        original = fake_source(book_id="149", pdf_id="ActualBook149PdfDocumentId")
+        valid = inspect_response(case, fake_result([original]), catalog={
+            "149": {"book_id": "149", "title": "Sample Primary Work",
+                    "pdf_file_id": "ActualBook149PdfDocumentId"},
+        })
+        self.assertTrue(valid["provenance_pass"], valid["issues"])
+        self.assertEqual(valid["catalog_pdf_verified_book_ids"], ["149"])
+
     def test_unprovided_citations_and_wrong_pdf_page_fail(self):
         case = self.cases["literature-orwell-language"]
         broken = fake_source(book_id="89")
@@ -211,7 +229,9 @@ class BenchRunnerTests(unittest.TestCase):
                 if url.endswith("/api/health"):
                     return 200, {"build": "reading-companion-test"}
                 if url.endswith("/api/books"):
-                    return 200, {"books": [{"book_id": "529", "available": True}]}
+                    return 200, {"books": [{"book_id": "529", "available": True,
+                                            "pdf_file_id": FAKE_ID,
+                                            "title": "Sample Primary Work"}]}
                 if url.endswith("/api/chat"):
                     self.assertEqual(payload["book_id"], "529")
                     self.assertEqual(payload["scope"], "book")
