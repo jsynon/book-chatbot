@@ -23,6 +23,7 @@ from retrieval_relevance import refers_to_previous_question
 from passage_quality import source_form, source_kind, discourse_cues, curate_candidates
 from evidence_coverage import recover_gap_evidence
 from quote_audit import audit_quotes
+from evidence_structure import reserve_question_parts, final_part_coverage
 
 
 CANDIDATE_LIMIT = 24
@@ -191,71 +192,115 @@ def select_neighbor_context(index, anchors, candidates, budget=MAX_EVIDENCE_CHAR
 
 
 def render_argument_context(index, anchors, selected):
-    """Group each core excerpt with its actual neighbors IN READING ORDER.
+    """Present nearby ORIGINAL arguments as coherent, citable source scenes.
 
-    The model sees source order and separate roles, preventing a nearby
-    objection or qualification from becoming an isolated freestanding claim.
-    All entries are the untouched source text and retain independent IDs.
-    This is formatting, not a fabricated machine summary of the argument.
+    Earlier versions showed selected adjacent passages as separate evidence
+    sections linked only by metadata, so a narrator quoting a protagonist
+    could be mistaken for the protagonist speaking. This version groups up
+    to THREE nearby real source passages from one work, orders their actual
+    texts as written, and keeps each original source ID intact. It does not
+    invent speaker identities or infer chronology across distant scenes.
+    Context passages are included ONCE, not duplicated in each core block.
     """
     positions = {p["passage_id"]: i for i, p in enumerate(index.passages)}
-    sections = []
+    groups = []
+    def neighbor(a, b):
+        ia = positions.get(a["passage_id"])
+        ib = positions.get(b["passage_id"])
+        if ia is None or ib is None:
+            return False
+        if a["book_id"] != b["book_id"] or (
+                a["corpus_version"] != b["corpus_version"]):
+            return False
+        if abs(ia - ib) > 4:
+            return False
+        if min(abs(x - y) for x in a["pages"] for y in b["pages"]) > 1:
+            return False
+        # Adjacent paragraphs may be the very same argumentative exchange.
+        # Looser connections need an observable dialogue/reporting flag,
+        # not just the occurrence of the same philosophical word.
+        if abs(ia - ib) <= 1:
+            return True
+        for passage in (a, b):
+            cues = discourse_cues(passage["text"])
+            if (cues["reported_speech_present"] or cues["opening_fragment"]
+                    or cues["opening_quotation_without_attribution"]):
+                return True
+        return False
+
     for anchor in anchors:
-        block = [anchor] + [
-            passage for passage in selected
-            if passage.get("context_for") == anchor["source_id"]
-        ]
-        block.sort(key=lambda p: positions.get(p["passage_id"], float("inf")))
-        # Core excerpts often belong to ONE continuing dialogue but were
-        # independently selected and displayed as separate sections. Connect
-        # them by actual original passage position, without duplicating texts
-        # or speculating about the speaker: source S17 on PDF 464 can provide
-        # vital context for source S8 on PDF 465.
-        at = positions.get(anchor["passage_id"])
-        near = []
-        for other in anchors:
-            if other["passage_id"] == anchor["passage_id"]:
-                continue
-            op = positions.get(other["passage_id"])
-            if (at is None or op is None or not 0 < abs(at - op) <= 8
-                    or other["book_id"] != anchor["book_id"]
-                    or other["corpus_version"] != anchor["corpus_version"]
-                    or min(abs(a - b) for a in anchor["pages"]
-                           for b in other["pages"]) > 1):
-                continue
-            near.append({
+        match = next((
+            group for group in groups
+            if len(group) < 3 and any(neighbor(anchor, p) for p in group)
+        ), None)
+        if match is None:
+            groups.append([anchor])
+        else:
+            match.append(anchor)
+
+    sections = []
+    for members in groups:
+        ids = {p["source_id"] for p in members}
+        passages = list(members)
+        passages.extend(
+            p for p in selected
+            if p.get("context_for") in ids
+        )
+        unique = {}
+        for p in passages:
+            unique.setdefault(p["passage_id"], p)
+        ordered = sorted(
+            unique.values(),
+            key=lambda p: positions.get(p["passage_id"], 10**9),
+        )
+        first = members[0]
+        center = positions.get(first["passage_id"])
+        links = []
+        for other in members[1:]:
+            at = positions.get(other["passage_id"])
+            links.append({
                 "source_id": other["source_id"], "pages": other["pages"],
-                "reading_relation": "earlier" if op < at else "later",
+                "reading_relation": (
+                    "earlier" if center is not None and at is not None
+                    and at < center else "later"
+                ),
                 "source_kind": "other_selected_original_passage",
             })
-        near.sort(key=lambda item: positions.get(
-            next(p["passage_id"] for p in anchors
-                 if p["source_id"] == item["source_id"]), 10**9
+        links.sort(key=lambda item: next(
+            (positions.get(p["passage_id"], 10**9) for p in members
+             if p["source_id"] == item["source_id"]), 10**9
         ))
         sections.append({
-            "nearby_selected_evidence": near,
-            "book_id": anchor["book_id"],
-            "book_title": anchor["title"],
-            "book_author": anchor.get("author", ""),
-            "edited_collection": anchor.get("edited_collection", False),
-            "subjects": anchor.get("subjects", []),
-            "core_source_id": anchor["source_id"],
-            "core_original_position": positions.get(anchor["passage_id"]),
+            "scene_type": (
+                "adjacent_original_argument" if len(members) > 1
+                else "individual_original_argument"
+            ),
+            "source_order_verified": True,
+            "speaker_identity_verified": False,
+            "nearby_selected_evidence": links,
+            "book_id": first["book_id"],
+            "book_title": first["title"],
+            "book_author": first.get("author", ""),
+            "edited_collection": first.get("edited_collection", False),
+            "subjects": first.get("subjects", []),
+            "core_source_id": first["source_id"],
+            "core_source_ids": [p["source_id"] for p in members],
+            "core_original_position": center,
             "reading_sequence": [
                 {
-                    "source_id": p["source_id"],
-                    "pages": p["pages"],
-                    "role": ("central_evidence" if p["source_id"] ==
-                             anchor["source_id"]
-                             else p.get("context_role", "related_context")),
+                    "source_id": p["source_id"], "pages": p["pages"],
+                    "role": (
+                        "central_evidence" if p["source_id"] in ids
+                        else p.get("context_role", "related_context")
+                    ),
                     "source_form": source_kind(p),
                     "discourse_cues": discourse_cues(p["text"]),
                     "text": p["text"],
-                } for p in block
-            ]
+                }
+                for p in ordered
+            ],
         })
     return json.dumps(sections, ensure_ascii=False)
-
 
 def choose_evidence(question, history, index, facets, provider, log,
                     selection_mode="model"):
@@ -392,6 +437,25 @@ def choose_evidence(question, history, index, facets, provider, log,
         finally:
             stage["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
 
+    # v1.4.6 release-gate improvement: deterministic source coverage of
+    # the reader's distinct question parts. No model is asked whether to
+    # initiate this retrieval. It uses only already-indexed original pages,
+    # bounded to two extra source anchors within the same six-slot budget.
+    # Explicit author coverage still runs immediately afterward.
+    if len(facets) > 1 and hasattr(index, "rank"):
+        candidates, anchors, facet_audit = reserve_question_parts(
+            index, facets, candidates, anchors,
+            max_primary=PRIMARY_LIMIT
+        )
+        stage["question_part_coverage"] = facet_audit
+        stage["selected_ids"] = [p["source_id"] for p in anchors]
+    else:
+        stage["question_part_coverage"] = {
+            "status": "not_applicable",
+            "parts": [], "added": [], "replaced_source_ids": [],
+            "model_calls_added": 0,
+        }
+
     # Source coverage belongs to a PERSON, not whichever particular volume
     # was highest-ranked. A citation from Aristotle's Ethics satisfies an
     # Aristotle requirement even if the Works anthology was also selected.
@@ -454,6 +518,10 @@ def choose_evidence(question, history, index, facets, provider, log,
         stage["reason"] = "No complete selected passage fits the evidence budget"
     selected, added = select_neighbor_context(index, bounded, candidates)
     stage["bounded_ids"] = [p["source_id"] for p in bounded]
+    stage["final_facet_evidence"] = (
+        final_part_coverage(index, facets, bounded) if len(facets) > 1
+        else []
+    )
     stage["added_context"] = added
     return candidates, selected, bounded, stage
 
@@ -609,6 +677,11 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             "of the cited original passages. Do not lightly edit grammar, "
             "change words, or combine distant pieces into a supposed "
             "literal quotation. Never invent quotation wording. "
+            "For a multi-part question, address EACH distinct part, "
+            "rather than repeating the first part with different citations. "
+            "Use the supplied question-part source map as a retrieval hint, "
+            "not as a verdict that the answer is supported. If a part has "
+            "no defensible evidence, state the limitation directly. "
             "When the evidence is incomplete, say 'these passages do not "
             "establish...' rather than pretending the whole book is silent. "
             "Return JSON with 'paragraphs', each having 'text' and 1 to 4 "
@@ -654,8 +727,15 @@ def answer_evidence_first(question, history, index, facets, provider, build,
         if (getattr(index, "is_cross_library", False)
                 and not refers_to_previous_question(question, index.tokenize)):
             conversation = []
+        # These are lexical source maps, not determinations of whether
+        # a claim has been proved. The model must either address each part
+        # from the available originals or acknowledge insufficient evidence.
+        coverage_map = stage.get("final_facet_evidence", [])
         user = (
             "Reader's question:\n" + question
+            + "\n\nQuestion-part source map (lexical evidence only; "
+              "NOT semantic verification):\n"
+            + json.dumps(coverage_map, ensure_ascii=False)
             + "\n\nRecent conversation:\n"
             + json.dumps(conversation, ensure_ascii=False)
             + "\n\nSelected original-source arguments. Inside each section, "
@@ -745,6 +825,23 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             "cited_book_ids": sorted(cited_books),
             "missing_authors": missing_authors,
         }
+    # A lexical evidence check is intentionally weaker than a semantic
+    # reviewer. When it cannot even establish that some question vocabulary
+    # is represented, disclose the gap to the reader instead of silently
+    # treating the cited draft as a complete answer.
+    coverage = stage.get("final_facet_evidence", [])
+    unresolved = [
+        p["part"] for p in coverage
+        if not p.get("lexical_evidence_present", False)
+    ]
+    if outcome == "draft" and unresolved:
+        trace["evidence_check"]["unresolved_question_parts"] = unresolved
+        notice = (
+            "The selected passages did not clearly cover every part of "
+            "your question in the source search. Some parts of this "
+            "answer may be incomplete; consult the linked originals."
+        )
+        coverage_notice = (coverage_notice + " " + notice).strip()
     quotes = trace["evidence_check"].get("quotation_precision", {})
     if outcome == "draft" and quotes.get("unmatched_count", 0):
         quote_note = (

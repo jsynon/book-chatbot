@@ -162,6 +162,18 @@ Source labels and valid page links remain necessary but never sufficient for sem
 
 **Acceptance test:** merge the PR, pull in GitHub Desktop, and run these same three benchmark cases under Gemma3:12b / Evidence-first, with troubleshooting enabled. Compare original candidate pages, `evidence_selection.gap_retrieval` audit, nearby selected source links, `evidence_check.quotation_precision`, model response and elapsed time against v1.4.4. At most **two** Ollama calls and six core source anchors. A `draft` proves only the source IDs/citation format are valid; the scientific, historical and literary explanations must be assessed against the originals.
 
+## v1.4.6 final quality gate — proceed to the demo
+
+**Reason for this release:** v1.4.5 still required Gemma to volunteer missing topic searches. None of the three live questions triggered that option, so the system could select six sources supporting the FIRST part while overlooking the SECOND. Several adjacent literary/historical passages were also shown as separate source units, making it harder to read an actual reported argument and response together.
+
+**General change:** `evidence_structure.py` independently checks each already-detected question part against real indexed source prose, can replace up to two low-priority anchors with better-matched original passages, and exposes unresolved parts in diagnostics and a reader-visible caution. `render_argument_context` now groups related adjacent originals into a single chronological reading unit without duplicating text, falsely identifying a speaker, or connecting distant chapters.
+
+**One bounded validation:** Existing regression suites plus six final source-assembly contracts; one read-only audit against original Darwin, Thucydides and Dostoevsky v47 shards. The audit found another real Darwin passage; it did **not** resolve every historical incident or literary-interpretation facet, and the system makes that uncertainty visible. No live Gemma answer-quality guarantee is implied by these source tests. At most two Ollama calls and six primary anchors are still required.
+
+**Stop criterion:** Once code compiles, all existing offline regression tests pass, and the single source audit shows no fabricated or wrongly attributed PDFs, mark the release ready. We will not create further v1.4 quality builds for merely imperfect prose. Only a critical regression warrants a blocker.
+
+**Next step:** v1.5 should deliver a usable, responsive one-book Reading Companion demo with original PDF links, approachable source navigation, and honest evidence limitations. The entire 644-book research scope remains the longer-term goal. The public Antilogicalism GitHub Pages interface will need a separate inference API/service; it cannot run local Ollama directly.
+
 ## Failure analysis
 
 For v1.4.1, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see grouped citation markers, any added source IDs, and rejected conflicts. This recovery supports at most six unique, existing source IDs per paragraph and does not grade whether the cited passage supports each claim. Preserve the same philosophical scoring rubric after a format-only recovery.

@@ -2,9 +2,9 @@
 
 The [Antilogicalism](https://jsynon.github.io/antilogicalism/) Reading Companion is a primary-source-grounded local reading assistant. It is intended to cover the full digital library, not only the current Aristotle pilot. The application deliberately separates bibliographic metadata, indexed PDF text, retrieval, answer composition and verification of citation identities.
 
-## Architecture in v1.4.5
+## Architecture in v1.4.6
 
-Version 1.4.3 introduced cross-disciplinary evaluation, and v1.4.4 added passage-form and attribution cues. **Version 1.4.5 extends the existing first evidence-selection call to diagnose missing parts of a question and request bounded supplemental lexical searches**, before the already-existing synthesis call. Hypothetical two-author conceptual planning and ordinary one-book scope are preserved; the benchmark does not influence retrieval ranking.
+Versions 1.4.3–1.4.5 introduced cross-disciplinary evaluation, passage-form checks, and optional model-suggested gap searches. **v1.4.6 is the final planned quality iteration before v1.5.** It applies an independent, deterministic coverage pass to multipart questions even when Gemma supplies no extra search terms, and groups nearby original passages into coherent, citable scenes. No new inference call is made and the benchmark does not modify retrieval ranking.
 
 
 The library now has **two supported retrieval scopes** sharing the same answer pipeline.
@@ -65,6 +65,16 @@ The v47 manifest, postings encoding and matching page IDs were inspected against
 A successful answer is deliberately labeled **draft**. It means source IDs are valid, not that the model's interpretation is true, complete or supported sentence by sentence. OCR damage, lexical mismatch, limited passage context, overconfident synthesis, and missing conceptual links remain real risks. A fixed set of passages cannot prove what an author *never* says across a book.
 
 The library ranking currently relies on lexical term matches and page-level presence. It is not a pretrained semantic embedding system; references to the same idea using very different vocabulary may be missed. A broad question samples up to four books; it is **not an exhaustive overview of all 644 works**. When appropriate, ask a more specific question or open an individual book. Some Google Drive PDF previews ignore the page anchor, so the physical page is also displayed.
+
+## v1.4.6: finite release gate and coherent evidence
+
+`evidence_structure.py` performs a bounded source search for the reader's already-detected question facets. It scores actual indexed original prose by lexical match, checks whether each facet has strong enough existing evidence, and may reserve at most **two original additional passages** if clear candidates exist. It respects the existing **six core sources** and is followed by author-level coverage and evidence-context budget checks. The source map is explicitly labeled lexical, **not** a semantic proof; if an important facet still has no clear match the user receives a caution rather than an invented historical event or character motive.
+
+`render_argument_context()` now groups **up to three neighboring selected original passages** from the same work into one ordered scene. Text and source IDs are not duplicated. It refuses cross-book or distant-page grouping, and separately notes that only source *order*, not the identity or reliability of speakers, is established.
+
+The single read-only real-v47 audit, `python scripts/audit_release_gate_v146.py`, has been run on Darwin, Thucydides and Dostoevsky. The tests also document residual lexical limitations: unnamed historical disputes and some novelistic relationships may not be found from the literal question alone. This is accepted as a *visible limitation* for the demonstration, not scored as a semantic pass. The ordinary local Gemma3:12b model still can misinterpret original passages.
+
+**Release policy:** freeze v1.4 answer-quality tweaks after this milestone except critical source-integrity defects. Begin **v1.5** by polishing the responsive frontend, phone-width reading, source/PDF navigation, usable one-book local demo and documented local installation. Hosting an Antilogicalism static frontend on GitHub Pages is feasible; inference requires a separate API/server, not GitHub Pages.
 
 ## Evidence-gap recovery and quote audit (v1.4.5)
 
