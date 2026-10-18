@@ -63,7 +63,7 @@ test('does not rank unrelated single-word matches over a multi-term history book
   {id:4,page:28,text:'These disputes caused the Peloponnesian War as tensions grew between the city powers. Their alliances clashed and the war continued.'}
  ];
  data['book-89.json']={pages:[{id:5,page:12,text:'The warriors gathered for war. Ancient heroes exchanged words and fought their enemies.'}]};
- const fetcher=url=>{const filename=String(url).split('/').pop().replace(/\\.gz$/,'');return Promise.resolve(filename in data ? new Response(gzipSync(JSON.stringify(data[filename])),{status:200}) : new Response('',{status:404}));};
+ const fetcher=url=>{const filename=String(url).split('/').pop().replace(/\.gz$/,'');return Promise.resolve(filename in data ? new Response(gzipSync(JSON.stringify(data[filename])),{status:200}) : new Response('',{status:404}));};
  const result=await new RemoteLibrary('https://example.test/v47/',fetcher).search('What caused the Peloponnesian War?');
  assert(result.sources.length>0);
  assert(result.sources.every(source=>source.bookId==='152'));
