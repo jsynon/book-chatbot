@@ -111,6 +111,16 @@ def recover_gap_evidence(index, original_candidates, anchors, raw_queries,
         audit["reason"] = "no_matching_original_prose"
         return candidates, selected, audit
 
+    original_selection = list(selected)
+    # Allocate slots for the WHOLE gap batch before inserting any new
+    # source. Otherwise, when all six slots are full, the second recovered
+    # source accidentally evicts the first, defeating multi-part coverage.
+    preserve = max(0, min(len(original_selection),
+                          max_primary - len(gap_hits)))
+    selected = original_selection[:preserve]
+    audit["replaced_source_ids"] = [
+        p["source_id"] for p in original_selection[preserve:]
+    ]
     for query, hit in gap_hits:
         original = by_passage.get(hit["passage_id"])
         if original is None:
@@ -118,12 +128,6 @@ def recover_gap_evidence(index, original_candidates, anchors, raw_queries,
             next_number += 1
             by_passage[hit["passage_id"]] = original
             candidates.append(original)
-        # Retain first / most decisive selected sources. If selected was
-        # already full, drop from the bottom. Author coverage must be applied
-        # after this step, so an author cannot disappear without notice.
-        if len(selected) >= max_primary:
-            replaced = selected.pop()
-            audit["replaced_source_ids"].append(replaced["source_id"])
         selected.append(original)
         primary_passages.add(hit["passage_id"])
         audit["admitted"].append({
