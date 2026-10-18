@@ -6,13 +6,15 @@
 
 **The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
-## Version 1.4: cross-library retrieval
+## Version 1.4.1: relevance-aware cross-library retrieval
 
-Version 1.4 makes the first **across-library** reading mode available in the local prototype, alongside the established **one-book** Aristotle demo and selectable individual books.
+Version 1.4 established the first across-library reading mode. **Version 1.4.1 improves relevance and attribution** after real-reader tests exposed keyword-only false matches, unrelated edited anthologies, and an incorrect requirement to cite one arbitrary volume rather than an author. The established **one-book** Aristotle demo remains available and unchanged.
 
 - **One selected book:** The v1.3 path remains available. Find a title or author in the website catalog; only its compressed text shard is loaded and indexed, with an LRU cache of two book indexes by default.
 - **Across the Antilogicalism library (experimental):** Search the existing v47 inverted index for relevant pages throughout the corpus, then fetch and reconstruct passages from **up to four matching source books**. It opens a bounded number of pages per chosen book, rather than reading all 644 books into memory.
-- **Explicit comparisons:** A question naming two authors gives each author's matching work a chance to contribute evidence. If one named author's material cannot be located for the topic, the app reports the coverage problem instead of silently answering for only the other.
+- **Subject-focused discovery:** The search distinguishes the topic of a question from reader instructions such as "different authors," "library," and "question." It favors pages discussing multiple topic words together, work-title/subject relevance, and concentrated evidence over incidental hits in enormous anthologies. This is deterministic lexical relevance, **not** a semantic understanding engine.
+- **Author-aware comparisons:** Questions naming authors now recognize their works as an author *group*, including common short surnames. Generic bylines such as "Various authors" cannot be mistaken for named people. With two named authors, up to two works per author can supply evidence, and citation coverage is checked **per person**, not per arbitrary first-ranked volume.
+- **Careful narrative attribution:** The evidence selector and answer composer are reminded that dialogue spoken by fictional characters is not necessarily an authorial thesis. These prompts do not guarantee correct literary interpretation.
 - **Provenance:** Every source preserves its own book ID, title, full-text version, original PDF page and Google Drive document. Multiple books never share the same source ID within a response.
 - **Reading context:** When a selected excerpt depends on preceding/following argument, those original passages are shown in book order with separate citations, not fabricated summaries.
 
@@ -42,8 +44,8 @@ The optional **Development tests and model comparisons** section preserves the e
 
 For each question, the application:
 
-1. **Discovers sources:** in a selected book, its local passage index; across the library, the global v47 page postings and only the top few compatible book shards. Explicitly named authors receive coverage safeguards, and selected pages are diversified across a work's argument rather than always taking the earliest occurrence.
-2. **Selects evidence:** one local Ollama call chooses up to six primary-source passages from a bounded pool, with book diversity maintained when an explicit comparison requires it.
+1. **Discovers sources:** in a selected book, its local passage index; across the library, intent-filtered content terms query the global v47 page postings before opening the best-matched book shards. The ranking considers term co-occurrence, density across a work, original titles/subjects, and the presence of actual named authors. Independently attributable works are prioritized for broad author surveys; explicit named-author comparisons balance up to two works each. Selected pages are spread across a work rather than always taking the earliest occurrence.
+2. **Selects evidence:** passages are first reranked by actual topic coverage and proximity in the original text. One local Ollama call chooses up to six from that bounded pool, with author-level diversity maintained in explicit comparisons.
 3. **Preserves context:** independently cited passages are arranged in original reading order, with context added only for excerpts that appear to depend on it.
 4. **Explains:** a second Ollama call writes a readable response with paragraph-level source IDs and optional follow-up questions.
 5. **Binds citations:** Python validates structured and inline source markers against passages actually provided and renders clickable book-specific links. Missing/unknown/conflicting source IDs are rejected; valid grouped markers are reconciled without a new model call.
@@ -68,9 +70,9 @@ The result is labeled **draft**, because source identity and quotation integrity
 | BOOK_CHATBOT_CONTEXT_TOKENS | 8192 | Ollama context size |
 | BOOK_CHATBOT_PROGRESS | 1 | Enable CMD progress messages |
 
-**Modules:** app.py serves the UI and API; library_catalog.py manages single-book metadata/indexes; whole_library.py locates matching books/pages without reading the full corpus; grounded_pipeline.py builds book-specific passage and PDF provenance; evidence_pipeline.py selects and assembles source arguments; direct_pipeline.py binds citations and retains the v1.1 baseline; inference.py calls Ollama. The index.html reader keeps model comparisons optional. Full technical details are in [docs/README.md](docs/README.md).
+**Modules:** app.py serves the UI and API; library_catalog.py manages single-book metadata/indexes; retrieval_relevance.py parses topical vocabulary and real authorship; whole_library.py locates and reranks bounded books/pages; grounded_pipeline.py builds source passages and PDF provenance; evidence_pipeline.py selects and assembles source arguments; direct_pipeline.py binds citations; inference.py calls Ollama. The index.html reader keeps model comparisons optional. Full technical details are in [docs/README.md](docs/README.md).
 
-Tests use synthetic sources: **python -m unittest discover -s tests -p 'test_*pipeline.py' -v**, **python -m unittest discover -s tests -p 'test_library_catalog.py' -v** and **python -m unittest discover -s tests -p 'test_whole_library.py' -v**. They do not require Ollama. GitHub Actions runs the same contracts. For an optional real-v47 read-only check against the public corpus, run **python scripts/smoke_global_retrieval.py**; it downloads only a manifest, three partitions, two books and the catalog into a temporary directory.
+Tests use synthetic sources: **python -m unittest discover -s tests -p 'test_*pipeline.py' -v**, **python -m unittest discover -s tests -p 'test_library_catalog.py' -v** and **python -m unittest discover -s tests -p 'test_whole_library.py' -v**. Add **python -m unittest discover -s tests -p 'test_retrieval_relevance.py' -v** for subject/author regression tests. They do not require Ollama. GitHub Actions runs the same offline contracts. For an optional real-v47 read-only check against the public corpus, run **python scripts/smoke_relevance_v141.py**. This downloads a manifest, needed term partitions, the catalog, and at most four selected source books per question into a temporary directory. The audit identified *Man's Search for Meaning*, *A Confession*, and other individual works for the open-ended meaning-of-life question. It did not use Ollama.
 
 ## What's next
 
