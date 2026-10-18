@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Read with Aristotle — Antilogicalism book chatbot pilot</title>
+  <title>Antilogicalism Reading Companion — Aristotle pilot</title>
   <style>
     /*
       The page is intentionally self-contained: keeping these styles in the
@@ -32,6 +32,15 @@
     .body { white-space:pre-wrap; overflow-wrap:anywhere; }
     .sources { margin:13px 0 0; padding-top:10px; border-top:1px solid var(--line); font:14px/1.55 system-ui,sans-serif; }
     .sources a { color:var(--accent); margin-right:8px; }
+    .body a.citation { color:var(--accent); text-decoration:underline; white-space:nowrap; }
+    .highlights { margin:14px 0 0; padding:12px; border-left:3px solid var(--line); background:#fbf9f4; }
+    .highlights strong { font:600 13px system-ui,sans-serif; }
+    .highlights blockquote { margin:9px 0; padding:0 0 0 12px; border-left:1px solid var(--line); font-size:14px; }
+    .highlights a { color:var(--accent); font:12px system-ui,sans-serif; margin-left:5px; }
+    .follow-up-buttons { margin:15px 0 0; }
+    .follow-up-buttons strong { color:var(--muted); font:600 12px system-ui,sans-serif; }
+    .follow-up-buttons div { display:flex; flex-wrap:wrap; gap:8px; margin-top:7px; }
+    .follow-up-buttons button { white-space:normal; text-align:left; background:transparent; border:1px solid var(--line); color:var(--accent); font:13px system-ui,sans-serif; padding:7px 10px; }
     /* Diagnostic output is tucked away so normal reading stays uncluttered. */
     .diagnostics { margin:13px 0 0; border-top:1px solid var(--line); padding-top:10px; font:13px/1.5 system-ui,sans-serif; }
     .diagnostics summary { color:var(--muted); cursor:pointer; }
@@ -87,7 +96,11 @@
       <select id="model"><option value="qwen3:14b">qwen3:14b</option></select>
       <span id="model-status"></span>
       <label for="pipeline">Answering method</label>
-      <select id="pipeline"><option value="direct">Direct synthesis (Version 1)</option><option value="grounded">Historical claim/review pipeline</option></select>
+      <select id="pipeline">
+        <option value="evidence">Evidence-first answers (v1.2)</option>
+        <option value="direct">Direct synthesis (v1.1)</option>
+        <option value="grounded">Historical claim/review (comparison)</option>
+      </select>
       <label class="diagnostic-control"><input id="diagnostics-toggle" type="checkbox"> Include troubleshooting details in responses</label>
       <span class="diagnostic-control">Details include the question, retrieved passages, draft and optional review. Citation IDs are not proof that an interpretation is correct.</span>
     </div>
@@ -111,14 +124,14 @@
          follows the same /api/chat pipeline, including grounding and review. -->
     <section class="batch-runner" aria-label="Automated regression test run">
       <p><strong>Compare installed Ollama models</strong></p>
-      <p>Run the same questions through direct synthesis, the historical reviewer, or both. Expand full answers below and download all citations and timing details. A cited draft is not independently verified.</p>
+      <p>Run the same questions through evidence-first v1.2, direct v1.1, or the historical reviewer. Compare v1.2 against v1.1 in one report, including passages, timings, and full answers. Citations do not certify philosophical accuracy.</p>
       <label for="test-suite">Question set</label>
       <select id="test-suite">
         <option value="synthesis">Philosophical synthesis (1 question)</option>
         <option value="regression">Original regression set (5 questions)</option>
         <option value="combined">Both sets (6 questions)</option>
       </select>
-      <label class="diagnostic-control"><input id="compare-pipelines" type="checkbox"> Compare both answering methods (more requests)</label>
+      <label class="diagnostic-control"><input id="compare-pipelines" type="checkbox"> Compare v1.2 evidence-first vs. v1.1 direct (double the requests)</label>
       <div id="batch-model-options" class="batch-model-options" aria-live="polite">Loading installed models…</div>
       <div class="batch-actions">
         <button type="button" id="select-recommended-models" class="secondary">Select three larger models</button>
@@ -138,7 +151,7 @@
     </form>
     <div id="status" role="status"></div>
     <!-- Explain where processing happens and display the running server build. -->
-    <footer>This Version 1 prototype runs locally using Ollama. Citations connect explanations to pages, but are not automatic proof of correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
+    <footer>This Version 1.2 prototype runs locally using Ollama. Source excerpts are exact quotations; citations lead to their pages, but neither certifies an interpretation's correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
   </main>
   <script>
     // Cache the UI elements used by the event handlers so they can be updated
@@ -173,7 +186,7 @@
       .then(data => {
         currentBuild = data.build || 'unknown';
         currentPipeline = data.pipeline || 'unknown';
-        if (['direct', 'grounded'].includes(currentPipeline)) pipelineSelect.value = currentPipeline;
+        if (['evidence', 'direct', 'grounded'].includes(currentPipeline)) pipelineSelect.value = currentPipeline;
         buildStatus.textContent = `Local app build: ${currentBuild}${data.pipeline ? ` (${data.pipeline})` : ''}`;
       })
       .catch(() => { buildStatus.textContent = 'Local app build: unavailable'; });
@@ -196,7 +209,7 @@
         notes.push(`Stages: ${data.stages.map(stage => `${stage.stage}: ${stage.elapsed_ms} ms (${stage.status})`).join('; ')}.`);
       }
       if (status === 'verified') {
-        notes.push('Final issue: none; the checked answer passed.');
+        notes.push('Historical model review accepted the answer; this is not a truth certification.');
       } else if (summary.final_issue) {
         notes.push(`Main issue (${summary.final_stage || 'review'}): ${summary.final_issue}`);
         if (summary.final_reason) notes.push(`Final checker finding: ${summary.final_reason}`);
@@ -260,7 +273,7 @@
           result.pipeline || 'unknown',
           result.question || '',
           result.error ? 'request error' : summary.outcome || 'not recorded',
-          summary.final_issue || (summary.outcome === 'verified' ? 'None; answer passed.' : result.error || 'No final finding recorded.'),
+          summary.final_issue || (summary.outcome === 'verified' ? 'Historical model review passed (not independently verified).' : result.error || 'No final finding recorded.'),
           result.elapsed_ms == null ? '—' : `${(result.elapsed_ms / 1000).toFixed(1)} s`,
           '',
           (summary.attempt_history || []).map(attempt =>
@@ -470,7 +483,7 @@
 
       const startedAt = new Date().toISOString();
       const results = [];
-      const pipelines = comparePipelinesToggle.checked ? ['direct', 'grounded'] : [pipelineSelect.value];
+      const pipelines = comparePipelinesToggle.checked ? ['evidence', 'direct'] : [pipelineSelect.value];
       const total = models.length * pipelines.length * prompts.length;
       latestRegressionReport = null;
       batchResults.replaceChildren();
