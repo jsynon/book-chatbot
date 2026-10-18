@@ -129,6 +129,27 @@ class EvidenceFirstTests(unittest.TestCase):
         )
         self.assertEqual(len(result["sources"]), 1)
 
+    def test_evidence_first_returns_grouped_references_with_original_pages(self):
+        output = {
+            "paragraphs": [{
+                "text": ANSWER_TEXT + " [S1, S2]. A second passage explains "
+                        "why the adjustment should be recorded [S2].",
+                "source_ids": ["S1", "S2"],
+            }],
+            "follow_up_questions": [],
+        }
+        provider = StubProvider(selected_ids=["S1", "S2"], output=output)
+        result, provider = self.run_evidence(provider)
+        self.assertEqual(result["outcome"], "draft")
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(result["answer"].count("[S1]"), 1)
+        self.assertEqual(result["answer"].count("[S2]"), 1)
+        self.assertEqual({s["id"] for s in result["sources"]}, {"S1", "S2"})
+        self.assertTrue(all(source["pages"] for source in result["sources"]))
+        log = result["diagnostics"]["draft"]["citation_reconciliation"]
+        self.assertEqual(log[0]["grouped_markers_recovered"], 1)
+        self.assertEqual(result["diagnostics"]["draft"]["raw_response"], output)
+
     def test_evidence_first_rejects_unknown_inline_reference(self):
         generated = {
             "paragraphs": [{

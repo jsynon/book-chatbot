@@ -226,21 +226,100 @@ class DirectPipelineTests(unittest.TestCase):
         self.assertEqual(audit[0]["status"], "rejected_conflict")
         self.assertEqual(audit[0]["inline_ids"], ["S2"])
 
-    def test_reject_unsupported_fifth_source_and_malformed_markers(self):
-        for generated in [
-            {"paragraphs": [{
-                "text": GOOD_PROSE + " [S2] [S3] [S4] [S5]",
-                "source_ids": ["S1", "S2", "S3", "S4"],
-            }]},
-            {"paragraphs": [{
-                "text": GOOD_PROSE + " [S1,S2]", "source_ids": ["S1"]
-            }]},
+    def test_comma_separated_source_groups_recover_without_duplicate_tags(self):
+        audit = []
+        generated = {"paragraphs": [{
+            "text": GOOD_PROSE + " [S2, S1]. An illustrative example " 
+                    "follows from further passages [S3] [S2, S1].",
+            "source_ids": ["S1", "S2", "S3"],
+        }]}
+        text, used = validate_paragraphs(
+            generated, {"S1", "S2", "S3"}, audit
+        )
+        self.assertEqual(used, {"S1", "S2", "S3"})
+        self.assertEqual(text.count("[S1]"), 1)
+        self.assertEqual(text.count("[S2]"), 1)
+        self.assertEqual(text.count("[S3]"), 1)
+        self.assertNotIn("[S2, S1]", text)
+        self.assertEqual(audit[0]["markers_removed"], 3)
+        self.assertEqual(audit[0]["grouped_markers_recovered"], 2)
+
+    def test_five_unique_supplied_ids_can_be_preserved_after_reconciliation(self):
+        # The actual friendship test used four structured IDs and an
+        # additional valid source inside a grouped inline citation.
+        audit = []
+        generated = {"paragraphs": [{
+            "text": GOOD_PROSE + " [S8, S17, S25]. Supporting details " 
+                    "add clarity [S10] and [S10, S21].",
+            "source_ids": ["S8", "S10", "S17", "S21"]
+        }]}
+        rendered, used = validate_paragraphs(
+            generated, {"S8", "S10", "S17", "S21", "S25"}, audit
+        )
+        self.assertEqual(used, {"S8", "S10", "S17", "S21", "S25"})
+        self.assertEqual(
+            audit[0]["combined_ids"], ["S8", "S10", "S17", "S21", "S25"]
+        )
+        self.assertEqual(audit[0]["added_ids"], ["S25"])
+        self.assertEqual(audit[0]["grouped_markers_recovered"], 2)
+        self.assertEqual(rendered.count("[S25]"), 1)
+
+    def test_unknown_source_inside_citation_group_fails_closed(self):
+        audit = []
+        generated = {"paragraphs": [{
+            "text": GOOD_PROSE + " [S1, S999]",
+            "source_ids": ["S1"]
+        }]}
+        with self.assertRaisesRegex(CompletionError, "unknown source"):
+            validate_paragraphs(generated, {"S1"}, audit)
+        self.assertEqual(audit[0]["unknown_ids"], ["S999"])
+        self.assertEqual(audit[0]["status"], "rejected_unknown")
+
+    def test_disjoint_grouped_citations_rejected(self):
+        audit = []
+        generated = {"paragraphs": [{
+            "text": GOOD_PROSE + " [S2, S3]",
+            "source_ids": ["S1"]
+        }]}
+        with self.assertRaisesRegex(CompletionError, "disjoint"):
+            validate_paragraphs(generated, {"S1", "S2", "S3"}, audit)
+        self.assertEqual(audit[0]["status"], "rejected_conflict")
+
+    def test_badly_formed_citation_groups_cannot_pass_as_prose(self):
+        for text in [
+            "[S1 and S2]", "[S1, ???]", "[S1, S2 or S3]", "[S1, S2, S999x]",
+            "[S1, ]",
         ]:
-            with self.subTest(generated=generated):
-                with self.assertRaises(CompletionError):
-                    validate_paragraphs(
-                        generated, {"S1", "S2", "S3", "S4", "S5"}
-                    )
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(CompletionError, "malformed"):
+                    validate_paragraphs({
+                        "paragraphs": [{
+                            "text": GOOD_PROSE + " " + text,
+                            "source_ids": ["S1"]
+                        }]
+                    }, {"S1", "S2", "S3"})
+
+    def test_reconciled_citations_have_finite_limit(self):
+        # More than six citations, even if every ID exists, is not a useful
+        # citation bound for one paragraph and is rejected without dropping IDs.
+        audit = []
+        generated = {"paragraphs": [{
+            "text": GOOD_PROSE + " [S1, S2, S3, S4, S5, S6, S7]",
+            "source_ids": ["S1", "S2", "S3", "S4"],
+        }]}
+        with self.assertRaisesRegex(CompletionError, "safe citation limit"):
+            validate_paragraphs(generated, {f"S{i}" for i in range(1, 8)}, audit)
+        self.assertEqual(audit[0]["status"], "rejected_count")
+        self.assertEqual(audit[0]["source_limit"], 6)
+
+    def test_structured_array_cannot_exceed_its_four_source_limit(self):
+        generated = {"paragraphs": [{
+            "text": GOOD_PROSE + " [S1]",
+            "source_ids": ["S1", "S2", "S3", "S4", "S5"],
+        }]}
+        with self.assertRaisesRegex(CompletionError, "safe citation limit"):
+            validate_paragraphs(generated, {f"S{i}" for i in range(1, 6)})
+
 
     def test_duplicate_references_and_missing_paragraphs_rejected(self):
         for generated in [
