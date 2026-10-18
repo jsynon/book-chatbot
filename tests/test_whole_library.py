@@ -158,6 +158,9 @@ class CrossLibraryFixture(unittest.TestCase):
         self.assertEqual(metadata["book_shards_opened"], 2)
         self.assertTrue(metadata["page_count"] <= 2 * 9)
         self.assertEqual(set(metadata["required_book_ids"]), ids)
+        self.assertEqual({
+            group["author"] for group in metadata["required_author_groups"]
+        }, {"aristotle", "leo tolstoy"})
         self.assertEqual(set(b["book_id"] for b in metadata["candidate_books"]), ids)
         self.assertTrue(all(p["pages"][0] in (10, 11, 12, 20, 21, 22)
                             for p in index.passages))
@@ -280,7 +283,7 @@ class CrossLibraryFixture(unittest.TestCase):
             "evidence_selection", "evidence_grounded_synthesis"
         ])
         self.assertTrue(result["diagnostics"]["retrieval"]
-                        ["evidence_selection"].get("required_book_coverage"))
+                        ["evidence_selection"].get("required_author_coverage"))
         self.assertEqual(len({
             p["book_id"] for p in result["diagnostics"]["retrieval"]["merged"]
             if p["source_id"] in model.last_ids
@@ -307,7 +310,7 @@ class CrossLibraryFixture(unittest.TestCase):
         self.assertIn("does not cite evidence", output["coverage_notice"])
         self.assertEqual(
             len(output["diagnostics"]["evidence_check"]
-                ["named_author_citation_coverage"]["missing_book_ids"]), 1
+                ["named_author_citation_coverage"]["missing_authors"]), 1
         )
 
     def test_http_scope_uses_two_calls_and_correct_library_book_labels(self):
