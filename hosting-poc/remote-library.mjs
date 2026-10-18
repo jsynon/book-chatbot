@@ -40,16 +40,78 @@ export function isNavigationPage(text) {
     (raw.split(',').length >= 16 || raw.split(';').length >= 4) &&
     sentences <= 2;
 }
-function pageProseScore(text, terms) {
-  if (isNavigationPage(text)) return -Infinity;
-  const words = new Set(String(text || '').toLowerCase().match(/[a-z0-9]+/g) || []);
-  const matched = terms.filter(term => words.has(term)).length;
-  if (!matched) return -Infinity;
-  const sentenceBoundaries = (text.match(/[.!?]["')\]]?\s+(?=[A-Z])/g) || []).length;
-  // A genuine multi-sentence explanation is preferable to a list, header
-  // or isolated quoted name. Never fabricate an answer from raw page hits.
-  return 4 * matched + Math.min(4, sentenceBoundaries) +
-    (words.size >= 40 ? 1 : 0);
+// Edition metadata can contain topical keywords, but it is not evidence
+// about the work's subject. Preserve the page and link in the corpus; just
+// exclude it from a substantive-evidence preview.
+export function isPublicationPage(text) {
+  const head = String(text || '').slice(0, 1500);
+  return /\b(?:copyright|all rights reserved|may not be reproduced)\b/i.test(head) &&
+    /\b(?:copyright|all rights reserved|protected by international copyright|may not be reproduced)\b/i.test(head);
+}
+// Limited morphology, not a semantic thesaurus: e.g. cause/causes/caused.
+// Preserve proper-name stems; no question- or book-specific exception lists.
+function wordStem(word) {
+  let w = String(word || '').toLowerCase();
+  if (w.length < 5) return w;
+  if (w.length > 5 && /(ing|ed|es)$/.test(w)) {
+    w = w.replace(/(ing|ed|es)$/, '');
+  } else if (w.length > 5 && w.endsWith('s')) {
+    w = w.slice(0, -1);
+  }
+  if (w.length > 4 && w.endsWith('e')) w = w.slice(0, -1);
+  return w;
+}
+export function substantivePageEvidence(text, terms) {
+  if (isNavigationPage(text) || isPublicationPage(text)) return null;
+  const words = String(text || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+  if (words.length < 10) return null;
+  const roots = [...new Set(terms.map(wordStem))];
+  const wanted = new Set(roots);
+  let hits = 0, best = {score:0, center:0}, unique = new Set();
+  const normalized = words.map(wordStem);
+  for (let i = 0; i < normalized.length; i++) {
+    if (wanted.has(normalized[i])) { unique.add(normalized[i]); hits++; }
+  }
+  if (!hits) return null;
+  // Find the most locally concentrated part of the actual page. An isolated
+  // occurrence in a page heading should not dominate a full prose argument.
+  // The small number of query terms keeps this inexpensive on large books.
+  for (let i = 0; i < normalized.length; i += 30) {
+    const window = normalized.slice(i, i + 110);
+    const present = new Set(window.filter(word => wanted.has(word)));
+    const matched = window.filter(word => wanted.has(word)).length;
+    const score = 9 * present.size + Math.min(8, matched);
+    if (score > best.score) best = {score, center:Math.min(words.length-1, i+55)};
+  }
+  let score = best.score + 6 * unique.size + Math.min(5, Math.log1p(hits));
+  const opening = String(text).trim().slice(0, 180);
+  if (/^(?:(?:\d+|[ivxlc]+)\s+)?(?:introduction|preface|foreword|acknowledg(?:e)?ments)\b/i.test(opening)) {
+    score -= 12; // A preference, not a ban; introductions can contain arguments.
+  }
+  return {score, unique:unique.size, center:best.center};
+}
+export function excerptAroundEvidence(text, terms, max = 550) {
+  const compact = String(text || '').replace(/\s+/g, ' ').trim();
+  if (compact.length <= max) return compact;
+  const roots = new Set(terms.map(wordStem));
+  const matches = [...compact.matchAll(/[a-z0-9]+/gi)];
+  let bestStart=0, bestScore=-1;
+  // A sliding 70-word snippet gives the reader the relevant context rather
+  // than always showing the first 550 characters of a long PDF page.
+  for (let i=0;i<matches.length;i+=12) {
+    const start = matches[i].index;
+    const end = Math.min(compact.length, start+max);
+    const snippet = compact.slice(start,end);
+    const present = new Set((snippet.toLowerCase().match(/[a-z0-9]+/g)||[])
+      .map(wordStem).filter(word=>roots.has(word)));
+    const score = 5 * present.size + (snippet.match(/[.!?]\s/g)||[]).length;
+    if (score>bestScore) {bestScore=score;bestStart=start;}
+  }
+  if (!bestStart) return previewAtWordBoundary(compact,max);
+  let end=Math.min(compact.length,bestStart+max);
+  const lastSpace=compact.lastIndexOf(' ',end);
+  if(lastSpace>bestStart+max/2)end=lastSpace;
+  return '…'+compact.slice(bestStart,end).trim()+(end<compact.length?'…':'');
 }
 
 export class RemoteLibrary {
@@ -147,8 +209,8 @@ export class RemoteLibrary {
       hits.sort((a,b) => b.matched - a.matched || b.score - a.score || a.id - b.id);
       const titleTokens = new Set(String(manifest.books[id].title || '').toLowerCase().match(/[a-z0-9]+/g) || []);
       const overlap = terms.filter(term => titleTokens.has(term)).length;
-      return {id, hits, score:hits[0].score + 3 * hits[0].matched +
-        Math.log1p(hits.length) + 10 * overlap};
+      return {id, hits, titleOverlap:overlap, score:hits[0].score + 3 * hits[0].matched +
+        Math.log1p(hits.length) + 12 * overlap};
     });
     // If some books have joint topic terms, don't force single-term
     // incidental mentions into the limited set of cited books.
@@ -156,6 +218,14 @@ export class RemoteLibrary {
       books = books.filter(book => book.hits[0].matched >= 2);
     }
     books.sort((a,b) => b.score - a.score || Number(a.id) - Number(b.id));
+    // A query that strongly matches a work's own title should not spend
+    // its small evidence budget on a tangential survey, unless readers are
+    // explicitly asking for a comparison across authors or works.
+    const comparison = /\b(?:compare|contrast|versus|vs\.?|between)\b/i.test(question);
+    const directWorks = books.filter(book => book.titleOverlap >= 2);
+    if (!bookId && !comparison && directWorks.length && directWorks.length <= Math.max(1,Math.min(maxBooks,3))) {
+      books = directWorks;
+    }
     const sources = [];
     let booksScanned = 0, discardedNavigation = 0;
     const bookLimit = Math.max(1, Math.min(maxBooks, 3));
@@ -169,23 +239,25 @@ export class RemoteLibrary {
       const shard = await this.jsonGzip('book-' + book.id + '.json');
       booksScanned++;
       if (!Array.isArray(shard.pages)) throw new Error('Invalid source shard for ' + book.id);
-      // Inspect multiple ranked hits; index pages must not exhaust the two
-      // visible slots before we have considered the actual main text.
-      const relevant = new Map(book.hits.slice(0, 60).map(hit => [hit.id, hit]));
+      // The book shard is already downloaded. Inspect its entire indexed
+      // main text, not just the first sixty lexical hits; morphological
+      // variants and contextual discussion may lie outside that shortlist.
+      const relevant = new Map(book.hits.map(hit => [hit.id, hit]));
       const candidates = [];
       for (const item of shard.pages) {
-        const hit = relevant.get(item.id);
-        if (!hit || !Number.isSafeInteger(item.page) || item.page <= 0 ||
+        if (!Number.isSafeInteger(item.id) || String(manifest.page_books[item.id]) !== book.id ||
+            !Number.isSafeInteger(item.page) || item.page <= 0 ||
             typeof item.text !== 'string' || !item.text.trim()) continue;
-        const prose = pageProseScore(item.text, terms);
-        if (!Number.isFinite(prose)) { discardedNavigation++; continue; }
-        candidates.push({item, rank:prose + hit.score + 2 * hit.matched});
+        const evidence = substantivePageEvidence(item.text, terms);
+        if (!evidence) { discardedNavigation++; continue; }
+        const hit = relevant.get(item.id);
+        candidates.push({item, rank:evidence.score + (hit ? Math.min(8,hit.score) : 0)});
       }
       candidates.sort((a,b) => b.rank - a.rank || a.item.page - b.item.page);
       for (const {item} of candidates.slice(0, pageLimit)) {
         const url = 'https://drive.google.com/file/d/' + pdfId + '/view?usp=sharing#page=' + item.page;
         sources.push({bookId:book.id, title:meta.title, page:item.page, globalPageId:item.id,
-          url, preview:previewAtWordBoundary(item.text), textLength:item.text.length});
+          url, preview:excerptAroundEvidence(item.text,terms), textLength:item.text.length});
       }
     }
     return {terms, anchorTerm, sources:sources.map((item,i) => ({id:'S'+(i+1),...item})),
