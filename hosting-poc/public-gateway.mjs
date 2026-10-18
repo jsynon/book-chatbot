@@ -305,4 +305,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     notice:'Source provenance checked against v47; individual AI claims are not independently verified.',
   },200,origin);
 }
-export default {fetch:handleRequest};
+// Cloudflare calls fetch(request, env, ctx): ctx is an execution-context
+// object, not the test fetcher. Keep mock injection on the named helper only.
+export default {
+  fetch(request, env, _ctx) {
+    return handleRequest(request, env);
+  },
+};
