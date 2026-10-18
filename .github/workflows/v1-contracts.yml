@@ -1,4 +1,4 @@
-name: Reading Companion v1.4 contracts
+name: Reading Companion v1.4.1 contracts
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
           PY
       - name: Compile reading and library modules
         run: |
-          python -m compileall -q app.py whole_library.py library_catalog.py evidence_pipeline.py direct_pipeline.py grounded_pipeline.py inference.py scripts tests
+          python -m compileall -q app.py whole_library.py retrieval_relevance.py library_catalog.py evidence_pipeline.py direct_pipeline.py grounded_pipeline.py inference.py scripts tests
       - name: Check browser script syntax and controls
         run: |
           node - <<'JS'
@@ -54,3 +54,4 @@ jobs:
           python -m unittest discover -s tests -p 'test_*pipeline.py' -v
           python -m unittest discover -s tests -p 'test_library_catalog.py' -v
           python -m unittest discover -s tests -p 'test_whole_library.py' -v
+          python -m unittest discover -s tests -p 'test_retrieval_relevance.py' -v
