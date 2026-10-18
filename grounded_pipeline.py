@@ -14,6 +14,7 @@ import re
 import time
 
 from inference import CompletionError, OllamaProvider
+from passage_quality import source_form
 
 
 def object_schema(properties):
@@ -49,6 +50,7 @@ class PassageIndex:
         self.passages = []
         self.postings = defaultdict(dict)
         self.lengths = []
+        self.source_forms = []
         self.skipped_oversized = 0
         self.author_terms = set()
         for book, pages in books:
@@ -105,6 +107,7 @@ class PassageIndex:
                     index = len(self.passages)
                     self.passages.append(passage)
                     self.lengths.append(sum(terms.values()))
+                    self.source_forms.append(source_form(group))
                     for term, frequency in terms.items():
                         self.postings[term][index] = frequency
         self.average_length = sum(self.lengths) / max(1, len(self.lengths))
@@ -122,6 +125,17 @@ class PassageIndex:
             for index, tf in posting.items():
                 norm = 1.5 * (.25 + .75 * self.lengths[index] / max(1, self.average_length))
                 scores[index] += idf * tf * 2.5 / (tf + norm)
+        # Navigation text such as contents lists and page headers can
+        # repeat all query words without establishing a single claim.
+        # Retain those records for explicit chapter-index questions, but
+        # ordinarily rank full source prose ahead of obvious furniture.
+        if not re.search(
+            r"\b(?:chapter titles|table of contents|contents page|"
+            r"list the chapters|chapter headings|index entries|"
+            r"chapter names|section headings)\b", question, flags=re.I
+        ):
+            for index in scores:
+                scores[index] *= self.source_forms[index]["ranking_multiplier"]
         return sorted(scores, key=lambda index: (-scores[index], index))
 
     def search(self, question, facets, history=(), limit=24):
