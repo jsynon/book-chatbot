@@ -7204,8 +7204,7 @@ class Handler(BaseHTTPRequestHandler):
                 if planning_stage:
                     # End-to-end user latency includes the first call even
                     # though it happened before evidence retrieval.
-                    payload["elapsed_ms"] += planning_stage["elapsed_ms"]
-                    payload["diagnostics"]["elapsed_ms"] = payload["elapsed_ms"]
+                    payload["diagnostics"]["elapsed_ms"] += planning_stage["elapsed_ms"]
                 trace = payload["diagnostics"]
                 trace["model"] = model
                 trace["book"] = {"book_id": request_book_id,
