@@ -92,7 +92,7 @@ def _issue(issues, level, code, description):
     issues.append({"level": level, "code": code, "description": description})
 
 
-def inspect_response(case, result):
+def inspect_response(case, result, catalog=None):
     """Check deterministic citation/ID consistency, NEVER semantic correctness.
 
     The source metadata is returned by the app, and the tests distinguish
@@ -113,6 +113,8 @@ def inspect_response(case, result):
         _issue(issues, "error", "no_source_list", "Response lacks an array of cited sources.")
         sources = []
     by_id, seen_books, book_pdf_ids = {}, set(), {}
+    catalog_verified_ids = set()
+    catalog = catalog if isinstance(catalog, dict) else None
     for source in sources:
         if not isinstance(source, dict):
             _issue(issues, "error", "invalid_source", "Source is not an object.")
@@ -150,6 +152,19 @@ def inspect_response(case, result):
             if previous != pdf_id:
                 _issue(issues, "error", "book_pdf_conflict",
                        f"Book {bid} points to multiple PDFs in one answer.")
+            if catalog is not None and bid in catalog:
+                actual = catalog[bid]
+                expected_pdf = actual.get("pdf_file_id")
+                if not expected_pdf or pdf_id != expected_pdf:
+                    _issue(issues, "error", "wrong_book_pdf",
+                           f"Source {sid} PDF does not match book {bid}'s catalog entry.")
+                else:
+                    catalog_verified_ids.add(bid)
+                expected_title = actual.get("title")
+                if (isinstance(expected_title, str) and expected_title
+                        and source.get("title") != expected_title):
+                    _issue(issues, "error", "wrong_book_title",
+                           f"Source {sid}'s title does not match book {bid}'s catalog.")
         if (not isinstance(source.get("title"), str) or not source["title"]
                 or not isinstance(source.get("excerpt"), str)
                 or not source["excerpt"].strip()):
@@ -221,6 +236,7 @@ def inspect_response(case, result):
         "source_count": len(sources),
         "cited_source_ids": sorted(markers),
         "source_book_ids": sorted(seen_books),
+        "catalog_pdf_verified_book_ids": sorted(catalog_verified_ids),
         "provider_call_count": len(calls) if isinstance(calls, list) else None,
         "human_interpretation_checked": False,
     }
