@@ -1,74 +1,81 @@
 # Antilogicalism Reading Companion
 
-**A conversational way into the books, not a replacement for reading them.**
+**Read with the books, not instead of them.**
 
-The Reading Companion belongs to [Antilogicalism](https://jsynon.github.io/antilogicalism/): a website bringing together writing, a curated Bookshelf, and a full-text searchable Digital Library covering philosophy, literature, religion, history, science, and more. The purpose of this application is to make those primary sources more accessible through dialogue: ask a question, understand the argument, and open the original book to inspect the evidence.
+[Antilogicalism](https://jsynon.github.io/antilogicalism/) brings together original writing, a Bookshelf and a searchable Digital Library covering philosophy, religion, literature, history, science and related fields. The Reading Companion is a conversational layer over those texts: ask a question, understand an author's reasoning, then inspect the source passages and original PDF pages.
 
-**Our long-term goal is conversation across the entire Antilogicalism library.** Readers should be able to examine passages across works and authors, explore connections, and discover what to read next. A compelling explanation should lead back to the texts, not replace them.
+**The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
-## Current state: Version 1.3
+## Version 1.4: cross-library retrieval
 
-**Aristotle remains the pilot**, but the application now supports selecting other locally available works. It has two new architectural improvements:
+Version 1.4 makes the first **across-library** reading mode available in the local prototype, alongside the established **one-book** Aristotle demo and selectable individual books.
 
-**Argument continuity.** The evidence-first model receives central passages grouped with relevant preceding or following text in **their original reading order**, while each passage retains its own citation and PDF page. We add context for genuinely dependent excerpts, not just every short passage; this reduces distractions and helps distinguish a writer's conclusion from an objection, a qualification, or an illustration. This is a better input structure, not a guarantee of correct interpretation.
+- **One selected book:** The v1.3 path remains available. Find a title or author in the website catalog; only its compressed text shard is loaded and indexed, with an LRU cache of two book indexes by default.
+- **Across the Antilogicalism library (experimental):** Search the existing v47 inverted index for relevant pages throughout the corpus, then fetch and reconstruct passages from **up to four matching source books**. It opens a bounded number of pages per chosen book, rather than reading all 644 books into memory.
+- **Explicit comparisons:** A question naming two authors gives each author's matching work a chance to contribute evidence. If one named author's material cannot be located for the topic, the app reports the coverage problem instead of silently answering for only the other.
+- **Provenance:** Every source preserves its own book ID, title, full-text version, original PDF page and Google Drive document. Multiple books never share the same source ID within a response.
+- **Reading context:** When a selected excerpt depends on preceding/following argument, those original passages are shown in book order with separate citations, not fabricated summaries.
 
-**Catalog-backed book selection.** The app reads titles, authors and PDF links from the existing Antilogicalism website catalog and compressed text from the separate antilogicalism-library-data repository. It builds an in-memory lexical index **only when a book is selected**, retaining at most two by default. Switching books clears the conversation. Missing shards or uncertain PDF identities are reported rather than invented.
+The v47 manifest already maps **280,699 PDF pages** to **644 books**; **1,332 compressed term partitions** store delta-encoded page IDs. The Reading Companion reuses this infrastructure **without rebuilding it**. The website's separate catalog currently has 643 entries; the v47 manifest can supply verified title/PDF information for the additional indexed book. Metadata disagreement causes that work to be skipped rather than assigned a false PDF.
 
-The browser remains a local prototype with Ollama. It **does not yet search across multiple books in one question**. The next milestone is candidate discovery across the complete corpus and bounded cross-book retrieval using the library's already-existing index partitions.
+**Important limit:** This is **bounded discovery and cross-book synthesis**, not exhaustive research across every work for each question. An answer may omit relevant authors or passages. The original lexical search and OCR can miss concepts expressed in different wording. A valid source citation does not certify correct interpretation.
 
-## Run it locally
+## How to run
 
-You need Python 3.10+, [Ollama](https://ollama.com/), and sibling checkouts:
+Requirements: Python 3.10+, [Ollama](https://ollama.com/), and local sibling checkouts of:
 
 1. **book-chatbot** — this application.
-2. **antilogicalism-library-data** — existing compressed source text in data-v47.
-3. **antilogicalism** — the main website; its digital-library/library-catalog.json supplies real titles, author names, and PDF links.
+2. **antilogicalism-library-data** — the shared v47 corpus, including manifest.json.gz, terms-xx.json.gz and book-N.json.gz in data-v47.
+3. **antilogicalism** — the main website, providing digital-library/library-catalog.json for the book browser. The global search can still use the manifest's book metadata if this catalog is unavailable, but author recognition and the book browser work best with it.
 
-The third checkout is optional for the **Aristotle-only fallback**; other titles require its catalog, or an explicit BOOK_CHATBOT_CATALOG file path.
+Install Gemma3:12b using **ollama pull gemma3:12b**. Start the local server with **start.bat** on Windows or **python app.py**, then open **http://127.0.0.1:8765**. There is no paid API or dependency on a hosted language model.
 
-Install the baseline model with **ollama pull gemma3:12b**. Launch **start.bat** on Windows (or python app.py) and open **http://127.0.0.1:8765**. Select a book, ask a question, and follow the original PDF page links. A newly selected book may take longer on its first question while its index is built.
+Keep the default **One selected book** mode for Aristotle's *Nicomachean Ethics* or choose another title. To compare works, change **What would you like to search?** to **Across the Antilogicalism library (experimental)**, then ask something like:
 
-The optional expandable **Development tests and model comparisons** section retains the five historical Aristotle questions, the synthesis question, and the older pipelines. For ordinary development, use Gemma3:12b as the baseline and run the fixed tests after substantive changes; we do not need continuous comparisons of every model.
+> How do Aristotle and Tolstoy understand happiness and the good life?
 
-## How answers work
+The console prints progress from evidence selection and answer composition. The first global search may take slightly longer to load the compressed manifest and term partitions; subsequent searches reuse a bounded partition cache. PDF links open Google Drive previews, which sometimes ignore page fragments; the companion always displays the physical page number.
 
-The default **evidence-first** method searches a broader set of primary passages (up to 24), then asks the local model to choose up to six decisive pieces of evidence. Dependent excerpts receive separately cited local context in reading order. A second Ollama call explains the selected evidence in coherent prose with structured citations. Python checks every cited ID against the actual source passages, tolerates verified individual and grouped citation markers, and renders its own clickable links. Optional verbatim excerpts and follow-up questions encourage further reading.
+The optional **Development tests and model comparisons** section preserves the established Aristotle test questions. We use Gemma3:12b as our primary local baseline and test different models only when there is a concrete reason.
 
-A **draft** means citation identities are intact, not that an interpretation has been independently verified. The previous single-call v1.1 method and a historical model-review pipeline remain accessible for targeted comparisons; they are not the default.
+## Answer architecture
+
+For each question, the application:
+
+1. **Discovers sources:** in a selected book, its local passage index; across the library, the global v47 page postings and only the top few compatible book shards. Explicitly named authors receive coverage safeguards, and selected pages are diversified across a work's argument rather than always taking the earliest occurrence.
+2. **Selects evidence:** one local Ollama call chooses up to six primary-source passages from a bounded pool, with book diversity maintained when an explicit comparison requires it.
+3. **Preserves context:** independently cited passages are arranged in original reading order, with context added only for excerpts that appear to depend on it.
+4. **Explains:** a second Ollama call writes a readable response with paragraph-level source IDs and optional follow-up questions.
+5. **Binds citations:** Python validates structured and inline source markers against passages actually provided and renders clickable book-specific links. Missing/unknown/conflicting source IDs are rejected; valid grouped markers are reconciled without a new model call.
+
+The result is labeled **draft**, because source identity and quotation integrity are deterministic but philosophical correctness is **not** independently verified. In particular, an LLM can misunderstand the relationship between ideas while accurately quoting the relevant passage. Keep reading with the original text in view.
 
 ## Configuration
 
-| Variable | Default | Purpose |
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| BOOK_CHATBOT_LIBRARY_DATA | Sibling antilogicalism-library-data | Local corpus |
-| BOOK_CHATBOT_CATALOG | Sibling antilogicalism/digital-library/library-catalog.json | Real metadata and PDF links |
-| BOOK_CHATBOT_DATA_VERSION | v47 | Versioned text shards |
-| BOOK_CHATBOT_CACHED_BOOKS | 2 | Maximum live book indexes |
-| BOOK_CHATBOT_BOOK_ID | 7 | Default startup/pilot book |
-| BOOK_CHATBOT_BOOK_FILE | Not set | Optional explicit pilot shard |
-| BOOK_CHATBOT_BOOK_TITLE | Nicomachean Ethics — Aristotle | Pilot metadata fallback |
-| BOOK_CHATBOT_PDF_FILE_ID | Configured Aristotle PDF ID | Pilot PDF fallback |
-| OLLAMA_MODEL | gemma3:12b | Initial local model |
-| OLLAMA_URL | http://127.0.0.1:11434 | Ollama service |
-| BOOK_CHATBOT_PORT | 8765 | Local website port |
+| BOOK_CHATBOT_LIBRARY_DATA | Sibling antilogicalism-library-data | Shared v47 source and search partitions |
+| BOOK_CHATBOT_CATALOG | Sibling antilogicalism/digital-library/library-catalog.json | Browsing and author metadata |
+| BOOK_CHATBOT_DATA_VERSION | v47 | Source and index snapshot |
+| BOOK_CHATBOT_CACHED_BOOKS | 2 | Bounded in-memory single-book passage indexes |
+| BOOK_CHATBOT_PARTITION_CACHE | 8 | Maximum decompressed global term partitions retained |
+| BOOK_CHATBOT_BOOK_ID | 7 | Startup book (Aristotle pilot) |
+| BOOK_CHATBOT_BOOK_FILE | Not set | Optional explicit pilot book file |
+| OLLAMA_MODEL | gemma3:12b | Local development baseline |
+| OLLAMA_URL | http://127.0.0.1:11434 | Inference endpoint |
+| BOOK_CHATBOT_PORT | 8765 | Local HTTP port |
 | BOOK_CHATBOT_PIPELINE | evidence | Default answer method |
-| BOOK_CHATBOT_CONTEXT_TOKENS | 8192 | Model context/VRAM setting |
-| BOOK_CHATBOT_PROGRESS | 1 | Print inference progress |
+| BOOK_CHATBOT_CONTEXT_TOKENS | 8192 | Ollama context size |
+| BOOK_CHATBOT_PROGRESS | 1 | Enable CMD progress messages |
 
-The existing website catalog currently has **643 records** and the text repository documents **644 indexed books**. Catalog entries without a verified PDF URL or a locally installed shard remain unavailable; the application does not invent metadata.
+**Modules:** app.py serves the UI and API; library_catalog.py manages single-book metadata/indexes; whole_library.py locates matching books/pages without reading the full corpus; grounded_pipeline.py builds book-specific passage and PDF provenance; evidence_pipeline.py selects and assembles source arguments; direct_pipeline.py binds citations and retains the v1.1 baseline; inference.py calls Ollama. The index.html reader keeps model comparisons optional. Full technical details are in [docs/README.md](docs/README.md).
 
-## Code and roadmap
+Tests use synthetic sources: **python -m unittest discover -s tests -p 'test_*pipeline.py' -v**, **python -m unittest discover -s tests -p 'test_library_catalog.py' -v** and **python -m unittest discover -s tests -p 'test_whole_library.py' -v**. They do not require Ollama. GitHub Actions runs the same contracts. For an optional real-v47 read-only check against the public corpus, run **python scripts/smoke_global_retrieval.py**; it downloads only a manifest, three partitions, two books and the catalog into a temporary directory.
 
-- **app.py:** local server, the original pilot, and book-aware API routing.
-- **library_catalog.py:** metadata validation and bounded lazy passage indexes.
-- **grounded_pipeline.py:** lexical search and original page provenance.
-- **evidence_pipeline.py:** argument context and the evidence-first answer.
-- **direct_pipeline.py / inference.py:** citation binding and Ollama interface.
-- **index.html:** book search and conversation UI; developer diagnostics.
-- **tests/**, **docs/README.md**, **docs/evaluation.md:** contracts and further architecture.
+## What's next
 
-Run **python -m unittest discover -s tests -v** to check the deterministic contracts (no Ollama needed). GitHub Actions tests the same synthetic-source behavior, not philosophical accuracy or live inference.
+**Local acceptance first:** verify a cross-author answer, its sources and latency using the real installation. Then improve the reliability of book/page ranking and interpretive accuracy using the actual failures that readers encounter, not more Aristotle-specific prompt patches or a loop of model-vs-model experiments.
 
-**Next:** try the Aristotle demo and one other book, then build source candidate discovery across the full library without loading all 644 texts into memory. Add stable cross-book citations, test cross-work comparisons, and design a sustainable inference service. GitHub Pages can host a frontend but not Python or Ollama.
+**Public demo:** the browser and its source links can live on GitHub Pages, but serving real chat requests requires a sustainable Python/Ollama inference host; GitHub Pages alone cannot run the model. The architecture retains the usable one-book mode even if future global retrieval is imperfect.
 
-The goal throughout is simple: help people **read, investigate and think for themselves**.
+Antilogicalism's purpose remains **making the great texts easier to find, read, understand and question**.
