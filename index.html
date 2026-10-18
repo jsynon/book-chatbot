@@ -651,7 +651,7 @@
       addTurn('user', text);
       question.value = '';
       send.disabled = true;
-      status.textContent = 'Retrieving book passages and composing a cited explanation…';
+      status.textContent = 'Selecting primary-source evidence and composing a cited explanation…';
       try {
         const response = await fetch('/api/chat', {
           method: 'POST', headers: {'Content-Type':'application/json'},
@@ -671,7 +671,8 @@
           status.textContent = 'Check that Ollama is running and the selected model is installed.';
           return;
         }
-        addTurn('assistant', data.answer || data.error, data.sources || [], data.diagnostics || null);
+        addTurn('assistant', data.answer || data.error, data.sources || [], data.diagnostics || null,
+          data.evidence_highlights || [], data.follow_up_questions || []);
         history.push({role:'user',content:text},{role:'assistant',content:data.answer});
         status.textContent = '';
       } catch (error) {
