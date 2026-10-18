@@ -303,7 +303,7 @@
       batchResults.append(table);
     }
 
-    function addTurn(kind, text, sources = [], diagnostics = null) {
+    function addTurn(kind, text, sources = [], diagnostics = null, highlights = [], followUps = []) {
       // Build nodes with textContent (rather than interpolated HTML) so model
       // output is displayed as text and cannot inject markup into the page.
       const article = document.createElement('article');
@@ -313,8 +313,70 @@
       speaker.textContent = kind === 'user' ? 'You' : 'Reading companion';
       const body = document.createElement('div');
       body.className = 'body';
-      body.textContent = text;
+      // Link only citations to retrieved sources; render everything else as
+      // plain text nodes, never model-provided HTML.
+      if (kind === 'assistant' && sources.length) {
+        const byId = new Map(sources.map(source => [source.id, source]));
+        for (const chunk of String(text || '').split(/(\[S\d+\])/g)) {
+          const match = /^\[(S\d+)\]$/.exec(chunk);
+          const source = match ? byId.get(match[1]) : null;
+          if (source && source.url) {
+            const link = document.createElement('a');
+            link.className = 'citation';
+            link.href = source.url;
+            link.rel = 'noopener noreferrer';
+            link.target = '_blank';
+            link.textContent = chunk;
+            link.title = (source.title || 'Book') + ' — PDF page ' + source.page;
+            body.append(link);
+          } else if (chunk) {
+            body.append(document.createTextNode(chunk));
+          }
+        }
+      } else {
+        body.textContent = text;
+      }
       article.append(speaker, body);
+      if (kind === 'assistant' && Array.isArray(highlights) && highlights.length) {
+        const section = document.createElement('div');
+        section.className = 'highlights';
+        const heading = document.createElement('strong');
+        heading.textContent = 'Key passages from the book';
+        section.append(heading);
+        for (const item of highlights) {
+          if (!item || !item.quote || !item.url) continue;
+          const quote = document.createElement('blockquote');
+          quote.textContent = item.quote;
+          const link = document.createElement('a');
+          link.textContent = '[' + item.source_id + '] PDF p. ' + item.page;
+          link.href = item.url;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          quote.append(document.createTextNode(' '), link);
+          section.append(quote);
+        }
+        article.append(section);
+      }
+      if (kind === 'assistant' && Array.isArray(followUps) && followUps.length) {
+        const section = document.createElement('div');
+        section.className = 'follow-up-buttons';
+        const heading = document.createElement('strong');
+        heading.textContent = 'Explore further';
+        const buttons = document.createElement('div');
+        for (const followUp of followUps.slice(0, 2)) {
+          if (typeof followUp !== 'string') continue;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = followUp;
+          button.addEventListener('click', () => {
+            question.value = followUp;
+            question.focus();
+          });
+          buttons.append(button);
+        }
+        section.append(heading, buttons);
+        article.append(section);
+      }
       if (sources.length) {
         const list = document.createElement('div');
         list.className = 'sources';
@@ -509,6 +571,8 @@
               entry.http_status = response.status;
               entry.answer = data.answer || null;
               entry.sources = data.sources || [];
+              entry.evidence_highlights = data.evidence_highlights || [];
+              entry.follow_up_questions = data.follow_up_questions || [];
               entry.diagnostics = data.diagnostics || null;
               entry.summary = data.diagnostics?.summary || null;
               if (!response.ok || data.error) entry.error = data.error || `HTTP ${response.status}`;
