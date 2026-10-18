@@ -135,6 +135,23 @@
       .composer-actions button { flex:1 1 auto; min-height:44px; }
       button { min-height:40px; }
     }
+    /* v1.7: readers see only the reading experience. The same local interface
+       exposes testing controls at /developer, not on the ordinary page.
+       This is visual separation, NOT authentication or API authorization. */
+    body:not(.developer-mode) #reader-options,
+    body:not(.developer-mode) #aristotle-prompts,
+    body:not(.developer-mode) #library-prompts,
+    body:not(.developer-mode) #discipline-tests,
+    body:not(.developer-mode) #developer-tests,
+    body:not(.developer-mode) .developer-footnote,
+    body:not(.developer-mode) #developer-mode-nav { display:none !important; }
+    #developer-mode-nav { margin:14px 0 20px; padding:12px 14px; border:1px solid #bbb;
+      font:13px/1.5 system-ui,sans-serif; background:#f7f7f7; }
+    #developer-mode-nav p { margin:0 0 8px; }
+    #developer-mode-nav a { color:#111; }
+    .reader-disclaimer { border-top:1px solid #ddd; padding-top:15px; margin-top:26px;
+      color:#555; font:13px/1.65 "Century Schoolbook",Century,Garamond,serif; }
+    .reader-disclaimer p { margin:0 0 6px; }
     /* Source reader is contained in the same editorial column as the conversation. */
     .source-reader[hidden] { display:none !important; }
     .source-reader { margin:24px 0; padding:20px; background:#fff; border:1px solid #bbb; border-top:3px solid #111; }
@@ -263,17 +280,21 @@
   <div id="main" class="site-main">
   <main class="companion-content" id="content">
     <header>
-      <div class="eyebrow">Antilogicalism · local reading companion</div>
+      <div class="eyebrow">Antilogicalism · Reading Companion</div>
       <h1 id="reading-title">Read with Aristotle</h1>
       <p class="intro" id="reading-intro">Ask about an idea in the <em>Nicomachean Ethics</em>. Answers are grounded in passages from the book and cite the PDF pages to check for yourself.</p>
     </header>
+    <aside id="developer-mode-nav" aria-label="Local development workspace">
+      <p><strong>Developer Mode</strong> · Local testing workspace. Model selection, retrieval experiments, diagnostics, and benchmark runs are available below. This page is not intended for public visitors.</p>
+      <a href="/">← Return to Reader Mode</a>
+    </aside>
     <!-- The everyday reading flow is simple; local model and debugging controls are optional. -->
     <section class="reader-panel" aria-label="Choose what to read">
       <div class="field">
         <label for="search-scope">Read from</label>
         <select id="search-scope">
           <option value="book">One selected book</option>
-          <option value="library">Across the Antilogicalism library (experimental)</option>
+          <option value="library">Across the Antilogicalism Library</option>
         </select>
       </div>
       <div id="book-picker" class="book-picker">
@@ -393,8 +414,11 @@
       <p class="keyboard-hint">Tip: Ctrl+Enter (or ⌘+Enter on Mac) sends your question.</p>
     </form>
     <div id="status" role="status"></div>
-    <!-- Explain where processing happens and display the running server build. -->
-    <footer>Version 1.6 runs Ollama locally and retrieves from the shared v47 full-text index. Across-library responses consult a bounded selection of books, not the entire corpus at once. Source excerpts are exact quotations; citations lead to their pages, but neither certifies an interpretation's correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
+    <footer class="reader-disclaimer">
+      <p>AI-generated explanations may contain mistakes. Check interpretations against the original sources.</p>
+      <p>Across-library answers draw on selected books, not an exhaustive survey.</p>
+      <p class="developer-footnote">Local testing: Ollama and the v47 library index run on this computer. PDF page links may open Google Drive at page 1; use the listed physical page number. <span id="build-id">Checking local app build…</span></p>
+    </footer>
   </main>
   <div id="secondary" class="companion-widgets" aria-label="Site footer links and feeds">
     <div id="first" class="widget-area">
@@ -425,6 +449,12 @@
   <footer id="colophon" class="site-footer" role="contentinfo"></footer>
 </div>
   <script>
+    // Only the explicitly local /developer route reveals testing controls.
+    // These controls are not security boundaries; public hosting must
+    // separately restrict or remove development-only API functionality.
+    const DEVELOPER_MODE = location.pathname === '/developer' ||
+      location.pathname === '/developer/';
+    document.body.classList.toggle('developer-mode', DEVELOPER_MODE);
     // Cache the UI elements used by the event handlers so they can be updated
     // without repeatedly querying the document.
     const form = document.getElementById('chat-form');
@@ -615,7 +645,11 @@
       .then(data => {
         currentBuild = data.build || 'unknown';
         currentPipeline = data.pipeline || 'unknown';
-        if (['evidence', 'direct', 'grounded'].includes(currentPipeline)) pipelineSelect.value = currentPipeline;
+        if (DEVELOPER_MODE && ['evidence', 'direct', 'grounded'].includes(currentPipeline)) {
+          pipelineSelect.value = currentPipeline;
+        } else if (!DEVELOPER_MODE) {
+          pipelineSelect.value = 'evidence';
+        }
         buildStatus.textContent = `Local app build: ${currentBuild}${data.pipeline ? ` (${data.pipeline})` : ''}`;
       })
       .catch(() => { buildStatus.textContent = 'Local app build: unavailable'; });
@@ -661,14 +695,19 @@
         if (!result.available) {
           const option = searchScope.querySelector('option[value="library"]');
           option.disabled = true;
-          scopeStatus.textContent = 'Full-text manifest missing from local ' +
-            'antilogicalism-library-data/data-' + result.corpus_version;
+          scopeStatus.textContent = DEVELOPER_MODE ?
+            'Full-text manifest missing from local antilogicalism-library-data/data-' +
+              result.corpus_version : 'Across-library reading is temporarily unavailable.';
         } else {
-          scopeStatus.textContent = 'Uses existing indexed pages; only matching books are loaded';
+          scopeStatus.textContent = DEVELOPER_MODE ?
+            'Uses existing indexed pages; only matching books are loaded' :
+            'Answers draw on relevant passages from selected books.';
         }
       } catch (error) {
         searchScope.querySelector('option[value="library"]').disabled = true;
-        scopeStatus.textContent = 'Whole-library search unavailable: ' + error.message;
+        scopeStatus.textContent = DEVELOPER_MODE ?
+          'Whole-library search unavailable: ' + error.message :
+          'Across-library reading is temporarily unavailable.';
       }
     }
 
@@ -777,7 +816,9 @@
         aristotlePrompts.hidden = true;
         libraryPrompts.hidden = false;
         developerTests.hidden = true;
-        coverage.textContent = 'Experimental: retrieves selected passages from up to four books for each question.';
+        coverage.textContent = DEVELOPER_MODE ?
+          'Experimental: retrieves selected passages from up to four books for each question.' :
+          'Compare ideas using passages from a selection of works.';
       } else if (book) {
         const isPilot = book.book_id === defaultBookId;
         readingTitle.textContent = isPilot ? 'Read with Aristotle' :
@@ -787,9 +828,10 @@
         aristotlePrompts.hidden = !isPilot;
         libraryPrompts.hidden = true;
         developerTests.hidden = !isPilot;
-        coverage.textContent = isPilot
-          ? 'Aristotle is the pilot; select another book to explore the larger library.'
-          : 'This chat searches only the selected work; choose Across library to compare works.';
+        coverage.textContent = DEVELOPER_MODE ?
+          (isPilot ? 'Aristotle is the pilot; select another book to explore the larger library.' :
+           'This chat searches only the selected work; choose Across library to compare works.') :
+          'Questions are grounded in passages from the selected work.';
       }
       if (resetConversation) {
         closeSourceReader();
@@ -1364,7 +1406,7 @@
             history:history.slice(-6),
             model:modelSelect.value,
             pipeline:pipelineSelect.value,
-            diagnostics:diagnosticsToggle.checked
+            diagnostics:DEVELOPER_MODE && diagnosticsToggle.checked
           })
         });
         const data = await response.json();
@@ -1393,7 +1435,7 @@
     });
     loadModels();
     loadBooks();
-    loadDisciplineCases();
+    if (DEVELOPER_MODE) loadDisciplineCases();
   </script>
 </body>
 </html>
