@@ -52,8 +52,12 @@ def source_form(text):
     leader = bool(_DOT_LEADERS.search(plain))
     label = bool(_CHAPTER_LABEL.match(plain))
     list_separators = len(_LIST_BOUNDARIES.findall(plain))
+    # A contents entry may end in a single period. What distinguishes it
+    # from explanatory prose is a sequence of headings WITHOUT sentence
+    # boundaries inside the passage, not its final punctuation.
+    internal_sentences = len(re.findall(r"[.!?][\u201d\u2019\"']?\s+(?=[A-Z])", plain))
     multi_item_contents = (
-        list_separators >= 3 and not has_terminal_sentence
+        list_separators >= 3 and internal_sentences == 0
         and (count >= 15 or list_separators >= 5)
     )
     heading = bool(
