@@ -56,6 +56,13 @@ class PassageIndex:
         for book, pages in books:
             self.author_terms.update(tokenize(book["title"].rsplit("—", 1)[-1])
                                      if "—" in book["title"] else [])
+            # Only pages unmistakably labeled as contents/index material are
+            # marked here. Passage windows split from those pages inherit
+            # that source form even after the heading is left behind.
+            navigation_pages = {
+                page["page"] for page in pages
+                if source_form(page["text"])["reason"] == "contents_page"
+            }
             blocks = []
             for page in pages:
                 paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", page["text"])
@@ -101,13 +108,20 @@ class PassageIndex:
                         continue
                     identity = json.dumps([book["book_id"], book["corpus_version"],
                                            physical_pages, group], ensure_ascii=False)
+                    form = source_form(group)
+                    if (physical_pages and
+                            all(page in navigation_pages for page in physical_pages)):
+                        form = {**form, "kind": "navigation",
+                                "reason": "contents_page_fragment",
+                                "ranking_multiplier": 0.06}
                     passage = {**book, "pages": physical_pages,
                                "page": physical_pages[0], "text": group,
+                               "source_form_kind": form["kind"],
                                "passage_id": hashlib.sha256(identity.encode()).hexdigest()[:24]}
                     index = len(self.passages)
                     self.passages.append(passage)
                     self.lengths.append(sum(terms.values()))
-                    self.source_forms.append(source_form(group))
+                    self.source_forms.append(form)
                     for term, frequency in terms.items():
                         self.postings[term][index] = frequency
         self.average_length = sum(self.lengths) / max(1, len(self.lengths))

@@ -2,9 +2,9 @@
 
 The [Antilogicalism](https://jsynon.github.io/antilogicalism/) Reading Companion is a primary-source-grounded local reading assistant. It is intended to cover the full digital library, not only the current Aristotle pilot. The application deliberately separates bibliographic metadata, indexed PDF text, retrieval, answer composition and verification of citation identities.
 
-## Architecture in v1.4.4
+## Architecture in v1.4.5
 
-Version 1.4.3 introduces reproducible **cross-disciplinary evaluation**, not a new question-specific answer generator. The normal one-book, across-library, and two-call conceptual planning routes remain as implemented in v1.4.2. The benchmark and the optional question picker are isolated from the production retrieval ranking.
+Version 1.4.3 introduced cross-disciplinary evaluation, and v1.4.4 added passage-form and attribution cues. **Version 1.4.5 extends the existing first evidence-selection call to diagnose missing parts of a question and request bounded supplemental lexical searches**, before the already-existing synthesis call. Hypothetical two-author conceptual planning and ordinary one-book scope are preserved; the benchmark does not influence retrieval ranking.
 
 
 The library now has **two supported retrieval scopes** sharing the same answer pipeline.
@@ -65,6 +65,16 @@ The v47 manifest, postings encoding and matching page IDs were inspected against
 A successful answer is deliberately labeled **draft**. It means source IDs are valid, not that the model's interpretation is true, complete or supported sentence by sentence. OCR damage, lexical mismatch, limited passage context, overconfident synthesis, and missing conceptual links remain real risks. A fixed set of passages cannot prove what an author *never* says across a book.
 
 The library ranking currently relies on lexical term matches and page-level presence. It is not a pretrained semantic embedding system; references to the same idea using very different vocabulary may be missed. A broad question samples up to four books; it is **not an exhaustive overview of all 644 works**. When appropriate, ask a more specific question or open an individual book. Some Google Drive PDF previews ignore the page anchor, so the physical page is also displayed.
+
+## Evidence-gap recovery and quote audit (v1.4.5)
+
+The normal two-call route now performs **retrieval → first Ollama call (selection with optional search hints) → deterministic gap lookup → second Ollama call (cited synthesis)**. The selector sees separately numbered parts of the reader's question. When existing passages miss a distinct part, it may return up to two short lexical search suggestions in an additional JSON field. The backend normalizes and bounds these as untrusted index terms, retrieves **actual original text** only from the already-open passage index, verifies topical co-occurrence for multiword phrases, allocates stable fresh passage IDs, and retains at most two relevant additional anchors. A full source pool reserves slots for both gap additions *before replacing lower-priority original selections*, so the second gap cannot accidentally evict the first. Author-level coverage checks and the original six-anchor, three-context, 17,200-character evidence budget still apply. If hints are missing, invalid, or unhelpful, the normal source selection survives. The hypothetical cross-author conceptual route still uses its distinct first call; there is **never a third model invocation**.
+
+For speech attribution, the synthesis context now includes links between **nearby selected passages in the same book and original reading order**, rather than presenting fragments of the same dialogue without their relationship. This helps identify a reporting speaker followed by a character's own qualification while deliberately avoiding any automatic speaker identification. The page-level contents-page identity survives when the source is split into smaller windows: an orphaned contents fragment stays navigation rather than becoming evidence merely because its heading was in an earlier window.
+
+The separate `quote_audit.py` checks long double-quoted passages mechanically against the full cited original excerpts, with Unicode/punctuation normalization. It catches changed words such as **“an struggle”** versus the original **“A struggle”**. A mismatch is disclosed to the reader and recorded in diagnostics; the app does not silently alter the prose, infer truth, or claim a quote from an unseen volume is authenticated. Short scare quotes and paraphrase are not automatically judged. All quoted passages and voice attribution still require reader assessment.
+
+`tests/test_evidence_coverage.py` tests bounded recovery, two-call count, distinct source provenance, contents-page propagation, adjacent source links, and quote warnings using synthetic book text. `scripts/audit_facet_recovery_v145.py` optionally downloads the existing public v47 Darwin/Thucydides/Dostoevsky shards to a temp directory and checks those mechanisms with no Ollama or corpus changes. Network-dependent audits are intentionally separate from offline CI.
 
 ## Source-form quality and cautious attribution (v1.4.4)
 
