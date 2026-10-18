@@ -81,7 +81,7 @@ def source_form(text):
     # no prose sentences, distinguish it from an actual historical account.
     locators = _PAGE_LOCATOR.findall(plain)
     reference_index = bool(
-        count >= 35 and len(locators) >= 10 and
+        count >= 20 and len(locators) >= 10 and
         len(locators) / max(count, 1) >= .12 and
         (plain.count(";") >= 3 or plain.count(",") >= 15) and
         internal_sentences <= 2
