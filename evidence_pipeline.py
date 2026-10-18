@@ -555,13 +555,13 @@ def _follow_up_questions(output):
         if not re.match(
             r"^(?:what|why|how|which|who|whose|where|when|can|could|would|"
             r"should|will|does|do|did|is|are|was|were|has|have|had|might|"
-            r"may|in what|to what|under what|according to what)\\b",
+            r"may|in what|to what|under what|according to what)\b",
             text, flags=re.I,
         ):
             continue
         if re.search(
             r"\\b(?:and|or|but|because|although|if|even|of|to|the|"
-            r"a|an|with|in|on|at|for|by|about|from)\\s*\\?$",
+            r"a|an|with|in|on|at|for|by|about|from)\s*\?$",
             text, flags=re.I,
         ):
             continue
