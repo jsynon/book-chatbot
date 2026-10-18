@@ -143,6 +143,7 @@
     .source-reader .source-quote { padding:12px; border-left:3px solid #888; background:#f5f5f5; margin:12px 0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:15px; }
     .source-reader .source-page-text { white-space:normal; overflow-wrap:anywhere; line-height:1.7; font-size:17px; max-height:65vh; overflow-y:auto; border-top:1px solid #ddd; padding-top:14px; }
     .source-reader .source-page-text p { margin:0 0 1em; text-indent:0; }
+    .source-reader .source-page-text mark.cited-highlight { background:#fff0a5; color:#111; padding:1px 0; box-decoration-break:clone; -webkit-box-decoration-break:clone; }
     .source-reader .source-page-text.original-ocr { white-space:pre-wrap; }
     .source-reader .source-page-text.original-ocr p { margin:0; }
     .source-reader .source-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:14px 0; }
@@ -442,20 +443,51 @@
     const sourceOriginal = document.getElementById('source-original');
     const sourceLayout = document.getElementById('source-layout');
     let currentPageText = '';
+    function appendMarkedText(container, text, base, match) {
+      const left = match ? Math.max(0, match.start - base) : text.length;
+      const right = match ? Math.min(text.length, match.end - base) : 0;
+      if (!match || right <= left) {
+        container.append(document.createTextNode(text));
+        return null;
+      }
+      if (left) container.append(document.createTextNode(text.slice(0,left)));
+      const marked = document.createElement('mark');
+      marked.className = 'cited-highlight';
+      marked.textContent = text.slice(left,right);
+      container.append(marked);
+      if (right < text.length) container.append(document.createTextNode(text.slice(right)));
+      return marked;
+    }
     function displaySourceText() {
       sourceReaderText.replaceChildren();
       const original = sourceLayout.value === 'original';
       sourceReaderText.classList.toggle('original-ocr', original);
-      if (original) {
-        sourceReaderText.textContent = currentPageText;
-      } else {
-        for (const paragraphText of ReadingSourceText.readableParagraphs(currentPageText)) {
-          const paragraph = document.createElement('p');
-          paragraph.textContent = paragraphText;
-          sourceReaderText.append(paragraph);
-        }
+      const paragraphs = original ? [currentPageText] :
+        ReadingSourceText.readableParagraphs(currentPageText);
+      const separator = original ? '' : '\n\n';
+      const displayed = paragraphs.join(separator);
+      const applicable = activeSource && activeSource.source &&
+        Array.isArray(activeSource.source.pages) &&
+        activeSource.source.pages.map(Number).includes(Number(activeSource.page));
+      const match = applicable && activeSource.source.excerpt ?
+        ReadingSourceText.locateCitedExcerpt(displayed,activeSource.source.excerpt) : null;
+      let cursor = 0;
+      let target = null;
+      for (const content of paragraphs) {
+        const element = original ? sourceReaderText : document.createElement('p');
+        const mark = appendMarkedText(element,content,cursor,match);
+        if (mark && !target) target = mark;
+        if (!original) sourceReaderText.append(element);
+        cursor += content.length + separator.length;
       }
       sourceReaderText.scrollTop = 0;
+      if (target) {
+        // Center the evidence in the inner scrollable reader, not the whole page.
+        sourceReaderText.scrollTop = Math.max(0,
+          target.offsetTop - sourceReaderText.offsetTop -
+          sourceReaderText.clientHeight / 3);
+      }
+      return Boolean(target);
     }
     sourceLayout.addEventListener('change', displaySourceText);
     let activeSource = null;
@@ -492,6 +524,7 @@
       const request = ++sourceRequest;
       sourceReader.hidden = false;
       sourceReaderStatus.textContent = 'Loading original indexed page…';
+      activeSource = null;
       currentPageText = '';
       sourceReaderText.replaceChildren();
       sourcePrev.disabled = true;
@@ -515,8 +548,13 @@
           sourceReaderQuote.hidden = false;
         }
         currentPageText = data.text;
-        displaySourceText();
-        sourceReaderStatus.textContent = data.truncated ? 'Very long page: showing the first 50,000 characters.' : '';
+        const highlighted = displaySourceText();
+        const onCitedPage = Array.isArray(source.pages) &&
+          source.pages.map(Number).includes(Number(data.page));
+        sourceReaderStatus.textContent =
+          (highlighted ? 'Cited passage highlighted in yellow. ' :
+          onCitedPage && source.excerpt ? 'The cited excerpt could not be located reliably on this page. ' : '') +
+          (data.truncated ? 'Very long page: showing the first 50,000 characters.' : '');
         sourcePrev.disabled = data.previous_page == null;
         sourceNext.disabled = data.next_page == null;
         sourceOriginal.href = data.pdf_url;
