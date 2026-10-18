@@ -44,11 +44,12 @@ class DiversePassageIndex(PassageIndex):
     """Preserve source diversity in the 24 passages offered to the selector."""
 
     def __init__(self, books, tokenize, continuation, chosen_books,
-                 discovery, topic_terms=()):
+                 discovery, topic_terms=(), topic_terms_by_book=None):
         super().__init__(books, tokenize, continuation)
         self.chosen_books = list(chosen_books)
         self.discovery = discovery
         self.topic_terms = list(topic_terms)
+        self.topic_terms_by_book = topic_terms_by_book or {}
         self.is_cross_library = True
 
     def search(self, question, facets, history=(), limit=BROAD_RESULTS):
@@ -71,7 +72,16 @@ class DiversePassageIndex(PassageIndex):
                     questions.append(" ".join(subset))
         else:
             questions = [question]
-        ranked = [self.rank(q) for q in dict.fromkeys(questions)]
+        # In a conceptual plan, each book belongs to a known author and can
+        # have DIFFERENT retrieval concepts. Rank per author, not against a
+        # concatenated query that would unfairly punish different vocabularies.
+        if self.topic_terms_by_book:
+            ranked = []
+            for book_id in self.chosen_books:
+                topics = self.topic_terms_by_book.get(book_id, self.topic_terms)
+                ranked.append(self.rank(" ".join(topics)))
+        else:
+            ranked = [self.rank(q) for q in dict.fromkeys(questions)]
         book_lists = {book_id: [] for book_id in self.chosen_books}
         seen = set()
         for position in range(max(map(len, ranked), default=0)):
@@ -88,10 +98,11 @@ class DiversePassageIndex(PassageIndex):
 
         for book_id, candidates in book_lists.items():
             primary_rank = {i: rank for rank, i in enumerate(candidates)}
+            topics = self.topic_terms_by_book.get(book_id, self.topic_terms)
             scores = {i: passage_topic_score(
-                self.passages[i]["text"], self.topic_terms, self.tokenize)
+                self.passages[i]["text"], topics, self.tokenize)
                 for i in candidates}
-            if len(self.topic_terms) >= 2 and any(
+            if len(topics) >= 2 and any(
                 coverage >= 2 for _, coverage in scores.values()
             ):
                 candidates[:] = [i for i in candidates
@@ -242,9 +253,10 @@ class WholeLibraryLocator:
             selected.append(max(remaining, key=value))
         return selected
 
-    def _rank_page_candidates(self, question, manifest):
+    def _rank_page_candidates(self, question, manifest, terms_override=None):
         author_groups = self._authors_mentioned(question)
-        terms = self._terms(question, author_groups)
+        terms = (self._terms(question, author_groups)
+                 if terms_override is None else list(terms_override)[:MAX_TERMS])
         page_scores = defaultdict(float)
         page_matches = defaultdict(int)
         page_books = manifest["page_books"]
@@ -423,7 +435,7 @@ class WholeLibraryLocator:
                 pages.append({"page": int(page["page"]), "text": text})
         return pages
 
-    def search(self, question, max_books=MAX_BOOKS):
+    def search(self, question, max_books=MAX_BOOKS, concept_plan=None):
         """Return a cross-book passage index plus audit-friendly discovery.
 
         No Ollama calls. Never read more than max_books book shards, and never
@@ -431,9 +443,43 @@ class WholeLibraryLocator:
         """
         with self._lock:
             manifest = self._manifest_data()
-            scored, terms, author_groups = self._rank_page_candidates(
-                question, manifest
-            )
+            topic_terms_by_book = {}
+            if concept_plan is not None:
+                # These are only a model's search HINTS. The original question
+                # owns author identity; a planner can neither invent a new
+                # author nor broaden the search to unrelated writers.
+                author_groups = self._authors_mentioned(question)
+                if (not 2 <= len(author_groups) <= MAX_BOOKS
+                        or not isinstance(concept_plan, dict)
+                        or not isinstance(concept_plan.get("author_topics"), dict)
+                        or set(concept_plan["author_topics"]) != {
+                            g["author"] for g in author_groups
+                        }):
+                    raise LibrarySearchError(
+                        "Conceptual search plan does not match verified named authors."
+                    )
+                scored = {}
+                terms = []
+                for group in author_groups:
+                    hints = concept_plan["author_topics"][group["author"]]
+                    if (not isinstance(hints, list)
+                            or not 2 <= len(hints) <= 5
+                            or not all(isinstance(t, str)
+                                       and re.fullmatch(r"[a-z]{4,30}", t)
+                                       for t in hints)):
+                        raise LibrarySearchError("Invalid conceptual search hints")
+                    group_scored, found, _ = self._rank_page_candidates(
+                        question, manifest, terms_override=hints
+                    )
+                    terms.extend(t for t in found if t not in terms)
+                    for bid in group["book_ids"]:
+                        if bid in group_scored:
+                            scored[bid] = group_scored[bid]
+                            topic_terms_by_book[bid] = hints
+            else:
+                scored, terms, author_groups = self._rank_page_candidates(
+                    question, manifest
+                )
             if len(author_groups) > MAX_BOOKS:
                 raise LibrarySearchError(
                     "Across-library comparison currently supports at most "
@@ -489,6 +535,14 @@ class WholeLibraryLocator:
             discovery = {
                 "scope": "library", "corpus_version": self.registry.corpus_version,
                 "terms": terms,
+                "retrieval_strategy": (
+                    "author_specific_concept_plan" if concept_plan is not None
+                    else "literal_topic_postings"
+                ),
+                "conceptual_plan": (
+                    {"author_topics": concept_plan["author_topics"]}
+                    if concept_plan is not None else None
+                ),
                 "authors_detected": len(author_groups),
                 "required_author_groups": [
                     {"author": group["author"],
@@ -507,7 +561,11 @@ class WholeLibraryLocator:
             }
             index = DiversePassageIndex(
                 books, self.tokenize, self.continuation, used_ids, discovery,
-                topic_terms=terms
+                topic_terms=terms,
+                topic_terms_by_book={
+                    bid: topic_terms_by_book[bid]
+                    for bid in used_ids if bid in topic_terms_by_book
+                }
             )
             if not index.passages:
                 raise LibrarySearchError(
