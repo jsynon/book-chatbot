@@ -7,7 +7,8 @@ import unittest
 
 import app
 from retrieval_relevance import (
-    canonical_author, content_terms, named_author_groups, passage_topic_score
+    canonical_author, content_terms, named_author_groups, passage_topic_score,
+    refers_to_previous_question,
 )
 from whole_library import WholeLibraryLocator
 
@@ -83,6 +84,20 @@ class QueryRelevanceTests(unittest.TestCase):
         self.assertEqual({g["author"] for g in groups},
                          {"immanuel kant", "david hume", "simone weil",
                           "john stuart mill"})
+
+    def test_followup_history_is_not_forced_into_independent_topic(self):
+        self.assertFalse(refers_to_previous_question(
+            "How do different authors approach the meaning of life?",
+            app.tokenize))
+        self.assertFalse(refers_to_previous_question(
+            "How do Aristotle and Tolstoy understand happiness?",
+            app.tokenize))
+        self.assertTrue(refers_to_previous_question(
+            "How about Tolstoy?", app.tokenize))
+        self.assertTrue(refers_to_previous_question(
+            "What does that mean?", app.tokenize))
+        self.assertTrue(refers_to_previous_question(
+            "How do they differ?", app.tokenize))
 
     def test_new_topic_is_not_limited_to_philosophy_keyword_list(self):
         self.assertEqual(
