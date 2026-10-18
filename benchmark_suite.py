@@ -9,7 +9,6 @@ still require a human to read the passages and assess the explanation.
 import json
 from pathlib import Path
 import re
-from urllib.parse import urlparse
 
 DISCIPLINES = frozenset({"science", "history", "literature", "philosophy"})
 SCORE_DIMENSIONS = (
@@ -18,7 +17,7 @@ SCORE_DIMENSIONS = (
 )
 CITATION = re.compile(r"\[(S[1-9]\d*)\]")
 DRIVE_ID = re.compile(
-    r"^https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)/view(?:\?.*)?(?:#page=(\d+))?$"
+    r"^https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)/view(?:\?[^#]*)?(?:#page=(\d+))?$"
 )
 
 
