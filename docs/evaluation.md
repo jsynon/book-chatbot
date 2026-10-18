@@ -4,7 +4,7 @@
 
 ## Repeatable evaluation
 
-Run the fixed five-question regression test and the separate synthesis question on the same installed Ollama models. Compare **evidence v1.2** with **direct v1.1** using identical questions, fresh conversation histories, and the same underlying book shard. Record the local build, model, context length, passage IDs and pages, full output and elapsed time. Export the JSON report.
+Use **Gemma3:12b** as the standard local model, not a recurring contest among models. For substantive changes, run the established five Aristotle regression questions and one difficult synthesis question with fresh histories, record the build and elapsed time, and inspect the cited text. Run a different model only to answer a specific diagnostic question. For v1.4, additionally test one named **two-author comparison** and one **broad across-library question**, and inspect the selected books, pages and each linked PDF. Export the JSON report when debugging a problem.
 
 Do not use Google's AI Overview as ground truth. It can provide ideas for readable presentation, but it may draw from external study sites, vary between runs, and itself simplify or misinterpret texts. Whenever possible, judge claims from the cited Antilogicalism primary-source text.
 
@@ -31,9 +31,21 @@ These are **human review anchors**, not hardcoded answers or retrieval rules. Th
 - **Magnificence:** distinguish it from liberality, explain scale and noble expenditure, and ground the distinctions in Book IV.
 - **Synthesis question:** connect moral virtue, practical wisdom, and eudaimonia; recognize the aim/means relation, happiness as activity rather than transient mood, and (when relevant) the Book X complication that contemplation receives special priority.
 
+## Checks for v1.4 across-library reading
+
+The global retrieval mode is deliberately bounded. Evaluate both **which books are selected** and **what the model says about them**; a perfect URL does not mean the right work was found.
+
+- **Named cross-work comparison:** “How do Aristotle and Tolstoy understand happiness and the good life?” Confirm that source passages from both authors appear in retrieval, that the final answer cites both if it makes claims about both, and that no source uses the other author's PDF. Aristotle's Book X treatment of contemplation must not be flattened into an ordinary claim about practical virtue.
+- **Broader discovery:** “How do different authors in the library approach the question of life's meaning?” Review which books the system selected, and whether the answer clearly says it is only a sample of texts rather than an exhaustive survey of all 644 books.
+- **Cross-work identity:** Source IDs must be unique within one answer, and every title, book ID, original PDF page and Drive document must match the exact extracted passage. The source list should identify each book visibly.
+- **Search coverage:** A query that mentions two named authors but has indexed topical evidence for only one must report that limitation rather than silently invent a comparison. A missing global manifest must produce a clear local-data error before inference begins.
+- **Memory and timing:** Inspect the diagnostic field library_discovery. It should list at most four opened books and nine pages per book; the global mode must not load all compressed shards just because a single question was asked.
+
+A **real-index compatibility smoke** tests source mappings but not interpretation: it downloads v47 metadata, the happiness/virtue/meaning partitions, and Aristotle's and Tolstoy's shards, then reports selected original pages. A live Gemma answer is still required to judge the explanatory quality and latency of a cross-book conversation.
+
 ## Failure analysis
 
-For v1.2.2, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see grouped citation markers, any added source IDs, and rejected conflicts. This recovery supports at most six unique, existing source IDs per paragraph and does not grade whether the cited passage supports each claim. Preserve the same philosophical scoring rubric after a format-only recovery.
+For v1.4, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see grouped citation markers, any added source IDs, and rejected conflicts. This recovery supports at most six unique, existing source IDs per paragraph and does not grade whether the cited passage supports each claim. Preserve the same philosophical scoring rubric after a format-only recovery.
 
 For a poor answer, separate **retrieval** (the needed passage never appeared), **selection** (it was retrieved but not supplied), **interpretation** (it was supplied but the model got the meaning wrong), **citation** (the answer points at an irrelevant/unknown passage), and **presentation** (repetition or poor organization). These failures need different solutions. Do not conflate a successful JSON format with philosophical correctness.
 
