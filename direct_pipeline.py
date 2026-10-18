@@ -21,7 +21,7 @@ MAX_PARAGRAPHS = 6
 MAX_REFERENCES_PER_PARAGRAPH = 4
 
 
-INLINE_CITATION = re.compile(r"\[S\d+\]")
+INLINE_CITATION = re.compile(r"\[(S\d+)\]")
 
 
 def validate_paragraphs(result, allowed_ids, reconciliation_log=None):
