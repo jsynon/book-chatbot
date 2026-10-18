@@ -42,7 +42,7 @@ jobs:
           const match = html.match(/<script>([\s\S]*?)<\/script>/);
           if (!match) throw new Error('Expected inline application script');
           new vm.Script(match[1], {filename: 'index.html'});
-          for (const name of ['id="pipeline"', 'id="compare-pipelines"', 'id="test-suite"', 'Key passages from the book', "['evidence', 'direct']", 'id="book"', 'id="book-filter"', 'id="search-scope"', 'id="library-prompts"']) {
+          for (const name of ['id="pipeline"', 'id="compare-pipelines"', 'id="test-suite"', 'Key passages from the source books', "['evidence', 'direct']", 'id="book"', 'id="book-filter"', 'id="search-scope"', 'id="library-prompts"']) {
             if (!html.includes(name)) throw new Error('Missing model-comparison control: ' + name);
           }
           console.log('Browser script syntax and comparison controls OK.');
