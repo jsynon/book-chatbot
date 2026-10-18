@@ -70,6 +70,24 @@ jobs:
           if (!html.includes('id="source-layout"') || !html.includes('displaySourceText();')) {
             throw new Error('Missing source reader layout controls');
           }
+          const citeText = 'He understands the question, and he knows that the most important point must be stated plainly before the discussion continues.';
+          const wrappedPage = 'Introduction.\\n\\n  He understands the\\n question, and he knows that the most important point must\\n be stated plainly before the discussion continues.\\n\\nLater.';
+          const displayPage = formatting.readableParagraphs(wrappedPage).join('\\n\\n');
+          const found = formatting.locateCitedExcerpt(displayPage, citeText);
+          if (!found || displayPage.slice(found.start,found.end) !== citeText || found.partial) {
+            throw new Error('Failed to locate exact quoted passage across OCR wraps');
+          }
+          if (formatting.locateCitedExcerpt('The night is dark. The night is dark.', 'The night is dark.')) {
+            throw new Error('Short ambiguous phrase should never be highlighted');
+          }
+          const twoPages = 'An isolated introduction to the subject.\\n\\n' + citeText.slice(0,60);
+          const partial = formatting.locateCitedExcerpt(twoPages, citeText);
+          if (!partial || !partial.partial) {
+            throw new Error('Cross-page partial quotation should locate a distinctive continuous span');
+          }
+          if (!html.includes('cited-highlight') || !html.includes('appendMarkedText')) {
+            throw new Error('Missing source reader highlight rendering');
+          }
           console.log('Browser script syntax and comparison controls OK.');
           JS
       - name: Test bounded library retrieval and evidence pipeline contracts
