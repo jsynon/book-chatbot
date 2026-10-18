@@ -2,7 +2,7 @@
 
 The [Antilogicalism](https://jsynon.github.io/antilogicalism/) Reading Companion is a primary-source-grounded local reading assistant. It is intended to cover the full digital library, not only the current Aristotle pilot. The application deliberately separates bibliographic metadata, indexed PDF text, retrieval, answer composition and verification of citation identities.
 
-## Architecture in v1.4.3
+## Architecture in v1.4.4
 
 Version 1.4.3 introduces reproducible **cross-disciplinary evaluation**, not a new question-specific answer generator. The normal one-book, across-library, and two-call conceptual planning routes remain as implemented in v1.4.2. The benchmark and the optional question picker are isolated from the production retrieval ranking.
 
@@ -65,6 +65,18 @@ The v47 manifest, postings encoding and matching page IDs were inspected against
 A successful answer is deliberately labeled **draft**. It means source IDs are valid, not that the model's interpretation is true, complete or supported sentence by sentence. OCR damage, lexical mismatch, limited passage context, overconfident synthesis, and missing conceptual links remain real risks. A fixed set of passages cannot prove what an author *never* says across a book.
 
 The library ranking currently relies on lexical term matches and page-level presence. It is not a pretrained semantic embedding system; references to the same idea using very different vocabulary may be missed. A broad question samples up to four books; it is **not an exhaustive overview of all 644 works**. When appropriate, ask a more specific question or open an individual book. Some Google Drive PDF previews ignore the page anchor, so the physical page is also displayed.
+
+## Source-form quality and cautious attribution (v1.4.4)
+
+**Problem seen in actual reports:** Darwin's *Origin of Species* selected contents and chapter headers as if they contained evidence; Thucydides' quoted Corinthians reporting the Corcyraeans' position were mistaken for the Corinthians' own judgment; and Raskolnikov's reported theory plus a later scene were conflated with direct dialogue and a final confession.
+
+The original in-memory passage index now uses `passage_quality.source_form()` when ranking to suppress **obvious navigation and OCR-damaged running headers**, without deleting any page text. A second, bounded filter before the first Ollama call excludes navigational candidates if there are at least two substantive prose candidates. Requests explicitly about book contents/chapters are exempt. If the index is too sparse to offer real prose, the available evidence is retained instead of silently withheld. Original passage identities and PDF citations never change.
+
+The separate `passage_quality.discourse_cues()` exposes **visible** features: quotation marks, reporting verbs, and excerpts beginning mid-sentence or with unattributed dialogue. It does not attempt to assign identities or decide whose thesis is endorsed. When a selected excerpt opens mid-speech, `select_neighbor_context()` can bring in its actual immediately preceding passage, keeping an independent source ID and the existing context-page and character limits. The composer sees that context in original book order, along with uncertainty markers. It is instructed not to treat another party's view as the reporter's own, or to call a passage the final scene/confession unless the selected evidence actually establishes that sequence. These are not guarantees of correctness.
+
+**Performance:** All of these checks are deterministic Python; no extra Ollama call, external API, embedding model or new corpus is needed. Both the normal selector+composer and hypothetical author planner+composer still require **at most two local inference calls**. The work also applies to all authors/disciplines, rather than containing special-case author, work or question logic.
+
+Run `python -m unittest discover -s tests -p 'test_passage_quality.py' -v` for the source-form/discourse contracts. The optional, read-only public-v47 audit is `python scripts/audit_source_quality_v144.py`, which temporarily downloads the Darwin, Thucydides and Dostoevsky compressed texts. CI validates the synthetic contracts offline; the real-data audit has also been exercised separately. Neither audit proves the semantic quality of a Gemma answer.
 
 ## Evaluation across the library's disciplines
 
