@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Antilogicalism — Fingerprint Verification Pilot</title>
+<style>body{font:17px/1.6 Georgia,serif;max-width:760px;margin:2rem auto;padding:0 1rem;color:#222}h1{font-weight:normal}label{display:block;margin:1rem 0 .25rem}input{width:100%;box-sizing:border-box;padding:10px;font:15px system-ui}button{padding:10px 16px;background:#fff;border:1px solid #222;cursor:pointer}p.note{font:13px/1.5 system-ui;color:#555}pre{white-space:pre-wrap;overflow-wrap:anywhere}section{margin-top:1rem}</style></head>
+<body><h1>Verified Library Page — SHA-256 Pilot</h1>
+<p class="note">Local, protected development test only. Your browser reads the original indexed v47 page, sends its exact text to the disabled Cloudflare Worker, and the Worker compares it with a separately published SHA-256 fingerprint. No AI inference or public access.</p>
+<form id="probe"><label>Question</label><input id="question" value="What caused the Peloponnesian War?" required>
+<label>Cloudflare Worker URL</label><input id="worker" type="url" value="https://antilogicalism-companion-public.jsynon.workers.dev" required>
+<label>Private SOURCE_PROBE_TOKEN (kept in this tab only)</label><input id="token" type="password" autocomplete="off" required>
+<label><input id="tamper" type="checkbox" style="width:auto"> Deliberately alter one character to test rejection</label>
+<button id="run" type="submit">Verify original page 38</button></form>
+<p id="state" role="status"></p><section id="result"></section>
+<script type="module">
+import {RemoteLibrary} from './remote-library.mjs';
+const library=new RemoteLibrary();
+const form=document.getElementById('probe');
+const state=document.getElementById('state');
+const result=document.getElementById('result');
+const button=document.getElementById('run');
+form.addEventListener('submit',async event=>{
+  event.preventDefault();
+  button.disabled=true;
+  result.replaceChildren();
+  try{
+    state.textContent='Loading original book 152 page 38 text from the v47 corpus…';
+    const shard=await library.jsonGzip('book-152.json');
+    const item=shard.pages.find(p=>p.page===38&&p.id===34403);
+    if(!item||typeof item.text!=='string')throw new Error('Canonical page 38 was not found in downloaded v47 shard.');
+    const altered=document.getElementById('tamper').checked;
+    const raw=altered?item.text+'x':item.text;
+    const endpoint=document.getElementById('worker').value.replace(/\/+$/,'');
+    const question=document.getElementById('question').value.trim();
+    state.textContent='Requesting private SHA-256 comparison on Cloudflare…';
+    const response=await fetch(endpoint+'/internal/fingerprint-probe',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+document.getElementById('token').value,'Content-Type':'application/json'},
+      body:JSON.stringify({question,sources:[{bookId:'152',page:38,text:raw}]})
+    });
+    const data=await response.json();
+    const heading=document.createElement('h2');
+    const summary=document.createElement('p');
+    if(response.ok&&data.status==='verified'){
+      heading.textContent='Verified against the trusted v47 page hash';
+      const s=data.sources[0];
+      summary.textContent='Book '+s.bookId+' · physical PDF page '+s.page+' · global page '+s.globalPageId+
+        ' · hash packet '+s.fingerprintBytes+' bytes · elapsed wall time '+data.wallElapsedMs+' ms.';
+      const link=document.createElement('a');link.href=s.sourceUrl;link.textContent='Open the original source PDF';link.target='_blank';link.rel='noopener noreferrer';
+      result.append(heading,summary,link);
+    }else{
+      heading.textContent='Verification declined (HTTP '+response.status+')';
+      summary.textContent=data.error||'Request did not pass verification.';
+      result.append(heading,summary);
+    }
+    state.textContent=altered?'Negative-test result: modified text should be rejected.':'Original-page result returned. Check Cloudflare CPU metrics separately.';
+  }catch(error){state.textContent='Test could not complete: '+error.message;}
+  finally{button.disabled=false;}
+});
+</script></body></html>
