@@ -561,7 +561,7 @@ def _follow_up_questions(output):
             continue
         if re.search(
             r"\\b(?:and|or|but|because|although|if|even|of|to|the|"
-            r"a|an|with|in|on|at|for|by|about|from)\s*\?$",
+            r"a|an|with|in|on|at|for|by|about|from)\\s*\\?$",
             text, flags=re.I,
         ):
             continue
