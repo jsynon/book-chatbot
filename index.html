@@ -145,7 +145,7 @@
     .source-reader .source-actions button { min-height:40px; }
     .source-reader .source-actions a { color:#222; font:14px system-ui,sans-serif; }
     .source-reader .source-actions button:disabled { cursor:not-allowed; }
-    .sources .read-page { margin:4px 8px 5px 0; padding:6px 10px; background:#111; color:#fff; font:13px system-ui,sans-serif; }
+    .sources .read-page { margin:4px 8px 5px 0; padding:6px 10px; font:13px system-ui,sans-serif; }
     @media(max-width:600px){ .source-reader { padding:14px; } .source-reader .source-page-text { max-height:55vh; } }
   /* Scoped Book Lite integration: retain the existing reader controls and safety UI.
    The site's actual theme CSS is served from book-lite.css. */
@@ -174,7 +174,37 @@
     .companion-content .intro { margin:0 auto; max-width:670px; }
     .companion-content .body { font:18px/1.75 "Century Schoolbook",Century,Garamond,serif; }
     .companion-content textarea { font-family:"Century Schoolbook",Century,Garamond,serif; }
-    .companion-content button:not(.secondary-action) { background:#111; color:#fff; }
+    /* Book Lite reader controls: black text on white, with visible borders. */
+    .companion-content button,
+    .companion-content button:not(.secondary-action),
+    .companion-content .sources .read-page,
+    #secondary.companion-widgets .site-search button {
+      background:#fff; color:#111; border:1px solid #111;
+      text-shadow:none; box-shadow:none;
+    }
+    .companion-content button:hover:not(:disabled),
+    #secondary.companion-widgets .site-search button:hover:not(:disabled) {
+      background:#f0f0f0; color:#111;
+    }
+    .companion-content button:focus-visible,
+    #secondary.companion-widgets .site-search button:focus-visible {
+      outline:2px solid #111; outline-offset:2px;
+    }
+    /* Book Lite decorates blockquotes with oversized pseudo-quotation marks.
+       Suppress them ONLY for the app's source passages and spotlights. */
+    .companion-content .highlights blockquote,
+    .companion-content .source-reader .source-quote {
+      position:static; text-indent:0; margin:10px 0;
+      padding:8px 12px; border-left:2px solid #bbb;
+      background:#fafafa; color:#111; line-height:1.65;
+    }
+    .companion-content .highlights blockquote::before,
+    .companion-content .highlights blockquote::after,
+    .companion-content .source-reader .source-quote::before,
+    .companion-content .source-reader .source-quote::after {
+      content:none !important; display:none !important;
+    }
+    .companion-content .highlights blockquote p { margin:0; }
     .companion-content .reader-panel,.companion-content .turn { border-radius:2px; }
     .companion-content .turn.assistant { border-left-color:#111; }
     .companion-content .turn.user { background:#f5f5f5; border-color:#e5e5e5; }
@@ -185,7 +215,7 @@
     #secondary.companion-widgets li { margin:0 0 8px; }
     #secondary.companion-widgets a { color:#333; }
     #secondary.companion-widgets .site-search input { width:100%; min-width:0; padding:8px; font-size:14px; border:1px solid #bbb; }
-    #secondary.companion-widgets .site-search button { margin-top:6px; padding:7px 12px; font-size:13px; color:#fff; background:#111; border:0; }
+    #secondary.companion-widgets .site-search button { margin-top:6px; padding:7px 12px; font-size:13px; }
     #secondary.companion-widgets p { margin:9px 0; }
     #colophon.site-footer { max-width:750px; margin:0 auto; padding:15px 0 35px; font:12px/1.5 "Century Schoolbook",Century,Garamond,serif; }
     .companion-content footer { font-size:12px; }
@@ -358,7 +388,7 @@
     </form>
     <div id="status" role="status"></div>
     <!-- Explain where processing happens and display the running server build. -->
-    <footer>Version 1.5 demo runs Ollama locally and retrieves from the shared v47 full-text index. Across-library responses consult a bounded selection of books, not the entire corpus at once. Source excerpts are exact quotations; citations lead to their pages, but neither certifies an interpretation's correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
+    <footer>Version 1.6 runs Ollama locally and retrieves from the shared v47 full-text index. Across-library responses consult a bounded selection of books, not the entire corpus at once. Source excerpts are exact quotations; citations lead to their pages, but neither certifies an interpretation's correctness. It does not call a hosted AI service. Page citations open the PDF in Google Drive preview and show the physical page number; if Drive opens at page 1, navigate to that listed page in the preview.<br><span id="build-id">Checking local app build…</span></footer>
   </main>
   <div id="secondary" class="companion-widgets" aria-label="Site footer links and feeds">
     <div id="first" class="widget-area">
@@ -414,8 +444,27 @@
       if (sourceReturnTarget && sourceReturnTarget.isConnected) sourceReturnTarget.focus();
     }
     document.getElementById('close-source-reader').addEventListener('click', closeSourceReader);
+    function isReadableSourceLocator(source, page) {
+      // Validate numeric book and physical PDF page IDs. This must match real
+      // numeric source metadata: the v1.6.0 double-escaped regex rejected
+      // ALL citations and silently did nothing.
+      return Boolean(source && /^[0-9]+$/.test(String(source.book_id)) &&
+        /^[0-9]+$/.test(String(page)));
+    }
     async function openSourcePage(source, page, trigger, keepQuote = false) {
-      if (!source || !/^\\d+$/.test(String(source.book_id)) || !/^\\d+$/.test(String(page))) return;
+      if (!isReadableSourceLocator(source, page)) {
+        sourceReader.hidden = false;
+        sourceReaderTitle.textContent = 'Source unavailable';
+        sourceReaderMeta.textContent = '';
+        sourceReaderText.textContent = '';
+        sourceReaderQuote.hidden = true;
+        sourcePrev.disabled = true;
+        sourceNext.disabled = true;
+        sourceOriginal.removeAttribute('href');
+        sourceReaderStatus.textContent = 'This citation has no valid source book or physical PDF page number.';
+        sourceReader.scrollIntoView({behavior:'smooth',block:'start'});
+        return;
+      }
       if (trigger) sourceReturnTarget = trigger;
       const request = ++sourceRequest;
       sourceReader.hidden = false;
