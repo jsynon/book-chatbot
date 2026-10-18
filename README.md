@@ -6,6 +6,14 @@
 
 **The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
+## Version 1.5.1: Book Lite visual integration (local preview)
+
+The Reading Companion now shares the *appearance* of Antilogicalism's existing Book Lite website: the same theme CSS, photograph-backed site masthead and tagline, six-item navigation, Century Schoolbook typography, narrow editorial content column, and three-column footer arrangement. The actual stylesheet from `jsynon/antilogicalism/wp-content/themes/book-lite/style.css` is committed as `book-lite.css` and served locally. Asset references point to the public site's original decorative images; these visuals need network access to display. The footer feed areas link to the live Arts & Letters Daily and Quanta websites rather than pretending to have synchronized RSS content.
+
+This is a theme-matched **local demonstration**, not a published website page: `start.bat` continues to start a server bound to `127.0.0.1`; the existing chat API, catalog, v47 corpus, and Ollama inference remain unchanged. The menu links navigate to the actual live Antilogicalism pages, while the Reading Companion itself remains local. Changes to the site's Book Lite styles after this copy will need to be synced explicitly.
+
+**Review:** run locally and inspect the header, navigation, book picker, source links, and footer at desktop and phone widths in Chrome Device Toolbar. Confirm one-book and cross-library chats still work. No additional model-quality benchmark campaign is required for this styling release.
+
 ## Version 1.5.0: reader-first local demo
 
 The default page now prioritizes choosing a book, asking a question, and reading cited answers. Advanced model/pipeline settings, troubleshooting, and example-question collections are optional disclosures. Answers render safe paragraphs, emphasis, and linked source markers without interpreting model text as HTML. Source lists show physical PDF page numbers and disclose the known Google Drive limitation. The layout adapts to phone-sized browser windows, with clearer local-processing feedback, an explicit new-conversation control, and Ctrl+Enter/Command+Enter submission.
