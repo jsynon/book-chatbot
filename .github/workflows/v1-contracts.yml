@@ -1,0 +1,54 @@
+name: Reading Companion v1 contracts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  v1-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Create synthetic source book for contract tests
+        env:
+          BOOK_CHATBOT_BOOK_FILE: ${{ runner.temp }}/book-7.json.gz
+        run: |
+          python - <<'PY'
+          import gzip
+          import json
+          import os
+          with gzip.open(os.environ["BOOK_CHATBOT_BOOK_FILE"], "wt", encoding="utf-8") as file:
+              json.dump({"pages": [
+                  {"page": 1, "text": "Reading is an activity requiring attention and practice. Good interpretations must be checked against the original text."},
+                  {"page": 2, "text": "Scholarly questions call for evidence. A citation gives a reader an opportunity to verify a claim."}
+              ]}, file)
+          PY
+      - name: Compile Version 1 modules
+        run: |
+          python -m compileall -q app.py direct_pipeline.py grounded_pipeline.py inference.py tests
+      - name: Check browser script syntax and controls
+        run: |
+          node - <<'JS'
+          const fs = require('node:fs');
+          const vm = require('node:vm');
+          const html = fs.readFileSync('index.html', 'utf8');
+          const match = html.match(/<script>([\s\S]*?)<\/script>/);
+          if (!match) throw new Error('Expected inline application script');
+          new vm.Script(match[1], {filename: 'index.html'});
+          for (const name of ['id="pipeline"', 'id="compare-pipelines"', 'id="test-suite"']) {
+            if (!html.includes(name)) throw new Error('Missing model-comparison control: ' + name);
+          }
+          console.log('Browser script syntax and comparison controls OK.');
+          JS
+      - name: Test direct and historical comparison contracts
+        env:
+          BOOK_CHATBOT_BOOK_FILE: ${{ runner.temp }}/book-7.json.gz
+        run: |
+          python -m unittest discover -s tests -p 'test_*pipeline.py' -v
