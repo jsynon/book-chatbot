@@ -202,7 +202,8 @@ def render_argument_context(index, anchors, selected):
     return json.dumps(sections, ensure_ascii=False)
 
 
-def choose_evidence(question, history, index, facets, provider, log):
+def choose_evidence(question, history, index, facets, provider, log,
+                    selection_mode="model"):
     """Model-select evidence from a wider retrieval pool; recover predictably.
 
     A selector error may not destroy a good response: the raw selection error
@@ -246,28 +247,39 @@ def choose_evidence(question, history, index, facets, provider, log):
     )
     user = ("Question:\n" + question + "\n\nCandidate primary-source passages:\n"
             + json.dumps(previews, ensure_ascii=False))
-    log(f"Reviewing {len(candidates)} candidate passages for decisive evidence...")
-    started = time.perf_counter()
-    try:
-        output = provider.complete(
-            "evidence_selection", selector_system, user, selection_schema, 220
-        )
-        chosen = output.get("source_ids") if isinstance(output, dict) else None
-        if (not isinstance(chosen, list)
-                or not 1 <= len(chosen) <= PRIMARY_LIMIT
-                or any(not isinstance(s, str) or s not in allowed for s in chosen)
-                or len(chosen) != len(set(chosen))):
-            raise CompletionError("Evidence selector did not return unique known source IDs")
-        anchors = [allowed[sid] for sid in chosen]
-        stage["status"] = "complete"
-        stage["selected_ids"] = chosen
-    except CompletionError as error:
-        stage.update(status="ranked_fallback", reason=str(error))
+    if selection_mode == "ranked":
+        # The first model call was used for an author-specific search plan;
+        # another selector call would turn this into a costly THIRD model
+        # request. Ranked originals + author coverage preserve the two-call
+        # budget without inventing any new evidence.
         anchors = candidates[:PRIMARY_LIMIT]
-        stage["selected_ids"] = [p["source_id"] for p in anchors]
-        log("Evidence selector invalid; preserving top-ranked source fallback.")
-    finally:
-        stage["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
+        stage.update(status="conceptual_ranked",
+                     selected_ids=[p["source_id"] for p in anchors],
+                     elapsed_ms=0)
+        log("Using topic-ranked source passages after conceptual planning.")
+    else:
+        log(f"Reviewing {len(candidates)} candidate passages for decisive evidence...")
+        started = time.perf_counter()
+        try:
+            output = provider.complete(
+                "evidence_selection", selector_system, user, selection_schema, 220
+            )
+            chosen = output.get("source_ids") if isinstance(output, dict) else None
+            if (not isinstance(chosen, list)
+                    or not 1 <= len(chosen) <= PRIMARY_LIMIT
+                    or any(not isinstance(s, str) or s not in allowed for s in chosen)
+                    or len(chosen) != len(set(chosen))):
+                raise CompletionError("Evidence selector did not return unique known source IDs")
+            anchors = [allowed[sid] for sid in chosen]
+            stage["status"] = "complete"
+            stage["selected_ids"] = chosen
+        except CompletionError as error:
+            stage.update(status="ranked_fallback", reason=str(error))
+            anchors = candidates[:PRIMARY_LIMIT]
+            stage["selected_ids"] = [p["source_id"] for p in anchors]
+            log("Evidence selector invalid; preserving top-ranked source fallback.")
+        finally:
+            stage["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
 
     # Source coverage belongs to a PERSON, not whichever particular volume
     # was highest-ranked. A citation from Aristotle's Ethics satisfies an
@@ -350,8 +362,15 @@ def _follow_up_questions(output):
     return clean
 
 
-def answer_evidence_first(question, history, index, facets, provider, build):
-    """Two useful inference steps; no self-review, rewriting, or claim patches."""
+def answer_evidence_first(question, history, index, facets, provider, build,
+                          *, selection_mode="model", pre_stage=None):
+    """At most two useful model calls; no self-review or answer-repair agent.
+
+    The ordinary route calls the evidence selector and composer. A genuinely
+    hypothetical cross-author question can instead spend the FIRST call on
+    conceptual retrieval and use topic-ranked original passages here. Both
+    routes retain identical citation validation.
+    """
     started = time.perf_counter()
     verbose = isinstance(provider, OllamaProvider) and os.environ.get(
         "BOOK_CHATBOT_PROGRESS", "1"
@@ -367,9 +386,10 @@ def answer_evidence_first(question, history, index, facets, provider, build):
 
     log("Question: " + " ".join(question.split())[:180])
     candidates, selected, anchors, stage = choose_evidence(
-        question, history, index, facets, provider, log
+        question, history, index, facets, provider, log,
+        selection_mode=selection_mode
     )
-    stages = [stage]
+    stages = ([pre_stage] if pre_stage else []) + [stage]
     log(f"Selection: {stage['status']} in {stage.get('elapsed_ms', 0)/1000:.1f}s; "
         f"{len(anchors)} key passages + {len(selected)-len(anchors)} context passages.")
     log("Sources: " + (
@@ -381,7 +401,12 @@ def answer_evidence_first(question, history, index, facets, provider, build):
         "build": build, "pipeline": "evidence", "question": question,
         "retrieval": {
             "primary": candidates, "merged": selected, "facets": facets,
-            "selection_method": "model-selected evidence with argument dependencies",
+            "selection_method": (
+                "conceptual topic-ranked source evidence"
+                if selection_mode == "ranked"
+                else "model-selected evidence with argument dependencies"
+            ),
+            "conceptual_planning": pre_stage,
             "evidence_selection": stage,
             "library_discovery": getattr(index, "discovery", None),
             "argument_sections": [
@@ -477,6 +502,19 @@ def answer_evidence_first(question, history, index, facets, provider, build):
                 "works or that you surveyed the entire collection. For a "
                 "named comparison, give grounded treatment to each named "
                 "author and state where the evidence is incomplete."
+            )
+        if selection_mode == "ranked":
+            system += (
+                " The question requests a HYPOTHETICAL intellectual response. "
+                "No historical exchange between the named writers has been "
+                "established. Their source passages show actual positions, "
+                "but a proposed response from one to the other is YOUR "
+                "qualified reconstruction, never a documented quotation "
+                "or personal endorsement. Explicitly distinguish evidence "
+                "for each writer's ideas from your counterfactual inference. "
+                "If the provided passages do not establish a needed "
+                "position, acknowledge the gap rather than filling it "
+                "with ungrounded certainty."
             )
         conversation = [
             {"role": m.get("role"), "content": str(m.get("content", ""))[:800]}
