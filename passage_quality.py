@@ -54,6 +54,14 @@ def source_form(text):
     cap_fraction = n_caps / max(1, sum(len(w) > 1 for w in words))
     leader = bool(_DOT_LEADERS.search(plain))
     label = bool(_CHAPTER_LABEL.match(plain))
+    # A complete CONTENTS page can be several hundred words long. The
+    # passage splitter later produces windows that no longer contain this
+    # heading; classify the parent physical page and inherit its form.
+    explicit_contents_page = bool(re.match(
+        r"^(?:TABLE OF CONTENTS|CONTENTS|"
+        r"BOOK\s+[IVXLC\d]+\s+CHAPTER\s+PAGE)\b",
+        plain, re.I
+    ))
     list_separators = len(_LIST_BOUNDARIES.findall(plain))
     # A contents entry may end in a single period. What distinguishes it
     # from explanatory prose is a sequence of headings WITHOUT sentence
@@ -82,9 +90,11 @@ def source_form(text):
             re.match(r"^\d+\s+[A-Z]", plain) or cap_fraction >= .8
         )
     )
-    navigation = heading or page_furniture or multi_item_contents
+    navigation = (explicit_contents_page or heading
+                  or page_furniture or multi_item_contents)
     reason = (
-        "contents_list" if multi_item_contents
+        "contents_page" if explicit_contents_page
+        else "contents_list" if multi_item_contents
         else "heading_or_page_furniture" if navigation else "original_prose"
     )
     return {
@@ -120,6 +130,17 @@ def discourse_cues(text):
     }
 
 
+def source_kind(passage):
+    """Honor original physical-page classification from the index.
+
+    An isolated split fragment can look like prose even when it lives
+    entirely on a labeled contents page. Only a reliably classified parent
+    page may override the isolated passage's own form.
+    """
+    return ("navigation" if passage.get("source_form_kind") == "navigation"
+            else source_form(passage.get("text", ""))["kind"])
+
+
 def asks_for_book_structure(question):
     """Allow chapter titles/contents when readers actually request them."""
     return bool(re.search(
@@ -139,8 +160,7 @@ def curate_candidates(candidates, question, max_results=24):
     original = list(candidates[:max_results])
     if asks_for_book_structure(question):
         return original, []
-    clean = [p for p in original
-             if source_form(p.get("text", ""))["kind"] == "prose"]
+    clean = [p for p in original if source_kind(p) == "prose"]
     # Two real prose candidates are already more useful than adding a
     # heading as purported proof. With one or none, preserve thin/OCR
     # retrieval instead of silently suppressing all available evidence.
@@ -150,6 +170,6 @@ def curate_candidates(candidates, question, max_results=24):
         {"source_id": p["source_id"],
          "reason": source_form(p["text"])["reason"],
          "pages": p.get("pages", [])}
-        for p in original if source_form(p.get("text", ""))["kind"] == "navigation"
+        for p in original if source_kind(p) == "navigation"
     ]
     return clean, removed
