@@ -21,6 +21,10 @@ import threading
 
 from grounded_pipeline import PassageIndex
 from library_catalog import DRIVE_FILE
+from retrieval_relevance import (
+    canonical_author, content_terms, named_author_groups,
+    passage_topic_score,
+)
 
 
 MAX_TERMS = 8
@@ -30,16 +34,6 @@ MATCH_PAGES_PER_BOOK = 5
 PARTITION_CACHE_SIZE = 8
 BROAD_RESULTS = 24
 
-TERM_RE = re.compile(r"[a-z0-9]+")
-QUESTION_FRAMING = {
-    "explain", "compare", "comparison", "contrasts", "contrast",
-    "different", "difference", "differences", "understand", "understanding",
-    "describes", "describe", "view", "views", "approach", "approaches",
-    "author", "authors", "book", "books", "work", "works",
-    "philosopher", "philosophers", "think", "thinking", "discuss",
-    "discussion", "according", "relationship", "relate", "related",
-    "connect", "connects", "connection", "connections", "linked", "link",
-}
 
 
 class LibrarySearchError(ValueError):
@@ -162,47 +156,13 @@ class WholeLibraryLocator:
         return data
 
     def _authors_mentioned(self, question):
-        """Resolve explicitly mentioned author names without model guesses.
-
-        Full author names, and sufficiently distinctive surnames, are checked
-        as word-boundary phrases against actual catalog author metadata.
-        When two named authors occur, book selection must represent both.
-        """
-        question = " " + " ".join(TERM_RE.findall(question.lower())) + " "
-        groups = OrderedDict()
-        for item in self.registry.entries.values():
-            author = " ".join(TERM_RE.findall(item.get("author", "").lower()))
-            if not author or author == "anonymous":
-                continue
-            tokens = author.split()
-            parts = [author]
-            if len(tokens) > 1 and len(tokens[-1]) >= 5:
-                parts.append(tokens[-1])
-            if not any(" " + name + " " in question for name in parts):
-                continue
-            groups.setdefault(author, set()).add(item["book_id"])
-        return list(groups.values())
+        """Match named people, never generic anthology bylines."""
+        return named_author_groups(question, self.registry.entries)
 
     def _terms(self, question, author_groups):
-        author_words = set()
-        for group in author_groups:
-            for book_id in group:
-                meta = self.registry.entries.get(book_id, {})
-                author_words.update(TERM_RE.findall(
-                    meta.get("author", "").lower()
-                ))
-        terms = []
-        for word in TERM_RE.findall(question.lower()):
-            if (len(word) < 3 or word in author_words
-                    or word in QUESTION_FRAMING
-                    or not self.tokenize(word)):
-                continue
-            if word not in terms:
-                terms.append(word)
-            # The search index retains literal word forms (not stems).
-            # Inflection-expanded words can help, but never replace the
-            # reader's actual word with an invented substitute.
-        return terms[:MAX_TERMS]
+        """Return indexed surface words for the actual subject, not commands."""
+        return content_terms(question, self.tokenize, author_groups,
+                             limit=MAX_TERMS)
 
     def _book_metadata(self, book_id, manifest):
         existing = self.registry.entries.get(str(book_id))
@@ -222,6 +182,9 @@ class WholeLibraryLocator:
         return {
             "book_id": str(book_id),
             "title": (existing or {}).get("title") or entry.get("title"),
+            "work_title": (existing or {}).get("work_title") or entry.get("title"),
+            "author": (existing or {}).get("author") or "",
+            "subjects": (existing or {}).get("subjects") or [],
             "pdf_file_id": pdf_id,
             "corpus_version": self.registry.corpus_version,
         }
@@ -296,44 +259,106 @@ class WholeLibraryLocator:
             hits.sort(key=lambda h: (-h[2], -h[1], h[0]))
             top = self._diverse_page_hints(hits, MATCH_PAGES_PER_BOOK)
             size = self._book_counts.get(book_id, 1)
-            # Favor pages covering several words, then substantial evidence
-            # rather than sheer volume of one frequent word in a huge book.
+            best_concepts = max(x[2] for x in hits)
+            cooccurring = sum(x[2] >= 2 for x in hits)
+            fraction = cooccurring / max(size, 1)
+            title_terms = set(self.tokenize(
+                book["work_title"] + " " + " ".join(book["subjects"])
+            ))
+            title_matches = len(set(self.tokenize(" ".join(terms)))
+                                & title_terms)
+            author = canonical_author(book["author"])
+            # Distinguish *subject concentration* from the volume of incidental
+            # hits in a giant anthology. Explicit author comparisons still get
+            # the requested author's works regardless of collection status.
             scored[book_id] = {
-                "score": (top[0][1] * 2.5
-                          + sum(x[1] for x in top[:3]) * .6
-                          + top[0][2] * 2
-                          + math.log1p(len(hits)) * .25
-                          - math.log1p(size) * .12),
+                "score": (top[0][1] * 1.7
+                          + sum(x[1] for x in top[:3]) * .30
+                          + best_concepts * 4.0
+                          + math.log1p(60 * fraction) * 3.2
+                          + title_matches * 1.8
+                          - math.log1p(size) * .65
+                          - (2.8 if not author else 0.0)),
                 "pages": top, "matches": len(hits),
+                "max_concepts": best_concepts,
+                "multi_term_pages": cooccurring,
+                "topic_density": round(fraction, 5),
+                "title_overlap": title_matches,
+                "author": author,
                 "meta": book,
             }
         return scored, used, author_groups
 
     def _select_books(self, scored, author_groups, max_books):
+        """Respect distinct authors, then choose complementary source works.
+
+        For a named two-author comparison, don't spend three of four book
+        slots on one author. For a broad question, privilege independent
+        signed works over four anonymous/edited anthologies where possible.
+        Selection always depends on actual matching page postings.
+        """
         ranked = sorted(scored, key=lambda b: (
             -scored[b]["score"], -scored[b]["matches"], int(b)
         ))
-        if not author_groups:
-            return ranked[:max_books], []
-        selected = []
-        required = []
-        # One source from every explicitly named author is more important
-        # than filling all slots with works by just one named author.
-        for group in author_groups:
-            matches = [bid for bid in ranked if bid in group]
-            if matches:
-                selected.append(matches[0])
-                required.append(matches[0])
-        if len(selected) > max_books:
-            selected = selected[:max_books]
-            required = required[:max_books]
-        permissible = set().union(*author_groups)
+        selected, requirements = [], []
+        if author_groups:
+            # Allocate at least one source per named PERSON, then at most
+            # one more per person in round-robin order as space permits.
+            for group in author_groups[:max_books]:
+                choices = [
+                    bid for bid in ranked if bid in group["book_ids"]
+                ]
+                if not choices:
+                    requirements.append({
+                        "author": group["author"], "book_ids": []
+                    })
+                    continue
+                selected.append(choices[0])
+                requirements.append({
+                    "author": group["author"], "book_ids": [choices[0]]
+                })
+            for group in requirements:
+                if len(selected) >= max_books:
+                    break
+                candidates = [
+                    bid for bid in ranked
+                    if bid in next((g["book_ids"] for g in author_groups
+                                    if g["author"] == group["author"]), [])
+                    and bid not in selected
+                ]
+                if candidates:
+                    selected.append(candidates[0])
+                    group["book_ids"].append(candidates[0])
+            return selected, requirements
+
+        # For broad topic discovery, require multi-concept relevance when
+        # there is a page that genuinely matches two or more subject terms.
+        # This avoids forcing incidental single-word hits into the answer.
+        has_joint = any(item["max_concepts"] >= 2
+                        for item in scored.values())
+        if has_joint:
+            ranked = [bid for bid in ranked
+                      if scored[bid]["max_concepts"] >= 2]
+
+        # One independently attributable work per person first. A collection
+        # can still enter the pool, but a generic "Various authors" byline is
+        # not considered a distinct philosopher or an explicit named author.
+        chosen_authors = set()
         for book_id in ranked:
-            if len(selected) >= max_books:
-                break
-            if book_id in permissible and book_id not in selected:
+            author = scored[book_id]["author"]
+            if author and author not in chosen_authors:
                 selected.append(book_id)
-        return selected, required
+                chosen_authors.add(author)
+                if len(selected) == max_books:
+                    return selected, []
+        # If fewer than four named authors actually match, allow relevant
+        # source collections (or another work from a known author).
+        for book_id in ranked:
+            if book_id not in selected:
+                selected.append(book_id)
+                if len(selected) == max_books:
+                    break
+        return selected, []
 
     def _matching_source_pages(self, book_id, page_scores):
         path = self.root / f"book-{book_id}.json.gz"
@@ -389,11 +414,16 @@ class WholeLibraryLocator:
             chosen, required = self._select_books(
                 scored, author_groups, max(1, min(MAX_BOOKS, max_books))
             )
-            if author_groups and len(required) != min(len(author_groups), MAX_BOOKS):
+            if author_groups and any(
+                not group["book_ids"] for group in required
+            ):
+                missing = [g["author"] for g in required
+                           if not g["book_ids"]]
                 raise LibrarySearchError(
                     "At least one explicitly named author's works had no "
-                    "matching indexed pages with verified source PDFs. "
-                    "Try a more specific topic, or search that author alone."
+                    "matching indexed pages with verified source PDFs: "
+                    + ", ".join(missing)
+                    + ". Try a more specific topic, or search separately."
                 )
             if not chosen:
                 raise LibrarySearchError(
@@ -413,6 +443,10 @@ class WholeLibraryLocator:
                     "book_id": book_id,
                     "title": scored[book_id]["meta"]["title"],
                     "matching_pages": scored[book_id]["matches"],
+                    "multi_term_pages": scored[book_id]["multi_term_pages"],
+                    "topic_density": scored[book_id]["topic_density"],
+                    "title_overlap": scored[book_id]["title_overlap"],
+                    "author": scored[book_id]["meta"]["author"],
                     "opened_pages": [p["page"] for p in pages],
                     "top_global_page_ids": [
                         hit[0] for hit in scored[book_id]["pages"]
@@ -425,9 +459,17 @@ class WholeLibraryLocator:
             used_ids = [book["book_id"] for book, _ in books]
             discovery = {
                 "scope": "library", "corpus_version": self.registry.corpus_version,
-                "terms": terms, "authors_detected": len(author_groups),
+                "terms": terms,
+                "authors_detected": len(author_groups),
+                "required_author_groups": [
+                    {"author": group["author"],
+                     "book_ids": [bid for bid in group["book_ids"]
+                                  if bid in used_ids]}
+                    for group in required
+                ],
                 "required_book_ids": [
-                    bid for bid in required if bid in used_ids
+                    bid for group in required for bid in group["book_ids"]
+                    if bid in used_ids
                 ],
                 "candidate_books": details,
                 "book_shards_opened": len(books),
@@ -435,7 +477,8 @@ class WholeLibraryLocator:
                 "all_indexed_books_opened": False,
             }
             index = DiversePassageIndex(
-                books, self.tokenize, self.continuation, used_ids, discovery
+                books, self.tokenize, self.continuation, used_ids, discovery,
+                topic_terms=terms
             )
             if not index.passages:
                 raise LibrarySearchError(
