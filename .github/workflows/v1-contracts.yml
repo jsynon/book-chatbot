@@ -61,6 +61,15 @@ jobs:
             throw new Error('Invalid source locator accepted');
           }
           console.log('Source reader activation and locator contract OK.');
+          const formatting = require('./source_text_format.js');
+          const sample = '    He knows that when someone speaks at\n    length the meaning is not changed.\n\n    A second paragraph remains separate.';
+          const readable = formatting.readableParagraphs(sample);
+          if (readable.length !== 2 || readable[0] !== 'He knows that when someone speaks at length the meaning is not changed.' || readable[1] !== 'A second paragraph remains separate.') {
+            throw new Error('OCR prose reflow changed content or paragraph boundaries');
+          }
+          if (!html.includes('id="source-layout"') || !html.includes('displaySourceText();')) {
+            throw new Error('Missing source reader layout controls');
+          }
           console.log('Browser script syntax and comparison controls OK.');
           JS
       - name: Test bounded library retrieval and evidence pipeline contracts

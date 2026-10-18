@@ -6,6 +6,12 @@
 
 **The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
+## Version 1.6.2: readable OCR page layout
+
+The source reader now defaults to **Readable paragraphs**. It merges OCR hard-wrapped lines and removes indentation introduced by page extraction while keeping blank-line paragraph boundaries. A **Text display** selector switches instantly to **Original OCR layout** without fetching the page again. The stored v47 source text, source page numbers, citation identities, and model/retrieval code are unchanged. Reflow is only a visual aid; poetry, tables, columns and unusual OCR paragraph boundaries may need the original layout. No words are reconstructed or OCR corrections invented.
+
+**Test:** Open a cited *Fear and Trembling* page, verify readable paragraphs and original-layout toggle, navigate to neighboring pages and back, and confirm source citations and the local Book Lite layout remain functional. The browser CI verifies newline joining and paragraph boundaries. No new inference test cycle is needed.
+
 ## Version 1.6.0: integrated original-source reader
 
 **Reader workflow:** Ask a question in one-book or across-library mode, click an inline [S#] citation to inspect the original indexed physical PDF page without leaving the chat, navigate to the previous or next **available indexed page**, and open the original Google Drive PDF separately. The source panel shows the work, author, physical page number, full indexed page text (capped at 50,000 characters per response), and the passage originally cited. "Return to conversation" restores the prior control; no conversation context is erased by opening source pages.
