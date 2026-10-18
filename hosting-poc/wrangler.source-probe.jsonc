@@ -1,0 +1,19 @@
+{
+  // v1.9.1 protected SOURCE-ONLY CPU probe configuration.
+  // This is a separate Worker: the existing private AI test is untouched.
+  // No AI binding, no Turnstile secret, and PUBLIC_ENABLED remains false.
+  // Path is relative to this file in hosting-poc/.
+  "name": "antilogicalism-companion-public",
+  "main": "./public-gateway.mjs",
+  "compatibility_date": "2026-10-18",
+  "workers_dev": true,
+  "vars": {
+    "PUBLIC_ENABLED": "false"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true
+    }
+  }
+}
