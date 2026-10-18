@@ -226,6 +226,36 @@ class WholeLibraryLocator:
             "corpus_version": self.registry.corpus_version,
         }
 
+    @staticmethod
+    def _diverse_page_hints(hits, count):
+        """Keep strong matches while avoiding all hints from the first pages.
+
+        The v47 inverted index stores term presence, not term positions or
+        document frequencies within a page. On a one-word query, all pages
+        therefore tie. Cover the argument's early, middle and late appearances
+        rather than always choosing the earliest five PDF pages.
+        """
+        if len(hits) <= count:
+            return list(hits)
+        ranked = sorted(hits, key=lambda hit: (-hit[2], -hit[1], hit[0]))
+        best = ranked[0]
+        selected = [best]
+        lower = min(h[0] for h in hits)
+        upper = max(h[0] for h in hits)
+        span = max(1, upper - lower)
+        highest_score = max(h[1] for h in hits)
+        highest_coverage = max(h[2] for h in hits)
+        while len(selected) < count:
+            remaining = [h for h in hits if h not in selected]
+            def value(hit):
+                quality = (hit[1] / max(.001, highest_score)
+                           + .3 * hit[2] / max(1, highest_coverage))
+                spread = min(abs(hit[0] - prev[0])
+                             for prev in selected) / span
+                return (quality + .45 * spread, hit[2], hit[1], -hit[0])
+            selected.append(max(remaining, key=value))
+        return selected
+
     def _rank_page_candidates(self, question, manifest):
         author_groups = self._authors_mentioned(question)
         terms = self._terms(question, author_groups)
@@ -264,7 +294,7 @@ class WholeLibraryLocator:
             ).is_file():
                 continue
             hits.sort(key=lambda h: (-h[2], -h[1], h[0]))
-            top = hits[:MATCH_PAGES_PER_BOOK]
+            top = self._diverse_page_hints(hits, MATCH_PAGES_PER_BOOK)
             size = self._book_counts.get(book_id, 1)
             # Favor pages covering several words, then substantial evidence
             # rather than sheer volume of one frequent word in a huge book.
