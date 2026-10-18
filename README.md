@@ -6,6 +6,14 @@
 
 **The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
+## Version 1.7.0: reader and developer modes
+
+The default local page at `http://127.0.0.1:8765/` is now **Reader Mode**. It retains the Book Lite site layout, book selection, ordinary chat, sources and original-text navigation, with a compact notice about checking AI interpretations against original books. Model/pipeline options, example test suites, regression controls, diagnostics and the long local-build explanation are hidden on this page.
+
+Open **Developer Mode** at `http://127.0.0.1:8765/developer` to access those existing controls and the local build metadata. Reader Mode uses the evidence-first pipeline; changing models and historical comparison pipelines remains a local developer workflow. The server still binds to localhost and does not deploy any model publicly. **This is an interface separation, not an access-control boundary**: the diagnostics, model-selection and benchmark API endpoints must be secured or removed before exposing the backend to the internet.
+
+**Release gate:** Confirm the ordinary route is clean on desktop and mobile; test one question and citation page. On the developer route, verify Ollama model choice, troubleshooting toggle, example questions and regression controls still appear. The backend inference, citation identities and retrieval engine are not modified.
+
 ## Version 1.6.4: complete follow-up questions
 
 "Explore further" now displays only complete, concise questions. Model-generated fragments are filtered without discarding the cited answer or triggering extra model calls. The compose prompt asks for short standalone questions; a second client-side guard suppresses unpunctuated fragments, including responses from older backends. If there are no valid questions, the section is hidden. The answer and sources remain unchanged.
