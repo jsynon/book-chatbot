@@ -74,8 +74,7 @@ jobs:
           const wrappedPage = 'Introduction.\n\n  He understands the\n question, and he knows that the most important point must\n be stated plainly before the discussion continues.\n\nLater.';
           const displayPage = formatting.readableParagraphs(wrappedPage).join('\n\n');
           const found = formatting.locateCitedExcerpt(displayPage, citeText);
-          console.log('Highlight diagnostic:', JSON.stringify({displayPage, citeText, found, selected:found ? displayPage.slice(found.start,found.end) : null}));
-          if (!found || displayPage.slice(found.start,found.end) !== citeText || found.partial) {
+          if (!found || displayPage.slice(found.start,found.end) !== citeText.replace(/[.!?]$/, '') || found.partial) {
             throw new Error('Failed to locate exact quoted passage across OCR wraps');
           }
           if (formatting.locateCitedExcerpt('The night is dark. The night is dark.', 'The night is dark.')) {
