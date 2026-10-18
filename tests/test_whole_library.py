@@ -352,6 +352,38 @@ class CrossLibraryFixture(unittest.TestCase):
         self.assertEqual(coverage["missing_authors"], [])
         self.assertEqual(set(coverage["cited_book_ids"]), {"7", "88"})
 
+    def test_self_contained_library_question_does_not_inherit_prior_authors(self):
+        index, _ = self.locator.search(
+            "How do different authors approach the meaning of life?"
+        )
+        class Provider:
+            def __init__(self):
+                self.compose_user = ""
+            def complete(self, stage, system, user, schema, max_tokens):
+                if stage == "evidence_selection":
+                    return {"source_ids": ["S1"]}
+                self.compose_user = user
+                return {"paragraphs": [{
+                    "text": "One original text presents a reflective view of "
+                            "life and the search for enduring meaning.",
+                    "source_ids": ["S1"]
+                }], "follow_up_questions": []}
+
+        model = Provider()
+        result = answer_evidence_first(
+            "How do different authors approach the meaning of life?",
+            [
+                {"role": "user", "content":
+                 "Compare Aristotle and Tolstoy on happiness."},
+                {"role": "assistant", "content":
+                 "Earlier answer about the comparison."}
+            ], index, ["meaning", "life"], model, "test-v1.4.1"
+        )
+        self.assertEqual(result["outcome"], "draft")
+        self.assertIn("Recent conversation:\\n[]", model.compose_user)
+        self.assertNotIn("Earlier answer about the comparison.",
+                         model.compose_user)
+
     def test_http_scope_uses_two_calls_and_correct_library_book_labels(self):
         class Provider:
             def __init__(self):
