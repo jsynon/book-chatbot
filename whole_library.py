@@ -38,6 +38,7 @@ QUESTION_FRAMING = {
     "author", "authors", "book", "books", "work", "works",
     "philosopher", "philosophers", "think", "thinking", "discuss",
     "discussion", "according", "relationship", "relate", "related",
+    "connect", "connects", "connection", "connections", "linked", "link",
 }
 
 
