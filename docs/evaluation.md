@@ -74,6 +74,43 @@ The optional real-index-only smoke uses the command:
 This downloads only selected public v47 data into a temporary directory
 and does not invoke Ollama.
 
+## v1.4.2: hypothetical comparison as a general test case
+
+Ask this EXACT question in **Across library / Evidence-first / Gemma3:12b**:
+
+> What would Nietzsche think about Kierkegaard's thought?
+
+The original v1.4.1 diagnostic search contained just the term **thought**.
+The resulting citations were technically authentic yet largely irrelevant,
+and the models constructed speculative opinions from off-topic excerpts.
+
+In v1.4.2 the first model call should be **conceptual_retrieval_plan**,
+not **evidence_selection**. It must generate distinct search themes for each
+*real catalog author*, not invent what Nietzsche historically said about
+Kierkegaard. The second call should be **evidence_grounded_synthesis**,
+using original excerpts from both authors. There should be exactly
+**two** Ollama calls, including when planning returns malformed data.
+
+Read the diagnostic report in this order: original question type; planned
+author-specific terms; selected titles and physical PDF pages; original
+passage excerpts; final prose and citations. A good answer must distinguish
+documented positions from **hypothetical interpretation**.
+
+The real public v47 INDEX-ONLY audit with representative thematic terms
+found more suitable passages in *Fear and Trembling*, *The Sickness Unto
+Death*, Nietzsche's *On the Genealogy of Morals* and an edited collection.
+This establishes improved source discovery, NOT Gemma answer quality.
+Collections can mix an editor's words with the writer's, so verify the
+speaker of each cited paragraph.
+
+Ordinary questions ("How do Aristotle and Tolstoy understand happiness?")
+must retain their original selector+composer flow. A standalone new question
+must not inherit unrelated named authors from earlier chat.
+
+Run python scripts/smoke_conceptual_v142.py for an optional read-only,
+index-only audit against the public v47 files without calling Ollama.
+Synthetic tests validate the strict two-call ceiling and original PDF identity.
+
 ## Failure analysis
 
 For v1.4.1, a **citation-recovered** draft means its `[S#]` markers were reconciled with real, supplied passage IDs; it does **not** mean the content was checked for truth. Inspect `diagnostics.draft.citation_reconciliation` to see grouped citation markers, any added source IDs, and rejected conflicts. This recovery supports at most six unique, existing source IDs per paragraph and does not grade whether the cited passage supports each claim. Preserve the same philosophical scoring rubric after a format-only recovery.
