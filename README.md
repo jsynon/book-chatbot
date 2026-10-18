@@ -6,7 +6,7 @@ The Reading Companion is one part of [Antilogicalism](https://jsynon.github.io/a
 
 **Our long-term goal is to make the entire Antilogicalism digital library available for source-grounded conversation.** Readers should eventually be able to trace arguments across works and authors, compare interpretations, discover books worth reading, and check the underlying text—not merely accept a fluent AI summary.
 
-## Current state: Version 1.2.1
+## Current state: Version 1.2.2
 
 The running prototype uses **Aristotle's *Nicomachean Ethics*** as its first book. It is local, free of hosted inference API dependencies, and meant to become a useful one-book demo before expanding to the full collection.
 
@@ -18,7 +18,7 @@ Version 1.2's default is **evidence-first answering**:
 4. Ask the model for a **direct, coherent explanation** with paragraph-level source IDs. The application—not the model—places inline citation links.
 5. Display verbatim, short **key passages** with PDF page links and, when useful, one or two natural follow-up questions that the reader can pursue.
 
-**Version 1.2.1 citation recovery:** some models place `[S#]` markers directly in the prose, even when source IDs are also returned separately. The application now reconciles known, overlapping references, preserves any valid additional sources, removes duplicate inline markers, and renders its own citation links. Unknown, disjoint/conflicting, or excessive references are still rejected. Opt-in diagnostics record any recovery or rejection; no extra model call is made. This fixes a formatting failure, **not** an interpretive error.
+**Version 1.2.2 citation recovery:** some models place `[S#]` markers directly in the prose—or group them as `[S1, S2]`—even when source IDs are returned separately. The application now reconciles known, overlapping references, preserves any valid additional sources, removes duplicate inline markers, and renders its own citation links. Unknown, disjoint/conflicting, malformed, or excessive references are still rejected. Structured source lists remain limited to four IDs; citation recovery can preserve up to six *distinct IDs from passages actually supplied* rather than silently discarding valid inline evidence. Opt-in diagnostics record any recovery or rejection; no extra model call is made. This fixes a formatting failure, **not** an interpretive error.
 
 The default uses **two local Ollama calls**: evidence selection and answer synthesis. There is **no model-generated grade, claim-by-claim reviewer, or automatic rewriting loop**. Responses are labeled **drafts**, because valid citation IDs do not establish that a philosophical interpretation is correct.
 
