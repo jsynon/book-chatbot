@@ -1024,7 +1024,9 @@
         heading.textContent = 'Explore further';
         const buttons = document.createElement('div');
         for (const followUp of followUps.slice(0, 2)) {
-          if (typeof followUp !== 'string') continue;
+          // Defensive presentation: never offer a clipped or unfinished
+          // question as a clickable action, even with an older backend.
+          if (typeof followUp !== 'string' || !followUp.trim().endsWith('?')) continue;
           const button = document.createElement('button');
           button.type = 'button';
           button.textContent = followUp;
@@ -1034,8 +1036,10 @@
           });
           buttons.append(button);
         }
-        section.append(heading, buttons);
-        article.append(section);
+        if (buttons.childElementCount) {
+          section.append(heading, buttons);
+          article.append(section);
+        }
       }
       if (sources.length) {
         const list = document.createElement('div');
