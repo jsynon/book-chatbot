@@ -179,6 +179,68 @@ export async function trustedPacketSources(question,locators,fetcher=(url,option
   return sources;
 }
 
+// v1.9.3 private pilot: verify the *exact* UTF-8 source page text supplied
+// by the browser against a small, owner-published v47 fingerprint packet.
+// The SHA-256 is calculated in the Worker using native WebCrypto; no mutable
+// browser-provided title, excerpt, page ID or PDF link is trusted.
+export const FINGERPRINT_ROOT='https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/';
+export async function verifiedFingerprintSources(question,items,fetcher=(url,opts)=>globalThis.fetch(url,opts)) {
+  if(!Array.isArray(items)||!items.length||items.length>3)
+    throw new Error('Invalid source count');
+  const packets=new Map(),seen=new Set(),sources=[];
+  let totalBytes=0;
+  for(const item of items){
+    if(!item || typeof item!=='object' ||
+       !/^[1-9]\d{0,3}$/.test(String(item.bookId))||
+       !Number.isSafeInteger(item.page)||item.page<1||item.page>10000||
+       typeof item.text!=='string')throw new Error('Invalid source claim');
+    const bookId=String(item.bookId),page=item.page;
+    const id=bookId+':'+page;
+    if(seen.has(id))throw new Error('Duplicate source claim');
+    seen.add(id);
+    const bytes=new TextEncoder().encode(item.text);
+    if(bytes.byteLength<25||bytes.byteLength>14000)
+      throw new Error('Unacceptable page text size');
+    totalBytes+=bytes.byteLength;
+    if(totalBytes>35000)throw new Error('Too much text submitted');
+    const chunk=Math.floor((page-1)/32),key=bookId+'/'+chunk;
+    if(!packets.has(key)){
+      const response=await fetcher(FINGERPRINT_ROOT+'books/'+bookId+'/'+chunk+'.json',{cache:'no-store'});
+      if(!response.ok)throw new Error('Trusted fingerprint packet is unavailable');
+      const raw=new Uint8Array(await response.arrayBuffer());
+      if(raw.byteLength>12000)throw new Error('Fingerprint packet exceeds size cap');
+      packets.set(key,{fingerprint:JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(raw)),
+        packetBytes:raw.byteLength});
+    }
+    const {fingerprint:p,packetBytes}=packets.get(key);
+    if(p.schema!=='antilogicalism-reader-fingerprints-v1'||
+       p.hashAlgorithm!=='SHA-256-utf8-exact'||p.libraryVersion!==47||
+       p.bookId!==bookId||p.chunk!==chunk||
+       p.firstPage!==chunk*32+1||p.lastPage!==chunk*32+32||
+       typeof p.title!=='string'||!p.title.trim()||
+       typeof p.pdfDriveId!=='string'||
+       !/^[A-Za-z0-9_-]{10,}$/.test(p.pdfDriveId)||
+       !Array.isArray(p.pages)||p.pages.length>32)
+       throw new Error('Invalid fingerprint metadata');
+    const matches=p.pages.filter(p=>p.page===page);
+    if(matches.length!==1)throw new Error('No unique canonical page fingerprint');
+    const match=matches[0];
+    if(!Number.isSafeInteger(match.globalPageId)||match.globalPageId<0||
+       !Number.isSafeInteger(match.utf8Bytes)||match.utf8Bytes!==bytes.byteLength||
+       typeof match.sha256!=='string'||!/^[a-f0-9]{64}$/.test(match.sha256))
+      throw new Error('Fingerprint metadata or text length mismatch');
+    const digest=await crypto.subtle.digest('SHA-256',bytes);
+    const actual=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+    if(actual!==match.sha256)throw new Error('Source text SHA-256 mismatch');
+    sources.push({id:'S'+(sources.length+1),bookId,title:p.title,
+      page,globalPageId:match.globalPageId,
+      url:'https://drive.google.com/file/d/'+p.pdfDriveId+
+        '/view?usp=sharing#page='+page,
+      preview:sourceExcerpt(item.text,question),fingerprintBytes:packetBytes});
+  }
+  return sources;
+}
+
 export function parseReview(raw,sources) {
   if(typeof raw!=='string')throw new Error('Missing evidence review');
   const a=raw.indexOf('{'),b=raw.lastIndexOf('}');
@@ -223,6 +285,66 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
   if(request.method==='GET'&&url.pathname==='/') {
     return json({status:'ready',service:'Antilogicalism Reading Companion',
       publicEnabled:env.PUBLIC_ENABLED==='true',mode:'public-foundation'},200,origin);
+  }
+  // Opt-in local test only; public AI remains disabled. This path accepts
+  // client-submitted full-page text solely to validate its exact SHA-256
+  // against trusted static metadata. It refuses missing/incorrect credentials.
+  if(url.pathname==='/internal/fingerprint-probe'){
+    const allowed=['http://127.0.0.1:8766','http://localhost:8766'];
+    const local=allowed.includes(origin);
+    const reply=(value,status=200)=>Response.json(value,{status,headers:{
+      'Cache-Control':'no-store','X-Content-Type-Options':'nosniff',
+      ...(local?{'Access-Control-Allow-Origin':origin,
+        'Access-Control-Allow-Methods':'POST, OPTIONS',
+        'Access-Control-Allow-Headers':'Authorization, Content-Type',
+        'Vary':'Origin'}:{}),
+    }});
+    if(origin&&!local)return reply({error:'Origin not allowed'},403);
+    if(request.method==='OPTIONS')
+      return new Response(null,{status:204,headers:{
+        'Access-Control-Allow-Origin':origin,
+        'Access-Control-Allow-Methods':'POST, OPTIONS',
+        'Access-Control-Allow-Headers':'Authorization, Content-Type',
+        'Vary':'Origin'}});
+    if(request.method!=='POST')return reply({error:'Method not allowed'},405);
+    if(typeof env.SOURCE_PROBE_TOKEN!=='string'||env.SOURCE_PROBE_TOKEN.length<32)
+      return reply({error:'Private fingerprint test is disabled'},503);
+    if(request.headers.get('Authorization')!=='Bearer '+env.SOURCE_PROBE_TOKEN)
+      return reply({error:'Unauthorized'},401);
+    const started=performance.now();
+    if(Number(request.headers.get('Content-Length'))>39000)
+      return reply({error:'Request too large'},413);
+    let data;
+    try{
+      const body=await request.text();
+      if(new TextEncoder().encode(body).byteLength>39000)
+        return reply({error:'Request too large'},413);
+      data=JSON.parse(body);
+    }catch{return reply({error:'Invalid JSON body'},400);}
+    if(!data||typeof data!=='object'||
+       typeof data.question!=='string'||data.question.length<5||
+       data.question.length>400||!Array.isArray(data.sources))
+       return reply({error:'Invalid question or page list'},400);
+    try{
+      const matched=await verifiedFingerprintSources(data.question,data.sources,fetcher);
+      return reply({status:'verified',format:'sha256-fingerprint-v1',
+        sources:matched.map(s=>({
+          bookId:s.bookId,title:s.title,page:s.page,
+          globalPageId:s.globalPageId,sourceUrl:s.url,
+          excerptLength:s.preview.length,
+          excerptSample:s.preview.slice(0,200),
+          fingerprintBytes:s.fingerprintBytes,
+        })),
+        wallElapsedMs:Math.round(performance.now()-started),cpuTimeMs:null,
+        note:'Exact page text SHA-256 matched trusted v47 fingerprints; this does not verify AI claims. No AI was run.'});
+    }catch(error){
+      const reason=String(error?.message||error);
+      const clientMismatch=/SHA-256 mismatch|length mismatch|Invalid source claim|Duplicate source claim|Unacceptable page text size|Too much text submitted/.test(reason);
+      // Avoid echoing user text, token or any sensitive input.
+      console.error('Source fingerprint probe failed:',reason);
+      return reply({error:clientMismatch?'Page did not match the trusted fingerprint':'Trusted source fingerprints unavailable or invalid',
+        wallElapsedMs:Math.round(performance.now()-started)},clientMismatch?422:503);
+    }
   }
   // Compare CPU time against /internal/source-probe with the same protected
   // token and source locator. No AI, no public access, no need to enable
