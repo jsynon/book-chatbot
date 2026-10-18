@@ -72,7 +72,7 @@ def named_author_groups(question, entries):
     last_names = {}
     for key in authored:
         words = key.split()
-        if len(words) > 1 and len(words[-1]) >= 5:
+        if len(words) > 1 and len(words[-1]) >= 4:
             last_names.setdefault(words[-1], set()).add(key)
 
     groups = []
