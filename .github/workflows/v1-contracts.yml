@@ -32,7 +32,7 @@ jobs:
           PY
       - name: Compile reading and library modules
         run: |
-          python -m compileall -q app.py benchmark_suite.py passage_quality.py evidence_structure.py evidence_coverage.py quote_audit.py whole_library.py retrieval_relevance.py conceptual_retrieval.py library_catalog.py evidence_pipeline.py direct_pipeline.py grounded_pipeline.py inference.py scripts tests
+          python -m compileall -q source_reader.py app.py benchmark_suite.py passage_quality.py evidence_structure.py evidence_coverage.py quote_audit.py whole_library.py retrieval_relevance.py conceptual_retrieval.py library_catalog.py evidence_pipeline.py direct_pipeline.py grounded_pipeline.py inference.py scripts tests
       - name: Check browser script syntax and controls
         run: |
           node - <<'JS'
@@ -60,4 +60,5 @@ jobs:
           python -m unittest discover -s tests -p 'test_passage_quality.py' -v
           python -m unittest discover -s tests -p 'test_evidence_coverage.py' -v
           python -m unittest discover -s tests -p 'test_evidence_structure.py' -v
+          python -m unittest discover -s tests -p 'test_source_reader.py' -v
           python scripts/run_cross_discipline.py --list
