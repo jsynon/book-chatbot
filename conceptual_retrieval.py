@@ -22,6 +22,13 @@ from retrieval_relevance import (
 
 MAX_AUTHOR_TOPICS = 5
 MAX_AUTHORS = 4
+# A hypothetical query can contain no content except "thought". These terms
+# are too vague to repair that failure; require a genuine topical distinction.
+VAGUE_PLAN_HINTS = {
+    "thought", "thoughts", "idea", "ideas", "philosophy",
+    "philosophical", "think", "thinking", "person", "people",
+    "writer", "writing", "opinion", "opinions",
+}
 
 
 def needs_concept_plan(question, catalog_entries):
@@ -58,7 +65,8 @@ def _validated_topic_words(items, tokenize, author_groups):
         for word in content_terms(phrase, tokenize, author_groups, limit=8):
             if (word not in terms and word not in excluded
                     and word not in QUESTION_FRAMING
-                    and len(word) >= 4):
+                    and len(word) >= 4
+                    and word not in VAGUE_PLAN_HINTS):
                 terms.append(word)
                 if len(terms) >= MAX_AUTHOR_TOPICS:
                     return terms
