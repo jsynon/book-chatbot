@@ -80,7 +80,7 @@ jobs:
           if (formatting.locateCitedExcerpt('The night is dark. The night is dark.', 'The night is dark.')) {
             throw new Error('Short ambiguous phrase should never be highlighted');
           }
-          const twoPages = 'An isolated introduction to the subject.\n\n' + citeText.slice(0,60);
+          const twoPages = 'An isolated introduction to the subject.\n\n' + citeText.split(' ').slice(0,15).join(' ');
           const partial = formatting.locateCitedExcerpt(twoPages, citeText);
           if (!partial || !partial.partial) {
             throw new Error('Cross-page partial quotation should locate a distinctive continuous span');
