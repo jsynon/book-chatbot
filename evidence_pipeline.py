@@ -346,9 +346,15 @@ def answer_evidence_first(question, history, index, facets, provider, build):
                 "evidence_grounded_synthesis", system, user, schema, 1400
             )
             trace["draft"] = {"status": "generated", "raw_response": output}
-            answer, used_ids = validate_paragraphs(output, set(allowed_ids))
+            trace["draft"]["citation_reconciliation"] = []
+            answer, used_ids = validate_paragraphs(
+                output, set(allowed_ids), trace["draft"]["citation_reconciliation"]
+            )
             follow_ups = _follow_up_questions(output)
             trace["draft"].update(status="accepted", text=answer)
+            if trace["draft"]["citation_reconciliation"]:
+                log("Recovered inline citation markers in "
+                    f"{len(trace['draft']['citation_reconciliation'])} paragraph(s).")
             compose_stage["status"] = "complete"
             outcome = "draft"
             log(f"Cited draft: {len(answer.split())} words, {len(used_ids)} passages; "
