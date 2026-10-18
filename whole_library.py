@@ -43,52 +43,75 @@ class LibrarySearchError(ValueError):
 class DiversePassageIndex(PassageIndex):
     """Preserve source diversity in the 24 passages offered to the selector."""
 
-    def __init__(self, books, tokenize, continuation, chosen_books, discovery):
+    def __init__(self, books, tokenize, continuation, chosen_books,
+                 discovery, topic_terms=()):
         super().__init__(books, tokenize, continuation)
         self.chosen_books = list(chosen_books)
         self.discovery = discovery
-        # Automatically selected works are preferred, but not every author
-        # mentioned in a question is necessarily the author's own text.
+        self.topic_terms = list(topic_terms)
         self.is_cross_library = True
 
     def search(self, question, facets, history=(), limit=BROAD_RESULTS):
-        questions = list(dict.fromkeys(
-            facets if len(facets) > 1 else [question]
-        ))
-        if len(self.tokenize(question)) < 4:
-            prior = [m.get("content", "") for m in history
-                     if m.get("role") == "user"]
-            if prior:
-                questions.append(prior[-1] + " " + question)
-        ranked = [self.rank(q) for q in questions]
+        """Rank original passage wording by the READER'S subject, not UI words.
+
+        BM25 supplies a cheap first ranking. For each book, prefer original
+        passages that actually discuss more than one content term and use
+        those terms closely together. Never attach prose from a different
+        work just to fill a quota. Round robin keeps selected books visible.
+        """
+        if self.topic_terms:
+            questions = [" ".join(self.topic_terms)]
+            # Preserve multipart facets, but strip author names and question
+            # framing words by restricting each facet to known subject terms.
+            for facet in facets if len(facets) > 1 else []:
+                tokens = set(self.tokenize(facet))
+                subset = [t for t in self.topic_terms
+                          if self.tokenize(t)[0] in tokens]
+                if subset and len(subset) < len(self.topic_terms):
+                    questions.append(" ".join(subset))
+        else:
+            questions = [question]
+        ranked = [self.rank(q) for q in dict.fromkeys(questions)]
         book_lists = {book_id: [] for book_id in self.chosen_books}
         seen = set()
-        # Round robin across question facets before distributing book quotas.
-        for rank in range(max(map(len, ranked), default=0)):
+        for position in range(max(map(len, ranked), default=0)):
             for ranking in ranked:
-                if rank >= len(ranking):
+                if position >= len(ranking):
                     continue
-                pos = ranking[rank]
-                if pos in seen:
+                idx = ranking[position]
+                if idx in seen:
                     continue
-                seen.add(pos)
-                book_id = str(self.passages[pos]["book_id"])
+                seen.add(idx)
+                book_id = str(self.passages[idx]["book_id"])
                 if book_id in book_lists:
-                    book_lists[book_id].append(pos)
+                    book_lists[book_id].append(idx)
+
+        for book_id, candidates in book_lists.items():
+            primary_rank = {i: rank for rank, i in enumerate(candidates)}
+            scores = {i: passage_topic_score(
+                self.passages[i]["text"], self.topic_terms, self.tokenize)
+                for i in candidates}
+            if len(self.topic_terms) >= 2 and any(
+                coverage >= 2 for _, coverage in scores.values()
+            ):
+                candidates[:] = [i for i in candidates
+                                 if scores[i][1] >= 2]
+            candidates.sort(key=lambda i: (
+                -scores[i][1], -scores[i][0],
+                primary_rank[i]
+            ))
         result = []
-        # Each book gets a chance to contribute passages even when another
-        # book contains more repetitions of the query terms.
-        for rank in range(max(map(len, book_lists.values()), default=0)):
+        for position in range(max(map(len, book_lists.values()), default=0)):
             for book_id in self.chosen_books:
                 candidates = book_lists[book_id]
-                if rank < len(candidates):
-                    result.append(self.passages[candidates[rank]])
+                if position < len(candidates):
+                    result.append(self.passages[candidates[position]])
                     if len(result) == limit:
-                        return [{**p, "source_id": f"S{i + 1}"}
-                                for i, p in enumerate(result)]
+                        break
+            if len(result) == limit:
+                break
         return [{**p, "source_id": f"S{i + 1}"}
                 for i, p in enumerate(result)]
-
 
 class WholeLibraryLocator:
     """Read only partitions relevant to query words and selected book shards."""
