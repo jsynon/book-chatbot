@@ -587,3 +587,38 @@ test('Turnstile diagnostic distinguishes hostname and action mismatches',()=>{
     {reason:'action-mismatch'});
  assert.equal(turnstileRejection({success:true,hostname:'jsynon.github.io',action:'companion_ask'}),null);
 });
+
+
+test('siteverify HTTP 400 reports only known rejection code and still blocks AI',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const denied=Response.json({success:false,
+   'error-codes':['invalid-input-secret','not-an-authorized-code'],
+   secret:'must-not-appear-in-log',response:'must-not-appear-in-log',
+   hostname:'must-not-appear-in-log'}, {status:400});
+ let aiCalls=0,fingerprintFetches=0;
+ const environment=env({...pilotBaseEnv,
+   AI:{run:async()=>{aiCalls++;throw Error('AI must not run');}}});
+ const data={...fixture.body,turnstileToken:'one-time-challenge'};
+ const req=new Request(HOST+'/api/pilot-answer',{method:'POST',headers:{
+   Origin:'https://jsynon.github.io',
+   'CF-Connecting-IP':'198.51.100.42',
+   'Content-Type':'application/json'},body:JSON.stringify(data)});
+ const realWarn=console.warn, warnings=[];
+ try{
+   console.warn=(...args)=>warnings.push(args);
+   const result=await handleRequest(req,environment,async url=>{
+     if(String(url).includes('/siteverify'))return denied;
+     fingerprintFetches++;throw Error('Must never fetch source');
+   });
+   assert.equal(result.status,403);
+   assert.equal((await result.json()).error,
+     'Visitor verification failed; please retry the challenge');
+ } finally{console.warn=realWarn;}
+ assert.equal(aiCalls,0);
+ assert.equal(fingerprintFetches,0);
+ assert.equal(warnings.length,1);
+ assert.equal(warnings[0][0],'Reading Companion Turnstile verification failed');
+ assert.deepEqual(warnings[0][1],{
+   reason:'siteverify-http-failure',httpStatus:400,codes:['invalid-input-secret']});
+ assert.equal(JSON.stringify(warnings).includes('must-not-appear'),false);
+});
