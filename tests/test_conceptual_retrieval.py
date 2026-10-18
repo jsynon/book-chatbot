@@ -146,8 +146,12 @@ class ConceptPlanContracts(CrossLibraryFixture):
                 }).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(request) as response:
-                payload = json.load(response)
+            try:
+                with urllib.request.urlopen(request) as response:
+                    payload = json.load(response)
+            except urllib.error.HTTPError as error:
+                self.fail("Unexpected chat HTTP " + str(error.code)
+                          + ": " + error.read().decode("utf-8"))
 
         self.assertEqual(payload["outcome"], "draft")
         self.assertEqual(provider.calls, [
@@ -186,8 +190,12 @@ class ConceptPlanContracts(CrossLibraryFixture):
                 }).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(request) as response:
-                payload = json.load(response)
+            try:
+                with urllib.request.urlopen(request) as response:
+                    payload = json.load(response)
+            except urllib.error.HTTPError as error:
+                self.fail("Unexpected chat HTTP " + str(error.code)
+                          + ": " + error.read().decode("utf-8"))
         self.assertEqual(provider.calls, [
             "conceptual_retrieval_plan", "evidence_grounded_synthesis"
         ])
