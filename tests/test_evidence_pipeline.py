@@ -144,7 +144,7 @@ class EvidenceFirstTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "draft")
         stage = result["diagnostics"]["retrieval"]["evidence_selection"]
         self.assertEqual(stage["status"], "ranked_fallback")
-        self.assertTrue(all(p["source_id"].startswith("S") for p in result["sources"]))
+        self.assertTrue(all(p["id"].startswith("S") for p in result["sources"]))
         self.assertEqual(len(provider.calls), 2)
 
     def test_selector_exception_reverts_to_ranked_evidence(self):
