@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Antilogicalism — Verified AI Answer Pilot</title>
+<style>
+body{font:17px/1.6 Georgia,serif;max-width:820px;margin:2rem auto;padding:0 1rem;color:#222}
+h1,h2{font-weight:normal}h1{font-size:29px}h2{font-size:23px}
+label{display:block;margin:13px 0 4px}input{font:15px system-ui;padding:10px;box-sizing:border-box;width:100%}
+button{font:15px system-ui;background:#fff;border:1px solid #222;padding:11px 15px;cursor:pointer;margin-top:15px}
+button:disabled{opacity:.55}a{color:#111}article{border-top:1px solid #ddd;padding:9px 0}
+.note{font:13px/1.5 system-ui;color:#555}
+#status{min-height:1.6em}
+</style></head>
+<body><h1>Reading Companion — Verified AI Answer Pilot</h1>
+<p class="note">Private test: download the original indexed Thucydides page 38; send its exact text to the disabled public-foundation Worker for SHA-256 verification, then run two evidence-first AI requests. This consumes free Workers AI neurons. It is not the public Reading Companion. The token is never stored in your browser.</p>
+<form id="test">
+<label for="question">Your question about the selected passage</label>
+<input id="question" value="What caused the Peloponnesian War?" maxlength="400" required>
+<label for="endpoint">Cloudflare Worker</label>
+<input type="url" id="endpoint" value="https://antilogicalism-companion-public.jsynon.workers.dev" required>
+<label for="token">Private SOURCE_PROBE_TOKEN</label>
+<input type="password" id="token" autocomplete="off" required>
+<label><input id="tamper" type="checkbox" style="width:auto"> Deliberately alter page text (should reject before AI)</label>
+<button id="run" type="submit">Ask with verified source</button>
+</form>
+<p id="status" role="status"></p><section id="out" aria-live="polite"></section>
+<script type="module">
+import {RemoteLibrary} from './remote-library.mjs';
+const library=new RemoteLibrary();
+const form=document.getElementById('test'),out=document.getElementById('out');
+const status=document.getElementById('status'),button=document.getElementById('run');
+function line(node,label,value) {
+ const p=document.createElement('p');
+ p.className='note';p.textContent=label+': '+value;node.appendChild(p);
+}
+form.addEventListener('submit',async event=>{
+ event.preventDefault();button.disabled=true;out.replaceChildren();
+ try{
+  const question=document.getElementById('question').value.trim();
+  const token=document.getElementById('token').value;
+  const altered=document.getElementById('tamper').checked;
+  status.textContent='Loading original v47 Thucydides page 38…';
+  const book=await library.jsonGzip('book-152.json');
+  const page=book.pages.find(p=>p.id===34403&&p.page===38);
+  if(!page||typeof page.text!=='string')throw Error('Canonical v47 page 38 was not found.');
+  const text=altered?page.text+'x':page.text;
+  status.textContent='Verifying SHA-256 on Cloudflare, then reviewing evidence with hosted AI…';
+  const endpoint=document.getElementById('endpoint').value.replace(/\/+$/,'');
+  const result=await fetch(endpoint+'/internal/verified-answer',{
+    method:'POST',
+    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+    body:JSON.stringify({question,sources:[{bookId:'152',page:38,text}]})
+  });
+  const data=await result.json();
+  if(!result.ok){
+    status.textContent='Request declined (HTTP '+result.status+').';
+    const p=document.createElement('p');p.textContent=data.error||'The Worker did not return a verified answer.';
+    out.append(p);
+    if(data.stage)line(out,'Stage',data.stage);
+    return;
+  }
+  const h=document.createElement('h2');h.textContent=data.outcome==='insufficient-evidence'?
+    'Insufficient verified evidence':'AI explanation (verified book source)';
+  const p=document.createElement('p');p.textContent=data.answer;
+  out.append(h,p);
+  for(const src of data.citations||[]){
+    const article=document.createElement('article');
+    const label=document.createElement('strong');label.textContent='['+src.id+'] '+src.title+' · PDF page '+src.page;
+    const excerpt=document.createElement('p');excerpt.textContent=src.preview;
+    const a=document.createElement('a');a.href=src.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='Open original PDF at cited page';
+    article.append(label,excerpt,a);out.append(article);
+  }
+  line(out,'Evidence coverage',data.coverage||'unknown');
+  if(data.missing)line(out,'Missing evidence',data.missing);
+  line(out,'Citation status',data.reviewStatus);
+  line(out,'Workers AI neurons',data.usage?.neurons??'not reported');
+  line(out,'Wall time (not CPU)',(data.wallElapsedMs??'?')+' ms');
+  const warning=document.createElement('p');warning.className='note';warning.textContent=
+    'The page text was cryptographically verified against v47. Individual AI claims are not independently proved by the citations.';
+  out.append(warning);
+  status.textContent='Test complete: '+data.verifiedPages+' page(s) source-verified before AI.';
+ }catch(error){status.textContent='Test failed: '+error.message;}
+ finally{button.disabled=false;}
+});
+</script></body></html>

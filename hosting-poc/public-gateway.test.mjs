@@ -322,3 +322,129 @@ test('fingerprint route supports local CORS preflight without touching AI',async
  assert.equal(response.status,204);
  assert.equal(response.headers.get('Access-Control-Allow-Origin'),'http://127.0.0.1:8766');
 });
+
+
+async function fingerprintTestFixture() {
+ const text='The public disputes were over a breached agreement, whereas growing power created fear among competing cities. The deeper cause of the war was stated to be anxiety over political change.';
+ const bytes=new TextEncoder().encode(text);
+ const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),
+    b=>b.toString(16).padStart(2,'0')).join('');
+ const fingerprint={schema:'antilogicalism-reader-fingerprints-v1',
+    hashAlgorithm:'SHA-256-utf8-exact',libraryVersion:47,
+    bookId:'152',title:'History of the Peloponnesian War — Thucydides',
+    pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
+    pages:[{page:38,globalPageId:34403,utf8Bytes:bytes.byteLength,sha256}]};
+ const url=HOST+'/internal/verified-answer',
+    secret='valid-private-token-for-the-verified-pilot-456';
+ const body={question:'What caused the Peloponnesian War?',
+    sources:[{bookId:'152',page:38,text}]};
+ let fetchCount=0,aiCount=0;
+ const fetcher=async requestUrl=>{
+    fetchCount++;
+    assert.equal(requestUrl,
+      'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/books/152/1.json');
+    return Response.json(fingerprint);
+ };
+ const run=async(_model,input)=>{
+    aiCount++;
+    const content=input.max_completion_tokens===320?
+       JSON.stringify({coverage:'partial',missing:'More history is not in this page',
+          evidence:[{id:'S1'}]})
+       :'The passage distinguishes an immediate dispute from fear caused by growing power [S1].';
+    return {choices:[{finish_reason:'stop',message:{content}}],
+       usage:{neurons:9}};
+ };
+ const response=async({overrideBody=body,overrideToken=secret,
+    origin='http://127.0.0.1:8766',aiRun=run,method='POST',overrideAI}={})=>{
+     const request=new Request(url,{method,headers:{
+       Origin:origin,Authorization:'Bearer '+overrideToken,
+       'Content-Type':'application/json'},
+       ...(method==='POST'?{body:JSON.stringify(overrideBody)}:{})});
+     const environment=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:secret,
+       AI:overrideAI===undefined?{run:aiRun}:overrideAI});
+     return handleRequest(request,environment,fetcher);
+ };
+ return {body,secret,response,fetcher,stats:()=>({aiCount,fetchCount}),run};
+}
+test('v1.9.4 exact v47 source generates two bounded AI stages with canonical citation',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const result=await fixture.response();
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.equal(data.verifiedPages,1);
+ assert.equal(data.citations.length,1);
+ assert.equal(data.citations[0].globalPageId,34403);
+ assert.equal(data.citations[0].page,38);
+ assert(data.citations[0].url.includes(PDF));
+ assert.equal(data.coverage,'partial');
+ assert.equal(data.reviewStatus,'citations_not_claim_verified');
+ assert.equal(data.usage.neurons,18);
+ assert.equal(fixture.stats().aiCount,2);
+ assert.equal(fixture.stats().fetchCount,1);
+ assert.equal(result.headers.get('Access-Control-Allow-Origin'),
+    'http://127.0.0.1:8766');
+});
+test('v1.9.4 rejects modified same-length text before any inference',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const forged={...fixture.body,sources:fixture.body.sources.map(s=>({
+   ...s,text:s.text.replace('power','xxxxx')}))};
+ const result=await fixture.response({overrideBody:forged});
+ assert.equal(result.status,422);
+ assert.equal((await result.json()).stage,'source-verification');
+ assert.equal(fixture.stats().aiCount,0);
+});
+test('v1.9.4 denies unauthorized and unapproved-origin requests before fetching or AI',async()=>{
+ const fixture=await fingerprintTestFixture();
+ assert.equal((await fixture.response({overrideToken:'wrong'})).status,401);
+ assert.equal((await fixture.response({origin:'https://evil.example'})).status,403);
+ assert.equal(fixture.stats().aiCount,0);
+ assert.equal(fixture.stats().fetchCount,0);
+});
+test('v1.9.4 fails closed without AI binding, never accidentally opening public endpoint',async()=>{
+ const fixture=await fingerprintTestFixture();
+ assert.equal((await fixture.response({overrideAI:null})).status,503);
+ assert.equal(fixture.stats().fetchCount,0);
+ const publicDisabled=await handleRequest(request(payload),
+   env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:fixture.secret}),
+   async()=>{throw Error('No public source reads');});
+ assert.equal(publicDisabled.status,503);
+});
+test('v1.9.4 absence of useful evidence skips composition',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const result=await fixture.response({aiRun:async()=>{
+   calls++;return {choices:[{finish_reason:'stop',
+     message:{content:JSON.stringify({coverage:'none',missing:'Unsupported topic',
+       evidence:[]})}}],usage:{neurons:4}};
+ }});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'insufficient-evidence');
+ assert.equal(data.citations.length,0);
+ assert.equal(calls,1);
+});
+test('v1.9.4 bad or absent model citations never leave the server as an answer',async()=>{
+ for(const fabricated of ['The answer is clear [S9].','An unsupported claim without a source.']){
+   const fixture=await fingerprintTestFixture();
+   let calls=0;
+   const result=await fixture.response({aiRun:async()=>{
+      calls++;return {choices:[{finish_reason:'stop',message:{content:calls===1?
+         JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):fabricated}}],
+         usage:{neurons:4}};
+   }});
+   assert.equal(result.status,502);
+   const data=await result.json();
+   assert.equal(data.stage,'ai-answer');
+   assert.equal(data.answer,undefined);
+   assert.equal(calls,2);
+ }
+});
+test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const response=await fixture.response({method:'OPTIONS'});
+ assert.equal(response.status,204);
+ assert.equal(response.headers.get('Access-Control-Allow-Origin'),
+   'http://127.0.0.1:8766');
+ assert.equal(fixture.stats().aiCount,0);
+});
