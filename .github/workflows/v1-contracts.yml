@@ -45,6 +45,22 @@ jobs:
           for (const name of ['id="pipeline"', 'id="compare-pipelines"', 'id="test-suite"', 'Key passages from the source books', "['evidence', 'direct']", 'id="book"', 'id="book-filter"', 'id="search-scope"', 'id="library-prompts"', 'id="discipline-tests"', 'id="discipline-case"']) {
             if (!html.includes(name)) throw new Error('Missing model-comparison control: ' + name);
           }
+          // Runtime locator smoke check: a wrongly escaped digit regex in
+          // v1.6.0 silently disabled every in-page citation and Read button.
+          const locatorStart = html.indexOf('function isReadableSourceLocator(source, page) {');
+          const locatorEnd = html.indexOf('async function openSourcePage', locatorStart);
+          if (locatorStart < 0 || locatorEnd < 0) {
+            throw new Error('Missing source reader locator validation');
+          }
+          const locatorDefinition = html.slice(locatorStart, locatorEnd);
+          const isReadable = vm.runInNewContext(locatorDefinition + '; isReadableSourceLocator;');
+          if (!isReadable({book_id:'140'}, 179) || !isReadable({book_id:'7'}, '3')) {
+            throw new Error('Valid numeric book/page citation does not open the source reader');
+          }
+          if (isReadable({book_id:'../7'},179) || isReadable({book_id:'7'},'abc')) {
+            throw new Error('Invalid source locator accepted');
+          }
+          console.log('Source reader activation and locator contract OK.');
           console.log('Browser script syntax and comparison controls OK.');
           JS
       - name: Test bounded library retrieval and evidence pipeline contracts
