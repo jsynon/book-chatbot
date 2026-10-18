@@ -16,7 +16,11 @@ from retrieval_relevance import passage_topic_score
 
 MAX_GAP_QUERIES = 2
 MAX_ADDED_ANCHORS = 2
-MAX_GAP_CANDIDATES = 8
+MAX_GAP_CANDIDATES = 12
+# Supplemental passages must explain something, not merely label a section.
+# This stricter threshold applies ONLY to optional gap recovery; ordinary
+# short definitions and complete primary-source claims remain eligible.
+MIN_GAP_PROSE_WORDS = 24
 
 # These are ordinary English request instructions, not topical book terms.
 _FRAMING = {
@@ -85,7 +89,9 @@ def recover_gap_evidence(index, original_candidates, anchors, raw_queries,
         audit["searched"] += len(results)
         scored = []
         for result in results:
-            if source_form(result["text"])["kind"] != "prose":
+            form = source_form(result["text"])
+            if (form["kind"] != "prose"
+                    or form["word_count"] < MIN_GAP_PROSE_WORDS):
                 continue
             score, coverage = passage_topic_score(
                 result["text"], hints, index.tokenize
