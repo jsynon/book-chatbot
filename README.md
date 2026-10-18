@@ -6,6 +6,12 @@
 
 **The long-term goal is a single companion that can discuss works throughout the entire library**, including comparisons across writers and traditions. Its job is to make primary sources more approachable and useful for independent inquiry, not to present its own confident prose as a substitute for reading.
 
+## Version 1.5.0: reader-first local demo
+
+The default page now prioritizes choosing a book, asking a question, and reading cited answers. Advanced model/pipeline settings, troubleshooting, and example-question collections are optional disclosures. Answers render safe paragraphs, emphasis, and linked source markers without interpreting model text as HTML. Source lists show physical PDF page numbers and disclose the known Google Drive limitation. The layout adapts to phone-sized browser windows, with clearer local-processing feedback, an explicit new-conversation control, and Ctrl+Enter/Command+Enter submission.
+
+**Test locally:** start `start.bat`, open `http://127.0.0.1:8765` in Chrome, press F12, toggle Device Toolbar (Ctrl+Shift+M), and try a phone preset. No public hosting is needed. The server intentionally remains bound to `127.0.0.1`, so actual phones on the Wi-Fi cannot connect to this build yet. This is a *reader interface milestone*, not a new answer-accuracy certification or a solution to Google Drive's page-anchor behavior. The v1.4.6 source/retrieval pipeline is preserved.
+
 ## Version 1.4.6: final quality milestone before the v1.5 demo
 
 This is the **last planned answer-quality-focused v1.4 release before the v1.5 usable-demo milestone**. Versions 1.4–1.4.5 established cross-book retrieval, cross-disciplinary benchmarks, source-form safeguards, hypothetical planning, and two-call evidence selection. **Version 1.4.6 addresses one structural problem**: the model could have access to correct source passages but still overlook a distinct part of the question or misread a multi-paragraph exchange. The same two-call local Ollama pipeline, original PDF citations, one-book mode and bounded whole-library pilot remain intact. Further routine prompt/model retuning is NOT a demo prerequisite.
