@@ -941,6 +941,19 @@ function modelText(result) {
     result.choices[0].message.content.trim():'';
 }
 
+function normalizedEvidenceQuote(text) {
+  return String(text||'').toLocaleLowerCase().normalize('NFKC')
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+}
+function quotedPhrasesMatchSources(answer,sources) {
+  const matches=[...answer.matchAll(/“([^”]{12,320})”|"([^"]{12,320})"|‘([^’]{12,320})’/g)];
+  return matches.every(match=>{
+    const quote=normalizedEvidenceQuote(match[1]||match[2]||match[3]);
+    return !quote||sources.some(source=>
+      normalizedEvidenceQuote(source.preview).includes(quote));
+  });
+}
+
 // v1.9.4 private AI pilot. Only call this with independently SHA-256-verified
 // sources. Two bounded inference requests: evidence selection, then composition.
 // Citations here are source-ID checks, NOT semantic claim-level verification.
@@ -1009,6 +1022,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const answer=modelText(second);
   if(!answer)throw answerFailure('answer-composition-empty');
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
+  // Exact source-page provenance does not make model quotations reliable.
+  // Reject long quoted spans unless they occur verbatim in verified excerpts.
+  if(!quotedPhrasesMatchSources(answer,selected))
+    throw answerFailure('answer-quotation-not-source-verified');
   // Models sometimes group citations, e.g. [S1, S3]. Audit every source ID
   // inside each bracket group so an unknown citation cannot slip through
   // merely because it was not written as a standalone [S1] token.
@@ -1308,7 +1325,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'evidence-review-invalid-response','answer-composition-request-failed',
         'answer-composition-truncated','answer-composition-empty',
         'answer-composition-too-long','answer-citations-missing',
-        'answer-citations-invalid']);
+        'answer-citations-invalid','answer-quotation-not-source-verified']);
       const failureCode=known.has(error?.failureCode)?error.failureCode:
         'answer-generation-or-citation-failed';
       console.error('Reader pilot answer failed',{failureCode});
