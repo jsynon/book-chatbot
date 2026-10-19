@@ -37,6 +37,17 @@ test('bounded search planner produces distinct, well-formed corpus search querie
  assert.deepEqual(answer.queries,good.queries);
  assert.equal(answer.usage.neurons,3);
 });
+test('search planner retains explicitly named authors and works for source scoping',async()=>{
+ let systemPrompt='';
+ await planSearchQueries('How do Aristotle and Darwin explain change?', '', {
+  run:async(_model,options)=>{
+   systemPrompt=options.messages[0].content;
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(good)}}]};
+  }
+ });
+ assert.match(systemPrompt,/retain the relevant name in its corresponding query/i);
+ assert.match(systemPrompt,/Do not invent authors or works/i);
+});
 test('malformed, duplicate or truncated AI planning fails without invented sources',async()=>{
  for(const raw of ['I cannot help','{"queries":["the same phrase","the same phrase"]}',
    '{"queries":["one","another"]}','{"queries":[{"page":466}, "another phrase"]}']){
