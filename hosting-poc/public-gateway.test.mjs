@@ -455,7 +455,9 @@ test('v1.9.4 absence of useful evidence skips composition',async()=>{
  assert.equal(calls,1);
 });
 test('v1.9.4 bad or absent model citations never leave the server as an answer',async()=>{
- for(const fabricated of ['The answer is clear [S9].','An unsupported claim without a source.']){
+ for(const fabricated of ['The answer is clear [S9].',
+   'The answer is clear [S1, S9] [S1].',
+   'An unsupported claim without a source.']){
    const fixture=await fingerprintTestFixture();
    let calls=0;
    const result=await fixture.response({aiRun:async()=>{
@@ -591,6 +593,32 @@ test('public pilot verifies and submits four source candidates to the bounded an
  assert.equal(data.citations[0].url,'https://drive.google.com/file/d/'+PDF+'/view?usp=sharing#page=41');
  assert.equal(pilot.stats().verifyCalls,1);
  assert.equal(pilot.stats().calls,2);
+});
+test('public pilot resolves grouped citation IDs and rejects unknown IDs in a group',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===420)
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+       coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S3'}]})}}]};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The passages support this claim [S1, S3].'}}]};
+ }});
+ const source=pilot.fixture.body.sources[0];
+ const result=await pilot.post({body:{sources:[38,39,40].map(page=>({...source,page}))}});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.deepEqual(data.citations.map(item=>item.id),['S1','S3']);
+ assert.deepEqual(data.evidenceHighlights.map(item=>item.source_id),['S1','S3']);
+
+ const invalid=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===420)
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+       coverage:'full',missing:'',evidence:[{id:'S1'}]})}}]};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The passages support this claim [S1, S9] [S1].'}}]};
+ }});
+ const rejected=await invalid.post();
+ assert.equal(rejected.status,502);
+ assert.equal((await rejected.json()).failureCode,'answer-citations-invalid');
 });
 test('v1.9.5 public pilot rejects unknown book/page, tampered text, and bad Turnstile',async()=>{
  const pilot=await pilotScenario();
