@@ -28,3 +28,4 @@ Desktop.ini
 # Local model answers, diagnostics, and manually scored benchmark runs.
 reports/
 .wrangler/cache/wrangler-account.json
+/hosting-poc/wrangler.public-pilot.jsonc
