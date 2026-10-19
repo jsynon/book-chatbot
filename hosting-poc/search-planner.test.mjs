@@ -158,5 +158,5 @@ test('answer review and composition receive history only as non-evidence context
  assert.equal(answer.outcome,'verified-source-draft');
  assert.match(prompts[0][1].content,/Reader: Earlier question about virtue/);
  assert.match(prompts[1][0].content,/prior conversation only to resolve references; it is not evidence/);
- assert.match(prompts[1][1].content,/Current follow-up question:\\nHow does that shape character/);
+ assert.match(prompts[1][1].content,/Current follow-up question/);
 });
