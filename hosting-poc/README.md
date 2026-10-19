@@ -22,6 +22,12 @@ The retrieval here is intentionally **basic lexical ranking**, not a port of Pyt
 
 **Next gate:** test a model's structured two-call response and quota consumption through a deliberately restricted Cloudflare Workers Free proof of concept, with source validation and no automatic paid overages. This requires the maintainer to create/enable the free Cloudflare services, and may require an account even when the service is free. Never put provider credentials in browser JavaScript or commit them to GitHub.
 
+## Optional live evaluation authorization
+
+The public pilot endpoints can support an explicitly enabled, manually dispatched live-answer evaluation without requiring one-use Turnstile tokens for each automated request. The evaluation still uses the same AI binding, source fingerprint checks, origin checks, and both rate limiters. The authorization is disabled unless `PILOT_EVALUATION_ENABLED` is exactly `true` and the Worker has a private `PILOT_EVALUATION_TOKEN` secret of at least 32 characters. Public traffic continues to require Turnstile.
+
+After the evaluation workflow has been reviewed, generate a random token locally, store it as a Cloudflare Worker secret and as the matching GitHub Actions repository secret. Do not paste it into source, workflow inputs, diagnostic output, or chat. Keep `PILOT_EVALUATION_ENABLED` false except when the live evaluation is ready. The live workflow is opt-in and rate-limited; the routine 30-question retrieval benchmark makes no AI calls.
+
 ## v1.8.2 — Protected hosted AI evidence experiment
 
 This is a **manual, private-token smoke test**, not a public chat service. Its Worker API accepts short browser-supplied excerpts; **it does not yet independently verify them against the v47 corpus**, meaning citations are not tamper-proof or claim-verified. The local two-call evidence-first Python system remains the quality reference.

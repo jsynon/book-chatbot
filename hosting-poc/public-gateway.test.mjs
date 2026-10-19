@@ -508,17 +508,17 @@ async function pilotScenario({config={},model,turnstileValid=true}={}) {
    AI_RATE_LIMITER:{limit:async({key})=>{limitCalls++;visitorKeys.push(key);return {success:true}}},
    GLOBAL_RATE_LIMITER:{limit:async({key})=>{limitCalls++;globalKeys.push(key);return {success:true}}},
  });
- const post=async({body={},origin='https://jsynon.github.io',ip='198.51.100.42'}={})=>{
+ const post=async({body={},origin='https://jsynon.github.io',ip='198.51.100.42',headers={}}={})=>{
    const merged={...fixture.body,turnstileToken:'one-time-challenge',...body};
    const request=new Request(HOST+'/api/pilot-answer',{method:'POST',
       headers:{Origin:origin,'Content-Type':'application/json',
-        'CF-Connecting-IP':ip},
+        'CF-Connecting-IP':ip,...headers},
       body:JSON.stringify(merged)});
    return handleRequest(request,environment,validFetcher);
  };
- const plan=async({question='What causes this event?',origin='https://jsynon.github.io',ip='198.51.100.42'}={})=>{
+ const plan=async({question='What causes this event?',origin='https://jsynon.github.io',ip='198.51.100.42',headers={}}={})=>{
    const request=new Request(HOST+'/api/pilot-plan',{method:'POST',
-     headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':ip},
+     headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':ip,...headers},
      body:JSON.stringify({question,bookId:'',turnstileToken:'one-time-challenge'})});
    return handleRequest(request,environment,validFetcher);
  };
@@ -659,6 +659,36 @@ test('v1.9.5 blocks requests before model when pilot rate limiter rejects',async
  assert.equal(pilot.stats().calls,0);
  assert.equal(pilot.stats().verifyCalls,0);
  assert.equal(pilot.fixture.stats().fetchCount,0);
+});
+test('opt-in evaluation bearer reaches real pilot endpoints without bypassing rate limits',async()=>{
+ const token='evaluation-only-secret-'.repeat(3);
+ const model=async(_model,input)=>({choices:[{finish_reason:'stop',message:{content:
+   input.max_completion_tokens===210?' {"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}':
+   input.max_completion_tokens===420?JSON.stringify({coverage:'partial',missing:'',evidence:[{id:'S1'}]}):
+   'The passage identifies the deeper cause as fear of growing power [S1].'}}],usage:{neurons:1}});
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+   PILOT_EVALUATION_TOKEN:token},model});
+ const headers={Authorization:'Bearer '+token};
+ const planned=await pilot.plan({headers});
+ assert.equal(planned.status,200);
+ const answered=await pilot.post({headers});
+ assert.equal(answered.status,200);
+ assert.equal(pilot.stats().verifyCalls,0);
+ assert(pilot.stats().calls>=3);
+
+ const blocked=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+   PILOT_EVALUATION_TOKEN:token},turnstileValid:false});
+ assert.equal((await blocked.post({headers:{Authorization:'Bearer wrong'}})).status,403);
+ assert.equal(blocked.stats().verifyCalls,1);
+
+ const disabled=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'false',
+   PILOT_EVALUATION_TOKEN:token},turnstileValid:false});
+ assert.equal((await disabled.post({headers})).status,403);
+ assert.equal(disabled.stats().verifyCalls,1);
+
+ pilot.environment.AI_RATE_LIMITER={limit:async()=>({success:false})};
+ assert.equal((await pilot.post({headers})).status,429);
+ assert.equal(pilot.stats().verifyCalls,0);
 });
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
