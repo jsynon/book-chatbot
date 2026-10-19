@@ -504,6 +504,32 @@ test('v1.12 accepts a source-verbatim quotation with normalized punctuation',asy
  assert.match(data.answer,/growing power created fear/);
  assert.equal(calls,2);
 });
+test('v1.13 carries an explicit verse-range scope into review and composition prompts',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const question='According to 1 John 4:7–12, what does “God is love” mean?';
+ const prompts=[];
+ const result=await fixture.response({
+   overrideBody:{...fixture.body,question},
+   aiRun:async(_model,input)=>{
+     prompts.push(input.messages);
+     const content=input.max_completion_tokens===420?
+       JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+       'The verified passage connects divine love with loving one another [S1].';
+     return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
+   }
+ });
+ assert.equal(result.status,200);
+ assert.equal(prompts.length,2);
+ const reviewSystem=prompts[0][0].content.toLowerCase();
+ const answerSystem=prompts[1][0].content.toLowerCase();
+ assert.match(reviewSystem,/explicit textual scope/);
+ assert.match(reviewSystem,/parallel edition/);
+ assert.match(reviewSystem,/verse range/);
+ assert.match(answerSystem,/honor any explicit work, chapter, verse, section, or page range/);
+ assert.match(answerSystem,/adjacent chapter/);
+ assert(prompts[0][1].content.includes(question));
+ assert(prompts[1][1].content.includes(question));
+});
 test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
  const fixture=await fingerprintTestFixture();
  const response=await fixture.response({method:'OPTIONS'});
