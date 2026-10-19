@@ -955,7 +955,7 @@ function quotedPhrasesMatchSources(answer,sources) {
 }
 
 // v1.9.4 private AI pilot. Only call this with independently SHA-256-verified
-// sources. Two bounded inference requests: evidence selection, then composition.
+// sources. Two normal inference requests, with one conditional quotation repair.
 // Citations here are source-ID checks, NOT semantic claim-level verification.
 export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const combined=sources.map(s=>'['+s.id+'] '+s.title+', physical PDF page '+s.page+'\n'+s.preview).join('\n\n');
@@ -1014,6 +1014,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Use prior conversation only to resolve references; '+
         'it is not evidence and must not support factual claims. Distinguish what the author says from your own '+ 
         'inference. Do not invent facts, quotations, page numbers or sources. '+ 
+        'Paraphrase by default. Use quotation marks only for an exact phrase copied '+ 
+        'from a verified excerpt; never use them for emphasis or invented wording. '+ 
         'Put [S1], [S2], etc. immediately after statements supported by those '+ 
         'sources. If evidence is partial, explain the supported part and say '+ 
         'what remains uncertain. Do not invent missing evidence. '+ 
@@ -1035,9 +1037,39 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   if(!answer)throw answerFailure('answer-composition-empty');
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
   // Exact source-page provenance does not make model quotations reliable.
-  // Reject long quoted spans unless they occur verbatim in verified excerpts.
-  if(!quotedPhrasesMatchSources(answer,selected))
-    throw answerFailure('answer-quotation-not-source-verified');
+  // If a quote fails exact matching, make one bounded repair attempt. This path
+  // is conditional, so normal answers keep the two-request inference budget.
+  let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
+  if(!quotedPhrasesMatchSources(answer,selected)){
+    let repaired;
+    try{repaired=await ai.run(MODEL,{
+      messages:[
+        {role:'system',content:
+          'Correct the draft using ONLY the verified excerpts. The draft contains '+ 
+          'at least one quotation that is not an exact source match. Preserve only '+ 
+          'claims supported by these excerpts, paraphrase them, and use no quotation '+ 
+          'marks anywhere. Keep citations only as [S1], [S2], etc. for the supplied '+ 
+          'source IDs. Honor the question scope. Return only the corrected answer.'},
+        {role:'user',content:
+          'Question:\n'+question+'\nCoverage: '+review.coverage+
+          '\nMissing: '+(review.missing||'Not identified')+
+          '\n\nDraft to correct:\n'+answer+
+          '\n\nVerified source excerpts:\n'+
+          selected.map(s=>'['+s.id+'] '+s.title+
+            ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
+      ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:480,
+    });}catch{throw answerFailure('answer-quotation-repair-request-failed');}
+    if(['length','max_tokens'].includes(repaired?.choices?.[0]?.finish_reason))
+      throw answerFailure('answer-quotation-repair-truncated');
+    const repairedAnswer=modelText(repaired);
+    if(!repairedAnswer)throw answerFailure('answer-quotation-repair-empty');
+    if(repairedAnswer.length>2400)throw answerFailure('answer-quotation-repair-too-long');
+    if(!quotedPhrasesMatchSources(repairedAnswer,selected))
+      throw answerFailure('answer-quotation-repair-failed');
+    answer=repairedAnswer;
+    second=repaired;
+    answerNeurons+=Math.max(0,Number(repaired?.usage?.neurons)||0);
+  }
   // Models sometimes group citations, e.g. [S1, S3]. Audit every source ID
   // inside each bracket group so an unknown citation cannot slip through
   // merely because it was not written as a standalone [S1] token.
@@ -1049,7 +1081,6 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   if(cited.length===0)throw answerFailure('answer-citations-missing');
   if(cited.some(id=>!known.has(id)))throw answerFailure('answer-citations-invalid');
   const citations=selected.filter(s=>cited.includes(s.id));
-  const answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
   return {outcome:'verified-source-draft',answer,coverage:review.coverage,
     missing:review.missing,citations,followUpQuestions:review.followUpQuestions,
     reviewStatus:'citations_not_claim_verified',
