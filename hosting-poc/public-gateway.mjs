@@ -943,7 +943,7 @@ function modelText(result) {
 
 function normalizedEvidenceQuote(text) {
   return String(text||'').toLocaleLowerCase().normalize('NFKC')
-    .replace(/[^\\p{L}\\p{N}]+/gu,' ').trim();
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 }
 function quotedPhrasesMatchSources(answer,sources) {
   const matches=[...answer.matchAll(/“([^”]{12,320})”|"([^"]{12,320})"|‘([^’]{12,320})’/g)];
