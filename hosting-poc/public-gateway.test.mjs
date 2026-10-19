@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,sourceExcerpt,turnstileRejection} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,sourceExcerpt,turnstileRejection,PILOT_BOOKS,PILOT_BOOK_IDS} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -509,7 +509,10 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
  assert.equal(details.bookId,'152');
  assert.equal(details.firstPage,33);
  assert.equal(details.lastPage,64);
- assert.deepEqual(details.pilotBookIds,['7','114','152','529']);
+ assert.equal(PILOT_BOOK_IDS.length,128);
+ assert.deepEqual(details.pilotBookIds,PILOT_BOOK_IDS);
+ assert(['7','114','152','529','102'].every(id=>PILOT_BOOK_IDS.includes(id)));
+ assert.equal(PILOT_BOOKS['102'],'A Brief History of Time — Stephen Hawking');
  assert.equal(details.turnstileSiteKey,pilotBaseEnv.TURNSTILE_SITE_KEY);
  assert.equal(JSON.stringify(details).includes(pilotBaseEnv.TURNSTILE_SECRET),false);
 });
