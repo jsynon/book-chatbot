@@ -7,7 +7,7 @@
  * Public clients submit a question, a fresh Turnstile token, and numeric
  * book/page locators — NEVER their own passage text, title or PDF URL.
  * The Worker fetches trusted v47 source shards, binds PDF citations to
- * manifest metadata, then runs a bounded two-call AI answer.
+ * manifest metadata, then runs bounded answer generation with a conditional quote repair.
  *
  * Important: authentic source text != a factually supported AI answer.
  * This gateway does not provide claim-level entailment verification.
@@ -1033,7 +1033,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   });}catch{throw answerFailure('answer-composition-request-failed');}
   if(['length','max_tokens'].includes(second?.choices?.[0]?.finish_reason))
     throw answerFailure('answer-composition-truncated');
-  const answer=modelText(second);
+  let answer=modelText(second);
   if(!answer)throw answerFailure('answer-composition-empty');
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
   // Exact source-page provenance does not make model quotations reliable.
