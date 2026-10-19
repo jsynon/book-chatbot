@@ -333,7 +333,8 @@ async function fingerprintTestFixture() {
     hashAlgorithm:'SHA-256-utf8-exact',libraryVersion:47,
     bookId:'152',title:'History of the Peloponnesian War — Thucydides',
     pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
-    pages:[{page:38,globalPageId:34403,utf8Bytes:bytes.byteLength,sha256}]};
+    pages:[38,39,40,41].map((page,index)=>({page,globalPageId:34403+index,
+      utf8Bytes:bytes.byteLength,sha256}))};
  const url=HOST+'/internal/verified-answer',
     secret='valid-private-token-for-the-verified-pilot-456';
  const body={question:'What caused the Peloponnesian War?',
@@ -521,6 +522,29 @@ test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounde
  assert.equal(data.citations[0].page,38);
  assert.equal(data.citations[0].globalPageId,34403);
  assert.equal(pilot.stats().limitCalls,2);
+ assert.equal(pilot.stats().verifyCalls,1);
+ assert.equal(pilot.stats().calls,2);
+});
+test('public pilot verifies and submits four source candidates to the bounded answer stage',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===320){
+     const submitted=input.messages.at(-1).content;
+     assert.match(submitted,/\[S4\].*physical PDF page 41/);
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+       coverage:'full',missing:'',evidence:[{id:'S4'}]})}}]};
+   }
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The verified passage supports this explanation [S4].'}}]};
+ }});
+ const four=pilot.fixture.body.sources[0];
+ const result=await pilot.post({body:{sources:[38,39,40,41].map(page=>({...four,page}))}});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.verifiedPages,4);
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.deepEqual(data.citations.map(source=>({id:source.id,page:source.page,
+   globalPageId:source.globalPageId})),[{id:'S4',page:41,globalPageId:34406}]);
+ assert.equal(data.citations[0].url,'https://drive.google.com/file/d/'+PDF+'/view?usp=sharing#page=41');
  assert.equal(pilot.stats().verifyCalls,1);
  assert.equal(pilot.stats().calls,2);
 });

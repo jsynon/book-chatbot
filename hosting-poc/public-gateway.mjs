@@ -188,7 +188,7 @@ export async function trustedPacketSources(question,locators,fetcher=(url,option
 // browser-provided title, excerpt, page ID or PDF link is trusted.
 export const FINGERPRINT_ROOT='https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/';
 export async function verifiedFingerprintSources(question,items,fetcher=(url,opts)=>globalThis.fetch(url,opts)) {
-  if(!Array.isArray(items)||!items.length||items.length>3)
+  if(!Array.isArray(items)||!items.length||items.length>4)
     throw new Error('Invalid source count');
   const packets=new Map(),seen=new Set(),sources=[];
   let totalBytes=0;
@@ -543,7 +543,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       data.question.length>400||typeof data.turnstileToken!=='string'||
       data.turnstileToken.length<5||data.turnstileToken.length>2048||
       !Array.isArray(data.sources)||data.sources.length<1||
-      data.sources.length>2||
+      data.sources.length>4||
       !data.sources.every(s=>s && PILOT_BOOK_SET.has(String(s.bookId)) &&
         Number.isSafeInteger(s.page) && s.page>=1 && s.page<=10000 &&
         typeof s.text==='string'))
