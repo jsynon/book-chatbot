@@ -461,6 +461,7 @@ const pilotBaseEnv={
 async function pilotScenario({config={},model,turnstileValid=true}={}) {
  const fixture=await fingerprintTestFixture();
  let calls=0,verifyCalls=0,limitCalls=0;
+ const visitorKeys=[],globalKeys=[];
  const validFetcher=async(url,init)=>{
    if(String(url).includes('siteverify')){
       verifyCalls++;
@@ -473,8 +474,8 @@ async function pilotScenario({config={},model,turnstileValid=true}={}) {
  const ai={run:async(...args)=>{calls++;return (model||fixture.run)(...args);}};
  const environment=env({...pilotBaseEnv, ...config,
    AI:ai,
-   AI_RATE_LIMITER:{limit:async()=>{limitCalls++;return {success:true}}},
-   GLOBAL_RATE_LIMITER:{limit:async()=>{limitCalls++;return {success:true}}},
+   AI_RATE_LIMITER:{limit:async({key})=>{limitCalls++;visitorKeys.push(key);return {success:true}}},
+   GLOBAL_RATE_LIMITER:{limit:async({key})=>{limitCalls++;globalKeys.push(key);return {success:true}}},
  });
  const post=async({body={},origin='https://jsynon.github.io',ip='198.51.100.42'}={})=>{
    const merged={...fixture.body,turnstileToken:'one-time-challenge',...body};
@@ -484,8 +485,14 @@ async function pilotScenario({config={},model,turnstileValid=true}={}) {
       body:JSON.stringify(merged)});
    return handleRequest(request,environment,validFetcher);
  };
- return {post,environment,fixture,fetcher:validFetcher,
-   stats:()=>({calls,verifyCalls,limitCalls})};
+ const plan=async({question='What causes this event?',origin='https://jsynon.github.io',ip='198.51.100.42'}={})=>{
+   const request=new Request(HOST+'/api/pilot-plan',{method:'POST',
+     headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':ip},
+     body:JSON.stringify({question,bookId:'',turnstileToken:'one-time-challenge'})});
+   return handleRequest(request,environment,validFetcher);
+ };
+ return {post,plan,environment,fixture,fetcher:validFetcher,
+   stats:()=>({calls,verifyCalls,limitCalls,visitorKeys:[...visitorKeys],globalKeys:[...globalKeys]})};
 }
 test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every guard exists',async()=>{
  const off=await handleRequest(new Request(HOST+'/api/pilot-status',{
@@ -581,10 +588,37 @@ test('v1.9.5 refuses public AI without configuration, approved Origin, limits or
 test('v1.9.5 blocks requests before model when pilot rate limiter rejects',async()=>{
  const pilot=await pilotScenario();
  pilot.environment.AI_RATE_LIMITER={limit:async()=>({success:false})};
- assert.equal((await pilot.post()).status,429);
+ const response=await pilot.post();
+ assert.equal(response.status,429);
+ assert.equal((await response.json()).failureCode,'rate-limited');
  assert.equal(pilot.stats().calls,0);
  assert.equal(pilot.stats().verifyCalls,0);
  assert.equal(pilot.fixture.stats().fetchCount,0);
+});
+test('planner and answer have separate visitor budgets and share the global budget',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===210)return {choices:[{finish_reason:'stop',message:{content:
+     '{"queries":["specific original event causes","political motives and context"]}'}}]};
+   if(input.max_completion_tokens===320)return {choices:[{finish_reason:'stop',message:{content:
+     '{"coverage":"full","missing":"","evidence":[{"id":"S1"}]}'}}]};
+   return {choices:[{finish_reason:'stop',message:{content:'The passage explains the cause [S1].'}}]};
+ }});
+ assert.equal((await pilot.plan()).status,200);
+ assert.equal((await pilot.post()).status,200);
+ const stats=pilot.stats();
+ assert.deepEqual(stats.visitorKeys,[
+   'reading-pilot:visitor:198.51.100.42:planner',
+   'reading-pilot:visitor:198.51.100.42:answer'
+ ]);
+ assert.deepEqual(stats.globalKeys,['reading-pilot:global','reading-pilot:global']);
+});
+test('answer failures expose a safe reason code but not provider error text',async()=>{
+ const pilot=await pilotScenario({model:async()=>{throw new Error('PRIVATE provider response token');}});
+ const response=await pilot.post();
+ assert.equal(response.status,502);
+ const body=await response.json();
+ assert.equal(body.failureCode,'evidence-review-request-failed');
+ assert.equal(JSON.stringify(body).includes('PRIVATE'),false);
 });
 test('v1.9.5 exposes only safe CORS preflight on public endpoint',async()=>{
  const pilot=await pilotScenario();
