@@ -48,6 +48,25 @@ test('search planner retains explicitly named authors and works for source scopi
  assert.match(systemPrompt,/retain the relevant name in its corresponding query/i);
  assert.match(systemPrompt,/Do not invent authors or works/i);
 });
+test('search planning seeks source wording for change and causal-process questions',async()=>{
+ let systemPrompt='';
+ const plan={queries:[
+  'Aristotle moral virtue habits practice forming character',
+  'Darwin natural selection favorable variation inheritance populations'
+ ]};
+ const answer=await planSearchQueries(
+  'How do Aristotle and Darwin explain change in character and populations?', '', {
+   run:async(_model,options)=>{
+    systemPrompt=options.messages[0].content;
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(plan)}}]};
+   }
+  }
+ );
+ assert.deepEqual(answer.queries,plan.queries);
+ assert.match(systemPrompt,/concrete process and causal sequence/i);
+ assert.match(systemPrompt,/using likely source wording alongside broad concepts/i);
+ assert.match(systemPrompt,/do not rely only on a modern abstract label/i);
+});
 test('malformed, duplicate or truncated AI planning fails without invented sources',async()=>{
  for(const raw of ['I cannot help','{"queries":["the same phrase","the same phrase"]}',
    '{"queries":["one","another"]}','{"queries":[{"page":466}, "another phrase"]}']){

@@ -378,7 +378,12 @@ export async function planSearchQueries(question,bookTitle,ai){
         'locate complementary original passages addressing different parts '+
         'of the reader question. Focus on distinctive arguments, scenes, '+
         'characters, scientific mechanisms, events and near-synonyms likely '+
-        'to appear in the PRIMARY SOURCE. For two-part questions, one query '+
+        'to appear in the PRIMARY SOURCE. For questions about how something '+
+        'changes, forms, or causes an outcome, seek the concrete process and '+
+        'causal sequence the author describes, using likely source wording '+
+        'alongside broad concepts. Do not rely only on a modern abstract '+
+        'label when the source may describe the process in ordinary terms. '+
+        'For two-part questions, one query '+
         'should seek evidence for each part. When the reader names authors or '+
         'works, retain the relevant name in its corresponding query so source '+
         'discovery can distinguish books in the full library. Do not simply '+
