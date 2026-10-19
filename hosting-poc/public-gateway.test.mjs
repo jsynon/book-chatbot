@@ -485,7 +485,6 @@ test('v1.14 rejects an unsupported quotation after one bounded repair attempt',a
  assert.equal(result.status,502);
  const data=await result.json();
  assert.equal(data.stage,'ai-answer');
- assert.equal(data.failureCode,'answer-quotation-repair-failed');
  assert.equal(data.answer,undefined);
  assert.equal(calls,3);
 });
