@@ -472,6 +472,38 @@ test('v1.9.4 bad or absent model citations never leave the server as an answer',
    assert.equal(calls,2);
  }
 });
+test('v1.12 rejects a generated quotation that is absent from the verified excerpt',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const result=await fixture.response({aiRun:async()=>{
+   calls++;
+   const content=calls===1?
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+     'The passage calls it “the atoning sacrifice because we obey his commandments and do for our sins” [S1].';
+   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
+ }});
+ assert.equal(result.status,502);
+ const data=await result.json();
+ assert.equal(data.stage,'ai-answer');
+ assert.equal(data.answer,undefined);
+ assert.equal(calls,2);
+});
+test('v1.12 accepts a source-verbatim quotation with normalized punctuation',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const result=await fixture.response({aiRun:async()=>{
+   calls++;
+   const content=calls===1?
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+     'The excerpt says “growing power created fear among competing cities.” [S1].';
+   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
+ }});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.match(data.answer,/growing power created fear/);
+ assert.equal(calls,2);
+});
 test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
  const fixture=await fingerprintTestFixture();
  const response=await fixture.response({method:'OPTIONS'});
