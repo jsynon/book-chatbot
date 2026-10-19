@@ -89,6 +89,16 @@ test('refuses forged PDF page/book locators not supported by official manifest',
  await assert.rejects(trustedSources(question,[{bookId:'152',page:900}],fetcher),/Page not found/);
  await assert.rejects(trustedSources(question,[{bookId:'44',page:38}],fetcher),/Unknown cited book/);
 });
+test('truncated evidence-gap notes end at a complete sentence',()=>{
+ const source=[{id:'S1'}];
+ const complete='The passages do not define the event horizon.';
+ const clipped=complete+' An unfinished explanation '.repeat(20);
+ const review=parseReview(JSON.stringify({coverage:'partial',missing:clipped,evidence:[{id:'S1'}]}),source);
+ assert.equal(review.missing,complete);
+ const noSentence=parseReview(JSON.stringify({coverage:'partial',missing:'unfinished clause only',evidence:[{id:'S1'}]}),source);
+ assert.equal(noSentence.missing,'');
+});
+
 test('source selection is bound to ID from server-fetched content',()=>{
  const sources=[{id:'S1',preview:'verified from trusted book'}];
  const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S5'},{id:'S1'}]}),sources);

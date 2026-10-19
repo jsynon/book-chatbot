@@ -375,6 +375,17 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
   return sources;
 }
 
+function completeMissingNote(value){
+  if(typeof value!=='string')return '';
+  const note=value.trim().slice(0,240).trim();
+  if(!note)return '';
+  if(/[.!?][\"')\]]*$/.test(note))return note;
+  const ends=[...note.matchAll(/[.!?][\"')\]]*(?=\s|$)/g)];
+  if(!ends.length)return '';
+  const last=ends[ends.length-1];
+  return note.slice(0,last.index+last[0].length).trim();
+}
+
 export function parseReview(raw,sources) {
   if(typeof raw!=='string')throw new Error('Missing evidence review');
   const a=raw.indexOf('{'),b=raw.lastIndexOf('}');
@@ -391,8 +402,7 @@ export function parseReview(raw,sources) {
     seen.add(id);selected.push(byId.get(id));
     if(selected.length===3)break;
   }
-  return {coverage:review.coverage,missing:typeof review.missing==='string'?
-    review.missing.slice(0,240):'',selected};
+  return {coverage:review.coverage,missing:completeMissingNote(review.missing),selected};
 }
 function answerFailure(code){
   const error=new Error(code);
@@ -517,6 +527,10 @@ export async function planSearchQueries(question,bookTitle,ai){
         'source-level descriptions of what people or things do over abstract '+
         'labels alone; for example, seek repeated actions or doing just acts '+
         'when investigating how a disposition is formed. '+
+        'For questions asking what something is or how it works, seek a direct '+
+        'definition, boundary, or essential operation, not only its origins or '+
+        'consequences. For theory-versus-observation questions, prefer passages '+
+        'that explicitly compare models or predictions with observed evidence. '+
         'For two-part questions, one query '+
         'should seek evidence for each part. When the reader names authors or '+
         'works, retain the relevant name in its corresponding query so source '+
