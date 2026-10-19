@@ -531,8 +531,11 @@ export async function planSearchQueries(question,bookTitle,ai){
         'definition, boundary, or essential operation, not only its origins or '+
         'consequences. For theory-versus-observation questions, prefer passages '+
         'that explicitly compare models or predictions with observed evidence. '+
-        'For two-part questions, one query '+
-        'should seek evidence for each part. When the reader names authors or '+
+        'For two-part questions, keep the central subject or phenomenon in BOTH '+
+        'queries, adding each facet’s distinguishing terms instead of dropping '+
+        'the subject from a general-purpose query. For theory-versus-observation '+
+        'questions, seek observations and predictions about that same subject. '+
+        'One query should seek evidence for each part. When the reader names authors or '+
         'works, retain the relevant name in its corresponding query so source '+
         'discovery can distinguish books in the full library. Do not simply '+
         'copy the question or fill queries with generic words. Do not invent '+
