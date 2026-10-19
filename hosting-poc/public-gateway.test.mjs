@@ -519,7 +519,11 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
  assert.equal(details.bookId,'152');
  assert.equal(details.firstPage,33);
  assert.equal(details.lastPage,64);
- assert.equal(PILOT_BOOK_IDS.length,128);
+ assert.equal(PILOT_BOOK_IDS.length,642);
+ assert(!PILOT_BOOK_IDS.includes('1'));
+ assert(!PILOT_BOOK_IDS.includes('628'));
+ assert.equal(PILOT_BOOKS['2'],'Fragments — Anaxagoras');
+ assert.equal(details.scope,'full-public-catalog');
  assert.deepEqual(details.pilotBookIds,PILOT_BOOK_IDS);
  assert(['7','114','152','529','102'].every(id=>PILOT_BOOK_IDS.includes(id)));
  assert.equal(PILOT_BOOKS['102'],'A Brief History of Time — Stephen Hawking');
