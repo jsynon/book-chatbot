@@ -17,8 +17,139 @@ export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/
 const FRONTEND_ORIGIN = 'https://jsynon.github.io';
 const EXPECTED_TURNSTILE_HOST = 'jsynon.github.io';
 const TURNSTILE_ACTION = 'companion_ask';
-// v1.10 explicitly limited to four benchmark books until whole-library coverage is ready.
-export const PILOT_BOOK_IDS = Object.freeze(['7','114','152','529']);
+// v1.11 staged 128-book alpha; each answer page must still match an
+// owner-published v47 fingerprint before it reaches the model.
+export const PILOT_BOOKS = Object.freeze({
+  "7": "Nicomachean Ethics — Aristotle",
+  "529": "The Harvard Classics, Volume 11: On the Origin of Species — Charles Darwin",
+  "152": "History of the Peloponnesian War — Thucydides",
+  "114": "Crime and Punishment — Fyodor Dostoevsky",
+  "102": "A Brief History of Time — Stephen Hawking",
+  "149": "The Histories — Herodotus",
+  "89": "1984 — George Orwell",
+  "54": "Thus Spake Zarathustra — Friedrich Nietzsche",
+  "144": "On the Genealogy of Morals — Friedrich Nietzsche",
+  "239": "The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)",
+  "140": "Fear and Trembling — Søren Kierkegaard",
+  "192": "Philosophical Fragments — Søren Kierkegaard",
+  "253": "The Sickness Unto Death — Søren Kierkegaard",
+  "436": "Kierkegaard’s Attack Upon “Christendom,” 1854–1855 — Søren Kierkegaard",
+  "211": "The Science of Knowledge — Johann Gottlieb Fichte",
+  "353": "The Sound and the Fury — William Faulkner",
+  "473": "Sacred Books of the East, Volume 6 — Various authors (edited by F. Max Müller)",
+  "245": "The Social Contract — Jean-Jacques Rousseau",
+  "38": "The Varieties of Religious Experience — William James",
+  "188": "The Oresteia — Aeschylus",
+  "129": "Essays — Michel de Montaigne",
+  "600": "Collected Works, Volume II: Publications 1938–1974 — Kurt Gödel",
+  "136": "The History of the Decline and Fall of the Roman Empire, Volume IV — Edward Gibbon",
+  "464": "Tragic Sense of Life — Miguel de Unamuno",
+  "494": "Sacred Books of the East, Volume 27 — Various authors (edited by F. Max Müller)",
+  "26": "Democracy and Education — John Dewey",
+  "640": "Do Androids Dream of Electric Sheep? — Philip K. Dick",
+  "13": "Posterior Analytics — Aristotle",
+  "262": "What Is Metaphysics? — Martin Heidegger",
+  "456": "A Study of History: Abridgement of Volumes I–VI — Arnold J. Toynbee (abridged by D. C. Somervell)",
+  "605": "The Time Machine — H. G. Wells",
+  "478": "Sacred Books of the East, Volume 11 — Various authors (edited by F. Max Müller)",
+  "650": "Selections from the Prison Notebooks — Antonio Gramsci",
+  "172": "Man's Search for Meaning — Viktor E. Frankl",
+  "75": "Sophist — Plato",
+  "326": "Practical Philosophy — Immanuel Kant",
+  "202": "The Principles of Quantum Mechanics — P. A. M. Dirac",
+  "271": "A Little History of the World — E. H. Gombrich",
+  "123": "The Divine Comedy — Dante Alighieri",
+  "281": "Against Heresies, Book V — Irenaeus",
+  "457": "The Wretched of the Earth — Frantz Fanon",
+  "350": "The Sane Society — Erich Fromm",
+  "73": "Protagoras — Plato",
+  "336": "Of Grammatology — Jacques Derrida",
+  "309": "The Feynman Lectures on Physics — Richard P. Feynman",
+  "305": "The Education of Henry Adams — Henry Adams",
+  "609": "Fahrenheit 451 — Ray Bradbury",
+  "476": "Sacred Books of the East, Volume IX: The Qur'ân",
+  "619": "A History of Philosophy, Volume IX: From the French Revolution to Sartre, Camus, and Levi-Strauss — Frederick Copleston",
+  "143": "Complete Works — Sigmund Freud",
+  "70": "Phaedo — Plato",
+  "19": "Three Dialogues Between Hylas and Philonous — George Berkeley",
+  "615": "A History of Philosophy, Volume V: The British Philosophers, From Hobbes to Hume — Frederick Copleston",
+  "139": "Faust, Parts I and II — Johann Wolfgang von Goethe",
+  "479": "Sacred Books of the East, Volume 12 — Various authors (edited by F. Max Müller)",
+  "113": "On the Revolutions of the Heavenly Spheres — Nicolaus Copernicus",
+  "588": "God and Other Minds: A Study of the Rational Justification of Belief in God — Alvin Plantinga",
+  "303": "Lives of the Eminent Philosophers — Diogenes Laertius",
+  "67": "Laws — Plato",
+  "547": "The Voyage of the Beagle (Harvard Classics, Vol. 29) — Charles Darwin",
+  "115": "The Decline of the West — Oswald Spengler",
+  "315": "Heart of Darkness — Joseph Conrad",
+  "16": "The City of God — Augustine of Hippo",
+  "109": "Anti-Oedipus: Capitalism and Schizophrenia — Gilles Deleuze and Félix Guattari",
+  "32": "Philosophy of Mind (Part Three of the Encyclopaedia of the Philosophical Sciences) — G. W. F. Hegel",
+  "27": "Discourses — Epictetus",
+  "228": "The Assayer — Galileo Galilei",
+  "596": "The Rise and Fall of the Third Reich: A History of Nazi Germany — William L. Shirer",
+  "638": "The New Oxford Annotated Bible, Fully Revised Fifth Edition — edited by Michael D. Coogan",
+  "577": "Eros and Civilization: A Philosophical Inquiry into Freud — Herbert Marcuse",
+  "606": "The Denial of Death — Ernest Becker",
+  "74": "The Republic — Plato",
+  "12": "Politics — Aristotle",
+  "272": "The Logic of Scientific Discovery — Karl Popper",
+  "275": "A Short History of the World — H. G. Wells",
+  "560": "English Poetry, Vol. III: From Tennyson to Whitman (Harvard Classics, Vol. 42) — Various Poets",
+  "304": "Ecclesiastical History — Eusebius of Caesarea",
+  "622": "The Jefferson Bible — Thomas Jefferson",
+  "407": "D'Alembert's Dream — Denis Diderot",
+  "79": "Timaeus — Plato",
+  "29": "Letter to Menoeceus — Epicurus",
+  "157": "An Introduction to Metaphysics — Henri Bergson",
+  "398": "Vestiges of the Natural History of Creation — Robert Chambers",
+  "273": "No Exit and Three Other Plays — Jean-Paul Sartre",
+  "563": "Sacred Writings, Vol. II: Christian, Buddhist, Hindu, and Mohammedan (Harvard Classics, Vol. 45) — Various Authors",
+  "161": "Writings of Leon Trotsky (1932) — Leon Trotsky",
+  "206": "Religions, Values, and Peak Experiences — Abraham H. Maslow",
+  "540": "The Harvard Classics, Volume 22: The Odyssey — Homer",
+  "10": "Physics — Aristotle",
+  "629": "The Natural History of Pliny, Volume IV — Pliny the Elder",
+  "649": "A Theology of Liberation: History, Politics, and Salvation — Gustavo Gutiérrez",
+  "153": "The Iliad — Homer",
+  "278": "Against Heresies, Book II — Irenaeus",
+  "338": "The Open Society and Its Enemies, Volume I — Karl Popper",
+  "308": "The Fear of Freedom — Erich Fromm",
+  "236": "The Myth of Sisyphus and Other Essays — Albert Camus",
+  "598": "Essays on the Theory of Numbers — Richard Dedekind",
+  "101": "Brave New World — Aldous Huxley",
+  "22": "The Dhammapada",
+  "569": "One-Dimensional Man: Studies in the Ideology of Advanced Industrial Society — Herbert Marcuse",
+  "201": "The Principles of Psychology, Volume II — William James",
+  "18": "Meditations — Marcus Aurelius",
+  "300": "The Courage to Be — Paul Tillich",
+  "319": "A History of the Warfare of Science with Theology in Christendom, Volume II — Andrew Dickson White",
+  "318": "A History of the Warfare of Science with Theology in Christendom, Volume I — Andrew Dickson White",
+  "294": "The Catcher in the Rye — J. D. Salinger",
+  "624": "The Existence of God — Richard Swinburne",
+  "637": "A Theologico-Political Treatise — Benedict de Spinoza",
+  "408": "The Divided Self: An Existential Study in Sanity and Madness — R. D. Laing",
+  "15": "Rhetoric — Aristotle",
+  "618": "A History of Philosophy, Volume VIII: Bentham to Russell — Frederick Copleston",
+  "41": "Fundamental Principles of the Metaphysics of Morals — Immanuel Kant",
+  "595": "The Rise and Fall of the Great Powers: Economic Change and Military Conflict from 1500 to 2000 — Paul Kennedy",
+  "646": "The New Oxford Annotated Bible, Fourth Edition, with the Apocrypha — edited by Michael D. Coogan",
+  "258": "War and Peace — Leo Tolstoy",
+  "422": "Principles of Behavior: An Introduction to Behavior Theory — Clark L. Hull",
+  "64": "Gorgias — Plato",
+  "112": "Contingency, Irony, and Solidarity — Richard Rorty",
+  "631": "The Natural History of Pliny, Volume VI — Pliny the Elder",
+  "134": "The History of the Decline and Fall of the Roman Empire, Volume II — Edward Gibbon",
+  "92": "Animal Farm — George Orwell",
+  "471": "Sacred Books of the East, Volume 4 — Various authors (edited by F. Max Müller)",
+  "424": "Social Ecology and Communalism — Murray Bookchin",
+  "170": "Man and His Symbols — Carl Gustav Jung (editor)",
+  "6": "On Dreams — Aristotle",
+  "72": "Philebus — Plato",
+  "604": "Evolution and Ethics and Other Essays — Thomas H. Huxley",
+  "613": "A History of Philosophy, Volume III: Ockham to Suarez — Frederick Copleston"
+});
+export const PILOT_BOOK_IDS = Object.freeze(Object.keys(PILOT_BOOKS));
 const PILOT_BOOK_SET = new Set(PILOT_BOOK_IDS);
 const MODEL = '@cf/google/gemma-4-26b-a4b-it';
 const PDF = /^https:\/\/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]{10,})\/(?:view|preview)/;
@@ -462,8 +593,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     return json({status:'ready',service:'Antilogicalism Reading Companion',
       publicEnabled:env.PUBLIC_ENABLED==='true',mode:'public-foundation'},200,origin);
   }
-  // v1.10 public, LIMITED interdisciplinary pilot: Aristotle, Dostoevsky,
-  // Thucydides, Darwin. All accepted pages MUST pass original v47 hashes.
+  // v1.11 public, staged interdisciplinary alpha. All accepted pages MUST
+  // pass original v47 hashes; availability is limited to this 128-book cohort.
   // Public enablement requires explicit opt-in AND every safety binding.
   const pilotReady=env.PUBLIC_PILOT_ENABLED==='true' &&
     env.PUBLIC_ENABLED!=='true' && typeof env.TURNSTILE_SITE_KEY==='string' &&
@@ -479,7 +610,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       turnstileSiteKey:pilotReady?env.TURNSTILE_SITE_KEY:null,
       pilotBookIds:PILOT_BOOK_IDS,
       searchPlanning:true,
-      scope:'interdisciplinary-reader-pilot'},200,origin);
+      scope:'interdisciplinary-reader-alpha'},200,origin);
   }
   if(url.pathname==='/api/pilot-plan'){
     if(origin!==FRONTEND_ORIGIN)return json({error:'Origin not allowed'},403,origin);
@@ -515,11 +646,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       return json({error:'Invalid search-planning question or book scope'},400,origin);
     if(!await verifyTurnstile(data.turnstileToken,ip,env.TURNSTILE_SECRET,fetcher))
       return json({error:'Visitor verification failed; please retry the challenge'},403,origin);
-    let title='';
-    if(String(data.bookId)==='7')title='Nicomachean Ethics — Aristotle';
-    if(String(data.bookId)==='114')title='Crime and Punishment — Fyodor Dostoevsky';
-    if(String(data.bookId)==='152')title='History of the Peloponnesian War — Thucydides';
-    if(String(data.bookId)==='529')title='On the Origin of Species — Charles Darwin';
+    const title=PILOT_BOOKS[String(data.bookId)]||'';
     try{
       const result=await planSearchQueries(data.question,title,env.AI);
       return json({queries:result.queries,usage:result.usage,
