@@ -472,21 +472,41 @@ test('v1.9.4 bad or absent model citations never leave the server as an answer',
    assert.equal(calls,2);
  }
 });
-test('v1.12 rejects a generated quotation that is absent from the verified excerpt',async()=>{
+test('v1.14 rejects an unsupported quotation after one bounded repair attempt',async()=>{
  const fixture=await fingerprintTestFixture();
  let calls=0;
  const result=await fixture.response({aiRun:async()=>{
    calls++;
    const content=calls===1?
      JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
-     'The passage calls it “the atoning sacrifice because we obey his commandments and do for our sins” [S1].';
+     'The passage calls it “the atoning sacrifice because we obey his commandments and do for my sins” [S1].';
    return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
  }});
  assert.equal(result.status,502);
  const data=await result.json();
  assert.equal(data.stage,'ai-answer');
  assert.equal(data.answer,undefined);
- assert.equal(calls,2);
+ assert.equal(calls,3);
+});
+test('v1.14 repairs an unsupported quotation with a source-grounded paraphrase',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const prompts=[];
+ const result=await fixture.response({aiRun:async(_model,input)=>{
+   calls++;prompts.push(input.messages);
+   const content=calls===1?
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+     calls===2?
+       'The passage calls it “the atoning sacrifice because we obey his commandments and do for my sins” [S1].':
+       'The passage describes a truce dispute and concern about growing power [S1].';
+   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
+ }});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.equal(data.answer,'The passage describes a truce dispute and concern about growing power [S1].');
+ assert.equal(calls,3);
+ assert.match(prompts[2][0].content,/use no quotation marks anywhere/i);
 });
 test('v1.12 accepts a source-verbatim quotation with normalized punctuation',async()=>{
  const fixture=await fingerprintTestFixture();
