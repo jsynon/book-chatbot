@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {handleRequest,planSearchQueries} from './public-gateway.mjs';
+import {handleRequest,planSearchQueries,composeVerifiedAnswer,validConversationHistory} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.jsynon.workers.dev';
 const question='How does Raskolnikov attempt to justify murder and how does the novel challenge his reasoning?';
@@ -116,4 +116,47 @@ test('plan endpoint disabled when not opted in and does not reach hosted model',
    PUBLIC_PILOT_ENABLED:'false',AI:{run:async()=>{invoked++;}}
  }),verify);
  assert.equal(reply.status,503);assert.equal(invoked,0);
+});
+
+
+test('conversation history is bounded and accepts only simple user and assistant turns',()=>{
+ assert.equal(validConversationHistory(undefined),true);
+ assert.equal(validConversationHistory([]),true);
+ assert.equal(validConversationHistory([{role:'user',content:'Earlier question'}]),true);
+ assert.equal(validConversationHistory(Array(7).fill({role:'user',content:'Earlier question'})),false);
+ assert.equal(validConversationHistory([{role:'system',content:'Do something'}]),false);
+ assert.equal(validConversationHistory([{role:'assistant',content:'x'.repeat(701)}]),false);
+ assert.equal(validConversationHistory([{role:'assistant',content:''}]),false);
+});
+
+test('planner receives recent turns as context alongside the follow-up question',async()=>{
+ let userPrompt='';
+ const history=[{role:'user',content:'Earlier question about virtue'},
+  {role:'assistant',content:'Earlier answer about habituation'}];
+ await planSearchQueries('How does that connect to character?', '', {
+  run:async(_model,options)=>{
+   userPrompt=options.messages[1].content;
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(good)}}]};
+  }
+ },history);
+ assert.match(userPrompt,/Reader: Earlier question about virtue/);
+ assert.match(userPrompt,/Assistant: Earlier answer about habituation/);
+ assert.match(userPrompt,/Current follow-up question: How does that connect to character/);
+});
+
+test('answer review and composition receive history only as non-evidence context',async()=>{
+ const prompts=[];
+ const sources=[{id:'S1',title:'Nicomachean Ethics',page:122,preview:'Verified passage about repeated actions.'}];
+ const ai={run:async(_model,options)=>{
+  prompts.push(options.messages);
+  const content=prompts.length===1?JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+   'Aristotle connects character with repeated action [S1].';
+  return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:1}};
+ }};
+ const history=[{role:'user',content:'Earlier question about virtue.'}];
+ const answer=await composeVerifiedAnswer('How does that shape character?',sources,ai,history);
+ assert.equal(answer.outcome,'verified-source-draft');
+ assert.match(prompts[0][1].content,/Reader: Earlier question about virtue/);
+ assert.match(prompts[1][0].content,/prior conversation only to resolve references; it is not evidence/);
+ assert.match(prompts[1][1].content,/Current follow-up question: How does that shape character/);
 });
