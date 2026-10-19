@@ -48,7 +48,7 @@ test('search planner retains explicitly named authors and works for source scopi
  assert.match(systemPrompt,/retain the relevant name in its corresponding query/i);
  assert.match(systemPrompt,/Do not invent authors or works/i);
 });
-test('search planning seeks source wording for change and causal-process questions',async()=>{
+test('process-focused planning requires source-level actions as well as topic labels',async()=>{
  let systemPrompt='';
  const plan={queries:[
   'Aristotle moral virtue habits practice forming character',
@@ -64,8 +64,9 @@ test('search planning seeks source wording for change and causal-process questio
  );
  assert.deepEqual(answer.queries,plan.queries);
  assert.match(systemPrompt,/concrete process and causal sequence/i);
- assert.match(systemPrompt,/using likely source wording alongside broad concepts/i);
- assert.match(systemPrompt,/do not rely only on a modern abstract label/i);
+ assert.match(systemPrompt,/every process-focused query must include at least one concrete action, verb, or causal phrase/i);
+ assert.match(systemPrompt,/source-level descriptions of what people or things do over abstract labels alone/i);
+ assert.match(systemPrompt,/repeated actions or doing just acts/i);
 });
 test('malformed, duplicate or truncated AI planning fails without invented sources',async()=>{
  for(const raw of ['I cannot help','{"queries":["the same phrase","the same phrase"]}',

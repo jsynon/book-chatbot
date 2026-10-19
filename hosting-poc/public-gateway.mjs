@@ -380,9 +380,12 @@ export async function planSearchQueries(question,bookTitle,ai){
         'characters, scientific mechanisms, events and near-synonyms likely '+
         'to appear in the PRIMARY SOURCE. For questions about how something '+
         'changes, forms, or causes an outcome, seek the concrete process and '+
-        'causal sequence the author describes, using likely source wording '+
-        'alongside broad concepts. Do not rely only on a modern abstract '+
-        'label when the source may describe the process in ordinary terms. '+
+        'causal sequence the author describes. Every process-focused query '+
+        'must include at least one concrete action, verb, or causal phrase '+
+        'likely to occur in the source, in addition to any topic label. Prefer '+
+        'source-level descriptions of what people or things do over abstract '+
+        'labels alone; for example, seek repeated actions or doing just acts '+
+        'when investigating how a disposition is formed. '+
         'For two-part questions, one query '+
         'should seek evidence for each part. When the reader names authors or '+
         'works, retain the relevant name in its corresponding query so source '+
