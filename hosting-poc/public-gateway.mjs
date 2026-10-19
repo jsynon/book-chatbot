@@ -1162,6 +1162,31 @@ async function verifyTurnstile(token,ip,secret,fetcher) {
   }
   return true;
 }
+function constantTimeStringEqual(left,right) {
+  const a=new TextEncoder().encode(String(left||''));
+  const b=new TextEncoder().encode(String(right||''));
+  let difference=a.length^b.length;
+  const length=Math.max(a.length,b.length);
+  for(let index=0;index<length;index++)
+    difference|=(a[index]||0)^(b[index]||0);
+  return difference===0;
+}
+export function authorizedPilotEvaluation(request,env) {
+  if(env.PILOT_EVALUATION_ENABLED!=='true')return false;
+  const secret=String(env.PILOT_EVALUATION_TOKEN||'');
+  if(secret.length<32)return false;
+  const authorization=request.headers.get('Authorization')||'';
+  if(authorization.length>2048)return false;
+  return constantTimeStringEqual(authorization,'Bearer '+secret);
+}
+async function verifyPilotChallenge(request,token,ip,env,fetcher) {
+  // A manually dispatched evaluation workflow may authenticate with a
+  // dedicated bearer secret instead of minting disposable Turnstile tokens.
+  // Public requests still use Turnstile. The normal rate limits are applied
+  // earlier by both pilot routes and remain mandatory in evaluation mode.
+  if(authorizedPilotEvaluation(request,env))return true;
+  return verifyTurnstile(token,ip,env.TURNSTILE_SECRET,fetcher);
+}
 export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.fetch(url,opts)) {
   const origin=request.headers.get('Origin')||'';
   const url=new URL(request.url);
@@ -1220,7 +1245,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       data.turnstileToken.length>2048||
       !(data.bookId===''||PILOT_BOOK_SET.has(String(data.bookId))))
       return json({error:'Invalid search-planning question or book scope'},400,origin);
-    if(!await verifyTurnstile(data.turnstileToken,ip,env.TURNSTILE_SECRET,fetcher))
+    if(!await verifyPilotChallenge(request,data.turnstileToken,ip,env,fetcher))
       return json({error:'Visitor verification failed; please retry the challenge'},403,origin);
     const title=PILOT_BOOKS[String(data.bookId)]||'';
     try{
@@ -1269,7 +1294,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         Number.isSafeInteger(s.page) && s.page>=1 && s.page<=10000 &&
         typeof s.text==='string'))
       return json({error:'Invalid question or unsupported pilot pages'},400,origin);
-    if(!await verifyTurnstile(data.turnstileToken,ip,env.TURNSTILE_SECRET,fetcher))
+    if(!await verifyPilotChallenge(request,data.turnstileToken,ip,env,fetcher))
       return json({error:'Visitor verification failed; please retry the challenge'},403,origin);
     let sourcePages;
     try{sourcePages=await verifiedFingerprintSources(data.question,data.sources,fetcher);}

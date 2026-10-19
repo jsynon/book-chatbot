@@ -7,7 +7,12 @@
   "compatibility_date": "2026-10-18",
   "workers_dev": true,
   "ai": { "binding": "AI" },
-  "vars": { "PUBLIC_ENABLED": "false" },
+  "vars": {
+    "PUBLIC_ENABLED": "false",
+    "PUBLIC_PILOT_ENABLED": "false",
+    // Enable only when running the protected, manually dispatched evaluation.
+    "PILOT_EVALUATION_ENABLED": "false"
+  },
   // Namespaces must be unique within your own Cloudflare account; replace
   // these example namespace IDs with your own positive integer strings.
   "ratelimits": [
