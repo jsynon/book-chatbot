@@ -380,7 +380,7 @@ function completeMissingNote(value){
   const note=value.trim().slice(0,240).trim();
   if(!note)return '';
   if(/[.!?][\"')\]]*$/.test(note))return note;
-  const ends=[...note.matchAll(/[.!?][\"')\]]*(?=\\s|$)/g)];
+  const ends=[...note.matchAll(/[.!?][\"')\]]*(?=\s|$)/g)];
   if(!ends.length)return '';
   const last=ends[ends.length-1];
   return note.slice(0,last.index+last[0].length).trim();
