@@ -1009,7 +1009,11 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const answer=modelText(second);
   if(!answer)throw answerFailure('answer-composition-empty');
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
-  const cited=[...new Set([...answer.matchAll(/\[(S\d+)\]/g)].map(m=>m[1]))];
+  // Models sometimes group citations, e.g. [S1, S3]. Audit every source ID
+  // inside each bracket group so an unknown citation cannot slip through
+  // merely because it was not written as a standalone [S1] token.
+  const cited=[...new Set([...answer.matchAll(/\[([^\]]+)\]/g)]
+    .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]))];
   const known=new Set(selected.map(s=>s.id));
   // Do not return an apparently sourced answer with fabricated or missing
   // citations. Note that valid IDs alone do NOT validate factual support.
