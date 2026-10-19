@@ -99,6 +99,23 @@ test('truncated evidence-gap notes end at a complete sentence',()=>{
  assert.equal(noSentence.missing,'');
 });
 
+test('evidence review follow-ups are short, specific question strings with no duplicates',()=>{
+ const sources=[{id:'S1',preview:'verified'}];
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}],
+   followUpQuestions:[
+    'What changes when a variation is inherited?',
+    'What changes when a variation is inherited?',
+    'How does the text connect a change with its effect?',
+    'This prompt is too short?'
+   ]}),sources);
+ assert.deepEqual(review.followUpQuestions,[
+   'What changes when a variation is inherited?',
+   'How does the text connect a change with its effect?']);
+ const none=parseReview(JSON.stringify({coverage:'none',missing:'',evidence:[],
+   followUpQuestions:['What does the evidence say about this?']}),sources);
+ assert.deepEqual(none.followUpQuestions,[]);
+});
+
 test('source selection is bound to ID from server-fetched content',()=>{
  const sources=[{id:'S1',preview:'verified from trusted book'}];
  const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S5'},{id:'S1'}]}),sources);
@@ -358,9 +375,11 @@ async function fingerprintTestFixture() {
  };
  const run=async(_model,input)=>{
     aiCount++;
-    const content=input.max_completion_tokens===320?
+    const content=input.max_completion_tokens===420?
        JSON.stringify({coverage:'partial',missing:'More history is not in this page',
-          evidence:[{id:'S1'}]})
+          evidence:[{id:'S1'}],followUpQuestions:[
+            'Which disputes does Thucydides identify as immediate causes?',
+            'How did Athens’ growing power affect Spartan fears?']})
        :'The passage distinguishes an immediate dispute from fear caused by growing power [S1].';
     return {choices:[{finish_reason:'stop',message:{content}}],
        usage:{neurons:9}};
@@ -540,8 +559,9 @@ test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounde
  assert.equal(data.evidenceHighlights.length,1);
  assert.equal(data.evidenceHighlights[0].source_id,'S1');
  assert(data.evidenceHighlights[0].quote.includes('growing power'));
- assert.equal(data.followUpQuestions.length,2);
- assert(data.followUpQuestions.every(q=>q.endsWith('?')));
+ assert.deepEqual(data.followUpQuestions,[
+   'Which disputes does Thucydides identify as immediate causes?',
+   'How did Athens’ growing power affect Spartan fears?']);
  assert.equal(data.verifiedPages,1);
  assert.equal(data.citations[0].page,38);
  assert.equal(data.citations[0].globalPageId,34403);
@@ -551,7 +571,7 @@ test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounde
 });
 test('public pilot verifies and submits four source candidates to the bounded answer stage',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
-   if(input.max_completion_tokens===320){
+   if(input.max_completion_tokens===420){
      const submitted=input.messages.at(-1).content;
      assert.match(submitted,/\[S4\].*physical PDF page 41/);
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
@@ -616,7 +636,7 @@ test('planner and answer have separate visitor budgets and share the global budg
  const pilot=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===210)return {choices:[{finish_reason:'stop',message:{content:
      '{"queries":["specific original event causes","political motives and context"]}'}}]};
-   if(input.max_completion_tokens===320)return {choices:[{finish_reason:'stop',message:{content:
+   if(input.max_completion_tokens===420)return {choices:[{finish_reason:'stop',message:{content:
      '{"coverage":"full","missing":"","evidence":[{"id":"S1"}]}'}}]};
    return {choices:[{finish_reason:'stop',message:{content:'The passage explains the cause [S1].'}}]};
  }});
@@ -715,7 +735,7 @@ test('v1.10 allows any fingerprint-verified page from additional approved books'
  const fp=await fetched.json();
  fp.bookId='7';fp.chunk=0;fp.firstPage=1;fp.lastPage=32;fp.pages[0].page=4;
  const environment=env({...pilotBaseEnv,AI:{run:async(_m,input)=>{
-   calls++;return {choices:[{finish_reason:'stop',message:{content:input.max_completion_tokens===320?
+   calls++;return {choices:[{finish_reason:'stop',message:{content:input.max_completion_tokens===420?
      JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]})
      :'The cited source passage explains its subject [S1].'}}],usage:{neurons:4}};
  }}});

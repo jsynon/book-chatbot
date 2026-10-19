@@ -916,7 +916,20 @@ export function parseReview(raw,sources) {
     seen.add(id);selected.push(byId.get(id));
     if(selected.length===3)break;
   }
-  return {coverage:review.coverage,missing:completeMissingNote(review.missing),selected};
+  const followUpQuestions=[],questionKeys=new Set();
+  if(review.coverage!=='none'&&Array.isArray(review.followUpQuestions)){
+    for(const value of review.followUpQuestions.slice(0,4)){
+      if(typeof value!=='string')continue;
+      const question=value.trim();
+      const key=question.toLocaleLowerCase();
+      if(question.length<12||question.length>180||!question.endsWith('?')||
+        questionKeys.has(key))continue;
+      questionKeys.add(key);followUpQuestions.push(question);
+      if(followUpQuestions.length===2)break;
+    }
+  }
+  return {coverage:review.coverage,missing:completeMissingNote(review.missing),
+    selected,followUpQuestions};
 }
 function answerFailure(code){
   const error=new Error(code);
@@ -944,9 +957,12 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'explanation when relevant. Select only directly useful source IDs. '+ 
         'Do not assume missing facts. Return ONLY JSON with keys coverage '+ 
         '(full|partial|none), missing (string), evidence (list of up to '+ 
-        'three objects with an id such as S1). No invented IDs.'},
+        'three objects with an id such as S1), and followUpQuestions (up to '+ 
+        'two concise, question-mark-ending questions grounded in this question '+ 
+        'and the passages. Make them specific and useful for the next turn; '+ 
+        'avoid generic prompts and do not invent unsupported topics). No invented IDs.'},
       {role:'user',content:conversationContext(history)+'Current follow-up question:\n'+question+'\n\nVerified source passages:\n'+combined}
-    ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:320,
+    ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:420,
   });}catch{throw answerFailure('evidence-review-request-failed');}
   if(['length','max_tokens'].includes(first?.choices?.[0]?.finish_reason))
     throw answerFailure('evidence-review-truncated');
@@ -960,8 +976,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     return {outcome:'insufficient-evidence',answer:
       'The verified passage does not provide enough evidence to answer this question reliably.',
       coverage:review.coverage,missing:review.missing,citations:[],
-      reviewStatus:'no_selected_sources',usage:{neurons:reviewNeurons,
-        reviewNeurons,answerNeurons:0},model:MODEL,
+      reviewStatus:'no_selected_sources',followUpQuestions:[],
+      usage:{neurons:reviewNeurons,reviewNeurons,answerNeurons:0},model:MODEL,
       notice:'Book-page provenance was verified; AI claim entailment was not assessed.'};
   const selected=review.selected;
   let second;
@@ -976,7 +992,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Put [S1], [S2], etc. immediately after statements supported by those '+ 
         'sources. If evidence is partial, explain the supported part and say '+ 
         'what remains uncertain. Do not invent missing evidence. '+ 
-        'Prefer one clear concise paragraph.'},
+        'Prefer one clear concise paragraph. Keep distinct symbols and physical '+ 
+        'quantities distinct, and follow the source’s own definitions and sign '+ 
+        'conventions. Do not treat related quantities as interchangeable; for '+ 
+        'example, distinguish a potential function from stored field energy.'},
       {role:'user',content:
         conversationContext(history)+'Current follow-up question:\n'+question+'\nCoverage: '+review.coverage+
         '\nMissing: '+(review.missing||'Not identified')+
@@ -999,7 +1018,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const citations=selected.filter(s=>cited.includes(s.id));
   const answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
   return {outcome:'verified-source-draft',answer,coverage:review.coverage,
-    missing:review.missing,citations,reviewStatus:'citations_not_claim_verified',
+    missing:review.missing,citations,followUpQuestions:review.followUpQuestions,
+    reviewStatus:'citations_not_claim_verified',
     usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},
     model:MODEL,finishReason:second?.choices?.[0]?.finish_reason||'unknown',
     notice:'Exact indexed page text verified against owner-published SHA-256. Individual AI claims still require assessment.'};
@@ -1274,10 +1294,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     }));
     // Suggestions only populate the next question; they are not model claims
     // or an implicit extra billable AI call. Fresh retrieval occurs each turn.
-    const followUpQuestions=output.outcome==='verified-source-draft'?[
-      'What evidence in these passages supports this explanation?',
-      'How does this account compare with other works in the collection?'
-    ]:[];
+    const followUpQuestions=output.outcome==='verified-source-draft'?
+      output.followUpQuestions:[];
     return json({...output,verifiedPages:sourcePages.length,pilot:true,
       evidenceHighlights,followUpQuestions},200,origin);
   }
