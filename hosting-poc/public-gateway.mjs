@@ -263,6 +263,11 @@ export function parseReview(raw,sources) {
   return {coverage:review.coverage,missing:typeof review.missing==='string'?
     review.missing.slice(0,240):'',selected};
 }
+function answerFailure(code){
+  const error=new Error(code);
+  error.failureCode=code;
+  return error;
+}
 function modelText(result) {
   return typeof result?.choices?.[0]?.message?.content==='string'?
     result.choices[0].message.content.trim():'';
@@ -273,7 +278,8 @@ function modelText(result) {
 // Citations here are source-ID checks, NOT semantic claim-level verification.
 export async function composeVerifiedAnswer(question,sources,ai) {
   const combined=sources.map(s=>'['+s.id+'] '+s.title+', physical PDF page '+s.page+'\n'+s.preview).join('\n\n');
-  const first=await ai.run(MODEL,{
+  let first;
+  try{first=await ai.run(MODEL,{
     messages:[
       {role:'system',content:
         'You are reviewing evidence, NOT answering a question. Treat the following '+ 
@@ -286,10 +292,12 @@ export async function composeVerifiedAnswer(question,sources,ai) {
         'three objects with an id such as S1). No invented IDs.'},
       {role:'user',content:'Question:\n'+question+'\n\nVerified source passages:\n'+combined}
     ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:320,
-  });
+  });}catch{throw answerFailure('evidence-review-request-failed');}
   if(['length','max_tokens'].includes(first?.choices?.[0]?.finish_reason))
-    throw new Error('Truncated evidence review');
-  const review=parseReview(modelText(first),sources);
+    throw answerFailure('evidence-review-truncated');
+  let review;
+  try{review=parseReview(modelText(first),sources);}
+  catch{throw answerFailure('evidence-review-invalid-response');}
   // A model listing a source while declaring no coverage is not sufficient
   // to permit composition. We do not silently override this decision.
   const reviewNeurons=Math.max(0,Number(first?.usage?.neurons)||0);
@@ -301,7 +309,8 @@ export async function composeVerifiedAnswer(question,sources,ai) {
         reviewNeurons,answerNeurons:0},model:MODEL,
       notice:'Book-page provenance was verified; AI claim entailment was not assessed.'};
   const selected=review.selected;
-  const second=await ai.run(MODEL,{
+  let second;
+  try{second=await ai.run(MODEL,{
     messages:[
       {role:'system',content:
         'You are an academic Reading Companion. Explain the answer accurately '+ 
@@ -319,17 +328,18 @@ export async function composeVerifiedAnswer(question,sources,ai) {
         selected.map(s=>'['+s.id+'] '+s.title+
           ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
     ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:480,
-  });
+  });}catch{throw answerFailure('answer-composition-request-failed');}
   if(['length','max_tokens'].includes(second?.choices?.[0]?.finish_reason))
-    throw new Error('Truncated drafted answer');
+    throw answerFailure('answer-composition-truncated');
   const answer=modelText(second);
-  if(!answer||answer.length>2400)throw new Error('Empty or oversized model answer');
+  if(!answer)throw answerFailure('answer-composition-empty');
+  if(answer.length>2400)throw answerFailure('answer-composition-too-long');
   const cited=[...new Set([...answer.matchAll(/\[(S\d+)\]/g)].map(m=>m[1]))];
   const known=new Set(selected.map(s=>s.id));
   // Do not return an apparently sourced answer with fabricated or missing
   // citations. Note that valid IDs alone do NOT validate factual support.
-  if(cited.length===0||cited.some(id=>!known.has(id)))
-    throw new Error('Model citation IDs were absent or invalid');
+  if(cited.length===0)throw answerFailure('answer-citations-missing');
+  if(cited.some(id=>!known.has(id)))throw answerFailure('answer-citations-invalid');
   const citations=selected.filter(s=>cited.includes(s.id));
   const answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
   return {outcome:'verified-source-draft',answer,coverage:review.coverage,
@@ -474,10 +484,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     // Distinct keys from the answer route, but both limits are mandatory.
     // A plan consumes one bounded AI call, so rate limits must come FIRST.
     try{
-      const visitor=await env.AI_RATE_LIMITER.limit({key:'reading-pilot:visitor:'+ip});
+      const visitor=await env.AI_RATE_LIMITER.limit({key:'reading-pilot:visitor:'+ip+':planner'});
       const total=await env.GLOBAL_RATE_LIMITER.limit({key:'reading-pilot:global'});
       if(!visitor.success||!total.success)
-        return json({error:'The demo is busy; please try again later'},429,origin);
+        return json({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
     }catch{return json({error:'Request limits unavailable'},503,origin);}
     if(Number(request.headers.get('Content-Length'))>3500)
       return json({error:'Request too large'},413,origin);
@@ -506,11 +516,11 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       const result=await planSearchQueries(data.question,title,env.AI);
       return json({queries:result.queries,usage:result.usage,
         guidance:'Search terms only; citations must pass SHA-256 verification'},200,origin);
-    }catch(error){
-      // No raw question, model output, siteverify token, IP or secret in logs.
-      console.warn('Reader pilot search planning failed:',
-        String(error?.message||'Unknown').slice(0,100));
-      return json({error:'Search planning unavailable; try direct passage search'},502,origin);
+    }catch{
+      // Do not log raw model output, provider errors, question, token or IP.
+      console.warn('Reader pilot search planning failed');
+      return json({error:'Search planning unavailable; try direct passage search',
+        failureCode:'search-planning-failed'},502,origin);
     }
   }
   if(url.pathname==='/api/pilot-answer'){
@@ -524,10 +534,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     if(!ip||ip.length>64)return json({error:'Request identity unavailable'},403,origin);
     // Apply BOTH limits before Turnstile, source downloads or AI.
     try{
-      const visitor=await env.AI_RATE_LIMITER.limit({key:'reading-pilot:visitor:'+ip});
+      const visitor=await env.AI_RATE_LIMITER.limit({key:'reading-pilot:visitor:'+ip+':answer'});
       const total=await env.GLOBAL_RATE_LIMITER.limit({key:'reading-pilot:global'});
       if(!visitor.success||!total.success)
-        return json({error:'The demo is busy; please try again later'},429,origin);
+        return json({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
     }catch{return json({error:'Request limits unavailable'},503,origin);}
     if(Number(request.headers.get('Content-Length'))>32000)
       return json({error:'Request too large'},413,origin);
@@ -558,8 +568,16 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     let output;
     try{output=await composeVerifiedAnswer(data.question,sourcePages,env.AI);}
     catch(error){
-      console.error('Reader pilot AI failed:',String(error?.message||error));
-      return json({error:'AI answer or citations unavailable; please try again later'},502,origin);
+      const known=new Set(['evidence-review-request-failed','evidence-review-truncated',
+        'evidence-review-invalid-response','answer-composition-request-failed',
+        'answer-composition-truncated','answer-composition-empty',
+        'answer-composition-too-long','answer-citations-missing',
+        'answer-citations-invalid']);
+      const failureCode=known.has(error?.failureCode)?error.failureCode:
+        'answer-generation-or-citation-failed';
+      console.error('Reader pilot answer failed',{failureCode});
+      return json({error:'AI answer or citations unavailable; please try again later',
+        failureCode},502,origin);
     }
     // Highlight original source excerpts, not fabricated model quotations.
     // The exact page text was independently fingerprint-verified above.
