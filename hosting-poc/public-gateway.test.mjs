@@ -196,6 +196,8 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/Normally use two sentences for each part/);
  assert.match(inputs[1].messages[0].content,/aim for 140–180 words overall/);
  assert.match(inputs[1].messages[0].content,/without repeating points or padding/);
+ assert.match(inputs[1].messages[0].content,/second explains a reason, operation, criterion, or example that bears on that same part/);
+ assert.match(inputs[1].messages[0].content,/Do not use the second sentence for a nearby but different distinction or analogy/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
  assert.equal(inputs[1].max_completion_tokens,800);
@@ -1330,6 +1332,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
  assert.match(calls[0].messages[0].content,/Keep each point atomic: one claim per point/);
+ assert.match(calls[0].messages[0].content,/make the evidence map include the definition and the passage’s stated reason, operation, or criterion for each requested distinction/);
  assert.match(calls[0].messages[0].content,/For broad questions asking what a person or work says about a topic/);
  assert.match(calls[0].messages[0].content,/Prioritize direct explanation of the concept/);
  assert.match(calls[0].messages[0].content,/remarks that a term needs definition as context/);
