@@ -725,11 +725,11 @@ function queryWords(question) {
     .filter(w=>w.length>=3 && !STOP.has(w)))].slice(0,8);
 }
 export function sourceExcerpt(text,question,max=1080) {
-  const content=String(text||'').replace(/\\s+/g,' ').trim();
+  const content=String(text||'').replace(/\s+/g,' ').trim();
   if(content.length<=max)return content;
   const words=queryWords(question);
   const sentences=[];
-  const boundary=/[.!?](?:["'’”\\)\\]]*)(?=\\s|$)/g;
+  const boundary=/[.!?](?:["'’”)\]]*)(?=\s|$)/g;
   let start=0,match;
   while((match=boundary.exec(content))) {
     const end=boundary.lastIndex;
