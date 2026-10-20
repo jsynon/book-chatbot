@@ -192,8 +192,8 @@ test('same-book answers select complementary passages and synthesize every quest
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
- assert.match(inputs[1].messages[0].content,/Answer every requested part/);
- assert.match(inputs[1].messages[0].content,/180–260 words/);
+ assert.match(inputs[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered outline/);
+ assert.match(inputs[1].messages[0].content,/one or two sentences per part is usually enough/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
  assert.equal(inputs[1].max_completion_tokens,800);
  assert.equal(result.coverage,'full');
@@ -1252,6 +1252,9 @@ test('answer output explicitly discloses an unsupported requested part',async()=
  assert.match(result.answer,/do not fully address: contrast with skill/i);
  assert.equal(result.questionParts[2].status,'unsupported');
  assert.match(calls[1].messages[1].content,/contrast with skill — unsupported/);
+ assert.match(calls[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered/);
+ assert.match(calls[1].messages[0].content,/Give each supported part its own concise paragraph/);
+ assert.match(calls[1].messages[1].content,/contrast with skill — unsupported \[evidence: none\]/);
 });
 test('answer composition explicitly requests plain text instead of Markdown artifacts',async()=>{
  const {readFileSync}=await import('node:fs');
@@ -1307,9 +1310,9 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/do not turn a translator’s lexical gloss or capitalization convention into a claim about Kierkegaard’s theory/);
  assert.match(calls[1].messages[0].content,/State the central account once/);
  assert.match(calls[1].messages[0].content,/Do not restate the same claim with expanded synonyms/);
- assert.match(calls[1].messages[0].content,/different evidential job/);
+ assert.match(calls[1].messages[0].content,/Do not add a separate theme, implication, or background point unless it answers a requested part/);
  assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
  assert.match(calls[1].messages[0].content,/do not combine two reviewed points into a single definition/);
- assert.match(calls[1].messages[0].content,/usually about 180–260 words/);
+ assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map and keep it concise/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
 });

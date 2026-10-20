@@ -1441,18 +1441,18 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Put [S1], [S2], etc. immediately after statements supported by those '+ 
         'sources. If evidence is partial, explain the supported part and say '+ 
         'what remains uncertain. Do not invent missing evidence. '+ 
-        'Use the questionParts checklist as an outline. Address each supported '+
-       'component explicitly and keep it distinct from adjacent components. '+
-       'Omit unsupported components as factual claims; the system will append '+
-       'the precise coverage notice. Answer every requested part. For a substantive or multi-part question, '+
-        'start with a direct thesis, then explain two or three connected themes '+
-        'in three short paragraphs, usually about 180–260 words. Use the evidence '+
-        'map as an outline, but check every point against the excerpts and '+
-        'preserve meaningful differences between works. Give each paragraph a '+
-        'different evidential job: explain the main account first, then develop '+
-        'other supported implications or examples. Explain technical terms only '+
-        'as far as the excerpts allow, and use concrete examples when the passages '+
-        'supply them. Keep criticism of other positions and comments about '+
+        'For multi-part questions, use the questionParts checklist as the ordered '+
+        'outline. Give each supported part its own concise paragraph, in the same '+
+        'order as the checklist; one or two sentences per part is usually enough. '+
+        'Use only that part’s listed evidence IDs for its claims. Do not add a '+
+        'separate theme, implication, or background point unless it answers a '+
+        'requested part. Omit unsupported parts as factual claims; the system will '+
+        'append the precise coverage notice. For a single-part question, organize '+
+        'the answer around the evidence map and keep it concise. In either case, '+
+        'check every point against the excerpts and preserve meaningful differences '+
+        'between works. Explain technical terms only as far as the excerpts allow, '+
+        'and use concrete examples when the passages supply them. Keep criticism '+
+        'of other positions and comments about '+
         'definition subordinate unless they clarify the account. Preserve stated '+
         'relations precisely; do not turn “X is the opposite of Y, not Z” into a '+
         'claim that X is not a kind of Z. Keep distinct claims '+ 
