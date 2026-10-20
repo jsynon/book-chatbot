@@ -1193,8 +1193,9 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
   return {choices:[{finish_reason:'stop',message:{content:
    'In this passage, faith stands opposite sin rather than virtue [S1].'}}],usage:{neurons:3}};
  }};
- await composeVerifiedAnswer('What does Kierkegaard say about faith?',sources,ai);
+ const result=await composeVerifiedAnswer('What does Kierkegaard say about faith?',sources,ai);
  assert.equal(calls.length,2);
+ assert.deepEqual(result.evidenceMap,[{id:'S1',point:'Christianity makes faith the opposite of sin, not virtue.'}]);
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
  assert.match(calls[1].messages[0].content,/usually about 180–260 words/);
