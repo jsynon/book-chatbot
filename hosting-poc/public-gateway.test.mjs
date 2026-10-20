@@ -1236,7 +1236,7 @@ test('repairs a 120-plus-word single paragraph when three parts are supported',a
  assert(result.answer.trim().split(/\s+/).length>=180);
  const paragraphs=result.answer.trim().split(/\r?\n\s*\r?\n/).filter(Boolean);
  assert.equal(paragraphs.length,3);
- assert(paragraphs.every(paragraph=>(paragraph.match(/[.!?](?=\\s|$)/g)||[]).length>=3));
+ assert(paragraphs.every(paragraph=>(paragraph.match(/[.!?](?=\s|$)/g)||[]).length>=3));
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2','S3']);
 });
 
