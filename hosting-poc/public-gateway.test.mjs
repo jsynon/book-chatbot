@@ -1217,7 +1217,7 @@ test('repairs a 120-plus-word single paragraph when three parts are supported',a
   })}}],usage:{neurons:2}};
   if(calls.length===2){
    const draft='Practical wisdom is a true and reasoned state of capacity to act regarding things that are good or bad for humans [S1]. This capacity functions as a right rule regarding such matters [S2]. Practical wisdom differs from scientific knowledge because scientific knowledge involves demonstration, whereas practical wisdom involves deliberation about things that are variable and can be otherwise [S1]. While wisdom involves knowing things that are always the same, such as being white or straight, practical wisdom concerns matters that vary for different beings [S1]. Finally, practical wisdom is not art because action and making are different kinds of things [S1]. This distinction exists because the objects of practical wisdom are things capable of being otherwise, which separates them from the processes of making [S1].';
-   assert(draft.trim().split(/\\s+/).length>=120&&draft.trim().split(/\\s+/).length<180);
+   assert(draft.trim().split(/\s+/).length>=120&&draft.trim().split(/\\s+/).length<180);
    return {choices:[{finish_reason:'stop',message:{content:draft}}],usage:{neurons:2}};
   }
   assert.match(input.messages[0].content,/exactly three short paragraphs/);
