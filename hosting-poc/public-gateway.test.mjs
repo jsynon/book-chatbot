@@ -99,20 +99,26 @@ test('truncated evidence-gap notes end at a complete sentence',()=>{
  assert.equal(noSentence.missing,'');
 });
 
-test('evidence review follow-ups are short, specific question strings with no duplicates',()=>{
- const sources=[{id:'S1',preview:'verified'}];
+test('evidence review follow-ups are short, specific, and grounded in selected passages',()=>{
+ const question='How does Darwin explain variation?';
+ const sources=[
+  {id:'S1',title:'On the Origin of Species — Charles Darwin',
+   preview:'A variation is inherited; a change has an effect, and the text connects a change with its effect.'},
+  {id:'S2',title:'Augustine on miracles',preview:'Augustine discusses miracles in a separate work.'}
+ ];
  const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}],
    followUpQuestions:[
     'What changes when a variation is inherited?',
     'What changes when a variation is inherited?',
     'How does the text connect a change with its effect?',
+    'How does Augustine discuss miracles in his work?',
     'This prompt is too short?'
-   ]}),sources);
+   ]}),sources,question);
  assert.deepEqual(review.followUpQuestions,[
    'What changes when a variation is inherited?',
    'How does the text connect a change with its effect?']);
  const none=parseReview(JSON.stringify({coverage:'none',missing:'',evidence:[],
-   followUpQuestions:['What does the evidence say about this?']}),sources);
+   followUpQuestions:['What does the evidence say about this?']}),sources,question);
  assert.deepEqual(none.followUpQuestions,[]);
 });
 
@@ -639,9 +645,9 @@ test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounde
  assert.equal(data.evidenceHighlights.length,1);
  assert.equal(data.evidenceHighlights[0].source_id,'S1');
  assert(data.evidenceHighlights[0].quote.includes('growing power'));
- assert.deepEqual(data.followUpQuestions,[
-   'Which disputes does Thucydides identify as immediate causes?',
-   'How did Athens’ growing power affect Spartan fears?']);
+ // The selected page does not name Thucydides' immediate-dispute list or
+ // Athens/Sparta specifically, so the reviewer must not surface those prompts.
+ assert.deepEqual(data.followUpQuestions,[]);
  assert.equal(data.verifiedPages,1);
  assert.equal(data.citations[0].page,38);
  assert.equal(data.citations[0].globalPageId,34403);
