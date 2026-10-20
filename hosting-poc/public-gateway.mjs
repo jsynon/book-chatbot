@@ -728,20 +728,65 @@ export function sourceExcerpt(text,question,max=1080) {
   const content=String(text||'').replace(/\s+/g,' ').trim();
   if(content.length<=max)return content;
   const words=queryWords(question);
-  if(!words.length)return content.slice(0,max).replace(/\s+\S*$/,'')+'…';
-  let bestStart=0,bestScore=-1;
-  // Bounded, predictable retrieval from an already selected source page.
-  for(let i=0;i<content.length;i+=135) {
-    const slice=content.slice(i,i+max).toLowerCase();
-    const score=words.reduce((sum,w)=>sum+(slice.includes(w)?1:0),0);
-    if(score>bestScore){bestStart=i;bestScore=score;}
+  const sentences=[];
+  const boundary=/[.!?](?:["'’”)\]]*)(?=\s|$)/g;
+  let start=0,match;
+  while((match=boundary.exec(content))) {
+    const end=boundary.lastIndex;
+    const sentence=content.slice(start,end).trim();
+    if(sentence)sentences.push(sentence);
+    start=end;
   }
-  // Retain explanatory prose after the match; no special historical rules.
-  const start=bestStart>0 ? Math.max(0,content.lastIndexOf(' ',bestStart)):0;
-  const end=Math.min(content.length,start+max);
-  const last=end<content.length?content.lastIndexOf(' ',end):end;
-  const clipped=content.slice(start, last>start+max/2?last:end).trim();
-  return (start?'…':'')+clipped+(end<content.length?'…':'');
+  const tail=content.slice(start).trim();
+  if(tail)sentences.push(tail);
+  if(!sentences.length)sentences.push(content);
+  const score=sentence=>words.reduce((total,word)=>
+    total+(sentence.toLowerCase().includes(word)?1:0),0);
+  let center=0,bestScore=-1;
+  for(let i=0;i<sentences.length;i++) {
+    const current=score(sentences[i]);
+    if(current>bestScore){center=i;bestScore=current;}
+  }
+  let first=center,last=center,preferAfter=true;
+  const length=(from,to)=>sentences.slice(from,to+1).join(' ').length+
+    (from>0?1:0)+(to<sentences.length-1?1:0);
+  while(true) {
+    const options=[];
+    if(first>0&&length(first-1,last)<=max)
+      options.push({from:first-1,to:last,side:'before',score:score(sentences[first-1])});
+    if(last<sentences.length-1&&length(first,last+1)<=max)
+      options.push({from:first,to:last+1,side:'after',score:score(sentences[last+1])});
+    if(!options.length)break;
+    options.sort((a,b)=>b.score-a.score||
+      (((a.side==='after')===preferAfter)?-1:1));
+    if(options.length>1&&options[0].score===options[1].score)
+      preferAfter=!preferAfter;
+    const choice=options[0];
+    first=choice.from;last=choice.to;
+  }
+  let excerpt=(first>0?'…':'')+sentences.slice(first,last+1).join(' ')+
+    (last<sentences.length-1?'…':'');
+  if(excerpt.length<=max)return excerpt;
+  // A single unusually long sentence has no complete-sentence window to select.
+  // Keep the excerpt bounded and center it on the strongest keyword window.
+  let bestStart=0,windowScore=-1;
+  for(let i=0;i<content.length;i+=Math.max(1,Math.floor(max/8))) {
+    const current=score(content.slice(i,i+max));
+    if(current>windowScore){bestStart=i;windowScore=current;}
+  }
+  bestStart=Math.min(bestStart,Math.max(0,content.length-max));
+  if(bestStart>0) {
+    const aligned=content.lastIndexOf(' ',bestStart);
+    if(aligned>=0)bestStart=aligned+1;
+  }
+  let end=Math.min(content.length,bestStart+max);
+  if(end<content.length) {
+    const aligned=content.lastIndexOf(' ',end);
+    if(aligned>bestStart)end=aligned;
+  }
+  excerpt=(bestStart>0?'…':'')+content.slice(bestStart,end).trim()+
+    (end<content.length?'…':'');
+  return excerpt.length<=max?excerpt:excerpt.slice(0,max-1)+'…';
 }
 export async function trustedSources(question,locators,fetcher=(url,opt)=>globalThis.fetch(url,opt)) {
   const manifest=await corpusJson('manifest.json',fetcher);
