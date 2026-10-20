@@ -1442,10 +1442,13 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'sources. If evidence is partial, explain the supported part and say '+ 
         'what remains uncertain. Do not invent missing evidence. '+ 
         'For multi-part questions, use the questionParts checklist as the ordered '+
-        'outline. Give each supported part its own concise paragraph, in the same '+
-        'order as the checklist; one or two sentences per part is usually enough. '+
-        'Use only that part’s listed evidence IDs for its claims. Do not add a '+
-        'separate theme, implication, or background point unless it answers a '+
+        'outline. Give each supported part its own paragraph, in the same '+
+        'order as the checklist. Use two or three sentences for a part when needed '+
+        'to explain the definition or reasoning behind a distinction; a simple point '+
+        'may take one sentence. Use only that part’s listed evidence IDs for its '+
+        'claims. For three supported parts, roughly 120–180 words will usually give '+
+        'enough room; treat that as guidance, not a quota, and never pad. Do not add '+
+        'a separate theme, implication, or background point unless it answers a '+
         'requested part. Omit unsupported parts as factual claims; the system will '+
         'append the precise coverage notice. For a single-part question, organize '+
         'the answer around the evidence map and keep it concise. In either case, '+
