@@ -1443,13 +1443,15 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'what remains uncertain. Do not invent missing evidence. '+ 
         'For multi-part questions, use the questionParts checklist as the ordered '+
         'outline. Give each supported part its own paragraph, in the same '+
-        'order as the checklist. Use two or three sentences for a part when needed '+
-        'to explain the definition or reasoning behind a distinction; a simple point '+
-        'may take one sentence. Use only that part’s listed evidence IDs for its '+
-        'claims. For three supported parts, roughly 120–180 words will usually give '+
-        'enough room; treat that as guidance, not a quota, and never pad. Do not add '+
-        'a separate theme, implication, or background point unless it answers a '+
-        'requested part. Omit unsupported parts as factual claims; the system will '+
+        'order as the checklist. Normally use two sentences for each part: first '+
+        'answer it directly, then explain the key reason, contrast, or qualification '+
+        'that makes the answer clear. A third sentence is appropriate when the '+
+        'passages support a useful example or nuance. Use only that part’s listed '+
+        'evidence IDs for its claims. For three supported parts, aim for 140–180 '+
+        'words overall, without repeating points or padding. Omit adjacent topics '+
+        'that do not answer a listed part, such as a separate comparison between '+
+        'theoretical wisdom and practical wisdom. Omit unsupported parts as factual '+
+        'claims; the system will '+
         'append the precise coverage notice. For a single-part question, organize '+
         'the answer around the evidence map and keep it concise. In either case, '+
         'check every point against the excerpts and preserve meaningful differences '+

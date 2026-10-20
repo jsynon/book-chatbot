@@ -193,9 +193,10 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered outline/);
- assert.match(inputs[1].messages[0].content,/Use two or three sentences for a part when needed/);
- assert.match(inputs[1].messages[0].content,/roughly 120–180 words will usually give enough room/);
- assert.match(inputs[1].messages[0].content,/never pad/);
+ assert.match(inputs[1].messages[0].content,/Normally use two sentences for each part/);
+ assert.match(inputs[1].messages[0].content,/aim for 140–180 words overall/);
+ assert.match(inputs[1].messages[0].content,/without repeating points or padding/);
+ assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
  assert.equal(inputs[1].max_completion_tokens,800);
  assert.equal(result.coverage,'full');
@@ -1339,7 +1340,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/do not turn a translator’s lexical gloss or capitalization convention into a claim about Kierkegaard’s theory/);
  assert.match(calls[1].messages[0].content,/State the central account once/);
  assert.match(calls[1].messages[0].content,/Do not restate the same claim with expanded synonyms/);
- assert.match(calls[1].messages[0].content,/Do not add a separate theme, implication, or background point unless it answers a requested part/);
+ assert.match(calls[1].messages[0].content,/Omit adjacent topics that do not answer a listed part/);
  assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
  assert.match(calls[1].messages[0].content,/do not combine two reviewed points into a single definition/);
  assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map and keep it concise/);
