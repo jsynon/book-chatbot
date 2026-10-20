@@ -194,8 +194,9 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered outline/);
  assert.match(inputs[1].messages[0].content,/Normally use two sentences for each part/);
- assert.match(inputs[1].messages[0].content,/aim for 140–180 words overall/);
- assert.match(inputs[1].messages[0].content,/without repeating points or padding/);
+ assert.match(inputs[1].messages[0].content,/For three supported parts, write exactly three short paragraphs/);
+ assert.match(inputs[1].messages[0].content,/180–260 words overall/);
+ assert.match(inputs[1].messages[0].content,/never pad or repeat/);
  assert.match(inputs[1].messages[0].content,/second explains a reason, operation, criterion, or example that bears on that same part/);
  assert.match(inputs[1].messages[0].content,/Do not use the second sentence for a nearby but different distinction or analogy/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
@@ -1217,7 +1218,7 @@ test('expands a short answer when all three requested parts are supported',async
   if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:
    'Practical wisdom is a reasoned capacity for action about human goods [S1]. It is not science because it concerns variable actions, and it differs from art because action and making differ [S1, S3].'}}],usage:{neurons:2}};
   assert.match(input.messages[0].content,/exactly three short paragraphs/);
-  assert.match(input.messages[0].content,/Target 180–260 words overall/);
+  assert.match(input.messages[0].content,/Aim for 180–260 words overall/);
   assert.match(input.messages[1].content,/Reviewed evidence points/);
   return {choices:[{finish_reason:'stop',message:{content:
    'Practical wisdom is a true and reasoned capacity for acting about things good or bad for human beings [S1]. It concerns judgment about what to do in human affairs, and Aristotle connects it with deliberation because these matters can turn out otherwise. He also calls it a right rule concerning virtue, indicating that it guides virtuous action rather than merely describing it [S1, S2].\n\nThis makes it different from scientific knowledge. Science proceeds by demonstration from principles that are necessary and invariable; practical questions concern possible actions and changing circumstances [S1]. Since people deliberate about alternatives where more than one outcome is possible, practical wisdom cannot be scientific demonstration. Its reasoning guides choice in contingent situations instead of proving conclusions that must always hold [S1].\n\nPractical wisdom is also different from skill or art because Aristotle distinguishes action from making [S3]. The two are different kinds of activity, so skill at producing something does not by itself amount to sound judgment about how to act. The excerpt supports that basic distinction, though it does not provide a detailed account of particular crafts. The comparison marks the scope of practical wisdom without making unsupported claims about specific skills [S1, S3].'}}],usage:{neurons:4}};
