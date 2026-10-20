@@ -1338,6 +1338,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'components, select those pages; prefer distinct useful pages over '+
       'repeated or overlapping excerpts. Do not select extra pages just to meet '+
       'a count. '+
+      'For concept or comparison questions, make the evidence map include the '+
+      'definition and the passage’s stated reason, operation, or criterion for '+
+      'each requested distinction when available. Prefer those explanatory points '+
+      'over a nearby analogy or comparison that does not answer a requested part. '+
       'For broad questions asking what a person or work says about a topic, identify distinct supported answer themes: the central account, how it works or what it means, and any separate implication, example, or contrast the excerpts support. These are candidate themes, not a required checklist. Prioritize direct explanation of the concept, followed by an example or implication that clarifies it. Treat criticism of another thinker and remarks that a term needs definition as context, not core answer themes, unless they explicitly clarify the concept. Do not let those remarks displace substantive passages that explain what the concept involves. '+
       sourceGroupInstruction+ 
       'Return ONLY compact JSON with keys coverage (full|partial|none), missing '+ 
@@ -1443,11 +1447,15 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'what remains uncertain. Do not invent missing evidence. '+ 
         'For multi-part questions, use the questionParts checklist as the ordered '+
         'outline. Give each supported part its own paragraph, in the same '+
-        'order as the checklist. Normally use two sentences for each part: first '+
-        'answer it directly, then explain the key reason, contrast, or qualification '+
-        'that makes the answer clear. A third sentence is appropriate when the '+
-        'passages support a useful example or nuance. Use only that part’s listed '+
-        'evidence IDs for its claims. For three supported parts, aim for 140–180 '+
+        'order as the checklist. Normally use two sentences for each part. The '+
+        'first answers it directly; the second explains a reason, operation, '+
+        'criterion, or example that bears on that same part. For a definition, pair '+
+        'what the capacity is with an explicit feature of what it does, if the '+
+        'passages provide one. Do not use the second sentence for a nearby but '+
+        'different distinction or analogy. A simple supported point may use one '+
+        'sentence, and a useful directly relevant nuance may take a third. Use only '+
+        'that part’s listed evidence IDs for its claims. For three supported parts, '+
+        'aim for 140–180 '+
         'words overall, without repeating points or padding. Omit adjacent topics '+
         'that do not answer a listed part, such as a separate comparison between '+
         'theoretical wisdom and practical wisdom. Omit unsupported parts as factual '+
