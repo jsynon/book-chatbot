@@ -125,6 +125,33 @@ test('multi-source evidence review calls out each named group in normal and retr
    assert(prompt.includes('A Brief History of Time [S2]'));
  }
 });
+test('same-book answers select complementary passages and synthesize every question part',async()=>{
+ const question='How does Aristotle explain habituation, and how do repeated actions shape character?';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:14,
+   preview:'We become just by doing just acts, temperate by doing temperate acts, and brave by doing brave acts.'},
+  {id:'S2',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:13,
+   preview:'The virtues arise in us neither by nature nor against nature; we are adapted by nature to receive them and are made perfect by habit.'}
+ ];
+ const inputs=[];let call=0;
+ const ai={run:async(_model,input)=>{
+   inputs.push(input);call++;
+   if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]
+   })}}],usage:{neurons:3}};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'Aristotle says character is formed through habituation: people become just or brave by repeatedly doing the relevant kinds of acts [S1]. This process depends on practice rather than being born with a completed virtue. We have a natural capacity to receive virtues, but habit brings that capacity to completion [S2]. Together, the passages show how repeated conduct shapes a settled character.'}}],usage:{neurons:4}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(inputs.length,2);
+ assert.match(inputs[0].messages[0].content,/two or three distinct passages, including passages from the same book/);
+ assert.match(inputs[1].messages[0].content,/Answer every requested part/);
+ assert.match(inputs[1].messages[0].content,/120–200 words/);
+ assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use two or three/);
+ assert.equal(inputs[1].max_completion_tokens,600);
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+});
 test('multi-work full coverage requires selected evidence from every named work group',()=>{
  const question='How do Darwin in On the Origin of Species and Hawking in A Brief History of Time explain change?';
  const sources=[
