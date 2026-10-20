@@ -1226,9 +1226,9 @@ test('expands a short answer when all three requested parts are supported',async
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(calls.length,3);
  assert.equal(result.coverage,'full');
- assert.match(result.answer,/deliberating about what can be otherwise/);
+ assert.match(result.answer,/deliberation because these matters can turn out otherwise/);
  assert.match(result.answer,/principles that are necessary and invariable/);
- assert.match(result.answer,/production and action/);
+ assert.match(result.answer,/action from making/);
  assert(result.answer.trim().split(/\s+/).length>=180);
  assert.equal(result.answer.trim().split(/\r?\n\s*\r?\n/).filter(Boolean).length,3);
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2','S3']);
