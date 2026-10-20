@@ -99,28 +99,30 @@ test('truncated evidence-gap notes end at a complete sentence',()=>{
  assert.equal(noSentence.missing,'');
 });
 
-test('multi-source evidence review calls out each named group and available passage IDs',async()=>{
+test('multi-source evidence review calls out each named group in normal and retry prompts',async()=>{
  const question='How do Darwin in On the Origin of Species and Hawking in A Brief History of Time distinguish evidence?';
  const sources=[
   {id:'S1',bookId:'529',title:'The Harvard Classics, Volume 11: On the Origin of Species — Charles Darwin',page:96,preview:'Darwin describes the variation of species.'},
   {id:'S2',bookId:'102',title:'A Brief History of Time — Stephen Hawking',page:48,preview:'Hawking distinguishes models from observations.'}
  ];
  const prompts=[];
+ let call=0;
  const ai={run:async(_model,input)=>{
    prompts.push(input.messages[0].content);
-   if(input.max_completion_tokens===440)
-     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-       coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]
-     })}}]};
-   throw new Error('stop after capturing the review prompt');
+   call++;
+   if(call===1)return {choices:[{finish_reason:'length',message:{content:''}}]};
+   if(call===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]
+   })}}]};
+   throw new Error('stop after capturing the review prompts');
  }};
  await assert.rejects(composeVerifiedAnswer(question,sources,ai),error=>
    error?.failureCode==='answer-composition-request-failed');
- assert.equal(prompts.length,2);
- for(const prompt of prompts){
+ assert.equal(prompts.length,3);
+ for(const prompt of prompts.slice(0,2)){
    assert.match(prompt,/directly relevant evidence for a group/);
-   assert.match(prompt,/On the Origin of Species \[S1\]/);
-   assert.match(prompt,/A Brief History of Time \[S2\]/);
+   assert.match(prompt,/On the Origin of Species \\[S1\\]/);
+   assert.match(prompt,/A Brief History of Time \\[S2\\]/);
  }
 });
 test('multi-work full coverage requires selected evidence from every named work group',()=>{
