@@ -190,7 +190,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/Answer every requested part/);
- assert.match(inputs[1].messages[0].content,/140–240 words/);
+ assert.match(inputs[1].messages[0].content,/180–260 words/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
  assert.equal(inputs[1].max_completion_tokens,800);
  assert.equal(result.coverage,'full');
