@@ -1209,7 +1209,34 @@ test('fragmentary passages cannot be completed or attributed to the catalog auth
  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
 });
 
-test('rejects a cited answer sentence that stops at an unfinished clause',async()=>{
+test('repairs an incomplete cited answer sentence from verified excerpts',async()=>{
+ const sources=[{id:'S1',bookId:'436',
+  title:'Kierkegaard’s Attack Upon “Christendom,” 1854–1855 — Søren Kierkegaard',
+  page:21,preview:'In the Instant he has nothing to say about faith, except…'}];
+ let call=0;
+ const ai={run:async(_model,input)=>{
+  call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The sentence on faith is incomplete.',
+   evidence:[{id:'S1',point:'The excerpt does not complete its statement about faith.'}]
+  })}}],usage:{neurons:2}};
+  if(call===2)return {choices:[{finish_reason:'stop',message:{content:
+   'The text says that faith must not be [S1].'}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/Rewrite only the incomplete sentence or clause/);
+  assert.match(input.messages[1].content,/Draft to repair/);
+  return {choices:[{finish_reason:'stop',message:{content:
+   'The excerpt ends before completing its statement about faith [S1].'}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(
+  'What did Kierkegaard have to say about faith?',sources,ai
+ );
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.answer,
+  'The excerpt ends before completing its statement about faith [S1].');
+ assert.equal(call,3);
+});
+
+test('rejects an incomplete cited answer that remains unfinished after repair',async()=>{
  const sources=[{id:'S1',bookId:'436',
   title:'Kierkegaard’s Attack Upon “Christendom,” 1854–1855 — Søren Kierkegaard',
   page:21,preview:'In the Instant he has nothing to say about faith, except…'}];
@@ -1224,7 +1251,7 @@ test('rejects a cited answer sentence that stops at an unfinished clause',async(
  await assert.rejects(composeVerifiedAnswer(
   'What did Kierkegaard have to say about faith?',sources,ai
  ),error=>error?.failureCode==='answer-incomplete-cited-claim');
- assert.equal(call,2);
+ assert.equal(call,3);
 });
 
 
