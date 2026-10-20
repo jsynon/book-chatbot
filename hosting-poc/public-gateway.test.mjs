@@ -193,11 +193,11 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered outline/);
- assert.match(inputs[1].messages[0].content,/Normally use two sentences for each part/);
- assert.match(inputs[1].messages[0].content,/For three supported parts, write exactly three short paragraphs/);
+ assert.match(inputs[1].messages[0].content,/normally have three to five complete sentences/);
+ assert.match(inputs[1].messages[0].content,/exactly three developed, connected paragraphs/);
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
  assert.match(inputs[1].messages[0].content,/never pad or repeat/);
- assert.match(inputs[1].messages[0].content,/second explains a reason, operation, criterion, or example that bears on that same part/);
+ assert.match(inputs[1].messages[0].content,/should explain the point, its reason or distinction/);
  assert.match(inputs[1].messages[0].content,/Do not use the second sentence for a nearby but different distinction or analogy/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
@@ -1220,7 +1220,8 @@ test('repairs a 120-plus-word single paragraph when three parts are supported',a
    assert(draft.trim().split(/\s+/).length>=120&&draft.trim().split(/\\s+/).length<180);
    return {choices:[{finish_reason:'stop',message:{content:draft}}],usage:{neurons:2}};
   }
-  assert.match(input.messages[0].content,/exactly three short paragraphs/);
+  assert.match(input.messages[0].content,/exactly three developed paragraphs/);
+  assert.match(input.messages[0].content,/at least three complete sentences in each paragraph/);
   assert.match(input.messages[0].content,/Aim for 180–260 words overall/);
   assert.match(input.messages[1].content,/Reviewed evidence points/);
   return {choices:[{finish_reason:'stop',message:{content:
@@ -1233,7 +1234,9 @@ test('repairs a 120-plus-word single paragraph when three parts are supported',a
  assert.match(result.answer,/principles that are necessary and invariable/);
  assert.match(result.answer,/action from making/);
  assert(result.answer.trim().split(/\s+/).length>=180);
- assert.equal(result.answer.trim().split(/\r?\n\s*\r?\n/).filter(Boolean).length,3);
+ const paragraphs=result.answer.trim().split(/\r?\n\s*\r?\n/).filter(Boolean);
+ assert.equal(paragraphs.length,3);
+ assert(paragraphs.every(paragraph=>(paragraph.match(/[.!?](?=\\s|$)/g)||[]).length>=3));
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2','S3']);
 });
 
