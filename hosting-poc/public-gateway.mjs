@@ -1266,6 +1266,60 @@ function modelText(result) {
   return typeof result?.choices?.[0]?.message?.content==='string'?
     result.choices[0].message.content.trim():'';
 }
+function parseComposedDraft(raw,sources) {
+  const text=String(raw||'').trim();
+  const start=text.indexOf('{'),end=text.lastIndexOf('}');
+  if(start>=0&&end>start){
+    try{
+      const parsed=JSON.parse(text.slice(start,end+1));
+      if(typeof parsed.answer==='string'&&parsed.answer.trim()&&
+        Array.isArray(parsed.partChecks)){
+        const validIds=new Set(sources.map(source=>source.id));
+        const partChecks=parsed.partChecks.slice(0,4).flatMap(item=>{
+          if(!item||typeof item!=='object'||typeof item.part!=='string'||
+            !['supported','partial','unsupported'].includes(item.status))return [];
+          const evidenceIds=[...new Set((Array.isArray(item.evidenceIds)?item.evidenceIds:[])
+            .filter(id=>typeof id==='string'&&validIds.has(id)))].slice(0,4);
+          const status=item.status!=='unsupported'&&!evidenceIds.length?
+            'unsupported':item.status;
+          return [{part:item.part.trim().slice(0,180),status,evidenceIds}];
+        });
+        return {answer:parsed.answer.trim(),partChecks,structured:true};
+      }
+    }catch{}
+  }
+  return {answer:text,partChecks:[],structured:false};
+}
+function normalizedPartLabel(value) {
+  return String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+}
+function sourceMentionsPart(part,sources) {
+  const ignored=new Set(['about','after','also','among','both','each','explain',
+    'from','into','more','part','role','same','that','their','them','then',
+    'there','these','they','this','those','through','what','when','where',
+    'which','while','with','would','does','how','and','for','the','its']);
+  const terms=[...new Set(normalizedPartLabel(part).split(' ')
+    .filter(term=>term.length>=5&&!ignored.has(term)))];
+  if(!terms.length)return false;
+  const sourceWords=sources.flatMap(source=>normalizedPartLabel(source.preview).split(' '));
+  const matched=terms.filter(term=>sourceWords.some(word=>
+    word===term||(term.length>=5&&word.length>=5&&word.slice(0,5)===term.slice(0,5))));
+  return matched.length>=Math.max(1,Math.ceil(terms.length/2));
+}
+function reconcileQuestionParts(questionParts,partChecks,answer) {
+  const checks=new Map(partChecks.map(item=>[normalizedPartLabel(item.part),item]));
+  const citedIds=new Set([...String(answer||'').matchAll(/\[([^\]]+)\]/g)]
+    .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
+  return questionParts.map(original=>{
+    const check=checks.get(normalizedPartLabel(original.part));
+    if(!check)return original;
+    const evidenceIds=check.evidenceIds.filter(id=>citedIds.has(id));
+    if(check.status==='unsupported'||!evidenceIds.length)
+      return {...original,status:'unsupported',evidenceIds:[]};
+    return {...original,status:check.status,evidenceIds};
+  });
+}
 
 function normalizedEvidenceQuote(text) {
   return String(text||'').toLocaleLowerCase().normalize('NFKC')
@@ -1331,7 +1385,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'each component against the excerpts. For each component, return a '+
       'questionParts item with a short task-fragment label, status '+
       '(supported|partial|unsupported), and evidenceIds containing only selected '+
-      'source IDs that directly support it. A component with no direct selected '+
+      'source IDs that directly support it. A passage that explicitly discusses '+
+      'a requested concept or names its process counts as at least partial '+
+      'evidence when it does not answer the whole component; select it and '+
+      'describe only what it establishes. A component with no directly relevant '+
       'passage must be unsupported; do not mark the overall answer full unless '+
       'every component is supported. When up to four distinct passages, including '+
       'passages from the same book, add complementary evidence for different '+
@@ -1382,8 +1439,11 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Break every question into one to four requested components. Return each '+
         'component in questionParts with a short task-fragment label, status '+
         '(supported|partial|unsupported), and evidenceIds drawn only from '+
-        'selected sources. A component without direct evidence is unsupported; '+
-        'coverage cannot be full unless all components are supported. Check '+
+        'selected sources. A passage that explicitly discusses a requested concept '+
+        'or names its process counts as at least partial evidence when it does '+
+        'not answer the whole component; select it and describe only what it '+
+        'establishes. A component without directly relevant evidence is '+
+        'unsupported; coverage cannot be full unless all components are supported. Check '+
         'every requested component and select up to four complementary '+
         'distinct pages from the same book when '+
         'they add different relevant evidence. Do not select pages merely to '+
@@ -1440,6 +1500,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'inference. A book record naming an author does not prove that every passage is the author’s own prose: attribute explicit commentary, translation notes, narrator speech, and reported opinions to their visible speaker. If the speaker is unclear, state that limitation. Treat footnotes, translator or editor notes, and introductions as separate speakers. The evidence map is authoritative about this distinction: label editorial points as such, and do not turn a translator’s lexical gloss or capitalization convention into a claim about Kierkegaard’s theory. '+
         'Do not turn “the text has nothing to say about X” into a claim about what the author believed about X. Never complete a dangling clause or infer the words after an ellipsis or “except”; state that the excerpt is incomplete when that matters. '+
         'Do not invent facts, quotations, page numbers or sources. '+ 
+        'Before writing, inspect EVERY verified excerpt, including any passage the evidence review did not select or marked partial/unsupported. The review checklist can miss a relevant passage. If an excerpt directly addresses a requested part, explain what it establishes and cite it; never say the passages contain no information about that part when they do. '+ 
+        'Return one compact JSON object with keys answer and partChecks. partChecks must contain exactly one object for every requested question-part label, copying each label exactly, with status (supported|partial|unsupported) and evidenceIds. Mark a part supported only when the answer explicitly explains it using the cited excerpt; mark it partial when the excerpt supports only part of the requested explanation; mark unsupported only when no verified excerpt supports it. Use only valid source IDs. Check that every supported part is actually explained in the answer before returning. '+ 
         'Paraphrase by default. Use quotation marks only for an exact phrase copied '+ 
         'from a verified excerpt; never use them for emphasis or invented wording. '+ 
         'Put [S1], [S2], etc. immediately after statements supported by those '+ 
@@ -1471,7 +1533,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'opposition, cause, or equivalence unless the excerpt explicitly states '+ 
         'that relation. Explain connections cautiously and do not restate the '+ 
         'same point in multiple sentences. Avoid a book-by-book list of disconnected '+
-        'observations. Use plain text only: no Markdown, headings, asterisks, or bullet markers. '+
+        'observations. Use plain text only: no Markdown, headings, asterisks, or bullet markers in the answer field. '+
         'For a narrow factual question, '+
         'stay brief. When distinct selected passages support different points, '+
         'use up to four of those passages and place each citation next to the '+
@@ -1489,19 +1551,65 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
           ' [evidence: '+(item.evidenceIds.join(', ')||'none')+']').join('\n')+
         '\nEvidence map (reviewed points):\n'+
         (review.evidenceMap||[]).map(item=>'['+item.id+'] '+item.point).join('\n')+
-        '\n\nVerified source excerpts:\n'+
-        selected.map(s=>'['+s.id+'] '+s.title+
+        '\n\nVerified source excerpts (all submitted passages, including those not selected by the review):\n'+
+        sources.map(s=>'['+s.id+'] '+s.title+
           ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
-    ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:800,
+    ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:1100,
   });}catch(error){throw answerFailure('answer-composition-request-failed',{
     stage:'answer-composition',...inferenceFailureDiagnostics(error)});}
   if(['length','max_tokens'].includes(second?.choices?.[0]?.finish_reason))
     throw answerFailure('answer-composition-truncated');
-  let answer=modelText(second);
+  let composed=parseComposedDraft(modelText(second),sources);
+  let answer=composed.answer;
   if(!answer)throw answerFailure('answer-composition-empty');
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
   let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
-  const supportedPartCount=(review.questionParts||[])
+  let finalQuestionParts=review.questionParts||[];
+  let finalCoverage=review.coverage;
+  let finalMissing=review.missing;
+  if(composed.structured&&finalQuestionParts.length){
+    finalQuestionParts=reconcileQuestionParts(finalQuestionParts,composed.partChecks,answer);
+    const needsPartRepair=finalQuestionParts.some((part,index)=>
+      (review.questionParts[index].status==='supported'&&part.status!=='supported')||
+      (review.questionParts[index].status==='partial'&&part.status==='unsupported')||
+      (part.status==='unsupported'&&sourceMentionsPart(part.part,sources)));
+    if(needsPartRepair){
+      let repairedParts;
+      try{repairedParts=await ai.run(MODEL,{
+        messages:[
+          {role:'system',content:
+            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve accurate existing material and the requested scope. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
+          {role:'user',content:
+            'Question:\n'+question+'\n\nQuestion parts and evidence review status:\n'+
+            review.questionParts.map(part=>'- '+part.part+' — '+part.status+
+              ' [review evidence: '+(part.evidenceIds.join(', ')||'none')+']').join('\n')+
+            '\n\nInitial answer and coverage check:\n'+JSON.stringify({
+              answer,partChecks:composed.partChecks
+            })+'\n\nVerified excerpts:\n'+
+            sources.map(source=>'['+source.id+'] '+source.title+
+              ', physical PDF page '+source.page+'\n'+source.preview).join('\n\n')}
+        ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:1100,
+      });}catch(error){throw answerFailure('answer-part-repair-request-failed',{
+        stage:'answer-part-repair',...inferenceFailureDiagnostics(error)});}
+      if(['length','max_tokens'].includes(repairedParts?.choices?.[0]?.finish_reason))
+        throw answerFailure('answer-part-repair-truncated');
+      const repairedDraft=parseComposedDraft(modelText(repairedParts),sources);
+      if(!repairedDraft.answer)throw answerFailure('answer-part-repair-empty');
+      if(repairedDraft.answer.length>2400)throw answerFailure('answer-part-repair-too-long');
+      answer=repairedDraft.answer;
+      answerNeurons+=Math.max(0,Number(repairedParts?.usage?.neurons)||0);
+      if(repairedDraft.structured)
+        finalQuestionParts=reconcileQuestionParts(review.questionParts,
+          repairedDraft.partChecks,answer);
+    }
+    if(finalQuestionParts.length){
+      finalCoverage=finalQuestionParts.every(part=>part.status==='supported')?
+        'full':'partial';
+      finalMissing=questionPartMissingNote(finalQuestionParts)||
+        (finalCoverage==='full'?'':review.missing);
+    }
+  }
+  const supportedPartCount=finalQuestionParts
     .filter(item=>item.status==='supported'||item.status==='partial').length;
   const wordCount=text=>(String(text||'').match(/[\p{L}\p{N}]+(?:[’'’-][\p{L}\p{N}]+)*/gu)||[]).length;
   const answerParagraphs=text=>String(text||'').trim().split(/\r?\n\s*\r?\n/).filter(Boolean);
@@ -1525,7 +1633,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
           (review.evidenceMap||[]).map(item=>'['+item.id+'] '+item.point).join('\n')+
           '\n\nCurrent answer ('+wordCount(answer)+' words):\n'+answer+
           '\n\nVerified source excerpts:\n'+
-          selected.map(s=>'['+s.id+'] '+s.title+
+          sources.map(s=>'['+s.id+'] '+s.title+
             ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
       ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:800,
     });}catch(error){throw answerFailure('answer-depth-repair-request-failed',{
@@ -1556,7 +1664,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
           '\nParagraph sentence counts: '+(counts.join(', ')||'none')+
           '\nPrevious revision:\n'+answer+
           '\n\nVerified source excerpts:\n'+
-          selected.map(s=>'['+s.id+'] '+s.title+
+          sources.map(s=>'['+s.id+'] '+s.title+
             ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
       ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:800,
     });}catch(error){throw answerFailure('answer-depth-retry-request-failed',{
@@ -1585,7 +1693,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
             ' [evidence: '+(item.evidenceIds.join(', ')||'none')+']').join('\n')+
           '\n\nDraft to repair:\n'+answer+
           '\n\nVerified source excerpts:\n'+
-          selected.map(s=>'['+s.id+'] '+s.title+
+          sources.map(s=>'['+s.id+'] '+s.title+
             ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
       ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:800,
     });}catch(error){throw answerFailure('answer-incomplete-claim-repair-request-failed',{
@@ -1616,7 +1724,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
           '\nMissing: '+(review.missing||'Not identified')+
           '\n\nDraft to correct:\n'+answer+
           '\n\nVerified source excerpts:\n'+
-          selected.map(s=>'['+s.id+'] '+s.title+
+          sources.map(s=>'['+s.id+'] '+s.title+
             ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
       ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:800,
     });}catch(error){throw answerFailure('answer-quotation-repair-request-failed',{
@@ -1634,22 +1742,22 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   }
   if(hasDanglingCitedSentence(answer))
     throw answerFailure('answer-incomplete-cited-claim');
-  answer=appendMissingQuestionPartNotice(answer,review.questionParts||[]);
+  answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
   // Models sometimes group citations, e.g. [S1, S3]. Audit every source ID
   // inside each bracket group so an unknown citation cannot slip through
   // merely because it was not written as a standalone [S1] token.
   const cited=[...new Set([...answer.matchAll(/\[([^\]]+)\]/g)]
     .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]))];
-  const known=new Set(selected.map(s=>s.id));
+  const known=new Set(sources.map(s=>s.id));
   // Do not return an apparently sourced answer with fabricated or missing
   // citations. Note that valid IDs alone do NOT validate factual support.
   if(cited.length===0)throw answerFailure('answer-citations-missing');
   if(cited.some(id=>!known.has(id)))throw answerFailure('answer-citations-invalid');
-  const citations=selected.filter(s=>cited.includes(s.id));
-  return {outcome:'verified-source-draft',answer,coverage:review.coverage,
-    missing:review.missing,citations,followUpQuestions:review.followUpQuestions,
-    evidenceMap:review.evidenceMap,questionParts:review.questionParts,reviewStatus:'citations_not_claim_verified',
+  const citations=sources.filter(s=>cited.includes(s.id));
+  return {outcome:'verified-source-draft',answer,coverage:finalCoverage,
+    missing:finalMissing,citations,followUpQuestions:review.followUpQuestions,
+    evidenceMap:review.evidenceMap,questionParts:finalQuestionParts,reviewStatus:'citations_not_claim_verified',
     usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},
     model:MODEL,finishReason:second?.choices?.[0]?.finish_reason||'unknown',
     notice:'Exact indexed page text verified against owner-published SHA-256. Individual AI claims still require assessment.'};
@@ -1962,6 +2070,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'evidence-review-invalid-response','answer-composition-request-failed',
         'answer-composition-truncated','answer-composition-empty',
         'answer-composition-too-long','answer-incomplete-cited-claim',
+        'answer-part-repair-request-failed','answer-part-repair-truncated',
+        'answer-part-repair-empty','answer-part-repair-too-long',
         'answer-depth-repair-request-failed','answer-depth-repair-truncated',
         'answer-depth-repair-empty','answer-depth-repair-too-long',
         'answer-depth-retry-request-failed','answer-depth-retry-truncated',
