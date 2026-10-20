@@ -68,6 +68,20 @@ test('process-focused planning requires source-level actions as well as topic la
  assert.match(systemPrompt,/source-level descriptions of what people or things do over abstract labels alone/i);
  assert.match(systemPrompt,/repeated actions or doing just acts/i);
 });
+test('definition questions preserve the exact phrase instead of broad planner paraphrases',async()=>{
+ let systemPrompt='';
+ const answer=await planSearchQueries('What does “God is love” mean?','',{
+  run:async(_model,options)=>{
+   systemPrompt=options.messages[0].content;
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
+    'theological essence and divine nature','love through human experience and action'
+   ]})}}]};
+  }
+ });
+ assert.equal(answer.queries[0],'God is love meaning');
+ assert.equal(answer.queries[1],'love through human experience and action');
+ assert.match(systemPrompt,/preserve that exact phrase in one search query/i);
+});
 test('malformed, duplicate or truncated AI planning fails without invented sources',async()=>{
  for(const raw of ['I cannot help','{"queries":["the same phrase","the same phrase"]}',
    '{"queries":["one","another"]}','{"queries":[{"page":466}, "another phrase"]}']){
