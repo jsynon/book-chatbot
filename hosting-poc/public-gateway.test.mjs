@@ -201,7 +201,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/do not force a one-item-per-paragraph outline/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
- assert.equal(inputs[1].max_completion_tokens,800);
+ assert.equal(inputs[1].max_completion_tokens,1100);
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
@@ -876,7 +876,7 @@ test('public pilot selects and synthesizes four complementary pages from one boo
        coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'},{id:'S3',point:'Relevant supported passage point.'},{id:'S4',point:'Relevant supported passage point.'}]
      })}}]};
    }
-   assert.equal(input.max_completion_tokens,800);
+   assert.equal(input.max_completion_tokens,1100);
    const answer=input.messages.at(-1).content;
    for(let i=1;i<=4;i++)assert(answer.includes('[S'+i+']'));
    return {choices:[{finish_reason:'stop',message:{content:
@@ -1187,6 +1187,55 @@ test('a second evidence-review truncation returns a safe stage diagnostic in Wor
    finishReason:'length',retryFinishReason:'length',
    outputTokenLimit:760,sourceCount:1,retried:true
  });
+});
+
+test('composition checks every question part against all verified excerpts and repairs a missed source',async()=>{
+ const question='According to Darwin, how does natural selection operate, and what roles do inherited variation and struggle for existence play?';
+ const sources=[
+  {id:'S1',bookId:'529',title:'On the Origin of Species — Charles Darwin',page:96,
+   preview:'Natural selection preserves favorable individual differences and variations. It does not induce variability; it preserves variations that arise and prove beneficial.'},
+  {id:'S2',bookId:'529',title:'On the Origin of Species — Charles Darwin',page:140,
+   preview:'It is an error to suppose that there would be no struggle for existence, and, consequently, no natural selection, until many forms had been produced.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The role of struggle for existence is not addressed.',
+   questionParts:[
+    {part:'explain how natural selection operates, including inherited variation',status:'supported',evidenceIds:['S1']},
+    {part:'explain the role of struggle for existence',status:'unsupported',evidenceIds:[]}
+   ],
+   evidence:[{id:'S1',point:'Natural selection preserves favorable variations.'}]
+  })}}],usage:{neurons:2}};
+  if(calls.length===2){
+   assert.match(input.messages[1].content,/all submitted passages, including those not selected/i);
+   assert.match(input.messages[1].content,/struggle for existence, and, consequently, no natural selection/);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    answer:'Natural selection preserves favorable variations and does not create them [S1]. The struggle for existence is part of the account: Darwin rejects the idea that it begins only after many forms have appeared, connecting struggle with natural selection [S2].',
+    partChecks:[
+     {part:'explain how natural selection operates, including inherited variation',status:'supported',evidenceIds:['S1']},
+     {part:'explain the role of struggle for existence',status:'unsupported',evidenceIds:[]}
+    ]
+   })}}],usage:{neurons:3}};
+  }
+  assert.match(input.messages[0].content,/coverage check found missing or underexplained/);
+  assert.match(input.messages[1].content,/page 140/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Natural selection preserves favorable variations rather than creating them [S1]. The struggle for existence is also part of the process: Darwin rejects the assumption that it, and natural selection, begin only after many forms have appeared [S2]. The excerpt supports that connection, though this passage alone does not spell out every consequence of the struggle.',
+   partChecks:[
+    {part:'explain how natural selection operates, including inherited variation',status:'supported',evidenceIds:['S1']},
+    {part:'explain the role of struggle for existence',status:'supported',evidenceIds:['S2']}
+   ]
+  })}}],usage:{neurons:4}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[1].status,'supported');
+ assert.match(result.answer,/struggle for existence is also part of the process/);
+ assert.doesNotMatch(result.answer,/do not fully address/i);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
 
 test('repairs a 120-plus-word single paragraph when three parts are supported',async()=>{
