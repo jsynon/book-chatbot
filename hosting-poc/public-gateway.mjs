@@ -1017,9 +1017,11 @@ function enforceRequestedSourceGroups(review,question,sources){
   const missing=groups.filter(group=>![...group.bookIds].some(id=>selectedBookIds.has(String(id))));
   if(!missing.length)return review;
   const names=missing.map(group=>group.kind==='author'?group.label+"'s works":group.label);
-  const addition='The selected evidence does not cover '+names.join(' and ')+'.';
+  let addition='The selected evidence does not cover '+names.join(' and ')+'.';
+  if(addition.length>240)addition='The selected evidence does not cover one or more named source groups.';
   const existing=review.missing&&review.missing!==addition?review.missing:'';
-  const note=[existing,addition].filter(Boolean).join(' ').slice(0,240);
+  const combined=[existing,addition].filter(Boolean).join(' ');
+  const note=combined.length<=240?combined:addition;
   return {...review,coverage:review.coverage==='full'?'partial':review.coverage,
     missing:completeMissingNote(note)||addition,followUpQuestions:review.followUpQuestions};
 }
