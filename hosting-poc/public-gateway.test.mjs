@@ -1138,3 +1138,21 @@ test('fragmentary passages cannot be completed or attributed to the catalog auth
  assert.equal(result.coverage,'partial');
  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
 });
+
+test('rejects a cited answer sentence that stops at an unfinished clause',async()=>{
+ const sources=[{id:'S1',bookId:'436',
+  title:'Kierkegaard’s Attack Upon “Christendom,” 1854–1855 — Søren Kierkegaard',
+  page:21,preview:'In the Instant he has nothing to say about faith, except…'}];
+ let call=0;
+ const ai={run:async()=>{
+  call++;
+  const content=call===1?
+   JSON.stringify({coverage:'partial',missing:'The sentence on faith is incomplete.',evidence:[{id:'S1'}]}):
+   'The text says that faith must not be [S1].';
+  return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:2}};
+ }};
+ await assert.rejects(composeVerifiedAnswer(
+  'What did Kierkegaard have to say about faith?',sources,ai
+ ),error=>error?.failureCode==='answer-incomplete-cited-claim');
+ assert.equal(call,2);
+});
