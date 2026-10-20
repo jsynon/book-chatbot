@@ -1162,5 +1162,5 @@ test('answer composition explicitly requests plain text instead of Markdown arti
  const {readFileSync}=await import('node:fs');
  const source=readFileSync(new URL('./public-gateway.mjs',import.meta.url),'utf8');
  assert.match(source,/Use plain text only: no Markdown, headings, asterisks, or bullet markers/);
- assert.doesNotMatch(source,/a few \'\s*\+\s*\'brief bullets/);
+ assert.doesNotMatch(source,/brief bullets/);
 });
