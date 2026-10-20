@@ -190,7 +190,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/Answer every requested part/);
- assert.match(inputs[1].messages[0].content,/140–240 words/);
+ assert.match(inputs[1].messages[0].content,/180–260 words/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
  assert.equal(inputs[1].max_completion_tokens,800);
  assert.equal(result.coverage,'full');
@@ -1163,4 +1163,40 @@ test('answer composition explicitly requests plain text instead of Markdown arti
  const source=readFileSync(new URL('./public-gateway.mjs',import.meta.url),'utf8');
  assert.match(source,/Use plain text only: no Markdown, headings, asterisks, or bullet markers/);
  assert.doesNotMatch(source,/brief bullets/);
+});
+
+
+test('review keeps concise source-linked points for answer synthesis',()=>{
+ const sources=[
+  {id:'S1',bookId:'140',title:'Fear and Trembling',page:32,preview:'Faith and Hegel.'},
+  {id:'S2',bookId:'253',title:'The Sickness Unto Death',page:93,preview:'Faith is the opposite of sin.'}
+ ];
+ const review=parseReview(JSON.stringify({coverage:'partial',missing:'A broader account is not established.',
+  evidence:[{id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.'},
+   {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'}]}),sources);
+ assert.deepEqual(review.evidenceMap,[
+  {id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.'},
+  {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'}
+ ]);
+});
+
+test('answer composition receives the reviewed evidence map as its outline',async()=>{
+ const sources=[{id:'S1',bookId:'253',title:'The Sickness Unto Death',page:93,
+  preview:'For the whole of Christianity the opposite of sin is not virtue but faith.'}];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'These passages give a limited account.',
+   evidence:[{id:'S1',point:'Christianity makes faith the opposite of sin, not virtue.'}]
+  })}}],usage:{neurons:2}};
+  return {choices:[{finish_reason:'stop',message:{content:
+   'In this passage, faith stands opposite sin rather than virtue [S1].'}}],usage:{neurons:3}};
+ }};
+ await composeVerifiedAnswer('What does Kierkegaard say about faith?',sources,ai);
+ assert.equal(calls.length,2);
+ assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
+ assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
+ assert.match(calls[1].messages[0].content,/usually about 180–260 words/);
+ assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
 });
