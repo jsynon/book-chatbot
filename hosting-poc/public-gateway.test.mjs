@@ -1222,6 +1222,12 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[0].messages[0].content,/Prioritize direct explanation of the concept/);
  assert.match(calls[0].messages[0].content,/remarks that a term needs definition as context/);
  assert.match(calls[0].messages[0].content,/IDs may repeat only when the same passage supports a different point/);
+ assert.match(calls[0].messages[0].content,/Treat footnotes, translator or editor notes, and introductions as separate speakers/);
+ assert.match(calls[0].messages[0].content,/do not treat a translation note as Kierkegaard’s own distinction/);
+ assert.match(calls[1].messages[0].content,/The evidence map is authoritative about this distinction/);
+ assert.match(calls[1].messages[0].content,/do not turn a translator’s lexical gloss or capitalization convention into a claim about Kierkegaard’s theory/);
+ assert.match(calls[1].messages[0].content,/State the central account once/);
+ assert.match(calls[1].messages[0].content,/Do not restate the same claim with expanded synonyms/);
  assert.match(calls[1].messages[0].content,/different evidential job/);
  assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
  assert.match(calls[1].messages[0].content,/do not combine two reviewed points into a single definition/);
