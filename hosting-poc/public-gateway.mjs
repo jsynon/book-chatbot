@@ -1041,7 +1041,7 @@ export function parseReview(raw,sources,question='') {
     const id=typeof value==='string'?value:value?.id;
     if(!byId.has(id)||seen.has(id))continue;
     seen.add(id);selected.push(byId.get(id));
-    const point=typeof value==='object'&&typeof value.point==='string'?
+    const point=value&&typeof value==='object'&&typeof value.point==='string'?
       value.point.trim().slice(0,220):'';
     if(point)evidenceMap.push({id,point});
     if(selected.length===4)break;
