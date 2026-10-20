@@ -1340,7 +1340,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/do not turn a translator’s lexical gloss or capitalization convention into a claim about Kierkegaard’s theory/);
  assert.match(calls[1].messages[0].content,/State the central account once/);
  assert.match(calls[1].messages[0].content,/Do not restate the same claim with expanded synonyms/);
- assert.match(calls[1].messages[0].content,/Do not add a separate theme, implication, or background point unless it answers a requested part/);
+ assert.match(calls[1].messages[0].content,/Omit adjacent topics that do not answer a listed part/);
  assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
  assert.match(calls[1].messages[0].content,/do not combine two reviewed points into a single definition/);
  assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map and keep it concise/);
