@@ -1454,9 +1454,11 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'passages provide one. Do not use the second sentence for a nearby but '+
         'different distinction or analogy. A simple supported point may use one '+
         'sentence, and a useful directly relevant nuance may take a third. Use only '+
-        'that part’s listed evidence IDs for its claims. For three supported parts, '+
-        'aim for 140–180 '+
-        'words overall, without repeating points or padding. Omit adjacent topics '+
+        'that part’s listed evidence IDs for its claims. For three supported parts, write exactly three short paragraphs, one '+
+        'for each part in checklist order. Usually aim for 180–260 words overall, '+
+        'giving each paragraph room to answer its part and explain a supported '+
+        'reason, criterion, or example. Use that length only when the passages '+
+        'support it; never pad or repeat. Omit adjacent topics '+
         'that do not answer a listed part, such as a separate comparison between '+
         'theoretical wisdom and practical wisdom. Omit unsupported parts as factual '+
         'claims; the system will '+
@@ -1506,12 +1508,13 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const supportedPartCount=(review.questionParts||[])
     .filter(item=>item.status==='supported'||item.status==='partial').length;
   const wordCount=text=>(String(text||'').match(/[\p{L}\p{N}]+(?:[’'’-][\p{L}\p{N}]+)*/gu)||[]).length;
-  if(supportedPartCount>=3&&wordCount(answer)<120){
+  const paragraphCount=text=>String(text||'').trim().split(/\r?\n\s*\r?\n/).filter(Boolean).length;
+  if(supportedPartCount>=3&&(wordCount(answer)<180||paragraphCount(answer)<3)){
     let expanded;
     try{expanded=await ai.run(MODEL,{
       messages:[
         {role:'system',content:
-          'Expand this underdeveloped answer using ONLY the verified excerpts and reviewed evidence points. Answer every supported requested part in order. For each part, state the direct answer and add a distinct sentence explaining the relevant reason, operation, criterion, or example that the passage supports. Target 140–180 words overall. Do not repeat the same point, add an adjacent topic, invent evidence, or use a source ID not supplied for that part. Preserve the existing citations and place citations next to the claims they support. Return only the revised answer.'},
+          'Revise this answer into exactly three short paragraphs, one for each of the three supported requested parts, in checklist order. Separate paragraphs with blank lines. Answer each part directly, then explain its supported reason, operation, criterion, or example. Aim for 180–260 words overall when the excerpts support that depth. Keep every claim within the reviewed points and verified excerpts; use only the evidence IDs listed for that part. Preserve citations beside their claims. Remove tangents and redundancy. Do not pad, invent evidence, or add an adjacent topic. Return only the revised answer.'},
         {role:'user',content:
           'Question:\n'+question+'\nCoverage: '+review.coverage+
           '\nRequested question parts and their evidence IDs:\n'+
