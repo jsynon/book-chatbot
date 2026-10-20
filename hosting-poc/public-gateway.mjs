@@ -1507,7 +1507,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const answerParagraphs=text=>String(text||'').trim().split(/\r?\n\s*\r?\n/).filter(Boolean);
   const paragraphCount=text=>answerParagraphs(text).length;
   const paragraphSentenceCounts=text=>answerParagraphs(text).map(paragraph=>
-    (paragraph.match(/[.!?](?=\\s|$)/g)||[]).length);
+    (paragraph.match(/[.!?](?=\s|$)/g)||[]).length);
   if(supportedPartCount>=3&&(wordCount(answer)<180||paragraphCount(answer)<3||
     paragraphSentenceCounts(answer).some(count=>count<3))){
     let expanded;
