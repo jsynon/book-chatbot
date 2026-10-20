@@ -1181,6 +1181,19 @@ function quotedPhrasesMatchSources(answer,sources) {
 // v1.9.4 private AI pilot. Only call this with independently SHA-256-verified
 // sources. Two normal inference requests, with one conditional quotation repair.
 // Citations here are source-ID checks, NOT semantic claim-level verification.
+export function hasDanglingCitedSentence(answer) {
+  const text=String(answer||'');
+  const sentences=text.split(/(?<=[.!?])\\s+(?=[A-Z“"'“\\d])/);
+  const dangling=/\\b(?:is|are|was|were|be|been|being|has|have|had|do|does|did|will|would|can|could|should|must|may|might|shall)(?:\\s+not)?|not|because|except|but|and|or|to|with|of|in|on|at|for|from|that|which|who|whose)\\s*$/i;
+  return sentences.some(sentence=>{
+    const citationBlock=sentence.match(/(?:\\s*\\[S[1-9]\\d*(?:\\s*,\\s*S[1-9]\\d*)*\\])+\\s*[.!?]?$/);
+    if(!citationBlock)return false;
+    const claim=sentence.slice(0,citationBlock.index)
+      .replace(/[.,;:!?]+$/,'').trim();
+    return dangling.test(claim);
+  });
+}
+
 export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const combined=sources.map(s=>'['+s.id+'] '+s.title+', physical PDF page '+s.page+'\n'+s.preview).join('\n\n');
   const sourceGroups=requestedSourceGroups(question,sources);
@@ -1330,6 +1343,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let answer=modelText(second);
   if(!answer)throw answerFailure('answer-composition-empty');
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
+  if(hasDanglingCitedSentence(answer))
+    throw answerFailure('answer-incomplete-cited-claim');
   // Exact source-page provenance does not make model quotations reliable.
   // If a quote fails exact matching, make one bounded repair attempt. This path
   // is conditional, so normal answers keep the two-request inference budget.
