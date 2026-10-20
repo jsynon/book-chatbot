@@ -1046,7 +1046,7 @@ export function parseReview(raw,sources,question='') {
     }
     const point=value&&typeof value==='object'&&typeof value.point==='string'?
       value.point.trim().slice(0,220):'';
-    const pointKey=id+'\\0'+point.toLocaleLowerCase();
+    const pointKey=JSON.stringify([id,point.toLocaleLowerCase()]);
     if(point&&!seenPoints.has(pointKey)&&evidenceMap.length<8){
       seenPoints.add(pointKey);evidenceMap.push({id,point});
     }
