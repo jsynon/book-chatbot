@@ -1112,3 +1112,29 @@ test('a second evidence-review truncation returns a safe stage diagnostic in Wor
    outputTokenLimit:760,sourceCount:1,retried:true
  });
 });
+
+test('fragmentary passages cannot be completed or attributed to the catalog author',async()=>{
+ const question='What did Kierkegaard have to say about faith?';
+ const sources=[
+  {id:'S1',bookId:'436',title:'Kierkegaard’s Attack Upon “Christendom,” 1854–1855 — Søren Kierkegaard',page:21,
+   preview:'There is another respect in which S. K. was more evidently a Catholic; in the Instant he has nothing to say about faith, except…'},
+  {id:'S2',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:32,
+   preview:'If there is no incommensurability in human life, then Hegel is right; but he is not right in talking about faith.'}
+ ];
+ const inputs=[];let call=0;
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);call++;
+  const content=call===1?
+   JSON.stringify({coverage:'partial',missing:'The excerpt on The Instant ends before its point is complete.',evidence:[{id:'S2'}]}):
+   'In Fear and Trembling, Kierkegaard challenges Hegel’s account of faith, while this passage alone does not give a complete definition of faith [S2].';
+  return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(inputs.length,2);
+ assert.match(inputs[0].messages[0].content,/Never turn a statement that the text does not discuss a subject/);
+ assert.match(inputs[0].messages[0].content,/ellipsis, an unfinished clause/);
+ assert.match(inputs[1].messages[0].content,/A book record naming an author does not prove/);
+ assert.match(inputs[1].messages[0].content,/Never complete a dangling clause/);
+ assert.equal(result.coverage,'partial');
+ assert.deepEqual(result.citations.map(source=>source.id),['S2']);
+});
