@@ -76,6 +76,17 @@ test('inference failure diagnostics classify provider errors without exposing ra
  assert.equal(JSON.stringify(gatewayError).includes('private question'),false);
  const networkError=inferenceFailureDiagnostics(new Error('fetch failed: ECONNRESET'));
  assert.equal(networkError.providerClass,'network-error');
+ const quotaError=inferenceFailureDiagnostics({name:'Error',message:
+  'You have used up your daily free allocation of 10,000 Neurons.'});
+ assert.equal(quotaError.providerClass,'quota-or-credit-limit');
+ assert.equal(JSON.stringify(quotaError).includes('10,000 Neurons'),false);
+ const quotaCode=inferenceFailureDiagnostics({name:'AIError',code:3036,message:'request failed'});
+ assert.equal(quotaCode.providerClass,'quota-or-credit-limit');
+ assert.equal(quotaCode.providerCode,'3036');
+ const capacityError=inferenceFailureDiagnostics({name:'Error',status:429,code:3040,
+  message:'Capacity temporarily exceeded, please try again.'});
+ assert.equal(capacityError.providerClass,'capacity-unavailable');
+ assert.equal(capacityError.providerCode,'3040');
 });
 
 test('public endpoint fails closed by default and does not call AI',async()=>{
@@ -939,6 +950,18 @@ test('answer failures expose a safe reason code but not provider error text',asy
  const body=await response.json();
  assert.equal(body.failureCode,'evidence-review-request-failed');
  assert.equal(JSON.stringify(body).includes('PRIVATE'),false);
+});
+test('Worker reports quota and capacity failures with safe public codes',async()=>{
+ const quota=await pilotScenario({model:async()=>{throw {name:'Error',message:
+  'You have used up your daily free allocation of 10,000 Neurons.'};}});
+ const quotaResponse=await quota.post();
+ assert.equal(quotaResponse.status,502);
+ assert.equal((await quotaResponse.json()).failureCode,'ai-daily-limit-reached');
+ const capacity=await pilotScenario({model:async()=>{throw {name:'Error',status:429,code:3040,
+  message:'Capacity temporarily exceeded, please try again.'};}});
+ const capacityResponse=await capacity.post();
+ assert.equal(capacityResponse.status,502);
+ assert.equal((await capacityResponse.json()).failureCode,'ai-capacity-unavailable');
 });
 test('v1.9.5 exposes only safe CORS preflight on public endpoint',async()=>{
  const pilot=await pilotScenario();
