@@ -1227,7 +1227,7 @@ test('expands a short answer when all three requested parts are supported',async
  assert.match(result.answer,/deliberating about what can be otherwise/);
  assert.match(result.answer,/principles that are necessary and invariable/);
  assert.match(result.answer,/production and action/);
- assert(result.answer.trim().split(/\\s+/).length>=120);
+ assert(result.answer.trim().split(/\s+/).length>=120);
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2','S3']);
 });
 
