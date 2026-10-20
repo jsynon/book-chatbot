@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,PILOT_BOOKS,PILOT_BOOK_IDS} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -45,6 +45,18 @@ function env(overrides={}){
     return {choices:[{finish_reason:'stop',message:{content:msg}}],usage:{neurons:6}};
   }},...overrides};
 }
+test('inference failure diagnostics classify provider errors without exposing raw exception text',()=>{
+ const error=new Error('rate limit for token=private-token; prompt=private question');
+ error.status=429;
+ error.code='rate_limit';
+ const details=inferenceFailureDiagnostics(error);
+ assert.deepEqual(details,{providerClass:'rate-limited',providerStatus:429,providerCode:'rate_limit'});
+ assert.equal(JSON.stringify(details).includes('private-token'),false);
+ assert.equal(JSON.stringify(details).includes('private question'),false);
+ const unknown=inferenceFailureDiagnostics(new Error('private provider response body'));
+ assert.deepEqual(unknown,{providerClass:'unknown'});
+});
+
 test('public endpoint fails closed by default and does not call AI',async()=>{
  let touched=0;
  const e=env({PUBLIC_ENABLED:'false',AI:{run:async()=>{touched++;}}});
