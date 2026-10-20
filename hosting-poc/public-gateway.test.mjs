@@ -192,13 +192,13 @@ test('same-book answers select complementary passages and synthesize every quest
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
- assert.match(inputs[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered outline/);
+ assert.match(inputs[1].messages[0].content,/use the questionParts checklist to make sure/);
  assert.match(inputs[1].messages[0].content,/normally have three to five complete sentences/);
  assert.match(inputs[1].messages[0].content,/exactly three developed, connected paragraphs/);
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
  assert.match(inputs[1].messages[0].content,/never pad or repeat/);
  assert.match(inputs[1].messages[0].content,/should explain the point, its reason or distinction/);
- assert.match(inputs[1].messages[0].content,/Do not use the second sentence for a nearby but different distinction or analogy/);
+ assert.match(inputs[1].messages[0].content,/do not force a one-item-per-paragraph outline/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
  assert.equal(inputs[1].max_completion_tokens,800);
@@ -1336,8 +1336,8 @@ test('answer output explicitly discloses an unsupported requested part',async()=
  assert.match(result.answer,/do not fully address: contrast with skill/i);
  assert.equal(result.questionParts[2].status,'unsupported');
  assert.match(calls[1].messages[1].content,/contrast with skill — unsupported/);
- assert.match(calls[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered/);
- assert.match(calls[1].messages[0].content,/Give each supported part its own paragraph, in the same order as the checklist/);
+ assert.match(calls[1].messages[0].content,/use the questionParts checklist to make sure/);
+ assert.match(calls[1].messages[0].content,/every supported part is answered/);
  assert.match(calls[1].messages[1].content,/contrast with skill — unsupported \[evidence: none\]/);
 });
 test('answer composition explicitly requests plain text instead of Markdown artifacts',async()=>{
