@@ -991,8 +991,10 @@ function requestedSourceGroups(question,sources){
   const groups=[...workGroups];
   for(const author of authorBooks.values()){
     const fullMatch=containsSourceGroupPhrase(text,author.name);
-    const surnameMatch=(surnameOwners.get(author.surname)?.size===1)&&
-      containsSourceGroupPhrase(text,author.surname);
+    const capitalizedSurname=author.surname.replace(/^./,letter=>letter.toLocaleUpperCase());
+    const surnamePattern=new RegExp('(?:^|[^\\p{L}\\p{N}])'+capitalizedSurname+
+      '(?=$|[^\\p{L}\\p{N}])','u');
+    const surnameMatch=(surnameOwners.get(author.surname)?.size===1)&&surnamePattern.test(text);
     if(!fullMatch&&!surnameMatch)continue;
     if(workGroups.some(group=>[...author.bookIds].some(id=>group.bookIds.has(id))))continue;
     groups.push({kind:'author',key:normalizedSourceGroupText(author.name),
