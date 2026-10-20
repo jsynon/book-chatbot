@@ -1238,6 +1238,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'components, select those pages; prefer distinct useful pages over '+
       'repeated or overlapping excerpts. Do not select extra pages just to meet '+
       'a count. '+
+      'For broad questions asking what a person or work says about a topic, identify distinct supported answer themes: the central account, how it works or what it means, and any separate implication, example, or contrast the excerpts support. These are candidate themes, not a required checklist. If a supplied passage adds a substantive aspect beyond evidence already selected, include it when directly relevant. Do not let a criticism of another view or a statement of evidential limits stand in for the author’s own account when direct account evidence is available. '+
       sourceGroupInstruction+ 
       'Return ONLY compact JSON with keys coverage (full|partial|none), missing '+ 
       '(one short sentence, at most 120 characters), evidence (up to eight objects '+
@@ -1276,6 +1277,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'up to four complementary distinct pages from the same book when '+
         'they add different relevant evidence. Do not select pages merely to '+
         'reach a count. '+
+        'For broad questions about what a person or work says on a topic, check for distinct supported themes: the central account, its explanation, and a separate implication, example, or contrast. These are candidates, not a checklist. Include a directly relevant passage that adds a substantive aspect; do not let a criticism of another view or a note about limits replace an available direct account. '+
         'Follow-up questions must be grounded only in the evidence IDs you select; '+
         'do not introduce names or topics from unselected passages. Use [] when '+
         'no useful follow-up is supported. '+
@@ -1336,7 +1338,11 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'start with a direct thesis, then explain two or three connected themes '+
         'in three short paragraphs, usually about 180–260 words. Use the evidence '+
         'map as an outline, but check every point against the excerpts and '+
-        'preserve meaningful differences between works. Keep distinct claims '+ 
+        'preserve meaningful differences between works. Give each paragraph a '+
+        'different evidential job: explain the main account first, then develop '+
+        'other supported implications, examples, or contrasts. Explain technical '+
+        'terms only as far as the excerpts allow, and use concrete examples when '+
+        'the passages supply them. Keep distinct claims '+ 
         'separate; do not combine two reviewed points into a single definition, '+ 
         'opposition, cause, or equivalence unless the excerpt explicitly states '+ 
         'that relation. Explain connections cautiously and do not restate the '+ 
