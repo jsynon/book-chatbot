@@ -1320,7 +1320,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Answer every requested part. For a substantive or multi-part question, '+
         'give a complete synthesis in two or three short paragraphs, usually about 140–240 words when the question is substantive; explain how the points '+
         'connect instead of listing isolated facts. Use plain text only: no Markdown, headings, asterisks, or bullet markers. '+
-        'connect instead of listing isolated facts. For a narrow factual question, '+
+        'For a narrow factual question, '+
         'stay brief. When distinct selected passages support different points, '+
         'use up to four of those passages and place each citation next to the '+
         'claim it supports. Do not repeat evidence, pad the answer, or force a '+
