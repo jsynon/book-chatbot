@@ -1188,6 +1188,49 @@ test('a second evidence-review truncation returns a safe stage diagnostic in Wor
  });
 });
 
+test('expands a short answer when all three requested parts are supported',async()=>{
+ const question='According to Aristotle, what is practical wisdom, and how does it differ from science and art?';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:66,
+   preview:'Practical wisdom is a true and reasoned state of capacity to act about things good or bad for humans. It deals with things that can be otherwise and requires deliberation. It cannot be science because action is variable.'},
+  {id:'S2',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:73,
+   preview:'Virtue implies practical wisdom, which serves as a right rule concerning virtue.'},
+  {id:'S3',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:66,
+   preview:'Practical wisdom is not art because action and making are different kinds of things.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[
+    {part:'define practical wisdom',status:'supported',evidenceIds:['S1','S2']},
+    {part:'distinguish it from science',status:'supported',evidenceIds:['S1']},
+    {part:'distinguish it from art',status:'supported',evidenceIds:['S3']}
+   ],
+   evidence:[
+    {id:'S1',point:'Practical wisdom is a reasoned capacity for action about human goods, concerning variable matters that require deliberation.'},
+    {id:'S2',point:'Practical wisdom is a right rule concerning virtue.'},
+    {id:'S3',point:'Practical wisdom differs from art because action and making differ.'}
+   ]
+  })}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:
+   'Practical wisdom is a reasoned capacity for action about human goods [S1]. It is not science because it concerns variable actions, and it differs from art because action and making differ [S1, S3].'}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/Target 140–180 words overall/);
+  assert.match(input.messages[1].content,/Reviewed evidence points/);
+  return {choices:[{finish_reason:'stop',message:{content:
+   'Practical wisdom is a true and reasoned capacity for acting about things good or bad for human beings [S1]. It is not merely knowing a general rule: it includes deliberating about what can be otherwise and judging what action fits the situation [S1]. Aristotle connects this judgment with virtue, describing practical wisdom as a right rule for matters of virtue [S2].\n\nIt differs from scientific knowledge because science demonstrates conclusions from principles that are necessary and invariable, while practical wisdom concerns matters of action whose circumstances and outcomes can vary [S1]. Since people must deliberate about what could be otherwise, practical judgment cannot be demonstration in the scientific sense [S1].\n\nIt also differs from skill or art. Skill is concerned with making something, where the activity produces a separate result; practical wisdom concerns action, in which the choice and conduct themselves are at issue [S3]. Aristotle’s distinction is between production and action, not simply between harder and easier kinds of knowledge [S3].'}}],usage:{neurons:4}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/deliberating about what can be otherwise/);
+ assert.match(result.answer,/principles that are necessary and invariable/);
+ assert.match(result.answer,/production and action/);
+ assert(result.answer.trim().split(/\\s+/).length>=120);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2','S3']);
+});
+
 test('fragmentary passages cannot be completed or attributed to the catalog author',async()=>{
  const question='What did Kierkegaard have to say about faith?';
  const sources=[
