@@ -99,6 +99,38 @@ test('truncated evidence-gap notes end at a complete sentence',()=>{
  assert.equal(noSentence.missing,'');
 });
 
+test('multi-work full coverage requires selected evidence from every named work group',()=>{
+ const question='How do Darwin in On the Origin of Species and Hawking in A Brief History of Time explain change?';
+ const sources=[
+  {id:'S1',bookId:'529',title:'The Harvard Classics, Volume 11: On the Origin of Species — Charles Darwin',preview:'Natural selection preserves useful variation.'},
+  {id:'S2',bookId:'102',title:'A Brief History of Time — Stephen Hawking',preview:'Black holes have an event horizon.'}
+ ];
+ const hawkingOnly=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S2'}]}),sources,question);
+ assert.equal(hawkingOnly.coverage,'partial');
+ assert.match(hawkingOnly.missing,/Origin of Species/);
+ const both=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]}),sources,question);
+ assert.equal(both.coverage,'full');
+ assert.equal(both.missing,'');
+});
+test('multi-author full coverage is downgraded when one requested author group is absent',()=>{
+ const question='How do Aristotle and Darwin explain change?';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',preview:'Virtue develops through habit.'},
+  {id:'S2',bookId:'529',title:'On the Origin of Species — Charles Darwin',preview:'Natural selection preserves variations.'}
+ ];
+ const aristotleOnly=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}),sources,question);
+ assert.equal(aristotleOnly.coverage,'partial');
+ assert.match(aristotleOnly.missing,/Darwin/);
+ const both=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]}),sources,question);
+ assert.equal(both.coverage,'full');
+});
+test('single named work keeps existing evidence-review coverage behavior',()=>{
+ const sources=[{id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',preview:'Virtue develops through habit.'}];
+ const result=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}),sources,
+   'How does Aristotle explain becoming virtuous through repeated actions?');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.missing,'');
+});
 test('evidence review follow-ups are short, specific, and grounded in selected passages',()=>{
  const question='How does Darwin explain variation?';
  const sources=[
