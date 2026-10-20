@@ -1252,6 +1252,9 @@ test('answer output explicitly discloses an unsupported requested part',async()=
  assert.match(result.answer,/do not fully address: contrast with skill/i);
  assert.equal(result.questionParts[2].status,'unsupported');
  assert.match(calls[1].messages[1].content,/contrast with skill — unsupported/);
+ assert.match(calls[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered/);
+ assert.match(calls[1].messages[0].content,/Give each supported part its own concise paragraph/);
+ assert.match(calls[1].messages[1].content,/contrast with skill — unsupported \\[evidence: none\\]/);
 });
 test('answer composition explicitly requests plain text instead of Markdown artifacts',async()=>{
  const {readFileSync}=await import('node:fs');
@@ -1310,6 +1313,6 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/different evidential job/);
  assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
  assert.match(calls[1].messages[0].content,/do not combine two reviewed points into a single definition/);
- assert.match(calls[1].messages[0].content,/usually about 180–260 words/);
+ assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map and keep it concise/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
 });
