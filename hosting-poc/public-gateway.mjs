@@ -1297,7 +1297,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   if(review.coverage==='none'||review.selected.length===0)
     return {outcome:'insufficient-evidence',answer:
       'The verified passage does not provide enough evidence to answer this question reliably.',
-      coverage:review.coverage,missing:review.missing,citations:[],
+      coverage:review.coverage,missing:review.missing,citations:[],evidenceMap:review.evidenceMap,
       reviewStatus:'no_selected_sources',followUpQuestions:[],
       usage:{neurons:reviewNeurons,reviewNeurons,answerNeurons:0},model:MODEL,
       notice:'Book-page provenance was verified; AI claim entailment was not assessed.'};
@@ -1404,7 +1404,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const citations=selected.filter(s=>cited.includes(s.id));
   return {outcome:'verified-source-draft',answer,coverage:review.coverage,
     missing:review.missing,citations,followUpQuestions:review.followUpQuestions,
-    reviewStatus:'citations_not_claim_verified',
+    evidenceMap:review.evidenceMap,reviewStatus:'citations_not_claim_verified',
     usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},
     model:MODEL,finishReason:second?.choices?.[0]?.finish_reason||'unknown',
     notice:'Exact indexed page text verified against owner-published SHA-256. Individual AI claims still require assessment.'};
