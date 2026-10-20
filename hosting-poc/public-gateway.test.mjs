@@ -1282,7 +1282,7 @@ test('answer output explicitly discloses an unsupported requested part',async()=
  assert.equal(result.questionParts[2].status,'unsupported');
  assert.match(calls[1].messages[1].content,/contrast with skill — unsupported/);
  assert.match(calls[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered/);
- assert.match(calls[1].messages[0].content,/Give each supported part its own concise paragraph/);
+ assert.match(calls[1].messages[0].content,/Give each supported part its own paragraph, in the same order as the checklist/);
  assert.match(calls[1].messages[1].content,/contrast with skill — unsupported \[evidence: none\]/);
 });
 test('answer composition explicitly requests plain text instead of Markdown artifacts',async()=>{
