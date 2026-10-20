@@ -121,8 +121,8 @@ test('multi-source evidence review calls out each named group in normal and retr
  assert.equal(prompts.length,3);
  for(const prompt of prompts.slice(0,2)){
    assert.match(prompt,/directly relevant evidence for a group/);
-   assert.match(prompt,/On the Origin of Species \\[S1\\]/);
-   assert.match(prompt,/A Brief History of Time \\[S2\\]/);
+   assert(prompt.includes('On the Origin of Species [S1]'));
+   assert(prompt.includes('A Brief History of Time [S2]'));
  }
 });
 test('multi-work full coverage requires selected evidence from every named work group',()=>{
