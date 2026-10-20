@@ -1508,8 +1508,9 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const paragraphCount=text=>answerParagraphs(text).length;
   const paragraphSentenceCounts=text=>answerParagraphs(text).map(paragraph=>
     (paragraph.match(/[.!?](?=\s|$)/g)||[]).length);
-  if(supportedPartCount>=3&&(wordCount(answer)<180||paragraphCount(answer)<3||
-    paragraphSentenceCounts(answer).some(count=>count<3))){
+  const answerNeedsMoreDevelopment=text=>wordCount(text)<180||paragraphCount(text)<3||
+    paragraphSentenceCounts(text).some(count=>count<3);
+  if(supportedPartCount>=3&&answerNeedsMoreDevelopment(answer)){
     let expanded;
     try{expanded=await ai.run(MODEL,{
       messages:[
@@ -1536,6 +1537,37 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     if(expandedAnswer.length>2400)throw answerFailure('answer-depth-repair-too-long');
     answer=expandedAnswer;
     answerNeurons+=Math.max(0,Number(expanded?.usage?.neurons)||0);
+  }
+  if(supportedPartCount>=3&&answerNeedsMoreDevelopment(answer)){
+    const counts=paragraphSentenceCounts(answer);
+    let expandedAgain;
+    try{expandedAgain=await ai.run(MODEL,{
+      messages:[
+        {role:'system',content:
+          'The previous revision is still underdeveloped. Rewrite it as exactly three developed paragraphs separated by blank lines. Each paragraph must have at least three complete sentences, normally three to five. The previous version missed the requested depth; make each paragraph explain its point and reasoning from the supplied passages. Aim for 180–260 words overall when supported. Keep every claim within the reviewed evidence, use only the listed evidence IDs for each part, preserve citations, and remove tangents. Do not pad, repeat, or invent. Return only the revised answer.'},
+        {role:'user',content:
+          'Question:\n'+question+'\nCoverage: '+review.coverage+
+          '\nRequested question parts and evidence IDs:\n'+
+          (review.questionParts||[]).map(item=>'- '+item.part+' — '+item.status+
+            ' [evidence: '+(item.evidenceIds.join(', ')||'none')+']').join('\n')+
+          '\nReviewed evidence points:\n'+
+          (review.evidenceMap||[]).map(item=>'['+item.id+'] '+item.point).join('\n')+
+          '\n\nPrevious revision word count: '+wordCount(answer)+
+          '\nParagraph sentence counts: '+(counts.join(', ')||'none')+
+          '\nPrevious revision:\n'+answer+
+          '\n\nVerified source excerpts:\n'+
+          selected.map(s=>'['+s.id+'] '+s.title+
+            ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
+      ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:800,
+    });}catch(error){throw answerFailure('answer-depth-retry-request-failed',{
+      stage:'answer-depth-retry',...inferenceFailureDiagnostics(error)});}
+    if(['length','max_tokens'].includes(expandedAgain?.choices?.[0]?.finish_reason))
+      throw answerFailure('answer-depth-retry-truncated');
+    const finalExpandedAnswer=modelText(expandedAgain);
+    if(!finalExpandedAnswer)throw answerFailure('answer-depth-retry-empty');
+    if(finalExpandedAnswer.length>2400)throw answerFailure('answer-depth-retry-too-long');
+    answer=finalExpandedAnswer;
+    answerNeurons+=Math.max(0,Number(expandedAgain?.usage?.neurons)||0);
   }
   // A malformed cited sentence should not turn a complete request into a 502
   // when its meaning can be repaired from the already verified excerpts.
@@ -1932,6 +1964,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'answer-composition-too-long','answer-incomplete-cited-claim',
         'answer-depth-repair-request-failed','answer-depth-repair-truncated',
         'answer-depth-repair-empty','answer-depth-repair-too-long',
+        'answer-depth-retry-request-failed','answer-depth-retry-truncated',
+        'answer-depth-retry-empty','answer-depth-retry-too-long',
         'answer-incomplete-claim-repair-request-failed',
         'answer-incomplete-claim-repair-truncated','answer-incomplete-claim-repair-empty',
         'answer-incomplete-claim-repair-too-long',
