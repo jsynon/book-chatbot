@@ -1445,20 +1445,16 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Put [S1], [S2], etc. immediately after statements supported by those '+ 
         'sources. If evidence is partial, explain the supported part and say '+ 
         'what remains uncertain. Do not invent missing evidence. '+ 
-        'For multi-part questions, use the questionParts checklist as the ordered '+
-        'outline. Give each supported part its own paragraph, in the same '+
-        'order as the checklist. Normally use two sentences for each part. The '+
-        'first answers it directly; the second explains a reason, operation, '+
-        'criterion, or example that bears on that same part. For a definition, pair '+
-        'what the capacity is with an explicit feature of what it does, if the '+
-        'passages provide one. Do not use the second sentence for a nearby but '+
-        'different distinction or analogy. A simple supported point may use one '+
-        'sentence, and a useful directly relevant nuance may take a third. Use only '+
-        'that part’s listed evidence IDs for its claims. For three supported parts, write exactly three short paragraphs, one '+
-        'for each part in checklist order. Usually aim for 180–260 words overall, '+
-        'giving each paragraph room to answer its part and explain a supported '+
-        'reason, criterion, or example. Use that length only when the passages '+
-        'support it; never pad or repeat. Omit adjacent topics '+
+        'For multi-part questions, use the questionParts checklist to make sure '+
+        'every supported part is answered, but do not force a one-item-per-'+
+        'paragraph outline. For a substantive question with three supported '+
+        'parts, write exactly three developed, connected paragraphs. Each paragraph '+
+        'should normally have three to five complete sentences and should explain '+
+        'the point, its reason or distinction, and relevant context or example '+
+        'when the excerpts support them. Do not stop after a direct answer and one '+
+        'supporting sentence. Aim for 180–260 words overall when the evidence '+
+        'supports that depth. Keep each claim tied to the evidence IDs listed for '+
+        'its question part, and avoid repetition, padding, and adjacent topics. Omit adjacent topics '+
         'that do not answer a listed part, such as a separate comparison between '+
         'theoretical wisdom and practical wisdom. Omit unsupported parts as factual '+
         'claims; the system will '+
@@ -1508,13 +1504,17 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const supportedPartCount=(review.questionParts||[])
     .filter(item=>item.status==='supported'||item.status==='partial').length;
   const wordCount=text=>(String(text||'').match(/[\p{L}\p{N}]+(?:[’'’-][\p{L}\p{N}]+)*/gu)||[]).length;
-  const paragraphCount=text=>String(text||'').trim().split(/\r?\n\s*\r?\n/).filter(Boolean).length;
-  if(supportedPartCount>=3&&(wordCount(answer)<180||paragraphCount(answer)<3)){
+  const answerParagraphs=text=>String(text||'').trim().split(/\r?\n\s*\r?\n/).filter(Boolean);
+  const paragraphCount=text=>answerParagraphs(text).length;
+  const paragraphSentenceCounts=text=>answerParagraphs(text).map(paragraph=>
+    (paragraph.match(/[.!?](?=\\s|$)/g)||[]).length);
+  if(supportedPartCount>=3&&(wordCount(answer)<180||paragraphCount(answer)<3||
+    paragraphSentenceCounts(answer).some(count=>count<3))){
     let expanded;
     try{expanded=await ai.run(MODEL,{
       messages:[
         {role:'system',content:
-          'Revise this answer into exactly three short paragraphs, one for each of the three supported requested parts, in checklist order. Separate paragraphs with blank lines. Answer each part directly, then explain its supported reason, operation, criterion, or example. Aim for 180–260 words overall when the excerpts support that depth. Keep every claim within the reviewed points and verified excerpts; use only the evidence IDs listed for that part. Preserve citations beside their claims. Remove tangents and redundancy. Do not pad, invent evidence, or add an adjacent topic. Return only the revised answer.'},
+          'Rewrite this underdeveloped answer as exactly three developed paragraphs separated by blank lines. Cover all three supported requested parts across the paragraphs, but make the explanation flow naturally rather than assigning one checklist item a two-sentence paragraph. Use at least three complete sentences in each paragraph, normally three to five, and develop the distinctions with reasons or examples directly supported by the verified excerpts. Aim for 180–260 words overall when the excerpts support that depth. Keep claims within the reviewed points and use only evidence IDs listed for each part. Preserve citations beside their claims. Remove tangents and redundancy. Do not pad or invent evidence. Return only the revised answer.'},
         {role:'user',content:
           'Question:\n'+question+'\nCoverage: '+review.coverage+
           '\nRequested question parts and their evidence IDs:\n'+
