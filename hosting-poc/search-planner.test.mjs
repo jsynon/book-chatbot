@@ -163,7 +163,7 @@ test('answer review and composition receive history only as non-evidence context
  const sources=[{id:'S1',title:'Nicomachean Ethics',page:122,preview:'Verified passage about repeated actions.'}];
  const ai={run:async(_model,options)=>{
   prompts.push(options.messages);
-  const content=prompts.length===1?JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+  const content=prompts.length===1?JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Character is shaped by repeated action.'}]}):
    'Aristotle connects character with repeated action [S1].';
   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:1}};
  }};
