@@ -193,7 +193,9 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered outline/);
- assert.match(inputs[1].messages[0].content,/one or two sentences per part is usually enough/);
+ assert.match(inputs[1].messages[0].content,/Use two or three sentences for a part when needed/);
+ assert.match(inputs[1].messages[0].content,/roughly 120–180 words will usually give enough room/);
+ assert.match(inputs[1].messages[0].content,/never pad/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
  assert.equal(inputs[1].max_completion_tokens,800);
  assert.equal(result.coverage,'full');
