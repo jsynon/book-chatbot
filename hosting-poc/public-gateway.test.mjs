@@ -195,6 +195,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered outline/);
  assert.match(inputs[1].messages[0].content,/Normally use two sentences for each part/);
  assert.match(inputs[1].messages[0].content,/aim for 140–180 words overall/);
+ assert.match(inputs[1].messages[0].content,/without repeating points or padding/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
  assert.equal(inputs[1].max_completion_tokens,800);
