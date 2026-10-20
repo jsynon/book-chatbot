@@ -177,11 +177,11 @@ test('same-book answers select complementary passages and synthesize every quest
  }};
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(inputs.length,2);
- assert.match(inputs[0].messages[0].content,/two or three distinct passages, including passages from the same book/);
+ assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/Answer every requested part/);
- assert.match(inputs[1].messages[0].content,/120–200 words/);
- assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use two or three/);
- assert.equal(inputs[1].max_completion_tokens,600);
+ assert.match(inputs[1].messages[0].content,/140–240 words/);
+ assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
+ assert.equal(inputs[1].max_completion_tokens,800);
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
@@ -499,7 +499,7 @@ async function fingerprintTestFixture() {
  };
  const run=async(_model,input)=>{
     aiCount++;
-    const content=input.max_completion_tokens===440?
+    const content=input.max_completion_tokens===520?
        JSON.stringify({coverage:'partial',missing:'More history is not in this page',
           evidence:[{id:'S1'}],followUpQuestions:[
             'Which disputes does Thucydides identify as immediate causes?',
@@ -656,7 +656,7 @@ test('v1.13 carries an explicit verse-range scope into review and composition pr
    overrideBody:{...fixture.body,question},
    aiRun:async(_model,input)=>{
      prompts.push(input.messages);
-     const content=input.max_completion_tokens===440?
+     const content=input.max_completion_tokens===520?
        JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
        'The verified passage connects divine love with loving one another [S1].';
      return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
@@ -775,7 +775,7 @@ test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounde
 });
 test('public pilot verifies and submits four source candidates to the bounded answer stage',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
-   if(input.max_completion_tokens===440){
+   if(input.max_completion_tokens===520){
      const submitted=input.messages.at(-1).content;
      assert.match(submitted,/\[S4\].*physical PDF page 41/);
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
@@ -796,9 +796,32 @@ test('public pilot verifies and submits four source candidates to the bounded an
  assert.equal(pilot.stats().verifyCalls,1);
  assert.equal(pilot.stats().calls,2);
 });
+test('public pilot selects and synthesizes four complementary pages from one book',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520){
+     const submitted=input.messages.at(-1).content;
+     for(let i=1;i<=4;i++)assert.match(submitted,new RegExp('\\[S'+i+'\\].*physical PDF page '+(37+i)));
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+       coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'},{id:'S3'},{id:'S4'}]
+     })}}]};
+   }
+   assert.equal(input.max_completion_tokens,800);
+   const answer=input.messages.at(-1).content;
+   for(let i=1;i<=4;i++)assert(answer.includes('[S'+i+']'));
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The four passages provide distinct parts of the explanation [S1] [S2] [S3] [S4].'}}]};
+ }});
+ const source=pilot.fixture.body.sources[0];
+ const response=await pilot.post({body:{sources:[38,39,40,41].map(page=>({...source,page}))}});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(result.verifiedPages,4);
+ assert.deepEqual(result.citations.map(item=>item.id),['S1','S2','S3','S4']);
+ assert.deepEqual(result.citations.map(item=>item.page),[38,39,40,41]);
+});
 test('public pilot resolves grouped citation IDs and rejects unknown IDs in a group',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
-   if(input.max_completion_tokens===440)
+   if(input.max_completion_tokens===520)
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
        coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S3'}]})}}]};
    return {choices:[{finish_reason:'stop',message:{content:
@@ -812,7 +835,7 @@ test('public pilot resolves grouped citation IDs and rejects unknown IDs in a gr
  assert.deepEqual(data.evidenceHighlights.map(item=>item.source_id),['S1','S3']);
 
  const invalid=await pilotScenario({model:async(_model,input)=>{
-   if(input.max_completion_tokens===440)
+   if(input.max_completion_tokens===520)
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
        coverage:'full',missing:'',evidence:[{id:'S1'}]})}}]};
    return {choices:[{finish_reason:'stop',message:{content:
@@ -866,7 +889,7 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
  const token='evaluation-only-secret-'.repeat(3);
  const model=async(_model,input)=>({choices:[{finish_reason:'stop',message:{content:
    input.max_completion_tokens===210?' {"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}':
-   input.max_completion_tokens===440?JSON.stringify({coverage:'partial',missing:'',evidence:[{id:'S1'}]}):
+   input.max_completion_tokens===520?JSON.stringify({coverage:'partial',missing:'',evidence:[{id:'S1'}]}):
    'The passage identifies the deeper cause as fear of growing power [S1].'}}],usage:{neurons:1}});
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
    PILOT_EVALUATION_TOKEN:token},model});
@@ -896,7 +919,7 @@ test('planner and answer have separate visitor budgets and share the global budg
  const pilot=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===210)return {choices:[{finish_reason:'stop',message:{content:
      '{"queries":["specific original event causes","political motives and context"]}'}}]};
-   if(input.max_completion_tokens===440)return {choices:[{finish_reason:'stop',message:{content:
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:
      '{"coverage":"full","missing":"","evidence":[{"id":"S1"}]}'}}]};
    return {choices:[{finish_reason:'stop',message:{content:'The passage explains the cause [S1].'}}]};
  }});
@@ -995,7 +1018,7 @@ test('v1.10 allows any fingerprint-verified page from additional approved books'
  const fp=await fetched.json();
  fp.bookId='7';fp.chunk=0;fp.firstPage=1;fp.lastPage=32;fp.pages[0].page=4;
  const environment=env({...pilotBaseEnv,AI:{run:async(_m,input)=>{
-   calls++;return {choices:[{finish_reason:'stop',message:{content:input.max_completion_tokens===440?
+   calls++;return {choices:[{finish_reason:'stop',message:{content:input.max_completion_tokens===520?
      JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]})
      :'The cited source passage explains its subject [S1].'}}],usage:{neurons:4}};
  }}});
@@ -1023,11 +1046,11 @@ test('evidence review retries one truncated response with a compact bounded requ
  const ai={run:async(_model,input)=>{
    calls++;
    if(calls===1){
-     assert.equal(input.max_completion_tokens,440);
+     assert.equal(input.max_completion_tokens,520);
      return {choices:[{finish_reason:'length',message:{content:''}}],usage:{neurons:3}};
    }
    if(calls===2){
-     assert.equal(input.max_completion_tokens,640);
+     assert.equal(input.max_completion_tokens,760);
      assert(input.messages[0].content.includes('compact valid JSON'));
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
        coverage:'partial',missing:'The excerpt does not cover the entire question.',
@@ -1057,12 +1080,12 @@ test('a second evidence-review truncation returns a safe stage diagnostic in Wor
    const response=await pilot.post();
    assert.equal(response.status,502);
    assert.equal((await response.json()).failureCode,'evidence-review-truncated');
-   assert.deepEqual(calls,[440,640]);
+   assert.deepEqual(calls,[520,760]);
  }finally{console.error=original;}
  const failure=logged.find(entry=>entry[0]==='Reader pilot answer failed')?.[1];
  assert.deepEqual(failure,{
    failureCode:'evidence-review-truncated',stage:'evidence-review',
    finishReason:'length',retryFinishReason:'length',
-   outputTokenLimit:640,sourceCount:1,retried:true
+   outputTokenLimit:760,sourceCount:1,retried:true
  });
 });
