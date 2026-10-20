@@ -1328,8 +1328,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'in three short paragraphs, usually about 180–260 words. Use the evidence '+
         'map as an outline, but check every point against the excerpts and '+
         'preserve meaningful differences between works. Avoid a book-by-book '+
-        'list of disconnected observations. Use plain text only: no Markdown, '+
-        'headings, asterisks, or bullet markers. '+
+        'list of disconnected observations. Use plain text only: no Markdown, headings, asterisks, or bullet markers. '+
         'For a narrow factual question, '+
         'stay brief. When distinct selected passages support different points, '+
         'use up to four of those passages and place each citation next to the '+
