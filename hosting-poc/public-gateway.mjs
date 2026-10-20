@@ -1505,7 +1505,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
   const supportedPartCount=(review.questionParts||[])
     .filter(item=>item.status==='supported'||item.status==='partial').length;
-  const wordCount=text=>(String(text||'').match(/[\\p{L}\\p{N}]+(?:[’'’-][\\p{L}\\p{N}]+)*/gu)||[]).length;
+  const wordCount=text=>(String(text||'').match(/[\p{L}\p{N}]+(?:[’'’-][\p{L}\p{N}]+)*/gu)||[]).length;
   if(supportedPartCount>=3&&wordCount(answer)<120){
     let expanded;
     try{expanded=await ai.run(MODEL,{
