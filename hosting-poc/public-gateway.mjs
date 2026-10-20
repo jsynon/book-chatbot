@@ -1084,20 +1084,25 @@ export function parseReview(raw,sources,question='') {
   const selected=[],seen=new Set(),evidenceMap=[],seenPoints=new Set();
   for(const value of review.evidence.slice(0,8)) {
     const id=typeof value==='string'?value:value?.id;
-    if(!byId.has(id))continue;
+    const point=value&&typeof value==='object'&&typeof value.point==='string'?
+      value.point.trim().slice(0,220):'';
+    // An ID alone records provenance, not what the passage supports. Keep it
+    // out of both the selected-source set and the answer evidence map.
+    if(!byId.has(id)||!point)continue;
     if(!seen.has(id)){
       if(selected.length===4)continue;
       seen.add(id);selected.push(byId.get(id));
     }
-    const point=value&&typeof value==='object'&&typeof value.point==='string'?
-      value.point.trim().slice(0,220):'';
     const pointKey=JSON.stringify([id,point.toLocaleLowerCase()]);
-    if(point&&!seenPoints.has(pointKey)&&evidenceMap.length<8){
+    if(!seenPoints.has(pointKey)&&evidenceMap.length<8){
       seenPoints.add(pointKey);evidenceMap.push({id,point});
     }
   }
+  const coverage=selected.length?review.coverage:'none';
+  const parsedMissing=selected.length?completeMissingNote(review.missing):
+    completeMissingNote(review.missing)||'The review did not identify a supported point in any source passage.';
   const followUpQuestions=[],questionKeys=new Set();
-  if(review.coverage!=='none'&&Array.isArray(review.followUpQuestions)){
+  if(coverage!=='none'&&Array.isArray(review.followUpQuestions)){
     for(const value of review.followUpQuestions.slice(0,4)){
       if(typeof value!=='string')continue;
       const followUp=value.trim();
@@ -1108,7 +1113,7 @@ export function parseReview(raw,sources,question='') {
       if(followUpQuestions.length===2)break;
     }
   }
-  return enforceRequestedSourceGroups({coverage:review.coverage,missing:completeMissingNote(review.missing),
+  return enforceRequestedSourceGroups({coverage,missing:parsedMissing,
     selected,evidenceMap,followUpQuestions},question,sources);
 }
 // Extract only bounded, non-sensitive metadata from provider exceptions.
