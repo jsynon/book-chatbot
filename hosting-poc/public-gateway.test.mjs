@@ -54,7 +54,17 @@ test('inference failure diagnostics classify provider errors without exposing ra
  assert.equal(JSON.stringify(details).includes('private-token'),false);
  assert.equal(JSON.stringify(details).includes('private question'),false);
  const unknown=inferenceFailureDiagnostics(new Error('private provider response body'));
- assert.deepEqual(unknown,{providerClass:'unknown'});
+ assert.deepEqual(unknown,{
+  providerClass:'unknown',providerErrorType:'object',providerErrorName:'Error',
+  providerErrorFields:['name','message'],
+ });
+ assert.equal(JSON.stringify(unknown).includes('private provider response body'),false);
+ const nested=new Error('request failed',{cause:Object.assign(new Error('deadline exceeded'),{status:408})});
+ const nestedDetails=inferenceFailureDiagnostics(nested);
+ assert.equal(nestedDetails.providerClass,'timeout');
+ assert.equal(nestedDetails.providerStatus,408);
+ assert.equal(nestedDetails.providerErrorFields.includes('cause.status'),true);
+ assert.equal(JSON.stringify(nestedDetails).includes('deadline exceeded'),false);
 });
 
 test('public endpoint fails closed by default and does not call AI',async()=>{
