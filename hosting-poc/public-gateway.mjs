@@ -1036,15 +1036,20 @@ export function parseReview(raw,sources,question='') {
   if(!review||!['full','partial','none'].includes(review.coverage)||
     !Array.isArray(review.evidence))throw new Error('Incomplete evidence review');
   const byId=new Map(sources.map(s=>[s.id,s]));
-  const selected=[],seen=new Set(),evidenceMap=[];
-  for(const value of review.evidence.slice(0,6)) {
+  const selected=[],seen=new Set(),evidenceMap=[],seenPoints=new Set();
+  for(const value of review.evidence.slice(0,8)) {
     const id=typeof value==='string'?value:value?.id;
-    if(!byId.has(id)||seen.has(id))continue;
-    seen.add(id);selected.push(byId.get(id));
+    if(!byId.has(id))continue;
+    if(!seen.has(id)){
+      if(selected.length===4)continue;
+      seen.add(id);selected.push(byId.get(id));
+    }
     const point=value&&typeof value==='object'&&typeof value.point==='string'?
       value.point.trim().slice(0,220):'';
-    if(point)evidenceMap.push({id,point});
-    if(selected.length===4)break;
+    const pointKey=JSON.stringify([id,point.toLocaleLowerCase()]);
+    if(point&&!seenPoints.has(pointKey)&&evidenceMap.length<8){
+      seenPoints.add(pointKey);evidenceMap.push({id,point});
+    }
   }
   const followUpQuestions=[],questionKeys=new Set();
   if(review.coverage!=='none'&&Array.isArray(review.followUpQuestions)){
@@ -1235,8 +1240,12 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'a count. '+
       sourceGroupInstruction+ 
       'Return ONLY compact JSON with keys coverage (full|partial|none), missing '+ 
-      '(one short sentence, at most 120 characters), evidence (up to four objects '+
-      'with id and point fields; each point is concise and directly supported), and '+
+      '(one short sentence, at most 120 characters), evidence (up to eight objects '+
+      'with id and point fields, covering up to four unique source IDs; IDs may '+ 
+      'repeat only when the same passage supports a different point. Keep each '+ 
+      'point atomic: one claim per point. Do not merge separate claims or imply '+ 
+      'a definition, opposition, cause, or equivalence unless the passage states '+ 
+      'that relation), and '+
       'followUpQuestions (up to two short, specific '+ 
       'question-mark-ending questions grounded in the question and selected '+
       'evidence only. Do not introduce a person, work, or topic absent from both '+
@@ -1327,8 +1336,12 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'start with a direct thesis, then explain two or three connected themes '+
         'in three short paragraphs, usually about 180–260 words. Use the evidence '+
         'map as an outline, but check every point against the excerpts and '+
-        'preserve meaningful differences between works. Avoid a book-by-book '+
-        'list of disconnected observations. Use plain text only: no Markdown, headings, asterisks, or bullet markers. '+
+        'preserve meaningful differences between works. Keep distinct claims '+ 
+        'separate; do not combine two reviewed points into a single definition, '+ 
+        'opposition, cause, or equivalence unless the excerpt explicitly states '+ 
+        'that relation. Explain connections cautiously and do not restate the '+ 
+        'same point in multiple sentences. Avoid a book-by-book list of disconnected '+
+        'observations. Use plain text only: no Markdown, headings, asterisks, or bullet markers. '+
         'For a narrow factual question, '+
         'stay brief. When distinct selected passages support different points, '+
         'use up to four of those passages and place each citation next to the '+

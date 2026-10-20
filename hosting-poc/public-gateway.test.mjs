@@ -1173,10 +1173,13 @@ test('review keeps concise source-linked points for answer synthesis',()=>{
  ];
  const review=parseReview(JSON.stringify({coverage:'partial',missing:'A broader account is not established.',
   evidence:[{id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.'},
-   {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'}]}),sources);
+   {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'},
+   {id:'S2',point:'The passage connects faith with the possibility of offense.'}]}),sources);
+ assert.deepEqual(review.selected.map(source=>source.id),['S1','S2']);
  assert.deepEqual(review.evidenceMap,[
   {id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.'},
-  {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'}
+  {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'},
+  {id:'S2',point:'The passage connects faith with the possibility of offense.'}
  ]);
 });
 
@@ -1198,6 +1201,9 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.deepEqual(result.evidenceMap,[{id:'S1',point:'Christianity makes faith the opposite of sin, not virtue.'}]);
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
+ assert.match(calls[0].messages[0].content,/Keep each point atomic: one claim per point/);
+ assert.match(calls[0].messages[0].content,/IDs may repeat only when the same passage supports a different point/);
+ assert.match(calls[1].messages[0].content,/do not combine two reviewed points into a single definition/);
  assert.match(calls[1].messages[0].content,/usually about 180–260 words/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
 });
