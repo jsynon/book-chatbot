@@ -50,7 +50,11 @@ test('inference failure diagnostics classify provider errors without exposing ra
  error.status=429;
  error.code='rate_limit';
  const details=inferenceFailureDiagnostics(error);
- assert.deepEqual(details,{providerClass:'rate-limited',providerStatus:429,providerCode:'rate_limit'});
+ assert.deepEqual(details,{
+  providerClass:'rate-limited',providerErrorType:'object',providerErrorName:'Error',
+  providerErrorFields:['name','message','status','code'],
+  providerStatus:429,providerCode:'rate_limit',
+ });
  assert.equal(JSON.stringify(details).includes('private-token'),false);
  assert.equal(JSON.stringify(details).includes('private question'),false);
  const unknown=inferenceFailureDiagnostics(new Error('private provider response body'));
