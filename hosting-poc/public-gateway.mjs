@@ -1093,6 +1093,7 @@ export function inferenceFailureDiagnostics(error){
   ];
   const providerCode=codeCandidates.find(value=>typeof value==='string'&&
     /^[A-Za-z0-9_.-]{1,48}$/.test(value));
+  const providerCodeNumber=codeCandidates.find(value=>Number.isSafeInteger(value)&&value>=0);
   // Read text only for matching a small set of safe categories; never return or
   // log the message itself. Include common nested cause/provider error shapes.
   const messages=[
@@ -1103,10 +1104,14 @@ export function inferenceFailureDiagnostics(error){
   // Many Workers AI failures arrive as a plain {name, message} object with
   // no status/code fields. Classify only broad, fixed categories from that
   // message; never include its raw text in logs or responses.
-  if(providerStatus===429||/\b429\b|rate.?limit|too many requests/.test(messages))
-    providerClass='rate-limited';
-  else if(/quota|daily limit|neuron limit|credits? exhausted/.test(messages))
+  if(providerCode==='3036'||providerCodeNumber===3036||
+    /\b3036\b|daily free allocation|used up.{0,64}(?:daily|10,?000 neurons)|10,?000 neurons.{0,32}(?:daily|allocation)|quota|daily limit|neuron limit|credits? exhausted/.test(messages))
     providerClass='quota-or-credit-limit';
+  else if(providerCode==='3040'||providerCodeNumber===3040||
+    /\b3040\b|out of capacity|capacity temporarily exceeded/.test(messages))
+    providerClass='capacity-unavailable';
+  else if(providerStatus===429||/\b429\b|rate.?limit|too many requests/.test(messages))
+    providerClass='rate-limited';
   else if(providerStatus===408||/\b504\b|gateway timeout|timed? ?out|deadline exceeded/.test(messages))
     providerClass='timeout';
   else if(/fetch failed|network error|connection reset|socket hang up|econnreset|enotfound|eai_again/.test(messages))
@@ -1129,7 +1134,14 @@ export function inferenceFailureDiagnostics(error){
   };
   if(providerStatus!==undefined)diagnostics.providerStatus=providerStatus;
   if(providerCode)diagnostics.providerCode=providerCode;
+  else if(providerCodeNumber!==undefined)diagnostics.providerCode=String(providerCodeNumber);
   return diagnostics;
+}
+function publicAiFailureCode(providerClass){
+  if(providerClass==='quota-or-credit-limit')return 'ai-daily-limit-reached';
+  if(providerClass==='capacity-unavailable')return 'ai-capacity-unavailable';
+  if(providerClass==='rate-limited')return 'ai-rate-limited';
+  return '';
 }
 function answerFailure(code,diagnostics={}){
   const error=new Error(code);
@@ -1619,9 +1631,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     }catch(error){
       // Record only sanitized provider status/category/code; never log raw
       // model output, error text, question, token, passage content, or IP.
-      console.warn('Reader pilot search planning failed',inferenceFailureDiagnostics(error));
+      const diagnostics=inferenceFailureDiagnostics(error);
+      console.warn('Reader pilot search planning failed',diagnostics);
       return json({error:'Search planning unavailable; try direct passage search',
-        failureCode:'search-planning-failed'},502,origin);
+        failureCode:publicAiFailureCode(diagnostics.providerClass)||'search-planning-failed'},502,origin);
     }
   }
   if(url.pathname==='/api/pilot-answer'){
@@ -1677,9 +1690,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       const failureCode=known.has(error?.failureCode)?error.failureCode:
         'answer-generation-or-citation-failed';
       const diagnostics=error?.diagnostics||{};
+      const publicFailureCode=publicAiFailureCode(diagnostics.providerClass);
       console.error('Reader pilot answer failed',{failureCode,...diagnostics});
       return json({error:'AI answer or citations unavailable; please try again later',
-        failureCode},502,origin);
+        failureCode:publicFailureCode||failureCode},502,origin);
     }
     // Highlight original source excerpts, not fabricated model quotations.
     // The exact page text was independently fingerprint-verified above.
