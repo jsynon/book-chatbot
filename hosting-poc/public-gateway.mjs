@@ -1502,9 +1502,40 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let answer=modelText(second);
   if(!answer)throw answerFailure('answer-composition-empty');
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
+  let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
+  const supportedPartCount=(review.questionParts||[])
+    .filter(item=>item.status==='supported'||item.status==='partial').length;
+  const wordCount=text=>(String(text||'').match(/[\p{L}\p{N}]+(?:[’'’-][\p{L}\p{N}]+)*/gu)||[]).length;
+  if(supportedPartCount>=3&&wordCount(answer)<120){
+    let expanded;
+    try{expanded=await ai.run(MODEL,{
+      messages:[
+        {role:'system',content:
+          'Expand this underdeveloped answer using ONLY the verified excerpts and reviewed evidence points. Answer every supported requested part in order. For each part, state the direct answer and add a distinct sentence explaining the relevant reason, operation, criterion, or example that the passage supports. Target 140–180 words overall. Do not repeat the same point, add an adjacent topic, invent evidence, or use a source ID not supplied for that part. Preserve the existing citations and place citations next to the claims they support. Return only the revised answer.'},
+        {role:'user',content:
+          'Question:\n'+question+'\nCoverage: '+review.coverage+
+          '\nRequested question parts and their evidence IDs:\n'+
+          (review.questionParts||[]).map(item=>'- '+item.part+' — '+item.status+
+            ' [evidence: '+(item.evidenceIds.join(', ')||'none')+']').join('\n')+
+          '\nReviewed evidence points:\n'+
+          (review.evidenceMap||[]).map(item=>'['+item.id+'] '+item.point).join('\n')+
+          '\n\nCurrent answer ('+wordCount(answer)+' words):\n'+answer+
+          '\n\nVerified source excerpts:\n'+
+          selected.map(s=>'['+s.id+'] '+s.title+
+            ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
+      ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:800,
+    });}catch(error){throw answerFailure('answer-depth-repair-request-failed',{
+      stage:'answer-depth-repair',...inferenceFailureDiagnostics(error)});}
+    if(['length','max_tokens'].includes(expanded?.choices?.[0]?.finish_reason))
+      throw answerFailure('answer-depth-repair-truncated');
+    const expandedAnswer=modelText(expanded);
+    if(!expandedAnswer)throw answerFailure('answer-depth-repair-empty');
+    if(expandedAnswer.length>2400)throw answerFailure('answer-depth-repair-too-long');
+    answer=expandedAnswer;
+    answerNeurons+=Math.max(0,Number(expanded?.usage?.neurons)||0);
+  }
   // A malformed cited sentence should not turn a complete request into a 502
   // when its meaning can be repaired from the already verified excerpts.
-  let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
   if(hasDanglingCitedSentence(answer)){
     let repaired;
     try{repaired=await ai.run(MODEL,{
@@ -1896,6 +1927,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'evidence-review-invalid-response','answer-composition-request-failed',
         'answer-composition-truncated','answer-composition-empty',
         'answer-composition-too-long','answer-incomplete-cited-claim',
+        'answer-depth-repair-request-failed','answer-depth-repair-truncated',
+        'answer-depth-repair-empty','answer-depth-repair-too-long',
         'answer-incomplete-claim-repair-request-failed',
         'answer-incomplete-claim-repair-truncated','answer-incomplete-claim-repair-empty',
         'answer-incomplete-claim-repair-too-long',
