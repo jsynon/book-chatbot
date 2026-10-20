@@ -1236,7 +1236,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       sourceGroupInstruction+ 
       'Return ONLY compact JSON with keys coverage (full|partial|none), missing '+ 
       '(one short sentence, at most 120 characters), evidence (up to four objects '+
-      'with an id such as S1 and a concise, directly supported point), and '+
+      'with id and point fields; each point is concise and directly supported), and '+
       'followUpQuestions (up to two short, specific '+ 
       'question-mark-ending questions grounded in the question and selected '+
       'evidence only. Do not introduce a person, work, or topic absent from both '+
