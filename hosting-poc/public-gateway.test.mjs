@@ -194,8 +194,9 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered outline/);
  assert.match(inputs[1].messages[0].content,/Normally use two sentences for each part/);
- assert.match(inputs[1].messages[0].content,/aim for 140–180 words overall/);
- assert.match(inputs[1].messages[0].content,/without repeating points or padding/);
+ assert.match(inputs[1].messages[0].content,/For three supported parts, write exactly three short paragraphs/);
+ assert.match(inputs[1].messages[0].content,/180–260 words overall/);
+ assert.match(inputs[1].messages[0].content,/never pad or repeat/);
  assert.match(inputs[1].messages[0].content,/second explains a reason, operation, criterion, or example that bears on that same part/);
  assert.match(inputs[1].messages[0].content,/Do not use the second sentence for a nearby but different distinction or analogy/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
@@ -1188,7 +1189,7 @@ test('a second evidence-review truncation returns a safe stage diagnostic in Wor
  });
 });
 
-test('expands a short answer when all three requested parts are supported',async()=>{
+test('repairs a 120-plus-word single paragraph when three parts are supported',async()=>{
  const question='According to Aristotle, what is practical wisdom, and how does it differ from science and art?';
  const sources=[
   {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:66,
@@ -1214,20 +1215,25 @@ test('expands a short answer when all three requested parts are supported',async
     {id:'S3',point:'Practical wisdom differs from art because action and making differ.'}
    ]
   })}}],usage:{neurons:2}};
-  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:
-   'Practical wisdom is a reasoned capacity for action about human goods [S1]. It is not science because it concerns variable actions, and it differs from art because action and making differ [S1, S3].'}}],usage:{neurons:2}};
-  assert.match(input.messages[0].content,/Target 140–180 words overall/);
+  if(calls.length===2){
+   const draft='Practical wisdom is a true and reasoned state of capacity to act regarding things that are good or bad for humans [S1]. This capacity functions as a right rule regarding such matters [S2]. Practical wisdom differs from scientific knowledge because scientific knowledge involves demonstration, whereas practical wisdom involves deliberation about things that are variable and can be otherwise [S1]. While wisdom involves knowing things that are always the same, such as being white or straight, practical wisdom concerns matters that vary for different beings [S1]. Finally, practical wisdom is not art because action and making are different kinds of things [S1]. This distinction exists because the objects of practical wisdom are things capable of being otherwise, which separates them from the processes of making [S1].';
+   assert(draft.trim().split(/\s+/).length>=120&&draft.trim().split(/\\s+/).length<180);
+   return {choices:[{finish_reason:'stop',message:{content:draft}}],usage:{neurons:2}};
+  }
+  assert.match(input.messages[0].content,/exactly three short paragraphs/);
+  assert.match(input.messages[0].content,/Aim for 180–260 words overall/);
   assert.match(input.messages[1].content,/Reviewed evidence points/);
   return {choices:[{finish_reason:'stop',message:{content:
-   'Practical wisdom is a true and reasoned capacity for acting about things good or bad for human beings [S1]. It is not merely knowing a general rule: it includes deliberating about what can be otherwise and judging what action fits the situation [S1]. Aristotle connects this judgment with virtue, describing practical wisdom as a right rule for matters of virtue [S2].\n\nIt differs from scientific knowledge because science demonstrates conclusions from principles that are necessary and invariable, while practical wisdom concerns matters of action whose circumstances and outcomes can vary [S1]. Since people must deliberate about what could be otherwise, practical judgment cannot be demonstration in the scientific sense [S1].\n\nIt also differs from skill or art. Skill is concerned with making something, where the activity produces a separate result; practical wisdom concerns action, in which the choice and conduct themselves are at issue [S3]. Aristotle’s distinction is between production and action, not simply between harder and easier kinds of knowledge [S3].'}}],usage:{neurons:4}};
+   'Practical wisdom is a true and reasoned capacity for acting about things good or bad for human beings [S1]. It concerns judgment about what to do in human affairs, and Aristotle connects it with deliberation because these matters can turn out otherwise. He also calls it a right rule concerning virtue, indicating that it guides virtuous action rather than merely describing it [S1, S2].\n\nThis makes it different from scientific knowledge. Science proceeds by demonstration from principles that are necessary and invariable; practical questions concern possible actions and changing circumstances [S1]. Since people deliberate about alternatives where more than one outcome is possible, practical wisdom cannot be scientific demonstration. Its reasoning guides choice in contingent situations instead of proving conclusions that must always hold [S1].\n\nPractical wisdom is also different from skill or art because Aristotle distinguishes action from making [S3]. The two are different kinds of activity, so skill at producing something does not by itself amount to sound judgment about how to act. The excerpt supports that basic distinction, though it does not provide a detailed account of particular crafts. The comparison marks the scope of practical wisdom without making unsupported claims about specific skills [S1, S3].'}}],usage:{neurons:4}};
  }};
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(calls.length,3);
  assert.equal(result.coverage,'full');
- assert.match(result.answer,/deliberating about what can be otherwise/);
+ assert.match(result.answer,/deliberation because these matters can turn out otherwise/);
  assert.match(result.answer,/principles that are necessary and invariable/);
- assert.match(result.answer,/production and action/);
- assert(result.answer.trim().split(/\s+/).length>=120);
+ assert.match(result.answer,/action from making/);
+ assert(result.answer.trim().split(/\s+/).length>=180);
+ assert.equal(result.answer.trim().split(/\r?\n\s*\r?\n/).filter(Boolean).length,3);
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2','S3']);
 });
 
