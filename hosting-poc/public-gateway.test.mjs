@@ -271,7 +271,7 @@ test('authentic sources flow through two calls and yield the canonical URL',asyn
  runs++;
  return {choices:[{finish_reason:'stop',message:{content:
   input.max_completion_tokens===280 ?
-  '{"coverage":"full","missing":"","evidence":[{"id":"S1"}]}' :
+  '{"coverage":"full","missing":"","evidence":[{"id":"S1","point":"Relevant supported passage point."}]}' :
   'The dispute and growth of power both matter [S1].'}}],usage:{neurons:6}};
  }}});
  const response=await handleRequest(request(),e,fetcher);
@@ -959,7 +959,7 @@ test('planner and answer have separate visitor budgets and share the global budg
    if(input.max_completion_tokens===210)return {choices:[{finish_reason:'stop',message:{content:
      '{"queries":["specific original event causes","political motives and context"]}'}}]};
    if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:
-     '{"coverage":"full","missing":"","evidence":[{"id":"S1"}]}'}}]};
+     '{"coverage":"full","missing":"","evidence":[{"id":"S1","point":"Relevant supported passage point."}]}'}}]};
    return {choices:[{finish_reason:'stop',message:{content:'The passage explains the cause [S1].'}}]};
  }});
  assert.equal((await pilot.plan()).status,200);
