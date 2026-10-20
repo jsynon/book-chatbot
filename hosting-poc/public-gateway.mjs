@@ -1489,12 +1489,39 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let answer=modelText(second);
   if(!answer)throw answerFailure('answer-composition-empty');
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
-  if(hasDanglingCitedSentence(answer))
-    throw answerFailure('answer-incomplete-cited-claim');
+  // A malformed cited sentence should not turn a complete request into a 502
+  // when its meaning can be repaired from the already verified excerpts.
+  let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
+  if(hasDanglingCitedSentence(answer)){
+    let repaired;
+    try{repaired=await ai.run(MODEL,{
+      messages:[
+        {role:'system',content:
+          'Repair the answer draft using ONLY the verified excerpts. At least one cited sentence ends in an unfinished clause. Rewrite only the incomplete sentence or clause as a complete, grammatical claim supported by the excerpt. If the excerpt cannot support a completion, remove the incomplete claim and state the limitation in a complete sentence. Preserve the requested-part order, all other supported claims, and valid source IDs. Do not add background or unsupported claims. Return only the corrected answer.'},
+        {role:'user',content:
+          'Question:\n'+question+'\nCoverage: '+review.coverage+
+          '\nMissing: '+(review.missing||'Not identified')+
+          '\nRequested question parts:\n'+
+          (review.questionParts||[]).map(item=>'- '+item.part+' — '+item.status+
+            ' [evidence: '+(item.evidenceIds.join(', ')||'none')+']').join('\n')+
+          '\n\nDraft to repair:\n'+answer+
+          '\n\nVerified source excerpts:\n'+
+          selected.map(s=>'['+s.id+'] '+s.title+
+            ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
+      ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:800,
+    });}catch(error){throw answerFailure('answer-incomplete-claim-repair-request-failed',{
+      stage:'answer-repair',...inferenceFailureDiagnostics(error)});}
+    if(['length','max_tokens'].includes(repaired?.choices?.[0]?.finish_reason))
+      throw answerFailure('answer-incomplete-claim-repair-truncated');
+    const repairedAnswer=modelText(repaired);
+    if(!repairedAnswer)throw answerFailure('answer-incomplete-claim-repair-empty');
+    if(repairedAnswer.length>2400)throw answerFailure('answer-incomplete-claim-repair-too-long');
+    answer=repairedAnswer;
+    answerNeurons+=Math.max(0,Number(repaired?.usage?.neurons)||0);
+  }
   // Exact source-page provenance does not make model quotations reliable.
   // If a quote fails exact matching, make one bounded repair attempt. This path
   // is conditional, so normal answers keep the two-request inference budget.
-  let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
   if(!quotedPhrasesMatchSources(answer,selected)){
     let repaired;
     try{repaired=await ai.run(MODEL,{
@@ -1526,6 +1553,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     second=repaired;
     answerNeurons+=Math.max(0,Number(repaired?.usage?.neurons)||0);
   }
+  if(hasDanglingCitedSentence(answer))
+    throw answerFailure('answer-incomplete-cited-claim');
   answer=appendMissingQuestionPartNotice(answer,review.questionParts||[]);
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
   // Models sometimes group citations, e.g. [S1, S3]. Audit every source ID
@@ -1854,6 +1883,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'evidence-review-invalid-response','answer-composition-request-failed',
         'answer-composition-truncated','answer-composition-empty',
         'answer-composition-too-long','answer-incomplete-cited-claim',
+        'answer-incomplete-claim-repair-request-failed',
+        'answer-incomplete-claim-repair-truncated','answer-incomplete-claim-repair-empty',
+        'answer-incomplete-claim-repair-too-long',
         'answer-quotation-repair-request-failed','answer-quotation-repair-truncated',
         'answer-quotation-repair-empty','answer-quotation-repair-too-long',
         'answer-quotation-repair-failed','answer-citations-missing',
