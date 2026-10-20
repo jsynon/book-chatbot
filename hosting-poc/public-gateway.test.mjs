@@ -1156,3 +1156,11 @@ test('rejects a cited answer sentence that stops at an unfinished clause',async(
  ),error=>error?.failureCode==='answer-incomplete-cited-claim');
  assert.equal(call,2);
 });
+
+
+test('answer composition explicitly requests plain text instead of Markdown artifacts',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const source=readFileSync(new URL('./public-gateway.mjs',import.meta.url),'utf8');
+ assert.match(source,/Use plain text only: no Markdown, headings, asterisks, or bullet markers/);
+ assert.doesNotMatch(source,/brief bullets/);
+});
