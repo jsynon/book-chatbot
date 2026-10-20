@@ -1058,6 +1058,34 @@ export function parseReview(raw,sources,question='') {
   return enforceRequestedSourceGroups({coverage:review.coverage,missing:completeMissingNote(review.missing),
     selected,followUpQuestions},question,sources);
 }
+// Extract only bounded, non-sensitive metadata from provider exceptions.
+// Never log raw messages, prompts, passages, tokens, IPs, or response bodies.
+export function inferenceFailureDiagnostics(error){
+  const statusCandidates=[error?.status,error?.statusCode,error?.response?.status];
+  const providerStatus=statusCandidates.find(value=>Number.isSafeInteger(value)&&value>=100&&value<=599);
+  const codeCandidates=[error?.code,error?.errorCode,error?.error?.code,error?.error_code];
+  const providerCode=codeCandidates.find(value=>typeof value==='string'&&
+    /^[A-Za-z0-9_.-]{1,48}$/.test(value));
+  const message=String(error?.message||error?.error?.message||'').toLowerCase();
+  let providerClass='unknown';
+  if(providerStatus===429||/\b429\b|rate.?limit|too many requests/.test(message))
+    providerClass='rate-limited';
+  else if(/quota|daily limit|neuron limit|credits? exhausted/.test(message))
+    providerClass='quota-or-credit-limit';
+  else if(providerStatus===408||/timed? ?out|deadline exceeded/.test(message))
+    providerClass='timeout';
+  else if(providerStatus===503||/unavailable|overloaded|temporarily busy/.test(message))
+    providerClass='unavailable';
+  else if(Number.isSafeInteger(providerStatus)&&providerStatus>=500)
+    providerClass='provider-server-error';
+  else if(Number.isSafeInteger(providerStatus)&&providerStatus>=400)
+    providerClass='provider-rejected';
+  const diagnostics={providerClass};
+  if(providerStatus!==undefined)diagnostics.providerStatus=providerStatus;
+  if(providerCode)diagnostics.providerCode=providerCode;
+  return diagnostics;
+}
+
 function answerFailure(code,diagnostics={}){
   const error=new Error(code);
   error.failureCode=code;
@@ -1068,6 +1096,10 @@ function answerFailure(code,diagnostics={}){
   if(Number.isSafeInteger(diagnostics.outputTokenLimit))safe.outputTokenLimit=diagnostics.outputTokenLimit;
   if(Number.isSafeInteger(diagnostics.sourceCount))safe.sourceCount=diagnostics.sourceCount;
   if(typeof diagnostics.retried==='boolean')safe.retried=diagnostics.retried;
+  if(typeof diagnostics.providerClass==='string')safe.providerClass=diagnostics.providerClass;
+  if(Number.isSafeInteger(diagnostics.providerStatus))safe.providerStatus=diagnostics.providerStatus;
+  if(typeof diagnostics.providerCode==='string'&&/^[A-Za-z0-9_.-]{1,48}$/.test(diagnostics.providerCode))
+    safe.providerCode=diagnostics.providerCode;
   if(Object.keys(safe).length)error.diagnostics=safe;
   return error;
 }
@@ -1140,7 +1172,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let first;
   try{first=await ai.run(MODEL,{
     messages:reviewMessages,chat_template_kwargs:{enable_thinking:false},max_completion_tokens:440,
-  });}catch{throw answerFailure('evidence-review-request-failed',{stage:'evidence-review',sourceCount:sources.length});}
+  });}catch(error){throw answerFailure('evidence-review-request-failed',{
+    stage:'evidence-review',sourceCount:sources.length,...inferenceFailureDiagnostics(error)});}
   let retryNeurons=0;
   const initialFinish=first?.choices?.[0]?.finish_reason;
   if(['length','max_tokens'].includes(initialFinish)){
@@ -1165,9 +1198,9 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     let retry;
     try{retry=await ai.run(MODEL,{
       messages:compactMessages,chat_template_kwargs:{enable_thinking:false},max_completion_tokens:640,
-    });}catch{throw answerFailure('evidence-review-request-failed',{
+    });}catch(error){throw answerFailure('evidence-review-request-failed',{
       stage:'evidence-review',finishReason:initialFinish,outputTokenLimit:640,
-      sourceCount:sources.length,retried:true});}
+      sourceCount:sources.length,retried:true,...inferenceFailureDiagnostics(error)});}
     const retryFinish=retry?.choices?.[0]?.finish_reason;
     if(['length','max_tokens'].includes(retryFinish))
       throw answerFailure('evidence-review-truncated',{
@@ -1228,7 +1261,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         selected.map(s=>'['+s.id+'] '+s.title+
           ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
     ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:600,
-  });}catch{throw answerFailure('answer-composition-request-failed');}
+  });}catch(error){throw answerFailure('answer-composition-request-failed',{
+    stage:'answer-composition',...inferenceFailureDiagnostics(error)});}
   if(['length','max_tokens'].includes(second?.choices?.[0]?.finish_reason))
     throw answerFailure('answer-composition-truncated');
   let answer=modelText(second);
@@ -1256,7 +1290,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
           selected.map(s=>'['+s.id+'] '+s.title+
             ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
       ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:600,
-    });}catch{throw answerFailure('answer-quotation-repair-request-failed');}
+    });}catch(error){throw answerFailure('answer-quotation-repair-request-failed',{
+      stage:'quotation-repair',...inferenceFailureDiagnostics(error)});}
     if(['length','max_tokens'].includes(repaired?.choices?.[0]?.finish_reason))
       throw answerFailure('answer-quotation-repair-truncated');
     const repairedAnswer=modelText(repaired);
@@ -1536,9 +1571,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       const result=await planSearchQueries(data.question,title,env.AI,data.history||[]);
       return json({queries:result.queries,usage:result.usage,
         guidance:'Search terms only; citations must pass SHA-256 verification'},200,origin);
-    }catch{
-      // Do not log raw model output, provider errors, question, token or IP.
-      console.warn('Reader pilot search planning failed');
+    }catch(error){
+      // Record only sanitized provider status/category/code; never log raw
+      // model output, error text, question, token, passage content, or IP.
+      console.warn('Reader pilot search planning failed',inferenceFailureDiagnostics(error));
       return json({error:'Search planning unavailable; try direct passage search',
         failureCode:'search-planning-failed'},502,origin);
     }
