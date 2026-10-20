@@ -747,7 +747,7 @@ export function sourceExcerpt(text,question,max=1080) {
     const current=score(sentences[i]);
     if(current>bestScore){center=i;bestScore=current;}
   }
-  let first=center,last=center;
+  let first=center,last=center,preferAfter=true;
   const length=(from,to)=>sentences.slice(from,to+1).join(' ').length+
     (from>0?1:0)+(to<sentences.length-1?1:0);
   while(true) {
@@ -758,9 +758,9 @@ export function sourceExcerpt(text,question,max=1080) {
       options.push({from:first,to:last+1,side:'after',score:score(sentences[last+1])});
     if(!options.length)break;
     options.sort((a,b)=>b.score-a.score||
-      sentences[a.from===first-1?a.from:a.to].length-
-      sentences[b.from===first-1?b.from:b.to].length||
-      (a.side==='after'?-1:1));
+      (((a.side==='after')===preferAfter)?-1:1));
+    if(options.length>1&&options[0].score===options[1].score)
+      preferAfter=!preferAfter;
     const choice=options[0];
     first=choice.from;last=choice.to;
   }
