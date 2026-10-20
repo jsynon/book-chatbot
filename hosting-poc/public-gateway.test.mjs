@@ -69,6 +69,13 @@ test('inference failure diagnostics classify provider errors without exposing ra
  assert.equal(nestedDetails.providerStatus,408);
  assert.equal(nestedDetails.providerErrorFields.includes('cause.status'),true);
  assert.equal(JSON.stringify(nestedDetails).includes('deadline exceeded'),false);
+ const gatewayError=inferenceFailureDiagnostics(
+  new Error('upstream returned 502 Bad Gateway; token=private-token; prompt=private question'));
+ assert.equal(gatewayError.providerClass,'provider-server-error');
+ assert.equal(JSON.stringify(gatewayError).includes('private-token'),false);
+ assert.equal(JSON.stringify(gatewayError).includes('private question'),false);
+ const networkError=inferenceFailureDiagnostics(new Error('fetch failed: ECONNRESET'));
+ assert.equal(networkError.providerClass,'network-error');
 });
 
 test('public endpoint fails closed by default and does not call AI',async()=>{
