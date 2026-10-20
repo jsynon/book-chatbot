@@ -1219,9 +1219,11 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
  assert.match(calls[0].messages[0].content,/Keep each point atomic: one claim per point/);
  assert.match(calls[0].messages[0].content,/For broad questions asking what a person or work says about a topic/);
- assert.match(calls[0].messages[0].content,/If a supplied passage adds a substantive aspect/);
+ assert.match(calls[0].messages[0].content,/Prioritize direct explanation of the concept/);
+ assert.match(calls[0].messages[0].content,/remarks that a term needs definition as context/);
  assert.match(calls[0].messages[0].content,/IDs may repeat only when the same passage supports a different point/);
  assert.match(calls[1].messages[0].content,/different evidential job/);
+ assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
  assert.match(calls[1].messages[0].content,/do not combine two reviewed points into a single definition/);
  assert.match(calls[1].messages[0].content,/usually about 180–260 words/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
