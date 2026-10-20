@@ -925,6 +925,104 @@ function followUpIsGrounded(question,followUp,selected){
   const overlap=terms.filter(term=>available.has(term)).length;
   return overlap>=Math.min(2,terms.length)&&overlap/terms.length>=0.5;
 }
+function normalizedSourceGroupText(value){
+  return String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .replace(/[’']/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+}
+function containsSourceGroupPhrase(haystack,phrase){
+  const text=' '+normalizedSourceGroupText(haystack)+' ';
+  const needle=' '+normalizedSourceGroupText(phrase)+' ';
+  return needle.length>2&&text.includes(needle);
+}
+function sourceGroupMetadata(){
+  const books=Object.entries(PILOT_BOOKS).map(([bookId,title])=>({bookId,title}));
+  const authorBooks=new Map();
+  const titleBooks=new Map();
+  for(const book of books){
+    const divider=book.title.lastIndexOf(' — ');
+    const work=divider>=0?book.title.slice(0,divider).trim():book.title.trim();
+    const contributor=divider>=0?book.title.slice(divider+3).replace(/\s*\([^)]*\)/g,'').trim():'';
+    const workAliases=new Set([work]);
+    // Collection records often put the actual work after a colon, as in
+    // "The Harvard Classics, Volume 11: On the Origin of Species".
+    for(const part of work.split(':').slice(1)){
+      const alias=part.trim();
+      if(alias.length>=8&&alias.split(/\s+/).length>=2)workAliases.add(alias);
+    }
+    for(const alias of workAliases){
+      const key=normalizedSourceGroupText(alias);
+      if(key.length<8||key.split(' ').length<2)continue;
+      if(!titleBooks.has(key))titleBooks.set(key,{label:alias,bookIds:new Set()});
+      titleBooks.get(key).bookIds.add(book.bookId);
+    }
+    if(!contributor||/^(edited|compiled|translated|selected|introduced|annotated|arranged|revised|prepared|adapted|compiled)\b/i.test(contributor))continue;
+    const names=contributor.split(/\s+and\s+/i).map(value=>value.trim()).filter(Boolean);
+    for(const name of names){
+      if(/^(edited|compiled|translated|selected|introduced|annotated|arranged|revised|prepared|adapted)\b/i.test(name))continue;
+      const normalized=normalizedSourceGroupText(name);
+      if(!normalized)continue;
+      if(!authorBooks.has(normalized))authorBooks.set(normalized,{name,bookIds:new Set(),surname:normalized.split(' ').at(-1)});
+      authorBooks.get(normalized).bookIds.add(book.bookId);
+    }
+  }
+  const surnameOwners=new Map();
+  for(const author of authorBooks.values()){
+    if(!surnameOwners.has(author.surname))surnameOwners.set(author.surname,new Set());
+    surnameOwners.get(author.surname).add(normalizedSourceGroupText(author.name));
+  }
+  return {titleBooks,authorBooks,surnameOwners};
+}
+function requestedSourceGroups(question,sources){
+  const {titleBooks,authorBooks,surnameOwners}=sourceGroupMetadata();
+  const text=String(question||'');
+  const matchedTitles=[];
+  for(const [key,value] of titleBooks){
+    if(containsSourceGroupPhrase(text,key))matchedTitles.push({key,...value});
+  }
+  // Prefer the longest explicit work names, avoiding counting a collection
+  // prefix and its subtitle as two separate requested works.
+  matchedTitles.sort((a,b)=>b.key.length-a.key.length);
+  const workGroups=[];
+  for(const match of matchedTitles){
+    if(workGroups.some(group=>[...match.bookIds].some(id=>group.bookIds.has(id))&&
+      (match.key.includes(group.key)||group.key.includes(match.key))))continue;
+    workGroups.push({kind:'work',key:match.key,label:match.label,bookIds:match.bookIds});
+  }
+  const groups=[...workGroups];
+  for(const author of authorBooks.values()){
+    const fullMatch=containsSourceGroupPhrase(text,author.name);
+    const surnameMatch=(surnameOwners.get(author.surname)?.size===1)&&
+      containsSourceGroupPhrase(text,author.surname);
+    if(!fullMatch&&!surnameMatch)continue;
+    if(workGroups.some(group=>[...author.bookIds].some(id=>group.bookIds.has(id))))continue;
+    groups.push({kind:'author',key:normalizedSourceGroupText(author.name),
+      label:author.name,bookIds:author.bookIds});
+  }
+  // If an author name maps to multiple spellings in catalog metadata, merge
+  // the IDs into one author group rather than treating it as multiple people.
+  const deduped=[];
+  for(const group of groups){
+    const prior=deduped.find(item=>item.kind===group.kind&&item.key===group.key);
+    if(prior)for(const id of group.bookIds)prior.bookIds.add(id);
+    else deduped.push(group);
+  }
+  // Only enforce when at least two distinct named works/authors are explicit.
+  if(deduped.length<2)return [];
+  return deduped.map(group=>({...group,bookIds:new Set(group.bookIds)}));
+}
+function enforceRequestedSourceGroups(review,question,sources){
+  const groups=requestedSourceGroups(question,sources);
+  if(!groups.length)return review;
+  const selectedBookIds=new Set(review.selected.map(source=>String(source.bookId)));
+  const missing=groups.filter(group=>![...group.bookIds].some(id=>selectedBookIds.has(String(id))));
+  if(!missing.length)return review;
+  const names=missing.map(group=>group.kind==='author'?group.label+"'s works":group.label);
+  const addition='The selected evidence does not cover '+names.join(' and ')+'.';
+  const existing=review.missing&&review.missing!==addition?review.missing:'';
+  const note=[existing,addition].filter(Boolean).join(' ').slice(0,240);
+  return {...review,coverage:review.coverage==='full'?'partial':review.coverage,
+    missing:completeMissingNote(note)||addition,followUpQuestions:review.followUpQuestions};
+}
 export function parseReview(raw,sources,question='') {
   if(typeof raw!=='string')throw new Error('Missing evidence review');
   const a=raw.indexOf('{'),b=raw.lastIndexOf('}');
@@ -953,8 +1051,8 @@ export function parseReview(raw,sources,question='') {
       if(followUpQuestions.length===2)break;
     }
   }
-  return {coverage:review.coverage,missing:completeMissingNote(review.missing),
-    selected,followUpQuestions};
+  return enforceRequestedSourceGroups({coverage:review.coverage,missing:completeMissingNote(review.missing),
+    selected,followUpQuestions},question,sources);
 }
 function answerFailure(code,diagnostics={}){
   const error=new Error(code);
