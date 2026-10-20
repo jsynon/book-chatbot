@@ -951,6 +951,19 @@ test('answer failures expose a safe reason code but not provider error text',asy
  assert.equal(body.failureCode,'evidence-review-request-failed');
  assert.equal(JSON.stringify(body).includes('PRIVATE'),false);
 });
+test('public pilot preserves safe answer-validation failure codes',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520)
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+       coverage:'partial',missing:'The excerpt does not establish the complete definition.',
+       evidence:[{id:'S1'}]})}}]};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The text says that faith must not be [S1].'}}]};
+ }});
+ const response=await pilot.post();
+ assert.equal(response.status,502);
+ assert.equal((await response.json()).failureCode,'answer-incomplete-cited-claim');
+});
 test('Worker reports quota and capacity failures with safe public codes',async()=>{
  const quota=await pilotScenario({model:async()=>{throw {name:'Error',message:
   'You have used up your daily free allocation of 10,000 Neurons.'};}});
