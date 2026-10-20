@@ -1100,17 +1100,24 @@ export function inferenceFailureDiagnostics(error){
     diagnosticPath(error,'cause.message'),diagnosticPath(error,'response.error.message'),
   ].filter(value=>typeof value==='string').join(' ').toLowerCase();
   let providerClass='unknown';
-  if(providerStatus===429||/\\b429\\b|rate.?limit|too many requests/.test(messages))
+  // Many Workers AI failures arrive as a plain {name, message} object with
+  // no status/code fields. Classify only broad, fixed categories from that
+  // message; never include its raw text in logs or responses.
+  if(providerStatus===429||/\b429\b|rate.?limit|too many requests/.test(messages))
     providerClass='rate-limited';
   else if(/quota|daily limit|neuron limit|credits? exhausted/.test(messages))
     providerClass='quota-or-credit-limit';
-  else if(providerStatus===408||/timed? ?out|deadline exceeded/.test(messages))
+  else if(providerStatus===408||/\b504\b|gateway timeout|timed? ?out|deadline exceeded/.test(messages))
     providerClass='timeout';
-  else if(providerStatus===503||/unavailable|overloaded|temporarily busy/.test(messages))
+  else if(/fetch failed|network error|connection reset|socket hang up|econnreset|enotfound|eai_again/.test(messages))
+    providerClass='network-error';
+  else if(providerStatus===503||/service unavailable|unavailable|overloaded|temporarily busy|capacity exceeded/.test(messages))
     providerClass='unavailable';
-  else if(Number.isSafeInteger(providerStatus)&&providerStatus>=500)
+  else if((Number.isSafeInteger(providerStatus)&&providerStatus>=500)||
+    /\b(?:500|501|502|503|504)\b|bad gateway|upstream (?:error|failure)/.test(messages))
     providerClass='provider-server-error';
-  else if(Number.isSafeInteger(providerStatus)&&providerStatus>=400)
+  else if((Number.isSafeInteger(providerStatus)&&providerStatus>=400)||
+    /bad request|invalid (?:request|argument|model)|unsupported model|model not found|unauthorized/.test(messages))
     providerClass='provider-rejected';
   const rawName=diagnosticPath(error,'name');
   const diagnostics={
