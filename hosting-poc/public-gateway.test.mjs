@@ -298,7 +298,7 @@ test('long source excerpts without searchable question terms end on sentence bou
  const text='A complete sentence gives background. '.repeat(8);
  const preview=sourceExcerpt(text,'the and for',82);
  assert(preview.length<=82);
- assert.match(preview.replace(/…$/,''),/\\.$/);
+ assert.match(preview.replace(/…$/,''),/\.$/);
 });
 
 test('source probe fails closed when token binding is missing',async()=>{
