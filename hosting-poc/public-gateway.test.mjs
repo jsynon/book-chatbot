@@ -1195,7 +1195,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  }};
  await composeVerifiedAnswer('What does Kierkegaard say about faith?',sources,ai);
  assert.equal(calls.length,2);
- assert.match(calls[1].messages[1].content,/Evidence map \\(reviewed points\\):/);
+ assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
  assert.match(calls[1].messages[0].content,/usually about 180–260 words/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
