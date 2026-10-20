@@ -1189,7 +1189,7 @@ test('a second evidence-review truncation returns a safe stage diagnostic in Wor
  });
 });
 
-test('expands a short answer when all three requested parts are supported',async()=>{
+test('repairs a 120-plus-word single paragraph when three parts are supported',async()=>{
  const question='According to Aristotle, what is practical wisdom, and how does it differ from science and art?';
  const sources=[
   {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:66,
@@ -1215,8 +1215,11 @@ test('expands a short answer when all three requested parts are supported',async
     {id:'S3',point:'Practical wisdom differs from art because action and making differ.'}
    ]
   })}}],usage:{neurons:2}};
-  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:
-   'Practical wisdom is a reasoned capacity for action about human goods [S1]. It is not science because it concerns variable actions, and it differs from art because action and making differ [S1, S3].'}}],usage:{neurons:2}};
+  if(calls.length===2){
+   const draft='Practical wisdom is a true and reasoned state of capacity to act regarding things that are good or bad for humans [S1]. This capacity functions as a right rule regarding such matters [S2]. Practical wisdom differs from scientific knowledge because scientific knowledge involves demonstration, whereas practical wisdom involves deliberation about things that are variable and can be otherwise [S1]. While wisdom involves knowing things that are always the same, such as being white or straight, practical wisdom concerns matters that vary for different beings [S1]. Finally, practical wisdom is not art because action and making are different kinds of things [S1]. This distinction exists because the objects of practical wisdom are things capable of being otherwise, which separates them from the processes of making [S1].';
+   assert(draft.trim().split(/\\s+/).length>=120&&draft.trim().split(/\\s+/).length<180);
+   return {choices:[{finish_reason:'stop',message:{content:draft}}],usage:{neurons:2}};
+  }
   assert.match(input.messages[0].content,/exactly three short paragraphs/);
   assert.match(input.messages[0].content,/Aim for 180–260 words overall/);
   assert.match(input.messages[1].content,/Reviewed evidence points/);
