@@ -50,11 +50,25 @@ test('inference failure diagnostics classify provider errors without exposing ra
  error.status=429;
  error.code='rate_limit';
  const details=inferenceFailureDiagnostics(error);
- assert.deepEqual(details,{providerClass:'rate-limited',providerStatus:429,providerCode:'rate_limit'});
+ assert.deepEqual(details,{
+  providerClass:'rate-limited',providerErrorType:'object',providerErrorName:'Error',
+  providerErrorFields:['name','message','status','code'],
+  providerStatus:429,providerCode:'rate_limit',
+ });
  assert.equal(JSON.stringify(details).includes('private-token'),false);
  assert.equal(JSON.stringify(details).includes('private question'),false);
  const unknown=inferenceFailureDiagnostics(new Error('private provider response body'));
- assert.deepEqual(unknown,{providerClass:'unknown'});
+ assert.deepEqual(unknown,{
+  providerClass:'unknown',providerErrorType:'object',providerErrorName:'Error',
+  providerErrorFields:['name','message'],
+ });
+ assert.equal(JSON.stringify(unknown).includes('private provider response body'),false);
+ const nested=new Error('request failed',{cause:Object.assign(new Error('deadline exceeded'),{status:408})});
+ const nestedDetails=inferenceFailureDiagnostics(nested);
+ assert.equal(nestedDetails.providerClass,'timeout');
+ assert.equal(nestedDetails.providerStatus,408);
+ assert.equal(nestedDetails.providerErrorFields.includes('cause.status'),true);
+ assert.equal(JSON.stringify(nestedDetails).includes('deadline exceeded'),false);
 });
 
 test('public endpoint fails closed by default and does not call AI',async()=>{

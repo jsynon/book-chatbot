@@ -1060,32 +1060,70 @@ export function parseReview(raw,sources,question='') {
 }
 // Extract only bounded, non-sensitive metadata from provider exceptions.
 // Never log raw messages, prompts, passages, tokens, IPs, or response bodies.
+function diagnosticPath(error,path){
+  let value=error;
+  for(const key of path.split('.')){
+    try{value=value?.[key];}catch{return undefined;}
+    if(value===undefined||value===null)return undefined;
+  }
+  return value;
+}
+const SAFE_ERROR_NAMES=new Set([
+  'Error','TypeError','RangeError','ReferenceError','SyntaxError','URIError',
+  'EvalError','AbortError','TimeoutError','AIError','ResponseError','InferenceError',
+]);
+const SAFE_ERROR_SHAPE_PATHS=[
+  'name','message','status','statusCode','code','errorCode','error_code',
+  'response','response.status','response.statusCode','response.code',
+  'error','error.status','error.statusCode','error.code','error.message',
+  'cause','cause.name','cause.status','cause.statusCode','cause.code','cause.message',
+];
 export function inferenceFailureDiagnostics(error){
-  const statusCandidates=[error?.status,error?.statusCode,error?.response?.status];
-  const providerStatus=statusCandidates.find(value=>Number.isSafeInteger(value)&&value>=100&&value<=599);
-  const codeCandidates=[error?.code,error?.errorCode,error?.error?.code,error?.error_code];
+  const statusCandidates=[
+    diagnosticPath(error,'status'),diagnosticPath(error,'statusCode'),
+    diagnosticPath(error,'response.status'),diagnosticPath(error,'error.status'),
+    diagnosticPath(error,'cause.status'),diagnosticPath(error,'cause.statusCode'),
+  ];
+  const providerStatus=statusCandidates.find(value=>
+    Number.isSafeInteger(value)&&value>=100&&value<=599);
+  const codeCandidates=[
+    diagnosticPath(error,'code'),diagnosticPath(error,'errorCode'),
+    diagnosticPath(error,'error.code'),diagnosticPath(error,'error_code'),
+    diagnosticPath(error,'response.code'),diagnosticPath(error,'cause.code'),
+  ];
   const providerCode=codeCandidates.find(value=>typeof value==='string'&&
     /^[A-Za-z0-9_.-]{1,48}$/.test(value));
-  const message=String(error?.message||error?.error?.message||'').toLowerCase();
+  // Read text only for matching a small set of safe categories; never return or
+  // log the message itself. Include common nested cause/provider error shapes.
+  const messages=[
+    diagnosticPath(error,'message'),diagnosticPath(error,'error.message'),
+    diagnosticPath(error,'cause.message'),diagnosticPath(error,'response.error.message'),
+  ].filter(value=>typeof value==='string').join(' ').toLowerCase();
   let providerClass='unknown';
-  if(providerStatus===429||/\b429\b|rate.?limit|too many requests/.test(message))
+  if(providerStatus===429||/\\b429\\b|rate.?limit|too many requests/.test(messages))
     providerClass='rate-limited';
-  else if(/quota|daily limit|neuron limit|credits? exhausted/.test(message))
+  else if(/quota|daily limit|neuron limit|credits? exhausted/.test(messages))
     providerClass='quota-or-credit-limit';
-  else if(providerStatus===408||/timed? ?out|deadline exceeded/.test(message))
+  else if(providerStatus===408||/timed? ?out|deadline exceeded/.test(messages))
     providerClass='timeout';
-  else if(providerStatus===503||/unavailable|overloaded|temporarily busy/.test(message))
+  else if(providerStatus===503||/unavailable|overloaded|temporarily busy/.test(messages))
     providerClass='unavailable';
   else if(Number.isSafeInteger(providerStatus)&&providerStatus>=500)
     providerClass='provider-server-error';
   else if(Number.isSafeInteger(providerStatus)&&providerStatus>=400)
     providerClass='provider-rejected';
-  const diagnostics={providerClass};
+  const rawName=diagnosticPath(error,'name');
+  const diagnostics={
+    providerClass,
+    providerErrorType:error===null?'null':Array.isArray(error)?'array':typeof error,
+    providerErrorName:SAFE_ERROR_NAMES.has(rawName)?rawName:'other',
+    providerErrorFields:SAFE_ERROR_SHAPE_PATHS.filter(path=>
+      diagnosticPath(error,path)!==undefined),
+  };
   if(providerStatus!==undefined)diagnostics.providerStatus=providerStatus;
   if(providerCode)diagnostics.providerCode=providerCode;
   return diagnostics;
 }
-
 function answerFailure(code,diagnostics={}){
   const error=new Error(code);
   error.failureCode=code;
