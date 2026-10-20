@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,sourceExcerpt,turnstileRejection,PILOT_BOOKS,PILOT_BOOK_IDS} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,PILOT_BOOKS,PILOT_BOOK_IDS} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -99,6 +99,32 @@ test('truncated evidence-gap notes end at a complete sentence',()=>{
  assert.equal(noSentence.missing,'');
 });
 
+test('multi-source evidence review calls out each named group in normal and retry prompts',async()=>{
+ const question='How do Darwin in On the Origin of Species and Hawking in A Brief History of Time distinguish evidence?';
+ const sources=[
+  {id:'S1',bookId:'529',title:'The Harvard Classics, Volume 11: On the Origin of Species — Charles Darwin',page:96,preview:'Darwin describes the variation of species.'},
+  {id:'S2',bookId:'102',title:'A Brief History of Time — Stephen Hawking',page:48,preview:'Hawking distinguishes models from observations.'}
+ ];
+ const prompts=[];
+ let call=0;
+ const ai={run:async(_model,input)=>{
+   prompts.push(input.messages[0].content);
+   call++;
+   if(call===1)return {choices:[{finish_reason:'length',message:{content:''}}]};
+   if(call===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]
+   })}}]};
+   throw new Error('stop after capturing the review prompts');
+ }};
+ await assert.rejects(composeVerifiedAnswer(question,sources,ai),error=>
+   error?.failureCode==='answer-composition-request-failed');
+ assert.equal(prompts.length,3);
+ for(const prompt of prompts.slice(0,2)){
+   assert.match(prompt,/directly relevant evidence for a group/);
+   assert(prompt.includes('On the Origin of Species [S1]'));
+   assert(prompt.includes('A Brief History of Time [S2]'));
+ }
+});
 test('multi-work full coverage requires selected evidence from every named work group',()=>{
  const question='How do Darwin in On the Origin of Species and Hawking in A Brief History of Time explain change?';
  const sources=[

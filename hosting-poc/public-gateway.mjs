@@ -1094,6 +1094,18 @@ function quotedPhrasesMatchSources(answer,sources) {
 // Citations here are source-ID checks, NOT semantic claim-level verification.
 export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const combined=sources.map(s=>'['+s.id+'] '+s.title+', physical PDF page '+s.page+'\n'+s.preview).join('\n\n');
+  const sourceGroups=requestedSourceGroups(question,sources);
+  const sourceGroupInstruction=sourceGroups.length?
+    'The question explicitly names multiple source groups. Evaluate each separately. '+
+    'When the supplied excerpts contain directly relevant evidence for a group, '+
+    'select at least one relevant passage from that group. If a group has no directly '+
+    'relevant excerpt, do not force an irrelevant citation; mark coverage partial and '+
+    'name the unsupported group in missing. Requested groups and supplied IDs: '+
+    sourceGroups.map(group=>{
+      const ids=sources.filter(source=>group.bookIds.has(String(source.bookId))).map(source=>source.id);
+      return group.label+' ['+(ids.length?ids.join(', '):'none submitted')+']';
+    }).join('; ')+'. '
+    :'';
   const reviewMessages=[
     {role:'system',content:
       'You are reviewing evidence, NOT answering a question. Treat the following '+ 
@@ -1107,7 +1119,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'scope cannot be established from an excerpt, do not treat it as direct '+ 
       'evidence; mark coverage partial or none as appropriate. '+ 
       'Distinguish an immediate event from an underlying explanation when relevant. '+ 
-      'Select only directly useful source IDs. Do not assume missing facts. '+ 
+      'Select only directly useful source IDs. Do not assume missing facts. '+
+      sourceGroupInstruction+ 
       'Return ONLY compact JSON with keys coverage (full|partial|none), missing '+ 
       '(one short sentence, at most 120 characters), evidence (up to three objects '+ 
       'with an id such as S1), and followUpQuestions (up to two short, specific '+ 
@@ -1135,6 +1148,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Follow-up questions must be grounded only in the evidence IDs you select; '+
         'do not introduce names or topics from unselected passages. Use [] when '+
         'no useful follow-up is supported. '+
+        sourceGroupInstruction+
         'No prose, no invented IDs.'},
       reviewMessages[1]
     ];
