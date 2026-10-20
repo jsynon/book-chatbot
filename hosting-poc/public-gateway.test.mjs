@@ -282,6 +282,25 @@ test('truncated retrieved passage retains causal sentence rather than a short ke
  assert(preview.includes('deeper explanation'));
 });
 
+test('long source excerpts keep complete relevant sentences and their nearby context',()=>{
+ const context='Earlier background that does not answer the question. '.repeat(35);
+ const passage='The immediate dispute concerned a broken agreement. The underlying cause was fear of the rival city’s growing power. This fear shaped how leaders interpreted later events.';
+ const preview=sourceExcerpt(context+passage,
+   'What were the immediate dispute and underlying cause?',1080);
+ assert(preview.startsWith('…'));
+ assert(preview.includes('The immediate dispute concerned a broken agreement.'));
+ assert(preview.includes('The underlying cause was fear of the rival city’s growing power.'));
+ assert(preview.includes('This fear shaped how leaders interpreted later events.'));
+ assert(preview.length<=1080);
+});
+
+test('long source excerpts without searchable question terms end on sentence boundaries',()=>{
+ const text='A complete sentence gives background. '.repeat(8);
+ const preview=sourceExcerpt(text,'the and for',82);
+ assert(preview.length<=82);
+ assert.match(preview.replace(/…$/,''),/\\.$/);
+});
+
 test('source probe fails closed when token binding is missing',async()=>{
  let fetched=0,models=0;
  const e=env({PUBLIC_ENABLED:'false',AI:{run:async()=>{models++;}}});
