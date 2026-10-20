@@ -40,7 +40,7 @@ function env(overrides={}){
   AI:{run:async(_model,input)=>{
     calls++;
     const msg=input.max_completion_tokens===280?
-      JSON.stringify({coverage:'partial',missing:'Another account would help',evidence:[{id:'S1'}]})
+      JSON.stringify({coverage:'partial',missing:'Another account would help',evidence:[{id:'S1',point:'Relevant supported passage point.'}]})
       :'The source explains a truce dispute and concern about growing power [S1].';
     return {choices:[{finish_reason:'stop',message:{content:msg}}],usage:{neurons:6}};
   }},...overrides};
@@ -137,9 +137,9 @@ test('truncated evidence-gap notes end at a complete sentence',()=>{
  const source=[{id:'S1'}];
  const complete='The passages do not define the event horizon.';
  const clipped=complete+' An unfinished explanation '.repeat(20);
- const review=parseReview(JSON.stringify({coverage:'partial',missing:clipped,evidence:[{id:'S1'}]}),source);
+ const review=parseReview(JSON.stringify({coverage:'partial',missing:clipped,evidence:[{id:'S1',point:'Relevant supported passage point.'}]}),source);
  assert.equal(review.missing,complete);
- const noSentence=parseReview(JSON.stringify({coverage:'partial',missing:'unfinished clause only',evidence:[{id:'S1'}]}),source);
+ const noSentence=parseReview(JSON.stringify({coverage:'partial',missing:'unfinished clause only',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}),source);
  assert.equal(noSentence.missing,'');
 });
 
@@ -156,7 +156,7 @@ test('multi-source evidence review calls out each named group in normal and retr
    call++;
    if(call===1)return {choices:[{finish_reason:'length',message:{content:''}}]};
    if(call===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-     coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]
+     coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'}]
    })}}]};
    throw new Error('stop after capturing the review prompts');
  }};
@@ -181,7 +181,7 @@ test('same-book answers select complementary passages and synthesize every quest
  const ai={run:async(_model,input)=>{
    inputs.push(input);call++;
    if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-     coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]
+     coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'}]
    })}}],usage:{neurons:3}};
    return {choices:[{finish_reason:'stop',message:{content:
      'Aristotle says character is formed through habituation: people become just or brave by repeatedly doing the relevant kinds of acts [S1]. This process depends on practice rather than being born with a completed virtue. We have a natural capacity to receive virtues, but habit brings that capacity to completion [S2]. Together, the passages show how repeated conduct shapes a settled character.'}}],usage:{neurons:4}};
@@ -202,10 +202,10 @@ test('multi-work full coverage requires selected evidence from every named work 
   {id:'S1',bookId:'529',title:'The Harvard Classics, Volume 11: On the Origin of Species — Charles Darwin',preview:'Natural selection preserves useful variation.'},
   {id:'S2',bookId:'102',title:'A Brief History of Time — Stephen Hawking',preview:'Black holes have an event horizon.'}
  ];
- const hawkingOnly=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S2'}]}),sources,question);
+ const hawkingOnly=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S2',point:'Relevant supported passage point.'}]}),sources,question);
  assert.equal(hawkingOnly.coverage,'partial');
  assert.match(hawkingOnly.missing,/Origin of Species/);
- const both=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]}),sources,question);
+ const both=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'}]}),sources,question);
  assert.equal(both.coverage,'full');
  assert.equal(both.missing,'');
 });
@@ -215,15 +215,15 @@ test('multi-author full coverage is downgraded when one requested author group i
   {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',preview:'Virtue develops through habit.'},
   {id:'S2',bookId:'529',title:'On the Origin of Species — Charles Darwin',preview:'Natural selection preserves variations.'}
  ];
- const aristotleOnly=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}),sources,question);
+ const aristotleOnly=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}),sources,question);
  assert.equal(aristotleOnly.coverage,'partial');
  assert.match(aristotleOnly.missing,/Darwin/);
- const both=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'}]}),sources,question);
+ const both=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'}]}),sources,question);
  assert.equal(both.coverage,'full');
 });
 test('single named work keeps existing evidence-review coverage behavior',()=>{
  const sources=[{id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',preview:'Virtue develops through habit.'}];
- const result=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}),sources,
+ const result=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}),sources,
    'How does Aristotle explain becoming virtuous through repeated actions?');
  assert.equal(result.coverage,'full');
  assert.equal(result.missing,'');
@@ -235,7 +235,7 @@ test('evidence review follow-ups are short, specific, and grounded in selected p
    preview:'A variation is inherited; a change has an effect, and the text connects a change with its effect.'},
   {id:'S2',title:'Augustine on miracles',preview:'Augustine discusses miracles in a separate work.'}
  ];
- const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}],
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}],
    followUpQuestions:[
     'What changes when a variation is inherited?',
     'What changes when a variation is inherited?',
@@ -253,8 +253,17 @@ test('evidence review follow-ups are short, specific, and grounded in selected p
 
 test('source selection is bound to ID from server-fetched content',()=>{
  const sources=[{id:'S1',preview:'verified from trusted book'}];
- const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S5'},{id:'S1'}]}),sources);
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S5',point:'Relevant supported passage point.'},{id:'S1',point:'Relevant supported passage point.'}]}),sources);
  assert.deepEqual(review.selected,sources);
+});
+
+test('an ID without a reviewed support point cannot authorize answer composition',()=>{
+ const sources=[{id:'S1',preview:'verified from trusted book'}];
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}),sources);
+ assert.equal(review.coverage,'none');
+ assert.deepEqual(review.selected,[]);
+ assert.deepEqual(review.evidenceMap,[]);
+ assert.match(review.missing,/did not identify a supported point/);
 });
 test('authentic sources flow through two calls and yield the canonical URL',async()=>{
  let runs=0;
@@ -531,7 +540,7 @@ async function fingerprintTestFixture() {
     aiCount++;
     const content=input.max_completion_tokens===520?
        JSON.stringify({coverage:'partial',missing:'More history is not in this page',
-          evidence:[{id:'S1'}],followUpQuestions:[
+          evidence:[{id:'S1',point:'Relevant supported passage point.'}],followUpQuestions:[
             'Which disputes does Thucydides identify as immediate causes?',
             'How did Athens’ growing power affect Spartan fears?']})
        :'The passage distinguishes an immediate dispute from fear caused by growing power [S1].';
@@ -616,7 +625,7 @@ test('v1.9.4 bad or absent model citations never leave the server as an answer',
    let calls=0;
    const result=await fixture.response({aiRun:async()=>{
       calls++;return {choices:[{finish_reason:'stop',message:{content:calls===1?
-         JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):fabricated}}],
+         JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):fabricated}}],
          usage:{neurons:4}};
    }});
    assert.equal(result.status,502);
@@ -632,7 +641,7 @@ test('v1.14 rejects an unsupported quotation after one bounded repair attempt',a
  const result=await fixture.response({aiRun:async()=>{
    calls++;
    const content=calls===1?
-     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
      'The passage calls it “the atoning sacrifice because we obey his commandments and do for my sins” [S1].';
    return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
  }});
@@ -649,7 +658,7 @@ test('v1.14 repairs an unsupported quotation with a source-grounded paraphrase',
  const result=await fixture.response({aiRun:async(_model,input)=>{
    calls++;prompts.push(input.messages);
    const content=calls===1?
-     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
      calls===2?
        'The passage calls it “the atoning sacrifice because we obey his commandments and do for my sins” [S1].':
        'The passage describes a truce dispute and concern about growing power [S1].';
@@ -668,7 +677,7 @@ test('v1.12 accepts a source-verbatim quotation with normalized punctuation',asy
  const result=await fixture.response({aiRun:async()=>{
    calls++;
    const content=calls===1?
-     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
      'The excerpt says “growing power created fear among competing cities.” [S1].';
    return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
  }});
@@ -687,7 +696,7 @@ test('v1.13 carries an explicit verse-range scope into review and composition pr
    aiRun:async(_model,input)=>{
      prompts.push(input.messages);
      const content=input.max_completion_tokens===520?
-       JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]}):
+       JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
        'The verified passage connects divine love with loving one another [S1].';
      return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
    }
@@ -809,7 +818,7 @@ test('public pilot verifies and submits four source candidates to the bounded an
      const submitted=input.messages.at(-1).content;
      assert.match(submitted,/\[S4\].*physical PDF page 41/);
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-       coverage:'full',missing:'',evidence:[{id:'S4'}]})}}]};
+       coverage:'full',missing:'',evidence:[{id:'S4',point:'Relevant supported passage point.'}]})}}]};
    }
    return {choices:[{finish_reason:'stop',message:{content:
      'The verified passage supports this explanation [S4].'}}]};
@@ -832,7 +841,7 @@ test('public pilot selects and synthesizes four complementary pages from one boo
      const submitted=input.messages.at(-1).content;
      for(let i=1;i<=4;i++)assert.match(submitted,new RegExp('\\[S'+i+'\\].*physical PDF page '+(37+i)));
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-       coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S2'},{id:'S3'},{id:'S4'}]
+       coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'},{id:'S3',point:'Relevant supported passage point.'},{id:'S4',point:'Relevant supported passage point.'}]
      })}}]};
    }
    assert.equal(input.max_completion_tokens,800);
@@ -853,7 +862,7 @@ test('public pilot resolves grouped citation IDs and rejects unknown IDs in a gr
  const pilot=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===520)
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-       coverage:'full',missing:'',evidence:[{id:'S1'},{id:'S3'}]})}}]};
+       coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S3',point:'Relevant supported passage point.'}]})}}]};
    return {choices:[{finish_reason:'stop',message:{content:
      'The passages support this claim [S1, S3].'}}]};
  }});
@@ -867,7 +876,7 @@ test('public pilot resolves grouped citation IDs and rejects unknown IDs in a gr
  const invalid=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===520)
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-       coverage:'full',missing:'',evidence:[{id:'S1'}]})}}]};
+       coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]})}}]};
    return {choices:[{finish_reason:'stop',message:{content:
      'The passages support this claim [S1, S9] [S1].'}}]};
  }});
@@ -919,7 +928,7 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
  const token='evaluation-only-secret-'.repeat(3);
  const model=async(_model,input)=>({choices:[{finish_reason:'stop',message:{content:
    input.max_completion_tokens===210?' {"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}':
-   input.max_completion_tokens===520?JSON.stringify({coverage:'partial',missing:'',evidence:[{id:'S1'}]}):
+   input.max_completion_tokens===520?JSON.stringify({coverage:'partial',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
    'The passage identifies the deeper cause as fear of growing power [S1].'}}],usage:{neurons:1}});
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
    PILOT_EVALUATION_TOKEN:token},model});
@@ -975,7 +984,7 @@ test('public pilot preserves safe answer-validation failure codes',async()=>{
    if(input.max_completion_tokens===520)
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
        coverage:'partial',missing:'The excerpt does not establish the complete definition.',
-       evidence:[{id:'S1'}]})}}]};
+       evidence:[{id:'S1',point:'Relevant supported passage point.'}]})}}]};
    return {choices:[{finish_reason:'stop',message:{content:
      'The text says that faith must not be [S1].'}}]};
  }});
@@ -1074,7 +1083,7 @@ test('v1.10 allows any fingerprint-verified page from additional approved books'
  fp.bookId='7';fp.chunk=0;fp.firstPage=1;fp.lastPage=32;fp.pages[0].page=4;
  const environment=env({...pilotBaseEnv,AI:{run:async(_m,input)=>{
    calls++;return {choices:[{finish_reason:'stop',message:{content:input.max_completion_tokens===520?
-     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1'}]})
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]})
      :'The cited source passage explains its subject [S1].'}}],usage:{neurons:4}};
  }}});
  const request=new Request(HOST+'/api/pilot-answer',{method:'POST',
@@ -1109,7 +1118,7 @@ test('evidence review retries one truncated response with a compact bounded requ
      assert(input.messages[0].content.includes('compact valid JSON'));
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
        coverage:'partial',missing:'The excerpt does not cover the entire question.',
-       evidence:[{id:'S1'}],followUpQuestions:['Which disputes preceded the war?']
+       evidence:[{id:'S1',point:'Relevant supported passage point.'}],followUpQuestions:['Which disputes preceded the war?']
      })}}],usage:{neurons:4}};
    }
    return {choices:[{finish_reason:'stop',message:{content:
@@ -1160,7 +1169,7 @@ test('fragmentary passages cannot be completed or attributed to the catalog auth
  const ai={run:async(_model,input)=>{
   inputs.push(input);call++;
   const content=call===1?
-   JSON.stringify({coverage:'partial',missing:'The excerpt on The Instant ends before its point is complete.',evidence:[{id:'S2'}]}):
+   JSON.stringify({coverage:'partial',missing:'The excerpt on The Instant ends before its point is complete.',evidence:[{id:'S2',point:'Relevant supported passage point.'}]}):
    'In Fear and Trembling, Kierkegaard challenges Hegel’s account of faith, while this passage alone does not give a complete definition of faith [S2].';
   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:3}};
  }};
@@ -1182,7 +1191,7 @@ test('rejects a cited answer sentence that stops at an unfinished clause',async(
  const ai={run:async()=>{
   call++;
   const content=call===1?
-   JSON.stringify({coverage:'partial',missing:'The sentence on faith is incomplete.',evidence:[{id:'S1'}]}):
+   JSON.stringify({coverage:'partial',missing:'The sentence on faith is incomplete.',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
    'The text says that faith must not be [S1].';
   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:2}};
  }};
