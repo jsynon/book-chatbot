@@ -1254,7 +1254,7 @@ test('answer output explicitly discloses an unsupported requested part',async()=
  assert.match(calls[1].messages[1].content,/contrast with skill — unsupported/);
  assert.match(calls[1].messages[0].content,/For multi-part questions, use the questionParts checklist as the ordered/);
  assert.match(calls[1].messages[0].content,/Give each supported part its own concise paragraph/);
- assert.match(calls[1].messages[1].content,/contrast with skill — unsupported \\[evidence: none\\]/);
+ assert.match(calls[1].messages[1].content,/contrast with skill — unsupported \[evidence: none\]/);
 });
 test('answer composition explicitly requests plain text instead of Markdown artifacts',async()=>{
  const {readFileSync}=await import('node:fs');
