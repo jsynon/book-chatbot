@@ -1729,7 +1729,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       const known=new Set(['evidence-review-request-failed','evidence-review-truncated',
         'evidence-review-invalid-response','answer-composition-request-failed',
         'answer-composition-truncated','answer-composition-empty',
-        'answer-composition-too-long','answer-citations-missing',
+        'answer-composition-too-long','answer-incomplete-cited-claim',
+        'answer-quotation-repair-request-failed','answer-quotation-repair-truncated',
+        'answer-quotation-repair-empty','answer-quotation-repair-too-long',
+        'answer-quotation-repair-failed','answer-citations-missing',
         'answer-citations-invalid','answer-quotation-not-source-verified']);
       const failureCode=known.has(error?.failureCode)?error.failureCode:
         'answer-generation-or-citation-failed';
