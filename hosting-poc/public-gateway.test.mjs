@@ -181,7 +181,10 @@ test('same-book answers select complementary passages and synthesize every quest
  const ai={run:async(_model,input)=>{
    inputs.push(input);call++;
    if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-     coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'}]
+     coverage:'full',missing:'',questionParts:[
+       {part:'explain habituation',status:'supported',evidenceIds:['S2']},
+       {part:'explain how repeated actions shape character',status:'supported',evidenceIds:['S1']}
+      ],evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'}]
    })}}],usage:{neurons:3}};
    return {choices:[{finish_reason:'stop',message:{content:
      'Aristotle says character is formed through habituation: people become just or brave by repeatedly doing the relevant kinds of acts [S1]. This process depends on practice rather than being born with a completed virtue. We have a natural capacity to receive virtues, but habit brings that capacity to completion [S2]. Together, the passages show how repeated conduct shapes a settled character.'}}],usage:{neurons:4}};
@@ -264,6 +267,29 @@ test('an ID without a reviewed support point cannot authorize answer composition
  assert.deepEqual(review.selected,[]);
  assert.deepEqual(review.evidenceMap,[]);
  assert.match(review.missing,/did not identify a supported point/);
+});
+test('multipart question coverage is derived from each explicitly tracked part',()=>{
+ const question='According to Aristotle, what is practical wisdom, and how does it differ from scientific knowledge and skill?';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:66,preview:'Practical wisdom is not science or art.'},
+  {id:'S2',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:67,preview:'Practical wisdom concerns variable matters.'}
+ ];
+ const review=parseReview(JSON.stringify({
+  coverage:'full',missing:'',
+  questionParts:[
+   {part:'define practical wisdom',status:'supported',evidenceIds:['S1']},
+   {part:'contrast practical wisdom with scientific knowledge',status:'supported',evidenceIds:['S1']},
+   {part:'contrast practical wisdom with skill',status:'unsupported',evidenceIds:[]}
+  ],
+  evidence:[
+   {id:'S1',point:'Practical wisdom is distinct from science and art.'},
+   {id:'S2',point:'Practical wisdom concerns variable matters.'}
+  ]
+ }),sources,question);
+ assert.equal(review.coverage,'partial');
+ assert.match(review.missing,/contrast practical wisdom with skill/);
+ assert.equal(review.questionParts.length,3);
+ assert.equal(review.questionParts[2].status,'unsupported');
 });
 test('authentic sources flow through two calls and yield the canonical URL',async()=>{
  let runs=0;
@@ -1202,6 +1228,31 @@ test('rejects a cited answer sentence that stops at an unfinished clause',async(
 });
 
 
+test('answer output explicitly discloses an unsupported requested part',async()=>{
+ const question='According to Aristotle, what is practical wisdom, and how does it differ from scientific knowledge and skill?';
+ const sources=[{id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:66,
+  preview:'Practical wisdom is not science or art; action and making are different.'}];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {usage:{neurons:2},choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[
+    {part:'define practical wisdom',status:'supported',evidenceIds:['S1']},
+    {part:'contrast with scientific knowledge',status:'supported',evidenceIds:['S1']},
+    {part:'contrast with skill',status:'unsupported',evidenceIds:[]}
+   ],
+   evidence:[{id:'S1',point:'Practical wisdom is distinct from science and art.'}]
+  })}}]};
+  return {usage:{neurons:3},choices:[{finish_reason:'stop',message:{content:'Practical wisdom concerns action on matters that can vary [S1]. It is not scientific knowledge because such matters can be otherwise [S1].'}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(result.coverage,'partial');
+ assert.match(result.missing,/contrast with skill/);
+ assert.match(result.answer,/do not fully address: contrast with skill/i);
+ assert.equal(result.questionParts[2].status,'unsupported');
+ assert.match(calls[1].messages[1].content,/contrast with skill — unsupported/);
+});
 test('answer composition explicitly requests plain text instead of Markdown artifacts',async()=>{
  const {readFileSync}=await import('node:fs');
  const source=readFileSync(new URL('./public-gateway.mjs',import.meta.url),'utf8');
