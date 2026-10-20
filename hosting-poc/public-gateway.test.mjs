@@ -1106,17 +1106,20 @@ test('evidence review retries one truncated response with a compact bounded requ
 });
 test('a second evidence-review truncation returns a safe stage diagnostic in Worker logs',async()=>{
  const calls=[];
+ const prompts=[];
  const original=console.error;let logged=[];
  console.error=(...args)=>logged.push(args);
  try{
    const pilot=await pilotScenario({model:async(_model,input)=>{
      calls.push(input.max_completion_tokens);
+     prompts.push(input.messages[0].content);
      return {choices:[{finish_reason:'length',message:{content:''}},],usage:{neurons:1}};
    }});
    const response=await pilot.post();
    assert.equal(response.status,502);
    assert.equal((await response.json()).failureCode,'evidence-review-truncated');
    assert.deepEqual(calls,[520,760]);
+   assert.match(prompts[1],/For broad questions about what a person or work says/);
  }finally{console.error=original;}
  const failure=logged.find(entry=>entry[0]==='Reader pilot answer failed')?.[1];
  assert.deepEqual(failure,{
@@ -1215,7 +1218,10 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
  assert.match(calls[0].messages[0].content,/Keep each point atomic: one claim per point/);
+ assert.match(calls[0].messages[0].content,/For broad questions asking what a person or work says about a topic/);
+ assert.match(calls[0].messages[0].content,/If a supplied passage adds a substantive aspect/);
  assert.match(calls[0].messages[0].content,/IDs may repeat only when the same passage supports a different point/);
+ assert.match(calls[1].messages[0].content,/different evidential job/);
  assert.match(calls[1].messages[0].content,/do not combine two reviewed points into a single definition/);
  assert.match(calls[1].messages[0].content,/usually about 180–260 words/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
