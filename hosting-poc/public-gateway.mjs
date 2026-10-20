@@ -1183,10 +1183,10 @@ function quotedPhrasesMatchSources(answer,sources) {
 // Citations here are source-ID checks, NOT semantic claim-level verification.
 export function hasDanglingCitedSentence(answer) {
   const text=String(answer||'');
-  const sentences=text.split(/(?<=[.!?])\\s+(?=[A-Z“"'“\\d])/);
-  const dangling=/\\b(?:is|are|was|were|be|been|being|has|have|had|do|does|did|will|would|can|could|should|must|may|might|shall)(?:\\s+not)?|not|because|except|but|and|or|to|with|of|in|on|at|for|from|that|which|who|whose)\\s*$/i;
+  const sentences=text.split(/(?<=[.!?])\s+(?=[A-Z“"'“\d])/);
+  const dangling=/\b(?:(?:is|are|was|were|be|been|being|has|have|had|do|does|did|will|would|can|could|should|must|may|might|shall)(?:\s+not)?|not|because|except|but|and|or|to|with|of|in|on|at|for|from|that|which|who|whose)\s*$/i;
   return sentences.some(sentence=>{
-    const citationBlock=sentence.match(/(?:\\s*\\[S[1-9]\\d*(?:\\s*,\\s*S[1-9]\\d*)*\\])+\\s*[.!?]?$/);
+    const citationBlock=sentence.match(/(?:\s*\[S[1-9]\d*(?:\s*,\s*S[1-9]\d*)*\])+\s*[.!?]?$/);
     if(!citationBlock)return false;
     const claim=sentence.slice(0,citationBlock.index)
       .replace(/[.,;:!?]+$/,'').trim();
