@@ -1164,3 +1164,26 @@ test('answer composition explicitly requests plain text instead of Markdown arti
  assert.match(source,/Use plain text only: no Markdown, headings, asterisks, or bullet markers/);
  assert.doesNotMatch(source,/brief bullets/);
 });
+
+
+test('review keeps concise source-linked points for answer synthesis',()=>{
+ const sources=[
+  {id:'S1',bookId:'140',title:'Fear and Trembling',page:32,preview:'Faith and Hegel.'},
+  {id:'S2',bookId:'253',title:'The Sickness Unto Death',page:93,preview:'Faith is the opposite of sin.'}
+ ];
+ const review=parseReview(JSON.stringify({coverage:'partial',missing:'A broader account is not established.',
+  evidence:[{id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.'},
+   {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'}]}),sources);
+ assert.deepEqual(review.evidenceMap,[
+  {id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.'},
+  {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'}
+ ]);
+});
+
+test('answer synthesis asks for a source-led, slightly longer explanation',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const source=readFileSync(new URL('./public-gateway.mjs',import.meta.url),'utf8');
+ assert.match(source,/Evidence map \\(reviewed points\\)/);
+ assert.match(source,/usually about 180–260 words/);
+ assert.match(source,/Avoid a book-by-book/);
+});
