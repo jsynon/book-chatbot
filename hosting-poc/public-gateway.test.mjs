@@ -165,6 +165,7 @@ test('multi-source evidence review calls out each named group in normal and retr
  assert.equal(prompts.length,3);
  for(const prompt of prompts.slice(0,2)){
    assert.match(prompt,/directly relevant evidence for a group/);
+   assert.match(prompt,/For questions about a relation between named concepts/);
    assert(prompt.includes('On the Origin of Species [S1]'));
    assert(prompt.includes('A Brief History of Time [S2]'));
    assert.match(prompt,/synthesize their difference while attributing each claim to its source/);
@@ -220,6 +221,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
  assert.match(inputs[1].messages[0].content,/usually about 150–220 words/);
  assert.match(inputs[1].messages[0].content,/Open with a direct answer calibrated to the evidence/);
+ assert.match(inputs[1].messages[0].content,/every cited claim must support that particular relation/);
  assert.match(inputs[1].messages[0].content,/do not present two passages from one author as two independent perspectives/);
  assert.match(inputs[1].messages[0].content,/avoid repetition, padding, and adjacent topics/);
  assert.match(inputs[1].messages[0].content,/should explain the point, its reason or distinction/);
