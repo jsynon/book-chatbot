@@ -167,6 +167,7 @@ test('multi-source evidence review calls out each named group in normal and retr
    assert.match(prompt,/directly relevant evidence for a group/);
    assert(prompt.includes('On the Origin of Species [S1]'));
    assert(prompt.includes('A Brief History of Time [S2]'));
+   assert.match(prompt,/synthesize their difference while attributing each claim to its source/);
  }
 });
 test('same-book answers select complementary passages and synthesize every question part',async()=>{
@@ -1656,7 +1657,8 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/Do not restate the same claim with expanded synonyms/);
  assert.match(calls[1].messages[0].content,/Omit adjacent topics that do not answer a listed part/);
  assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
- assert.match(calls[1].messages[0].content,/do not combine two reviewed points into a single definition/);
+ assert.match(calls[1].messages[0].content,/Do not combine two reviewed points into a definition/);
+ assert.match(calls[1].messages[0].content,/EXCEPTION: when the question explicitly asks for a comparison across separately named works/);
  assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map and keep it concise/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
 });
