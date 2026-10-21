@@ -258,6 +258,91 @@
       #secondary.companion-widgets { padding:20px 12px; grid-template-columns:1fr; gap:22px; }
       #colophon.site-footer { padding:12px; }
     }
+    /* Match the live Reading Companion's current Book Lite controls and
+       quieter, editorial form treatment while keeping the local-only tools. */
+    body.book-lite-companion { color:#3e454a; }
+    .companion-content h2,.companion-content h3 { color:#30363a; }
+    .companion-content input:not([type="checkbox"]),
+    .companion-content select {
+      min-height:42px; padding:8px 11px; border:1px solid #aeb7bd;
+      border-radius:2px; background:#fff; color:#20252a;
+      font:inherit; box-sizing:border-box;
+    }
+    .companion-content textarea {
+      min-height:94px; padding:10px 12px; border:1px solid #aeb7bd;
+      border-radius:2px; background:#fff; color:#20252a;
+      font:inherit; box-sizing:border-box;
+    }
+    .companion-content input:focus-visible,
+    .companion-content select:focus-visible,
+    .companion-content textarea:focus-visible,
+    .companion-content summary:focus-visible {
+      outline:2px solid #6b91a8; outline-offset:2px;
+    }
+    .companion-content button,
+    .companion-content button:not(.secondary-action),
+    .companion-content .sources .read-page,
+    #secondary.companion-widgets .site-search button {
+      min-height:42px; padding:7px 13px; border:1px solid #262b2f;
+      border-radius:2px; background:#262b2f; color:#fff;
+      font:inherit; text-shadow:none; box-shadow:none;
+    }
+    .companion-content button:hover:not(:disabled),
+    .companion-content .sources .read-page:hover,
+    #secondary.companion-widgets .site-search button:hover:not(:disabled) {
+      background:#111518; color:#fff;
+    }
+    .companion-content button:disabled {
+      border-color:#596167; background:#596167; color:#fff;
+      opacity:1; cursor:not-allowed;
+    }
+    .companion-content button:focus-visible,
+    #secondary.companion-widgets .site-search button:focus-visible {
+      outline:2px solid #6b91a8; outline-offset:2px;
+    }
+    .companion-content .reader-panel {
+      margin:1.1em 0 1.6em; padding:0; border:0;
+      border-radius:0; background:transparent;
+    }
+    .companion-content .reader-panel .field { gap:.25em; }
+    .companion-content .reader-panel label { color:#3e454a; font:inherit; }
+    .companion-content .reader-options { border-top:1px solid #dfe2e3; padding-top:.55em; }
+    .companion-content .reader-options .controls {
+      border-color:#dfe2e3; border-radius:2px; background:#fff;
+    }
+    .companion-content .turn {
+      border:0; border-top:1px solid #dfe2e3; border-radius:0;
+      background:transparent; padding:1em 0;
+    }
+    .companion-content .turn.user {
+      margin-left:0; padding-left:12px; border-left:3px solid #aeb7bd;
+      background:transparent; color:#30363a; font-weight:600;
+    }
+    .companion-content .turn.assistant { border-left:0; }
+    .companion-content .speaker { color:#4e555b; }
+    .companion-content .sources { border-top:1px solid #dfe2e3; }
+    .companion-content .source-reader {
+      border-color:#d5d8da; border-top:3px solid #333; border-radius:2px;
+    }
+    .companion-content .source-reader h2 { font-style:italic; }
+    .companion-content #status:not(:empty) {
+      position:relative; margin:1em 0; padding:.8em 1em .8em 3em;
+      border-left:4px solid #55788b; border-radius:2px;
+      background:#f1f5f7; color:#26343c; font-size:1.05em; font-weight:600;
+    }
+    .companion-content #status.busy::before {
+      position:absolute; left:1em; top:calc(50% - .55em); width:1.1em; height:1.1em;
+      border:3px solid #c4d0d7; border-top-color:#315d73; border-radius:50%;
+      background:transparent; margin:0; animation:companion-status-spin .8s linear infinite;
+    }
+    @keyframes companion-status-spin { to { transform:rotate(360deg); } }
+    @media (prefers-reduced-motion:reduce) {
+      .companion-content #status.busy::before { animation:none; border-color:#315d73; border-right-color:#c4d0d7; }
+    }
+    @media (max-width:600px) {
+      .companion-content .reader-panel { margin:1em 0 1.4em; }
+      .companion-content .reader-panel .field { width:100%; }
+    }
   </style>
 </head>
 <body class="book-lite-companion custom-header">
