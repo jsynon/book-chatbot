@@ -554,6 +554,41 @@ test('long source excerpts prioritize rare requested details beyond an earlier t
  assert(preview.length<=1080);
 });
 
+test('long excerpts retain complementary requested details and their nearby qualifications',()=>{
+ const question='How does Hobbes describe the role of common power in preventing conflict, and what happens without it?';
+ const opening='A discussion of people and their interests sets the scene. '.repeat(15);
+ const passage='Hobbes argues that without a common power to keep them all in awe, people cannot rely on justice and the laws of nature alone. They hinder one another through disagreement and may make war on each other when there is no common enemy. A common power provides protection by directing their strength toward peace, rather than leaving each person to act on private judgment.';
+ const closing='The chapter then turns to a separate example. '.repeat(15);
+ const preview=sourceExcerpt(opening+passage+closing,question,1080);
+ assert.match(preview,/without a common power to keep them all in awe/i);
+ assert.match(preview,/may make war on each other when there is no common enemy/i);
+ assert.match(preview,/private judgment/i);
+ assert(preview.length<=1080);
+});
+
+test('excerpt selection follows a question’s causal explanation after its topic is introduced',()=>{
+ const question='How do inherited variations, struggle for existence, and natural selection relate?';
+ const earlier='The first chapter describes variation under domestication and the power of selection. '.repeat(9);
+ const explanation='In the next chapter the struggle for existence follows because many more individuals are born than can possibly survive. Any being that varies in a profitable way has a better chance of surviving and is naturally selected. From the strong principle of inheritance, any selected variety tends to propagate its new and modified form.';
+ const later='The next chapter will consider extinction and divergence of character. '.repeat(8);
+ const preview=sourceExcerpt(earlier+explanation+later,question,1080);
+ assert.match(preview,/many more individuals are born than can possibly survive/i);
+ assert.match(preview,/has a better chance of surviving and is naturally selected/i);
+ assert.match(preview,/strong principle of inheritance/i);
+ assert(preview.length<=1080);
+});
+
+test('long dialogue excerpts keep the reporting speaker and the reply qualification together',()=>{
+ const question='How does Raskolnikov explain extraordinary people and what qualification does he make?';
+ const opening='The conversation begins with a question about an earlier article. '.repeat(12);
+ const dialogue='Porfiry says that Raskolnikov’s idea gives extraordinary people a right to transgress the law. Raskolnikov replies, “That wasn’t quite my contention,” and clarifies that he does not claim extraordinary people are always bound to commit breaches of morality. He says the only difference is that he doubts such an argument could be published.';
+ const preview=sourceExcerpt(opening+dialogue,question,1080);
+ assert.match(preview,/Porfiry says that Raskolnikov/i);
+ assert.match(preview,/Raskolnikov replies/i);
+ assert.match(preview,/does not claim extraordinary people are always bound/i);
+ assert(preview.length<=1080);
+});
+
 test('long source excerpts without searchable question terms end on sentence boundaries',()=>{
  const text='A complete sentence gives background. '.repeat(8);
  const preview=sourceExcerpt(text,'the and for',82);
