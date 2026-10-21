@@ -2129,13 +2129,44 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       stage:'relation-claim-audit',...inferenceFailureDiagnostics(error)});}
     if(['length','max_tokens'].includes(audited?.choices?.[0]?.finish_reason))
       throw answerFailure('relation-claim-audit-truncated');
-    const auditedDraft=parseComposedDraft(modelText(audited),sources);
-    if(!auditedDraft.structured||!auditedDraft.answer)
-      throw answerFailure('relation-claim-audit-invalid');
+    let auditedDraft=parseComposedDraft(modelText(audited),sources);
+    const auditPartsIncomplete=finalQuestionParts.length&&
+      auditedDraft.partChecks.length!==finalQuestionParts.length;
+    if(!auditedDraft.structured||!auditedDraft.answer||auditPartsIncomplete||
+      ['length','max_tokens'].includes(audited?.choices?.[0]?.finish_reason)){
+      let retry;
+      try{retry=await ai.run(MODEL,{
+        messages:[
+          {role:'system',content:
+            'Return ONLY valid JSON. Required shape: {"answer":"...","partChecks":['+
+            '{"part":"exact supplied label","status":"supported|partial|unsupported",'+
+            '"evidenceIds":["S1"]}]}. Include exactly one partChecks item for each '+
+            'requested part, using the label verbatim. Audit every claim against '+
+            'its cited excerpt. Remove claims that go beyond the excerpt, preserve '+
+            'counterfactuals, and retain citations only when the passage supports '+
+            'the adjacent claim. If the excerpts do not settle the requested '+
+            'relation, say so and mark that part partial. Use only supplied IDs.'},
+          {role:'user',content:
+            'Question: '+question+'\\nCurrent answer to audit: '+answer+
+            '\\nRequested parts: '+JSON.stringify(finalQuestionParts.map(part=>({
+              part:part.part,status:part.status,evidenceIds:part.evidenceIds
+            })))+'\\nVerified excerpts: '+sources.map(source=>
+              '['+source.id+'] '+source.title+' page '+source.page+': '+source.preview
+            ).join('\\n\\n')}
+        ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:700,
+      });}catch(error){throw answerFailure('relation-claim-audit-retry-request-failed',{
+        stage:'relation-claim-audit',...inferenceFailureDiagnostics(error)});}
+      if(['length','max_tokens'].includes(retry?.choices?.[0]?.finish_reason))
+        throw answerFailure('relation-claim-audit-retry-truncated');
+      auditedDraft=parseComposedDraft(modelText(retry),sources);
+      if(!auditedDraft.structured||!auditedDraft.answer)
+        throw answerFailure('relation-claim-audit-retry-invalid');
+      if(finalQuestionParts.length&&auditedDraft.partChecks.length!==finalQuestionParts.length)
+        throw answerFailure('relation-claim-audit-retry-incomplete');
+      audited=retry;
+    }
     if(auditedDraft.answer.length>2400)
       throw answerFailure('relation-claim-audit-too-long');
-    if(finalQuestionParts.length&&auditedDraft.partChecks.length!==finalQuestionParts.length)
-      throw answerFailure('relation-claim-audit-incomplete');
     answer=auditedDraft.answer;
     if(auditedDraft.partChecks.length){
       finalQuestionParts=reconcileQuestionParts(finalQuestionParts,
@@ -2569,7 +2600,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'answer-citations-invalid','answer-quotation-not-source-verified',
         'relation-claim-audit-request-failed','relation-claim-audit-truncated',
         'relation-claim-audit-invalid','relation-claim-audit-too-long',
-        'relation-claim-audit-incomplete']);
+        'relation-claim-audit-incomplete','relation-claim-audit-retry-request-failed',
+        'relation-claim-audit-retry-truncated','relation-claim-audit-retry-invalid',
+        'relation-claim-audit-retry-incomplete']);
       const failureCode=known.has(error?.failureCode)?error.failureCode:
         'answer-generation-or-citation-failed';
       const diagnostics=error?.diagnostics||{};
