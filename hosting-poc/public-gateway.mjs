@@ -1817,8 +1817,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'keep a narrow factual answer brief. Check source-based claims against the '+
         'excerpts and preserve meaningful differences between works. Explain technical '+
         'terms beyond the excerpts only as clearly labeled broader context, not as a '+
-        'definition supplied by the source. '+
-        'and use concrete examples when the passages supply them. Keep criticism '+
+        'definition supplied by the source. Use concrete examples when the passages supply them. '+
+        'Keep criticism '+
         'of other positions and comments about '+
         'definition subordinate unless they clarify the account. Preserve stated '+
         'relations precisely; do not turn “X is the opposite of Y, not Z” into a '+
