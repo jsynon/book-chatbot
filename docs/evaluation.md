@@ -22,6 +22,8 @@ Also record wall-clock latency and whether evidence selection brought in a decis
 
 ## Local claim-reviewed prototype
 
+To open these controls, run `start.bat` and leave its server window running, then visit `http://127.0.0.1:8765/developer` in your browser. The ordinary `http://127.0.0.1:8765/` page intentionally hides developer options. Restart the local server after pulling updates if it was already running.
+
 The local app now exposes **Claim-reviewed prototype** in Advanced settings for
 both one-book and Across-library questions. It uses the existing grounded
 pipeline: the model drafts separate claims with passage IDs, a second model call
