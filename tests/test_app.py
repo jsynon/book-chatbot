@@ -5516,7 +5516,8 @@ class InterfaceTests(unittest.TestCase):
     def test_batch_runner_uses_five_baseline_and_exploration_prompts(self):
         html = (APP_PATH.parent / "index.html").read_text(encoding="utf-8")
 
-        self.assertEqual(html.count('<button type="button">'), 5)
+        baseline_prompts = html.split('<details id="aristotle-prompts"', 1)[1].split("</details>", 1)[0]
+        self.assertEqual(baseline_prompts.count('<button type="button">'), 5)
         self.assertIn("What does Aristotle mean by practical wisdom?", html)
         self.assertIn("What does Aristotle mean by the mean relative to us?", html)
         self.assertIn("What does Aristotle think about God and the soul?", html)
@@ -5526,17 +5527,29 @@ class InterfaceTests(unittest.TestCase):
         self.assertNotIn("What does Aristotle mean by distributive justice?", html)
         self.assertNotIn("What does Aristotle mean by courage?", html)
         self.assertNotIn("What does Aristotle mean by equity, and how does it correct the law?", html)
-        self.assertIn("Run all five questions", html)
+        self.assertIn("Five repeatable test questions", baseline_prompts)
+        self.assertIn("Run test set", html)
         self.assertIn('id="run-regression"', html)
         self.assertIn('id="download-regression"', html)
         self.assertIn("fetch('/api/chat'", html)
-        self.assertIn("history:[], model, diagnostics:true", html)
+        self.assertIn("history:[], book_id:activeBookId, scope:searchScope.value, model, pipeline, diagnostics:true", html)
         self.assertIn("latestRegressionReport", html)
         self.assertIn("downloadRegressionReport", html)
         self.assertIn('id="batch-results"', html)
         self.assertIn("Results by model and question", html)
-        self.assertIn("schema_version:2", html)
+        self.assertIn("schema_version:3", html)
         self.assertIn("entry.summary = data.diagnostics?.summary", html)
+
+    def test_local_reader_uses_live_book_lite_controls_without_cloudflare_check(self):
+        html = (APP_PATH.parent / "index.html").read_text(encoding="utf-8")
+        self.assertIn('href="/book-lite.css"', html)
+        self.assertIn("color:#3e454a", html)
+        self.assertIn("background:#262b2f; color:#fff", html)
+        self.assertIn("border-radius:2px", html)
+        self.assertIn("Local Ollama model", html)
+        self.assertIn("Local testing: Ollama", html)
+        self.assertNotIn("companion-turnstile", html)
+        self.assertNotIn("Cloudflare Turnstile", html)
 
 
 if __name__ == "__main__":
