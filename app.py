@@ -98,7 +98,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
 # The UI displays this ID from /api/health. Bump it for every packaged build so
 # the user can tell which version the browser is currently talking to.
-BUILD_ID = "reading-companion-v1.7.1"
+BUILD_ID = "reading-companion-v1.7.2-claim-review-prototype"
 PIPELINE_MODE = os.environ.get("BOOK_CHATBOT_PIPELINE", "evidence").lower()
 if PIPELINE_MODE not in {"evidence", "direct", "grounded", "legacy"}:
     raise ValueError("BOOK_CHATBOT_PIPELINE must be evidence, direct, grounded, or legacy")
@@ -7180,9 +7180,9 @@ class Handler(BaseHTTPRequestHandler):
             conceptual_mode = False
             planning_stage = None
             if scope == "library":
-                if request_pipeline in {"grounded", "legacy"}:
+                if request_pipeline == "legacy":
                     self._json(400, {"error":
-                        "Across-library mode supports evidence-first or direct synthesis."})
+                        "Across-library mode does not support the legacy pipeline."})
                     return
                 try:
                     concept_plan = None
@@ -7304,6 +7304,10 @@ class Handler(BaseHTTPRequestHandler):
                                  "title": current_book["title"]}
                 payload["book"] = {"book_id": request_book_id,
                                    "title": current_book["title"]}
+                payload["scope"] = scope
+                if scope == "library":
+                    payload["library_discovery"] = discovery
+                    trace["library_discovery"] = discovery
                 trace["summary"] = summarize_diagnostics(trace)
                 # The new stages distinguish evidence absence, model support
                 # judgments, incomplete coverage, and malformed structures.
