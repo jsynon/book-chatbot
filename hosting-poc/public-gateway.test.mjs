@@ -593,14 +593,15 @@ test('evidence anchors preserve the speaker and conditional qualifier from the s
  const preview='Bees and ants can live sociably without a sovereign. '+
   'Additional background about political animals and shared interests. '.repeat(4)+
   'If a great multitude could observe justice without a common power to keep them in awe, there would be peace without subjection and no need for civil government.';
- const quote='If a great multitude could observe justice without a common power to keep them in awe';
+ const sentence='If a great multitude could observe justice without a common power to keep them in awe, there would be peace without subjection and no need for civil government.';
+ const quote='without a common power to keep them in awe, there would be peace without subjection';
  const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
   id:'S1',point:'Hobbes treats common power as necessary because people will not reliably keep peace unaided.',
   quote,speaker:'Hobbes',qualifier:'If a great multitude could observe justice without a common power'}
  ]}),[{id:'S1',preview}]);
  assert.deepEqual(review.evidenceMap,[{id:'S1',
   point:'Hobbes treats common power as necessary because people will not reliably keep peace unaided.',
-  quoteVerified:true,anchorQuote:quote,speaker:'Hobbes',
+  quoteVerified:true,anchorQuote:sentence,speaker:'Hobbes',
   qualifier:'If a great multitude could observe justice without a common power'}]);
  const bad=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
   id:'S1',point:'Hobbes treats common power as necessary.',quote:'People always need a king.',
@@ -1114,7 +1115,7 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
 test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
  const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
  assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
-  workerSourceBuild:'public-gateway-evidence-anchoring-v1',
+  workerSourceBuild:'public-gateway-evidence-context-v2',
   workerVersionId:metadata.id,workerVersionTag:metadata.tag,
   workerVersionTimestamp:metadata.timestamp
  });
@@ -1127,7 +1128,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(planned.status,200);
  assert.equal(planData.workerVersionId,metadata.id);
  assert.equal(planData.workerVersionTag,metadata.tag);
- assert.equal(planData.workerSourceBuild,'public-gateway-evidence-anchoring-v1');
+ assert.equal(planData.workerSourceBuild,'public-gateway-evidence-context-v2');
  const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
  const answered=await answerPilot.post();
  const answerData=await answered.json();
@@ -1176,7 +1177,7 @@ test('public evidence highlights follow a source-verified claim anchor',async()=
  assert.equal(data.evidenceHighlights[0].quote,anchor);
  assert.match(prompts[1][1].content,/speaker: Thucydides/);
  assert.match(prompts[1][1].content,/qualifier: was stated to be/);
- assert.match(prompts[1][1].content,/verified passage anchor/);
+ assert.match(prompts[1][1].content,/verified quote and sentence context/);
 });
 test('public pilot verifies and submits four source candidates to the bounded answer stage',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
@@ -2004,7 +2005,9 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[0].messages[0].content,/IDs may repeat only when the same passage supports a different point/);
  assert.match(calls[0].messages[0].content,/Treat footnotes, translator or editor notes, and introductions as separate speakers/);
  assert.match(calls[0].messages[0].content,/do not treat a translation note as Kierkegaard’s own distinction/);
- assert.match(calls[0].messages[0].content,/short exact quote copied from that same excerpt/);
+ assert.match(calls[0].messages[0].content,/exact quote copied from that same excerpt/);
+ assert.match(calls[0].messages[0].content,/record that reply as a separate evidence point/);
+ assert.match(calls[1].messages[0].content,/complete verified quote and sentence context together/);
  assert.match(calls[0].messages[0].content,/keep the condition and its consequence together/);
  assert.match(calls[0].messages[0].content,/actual differentiating criterion/);
  assert.match(calls[1].messages[0].content,/never detach a consequence from its “if,” “unless,” “only if,” or equivalent condition/);
