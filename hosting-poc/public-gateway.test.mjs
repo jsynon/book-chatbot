@@ -1515,6 +1515,42 @@ test('recognizes a cited reader synthesis when coverage calls the comparison uns
  assert.doesNotMatch(result.answer,/do not fully address/i);
 });
 
+test('repairs prose that denies a comparison while coverage marks it supported',async()=>{
+ const question='How do Aristotle and Hobbes explain political order, and how do their accounts differ?';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:12,
+   preview:'Political science aims at the human good and makes citizens good and obedient to laws.'},
+  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes',page:104,
+   preview:'Common power keeps people in awe so they may observe justice and the laws of nature.'}
+ ];
+ const calls=[];
+ const parts=[
+  {part:'Aristotle’s account of political order',status:'supported',evidenceIds:['S1']},
+  {part:'Hobbes’s account of political order',status:'supported',evidenceIds:['S2']},
+  {part:'How the accounts differ',status:'supported',evidenceIds:['S1','S2']}
+ ];
+ const refusal='Aristotle describes political order in terms of human good and citizens obeying laws [S1]. Hobbes describes common power as keeping people in awe so justice and natural law can be observed [S2]. The texts do not offer a direct comparison, and the evidence cannot establish a difference between their accounts [S1, S2].';
+ const repaired='Aristotle connects political order with the human good and with forming citizens who obey the laws [S1]. This frames civic order through the purpose political life should serve and the character citizens should develop. The passage therefore presents the good of the community as central to political inquiry, rather than describing authority only as a means of control.\n\nHobbes gives common power a different role: it keeps people in awe so that justice and the laws of nature can be observed [S2]. Political order here depends on an authority capable of securing obedience. The passage emphasizes the power needed to make shared rules effective, linking public order to the conditions for following them.\n\nThe accounts differ in their emphasis. Aristotle links political order to human good and civic formation, whereas Hobbes stresses common power as the means that sustains justice and obedience [S1, S2]. This contrast is a synthesis of the two supplied passages, each of which supports its own side. Together they point to a difference between the end political life should pursue and the authority that helps maintain order. The comparison stays within the emphasis visible in these excerpts.';
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',questionParts:parts,
+   evidence:[{id:'S1',point:'Aristotle connects political order with the human good and citizens.'},
+    {id:'S2',point:'Hobbes connects common power with justice and obedience.'}]
+  })}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:refusal,partChecks:parts})}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/Revise the answer to address each requested question part/);
+  assert.match(input.messages[1].content,/Initial answer and coverage check/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:repaired,partChecks:parts})}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[2].status,'supported');
+ assert.match(result.answer,/whereas Hobbes stresses common power/);
+ assert.doesNotMatch(result.answer,/evidence cannot establish a difference/);
+});
+
 test('repairs a 120-plus-word single paragraph when three parts are supported',async()=>{
  const question='According to Aristotle, what is practical wisdom, and how does it differ from science and art?';
  const sources=[
