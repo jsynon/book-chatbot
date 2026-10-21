@@ -757,8 +757,12 @@ export function sourceExcerpt(text,question,max=1080) {
   // an early-clause token limit can otherwise hide later named works.
   const lowerSentences=sentences.map(sentence=>sentence.toLowerCase());
   const edgeLabels=new Set();
-  const isShortLabel=sentence=>sentence.length<=80&&
-    !/\b(?:am|are|is|was|were|be|been|being|do|does|did|has|have|had|can|could|will|would|shall|should|may|might|must|because|although|while|when|where|which|who|that)\b/i.test(sentence);
+  const isShortLabel=sentence=>{
+    if(sentence.length>80)return false;
+    const tokens=sentence.match(/[A-Za-z][A-Za-z’'-]*/g)||[];
+    const internalCapitals=tokens.slice(1).filter(token=>/^[A-Z]/.test(token)).length;
+    return internalCapitals>=2||(tokens.length<=2&&internalCapitals>=1);
+  };
   // Scanned pages commonly begin or end with a short title/author line.
   // Keep those labels as context, but do not let them anchor the excerpt.
   for(let i=0;i<sentences.length&&i<3&&isShortLabel(sentences[i]);i++)edgeLabels.add(i);
