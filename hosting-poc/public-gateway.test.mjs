@@ -661,7 +661,7 @@ test('authentic sources flow through two calls and yield the canonical URL',asyn
  assert.equal(data.citations[0].page,38);
  assert.equal(data.citations[0].globalPageId,0);
  assert.equal(data.usage.neurons,12);
- assert.equal(data.reviewStatus,'citations_not_claim_verified');
+ assert.equal(data.reviewStatus,'claim_support_not_independently_verified');
 });
 test('truncated retrieved passage retains causal sentence rather than a short keyword hit',()=>{
  const text='Historical context before the conflict. '.repeat(10)+
@@ -1029,7 +1029,7 @@ test('v1.9.4 exact v47 source generates two bounded AI stages with canonical cit
  assert.equal(data.citations[0].page,38);
  assert(data.citations[0].url.includes(PDF));
  assert.equal(data.coverage,'partial');
- assert.equal(data.reviewStatus,'citations_not_claim_verified');
+ assert.equal(data.reviewStatus,'claim_support_not_independently_verified');
  assert.equal(data.usage.neurons,18);
  assert.equal(fixture.stats().aiCount,2);
  assert.equal(fixture.stats().fetchCount,1);
@@ -2250,7 +2250,7 @@ test('a final relation audit removes claims that a verified quote does not estab
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(calls.length,3);
  assert.equal(result.coverage,'partial');
- assert.equal(result.reviewStatus,'citations_not_claim_verified');
+ assert.equal(result.reviewStatus,'claim_support_not_independently_verified');
  assert.match(result.answer,/does not by itself establish a conflict between science and religion/);
  assert.match(result.answer,/that hypothetical does not settle whether a conflict exists/);
  assert.doesNotMatch(result.answer,/conflict over spiritual presences/);
