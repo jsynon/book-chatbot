@@ -212,17 +212,18 @@ test('same-book answers select complementary passages and synthesize every quest
  }};
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(inputs.length,2);
- assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
+ assert.match(inputs[0].messages[0].content,/up to six distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/use the questionParts checklist to make sure/);
  assert.match(inputs[1].messages[0].content,/For a distinction directly stated in an excerpt/);
  assert.match(inputs[1].messages[0].content,/normally have three to five complete sentences/);
  assert.match(inputs[1].messages[0].content,/exactly three developed, connected paragraphs/);
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
+ assert.match(inputs[1].messages[0].content,/usually about 120–180 words/);
  assert.match(inputs[1].messages[0].content,/avoid repetition, padding, and adjacent topics/);
  assert.match(inputs[1].messages[0].content,/should explain the point, its reason or distinction/);
  assert.match(inputs[1].messages[0].content,/do not force a one-item-per-paragraph outline/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
- assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to four/);
+ assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to six/);
  assert.equal(inputs[1].max_completion_tokens,1100);
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
@@ -972,7 +973,7 @@ async function fingerprintTestFixture() {
     hashAlgorithm:'SHA-256-utf8-exact',libraryVersion:47,
     bookId:'152',title:'History of the Peloponnesian War — Thucydides',
     pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
-    pages:[38,39,40,41].map((page,index)=>({page,globalPageId:34403+index,
+    pages:[38,39,40,41,42,43].map((page,index)=>({page,globalPageId:34403+index,
       utf8Bytes:bytes.byteLength,sha256}))};
  const url=HOST+'/internal/verified-answer',
     secret='valid-private-token-for-the-verified-pilot-456';
@@ -1308,51 +1309,55 @@ test('public evidence highlights follow a source-verified claim anchor',async()=
  assert.match(prompts[1][1].content,/qualifier: was stated to be/);
  assert.match(prompts[1][1].content,/verified quote and sentence context/);
 });
-test('public pilot verifies and submits four source candidates to the bounded answer stage',async()=>{
+test('public pilot verifies and submits six source candidates to the bounded answer stage',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===520){
      const submitted=input.messages.at(-1).content;
-     assert.match(submitted,/\[S4\].*physical PDF page 41/);
+     assert.match(submitted,/\[S6\].*physical PDF page 43/);
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-       coverage:'full',missing:'',evidence:[{id:'S4',point:'Relevant supported passage point.'}]})}}]};
+       coverage:'full',missing:'',evidence:[{id:'S6',point:'Relevant supported passage point.'}]})}}]};
    }
    return {choices:[{finish_reason:'stop',message:{content:
-     'The verified passage supports this explanation [S4].'}}]};
+     'The verified passage supports this explanation [S6].'}}]};
  }});
- const four=pilot.fixture.body.sources[0];
- const result=await pilot.post({body:{sources:[38,39,40,41].map(page=>({...four,page}))}});
+ const six=pilot.fixture.body.sources[0];
+ const result=await pilot.post({body:{sources:[38,39,40,41,42,43].map(page=>({...six,page}))}});
  assert.equal(result.status,200);
  const data=await result.json();
- assert.equal(data.verifiedPages,4);
+ assert.equal(data.verifiedPages,6);
  assert.equal(data.outcome,'verified-source-draft');
  assert.deepEqual(data.citations.map(source=>({id:source.id,page:source.page,
-   globalPageId:source.globalPageId})),[{id:'S4',page:41,globalPageId:34406}]);
- assert.equal(data.citations[0].url,'https://drive.google.com/file/d/'+PDF+'/view?usp=sharing#page=41');
+   globalPageId:source.globalPageId})),[{id:'S6',page:43,globalPageId:34408}]);
+ assert.equal(data.citations[0].url,'https://drive.google.com/file/d/'+PDF+'/view?usp=sharing#page=43');
  assert.equal(pilot.stats().verifyCalls,1);
  assert.equal(pilot.stats().calls,2);
 });
-test('public pilot selects and synthesizes four complementary pages from one book',async()=>{
+test('public pilot selects and synthesizes six complementary pages from one book',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===520){
      const submitted=input.messages.at(-1).content;
-     for(let i=1;i<=4;i++)assert.match(submitted,new RegExp('\\[S'+i+'\\].*physical PDF page '+(37+i)));
+     for(let i=1;i<=6;i++)assert.match(submitted,new RegExp('\\[S'+i+'\\].*physical PDF page '+(37+i)));
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-       coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'},{id:'S3',point:'Relevant supported passage point.'},{id:'S4',point:'Relevant supported passage point.'}]
+       coverage:'full',missing:'',evidence:[
+        {id:'S1',point:'First distinct supported point.'},{id:'S2',point:'Second distinct supported point.'},
+        {id:'S3',point:'Third distinct supported point.'},{id:'S4',point:'Fourth distinct supported point.'},
+        {id:'S5',point:'Fifth distinct supported point.'},{id:'S6',point:'Sixth distinct supported point.'}
+       ]
      })}}]};
    }
    assert.equal(input.max_completion_tokens,1100);
    const answer=input.messages.at(-1).content;
-   for(let i=1;i<=4;i++)assert(answer.includes('[S'+i+']'));
+   for(let i=1;i<=6;i++)assert(answer.includes('[S'+i+']'));
    return {choices:[{finish_reason:'stop',message:{content:
-     'The four passages provide distinct parts of the explanation [S1] [S2] [S3] [S4].'}}]};
+     'The six passages provide distinct parts of the explanation [S1] [S2] [S3] [S4] [S5] [S6].'}}]};
  }});
  const source=pilot.fixture.body.sources[0];
- const response=await pilot.post({body:{sources:[38,39,40,41].map(page=>({...source,page}))}});
+ const response=await pilot.post({body:{sources:[38,39,40,41,42,43].map(page=>({...source,page}))}});
  assert.equal(response.status,200);
  const result=await response.json();
- assert.equal(result.verifiedPages,4);
- assert.deepEqual(result.citations.map(item=>item.id),['S1','S2','S3','S4']);
- assert.deepEqual(result.citations.map(item=>item.page),[38,39,40,41]);
+ assert.equal(result.verifiedPages,6);
+ assert.deepEqual(result.citations.map(item=>item.id),['S1','S2','S3','S4','S5','S6']);
+ assert.deepEqual(result.citations.map(item=>item.page),[38,39,40,41,42,43]);
 });
 test('public pilot resolves grouped citation IDs and rejects unknown IDs in a group',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
