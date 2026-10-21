@@ -207,7 +207,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
 test('all-books planner assigns a named-work query to each side of a cross-work question',async()=>{
- const question="How does Darwin's On the Origin of Species explain inherited variation, and how does Hawking's A Brief History of Time use astronomical observations to explain black holes?";
+ const question="How does Darwin explain natural selection preserving favorable variations in On the Origin of Species, and how does Hawking use astronomical observations to support an explanation of black-hole phenomena in A Brief History of Time?";
  let prompt='';
  const ai={run:async(_model,input)=>{
    prompt=input.messages[0].content;
@@ -221,9 +221,10 @@ test('all-books planner assigns a named-work query to each side of a cross-work 
  const result=await planSearchQueries(question,'',ai);
  assert.match(prompt,/assign one query to each named source group/);
  assert.match(result.queries[0],/On the Origin of Species/i);
+ assert.match(result.queries[0],/natural selection|favorable variations/i);
  assert.match(result.queries[1],/A Brief History of Time/i);
  assert.doesNotMatch(result.queries[1],/On the Origin of Species/i);
- assert.match(result.queries[1],/astronomical observations|black holes/i);
+ assert.match(result.queries[1],/astronomical observations|black-hole phenomena/i);
 });
 
 test('selected-book planner preserves its own scope and model queries',async()=>{
