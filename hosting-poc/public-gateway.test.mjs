@@ -454,6 +454,71 @@ test('lowercase author surnames activate per-author evidence review for comparis
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
 });
+test('a report in one author’s book cannot stand as the other author’s primary evidence',()=>{
+ const question="what's the difference between the thought of kierkegaard and shestov?";
+ const sources=[
+  {id:'S1',bookId:'96',title:'Athens and Jerusalem — Lev Shestov',page:196,
+   preview:'Kierkegaard declared that Greek philosophy begins in wonder and Christian philosophy in despair.'},
+  {id:'S2',bookId:'192',title:'Philosophical Fragments — Søren Kierkegaard',page:57,
+   preview:'Consequences founded on a paradox are built over a yawning chasm.'}
+ ];
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',
+  questionParts:[
+   {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S1']},
+   {part:"Shestov's thought",status:'unsupported',evidenceIds:[]}
+  ],
+  evidence:[{id:'S1',point:'Shestov reports Kierkegaard’s distinction between Greek wonder and Christian despair.'}]
+ }),sources,question);
+ assert.equal(review.questionParts[0].status,'partial');
+ assert.deepEqual(review.questionParts[0].evidenceIds,['S1']);
+ assert.equal(review.questionParts[1].status,'unsupported');
+});
+test('author comparison repair replaces a secondary report with both authors’ own passages',async()=>{
+ const question="what's the difference between the thought of kierkegaard and shestov?";
+ const sources=[
+  {id:'S1',bookId:'192',title:'Philosophical Fragments — Søren Kierkegaard',page:57,
+   preview:'Consequences founded on a paradox are not to be appropriated as a settled estate, for their value rests upon the paradox.'},
+  {id:'S2',bookId:'96',title:'Athens and Jerusalem — Lev Shestov',page:196,
+   preview:'Kierkegaard declared that Greek philosophy begins in wonder and Christian philosophy in despair.'},
+  {id:'S3',bookId:'96',title:'Athens and Jerusalem — Lev Shestov',page:55,
+   preview:'The fear of freedom is a basic characteristic of human nature; people try to limit God by eternal principles, although divine thought is creative power.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[
+    {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S2']},
+    {part:"Shestov's thought",status:'unsupported',evidenceIds:[]}
+   ],
+   evidence:[{id:'S2',point:'Shestov reports Kierkegaard’s distinction between Greek wonder and Christian despair.'}]
+  })}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Shestov reports Kierkegaard’s contrast between Greek wonder and Christian despair [S2]. The submitted excerpts do not establish Shestov’s own position.',
+   partChecks:[
+    {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S2']},
+    {part:"Shestov's thought",status:'unsupported',evidenceIds:[]}
+   ]
+  })}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/prefer that author’s own submitted work/);
+  assert.match(input.messages[1].content,/Philosophical Fragments — Søren Kierkegaard/);
+  assert.match(input.messages[1].content,/Athens and Jerusalem — Lev Shestov, physical PDF page 55/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Kierkegaard’s Philosophical Fragments warns that consequences founded on a paradox lose their value if later generations treat them as an inherited settled estate [S1]. The passage says their meaning depends on keeping the paradox visible, like a city whose foundations would be forgotten at one’s peril. It therefore presents thought as returning to the original paradox rather than accepting inherited consequences uncritically. This shows one feature of Kierkegaard’s account in this text, though the excerpt does not define his whole philosophy [S1].\n\nShestov, by contrast, argues that human beings fear freedom and try to bind even God to eternal principles [S3]. He contrasts divine creative power with the human tendency to imitate and to accept rational limits. In the same passage he criticizes the idea that necessity makes some possibilities impossible even for God [S3]. The difference in emphasis is that Kierkegaard’s excerpt focuses on preserving the paradox, while Shestov challenges the rational necessity that would restrict creative freedom. This is a synthesis of these passages, not a direct exchange between the authors [S1, S3].',
+   partChecks:[
+    {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S1']},
+    {part:"Shestov's thought",status:'supported',evidenceIds:['S3']}
+   ]
+  })}}],usage:{neurons:4}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S3']);
+ assert.match(result.answer,/Shestov, by contrast, argues that human beings fear freedom/);
+});
 test('separately supported accounts can support a cross-work synthesis',async()=>{
  const question="How does Aristotle's Nicomachean Ethics differ from Hobbes's Leviathan on what secures political order?";
  const sources=[
@@ -1724,7 +1789,7 @@ test('named-author comparison repairs an omitted side from a submitted source an
    ]
   })}}],usage:{neurons:3}};
   if(calls.length===3){
-   assert.match(input.messages[0].content,/passage from that author’s own work may support that side/);
+   assert.match(input.messages[0].content,/prefer that author’s own submitted work/);
    assert.match(input.messages[1].content,/Beyond reason and knowledge/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
     answer:'Kierkegaard’s passage presents faith as a paradox in which the individual can stand in an absolute relation to God beyond the ethical universal [S2]. Shestov argues that universal necessity and rational knowledge constrain human freedom, and he calls for a struggle to break their power [S1]. Read together, the passages suggest a difference in emphasis: Kierkegaard focuses on the individual’s paradoxical relation to God, while Shestov attacks the rule of necessary truths and stresses freedom beyond reason. This is a comparison of the supplied passages, not a claim that either author directly compared them.',
