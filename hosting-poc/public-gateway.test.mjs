@@ -589,6 +589,39 @@ test('long dialogue excerpts keep the reporting speaker and the reply qualificat
  assert(preview.length<=1080);
 });
 
+test('evidence anchors preserve the speaker and conditional qualifier from the same verified excerpt',()=>{
+ const preview='Bees and ants can live sociably without a sovereign. '+
+  'Additional background about political animals and shared interests. '.repeat(4)+
+  'If a great multitude could observe justice without a common power to keep them in awe, there would be peace without subjection and no need for civil government.';
+ const quote='If a great multitude could observe justice without a common power to keep them in awe';
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
+  id:'S1',point:'Hobbes treats common power as necessary because people will not reliably keep peace unaided.',
+  quote,speaker:'Hobbes',qualifier:'If a great multitude could observe justice without a common power'}
+ ]}),[{id:'S1',preview}]);
+ assert.deepEqual(review.evidenceMap,[{id:'S1',
+  point:'Hobbes treats common power as necessary because people will not reliably keep peace unaided.',
+  quoteVerified:true,anchorQuote:quote,speaker:'Hobbes',
+  qualifier:'If a great multitude could observe justice without a common power'}]);
+ const bad=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
+  id:'S1',point:'Hobbes treats common power as necessary.',quote:'People always need a king.',
+  speaker:'Hobbes',qualifier:'unless the moon is full'
+ }]}),[{id:'S1',preview}]);
+ assert.equal(bad.evidenceMap[0].quoteVerified,false);
+ assert.equal('anchorQuote' in bad.evidenceMap[0],false);
+ assert.equal('qualifier' in bad.evidenceMap[0],false);
+});
+
+test('evidence-focused highlights choose the cited point instead of a topical opening',()=>{
+ const text='Bees and ants live sociably one with another. '+
+  'Background about their appetites and natural agreement. '.repeat(5)+
+  'If a great multitude could observe justice without a common power to keep them in awe, there would be peace without subjection and no need for civil government.';
+ const evidence='Without a common power to keep them in awe, Hobbes says people live in conflict; peace without subjection is only the hypothetical condition in which they could all observe justice.';
+ const quote=sourceExcerpt(text,evidence,320);
+ assert.match(quote,/common power to keep them in awe/i);
+ assert.match(quote,/If a great multitude could observe justice/i);
+ assert.doesNotMatch(quote,/Bees and ants/);
+});
+
 test('long source excerpts without searchable question terms end on sentence boundaries',()=>{
  const text='A complete sentence gives background. '.repeat(8);
  const preview=sourceExcerpt(text,'the and for',82);
@@ -1081,7 +1114,7 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
 test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
  const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
  assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
-  workerSourceBuild:'public-gateway-source-excerpt-relevance-v1',
+  workerSourceBuild:'public-gateway-evidence-anchoring-v1',
   workerVersionId:metadata.id,workerVersionTag:metadata.tag,
   workerVersionTimestamp:metadata.timestamp
  });
@@ -1094,7 +1127,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(planned.status,200);
  assert.equal(planData.workerVersionId,metadata.id);
  assert.equal(planData.workerVersionTag,metadata.tag);
- assert.equal(planData.workerSourceBuild,'public-gateway-source-excerpt-relevance-v1');
+ assert.equal(planData.workerSourceBuild,'public-gateway-evidence-anchoring-v1');
  const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
  const answered=await answerPilot.post();
  const answerData=await answered.json();
@@ -1121,6 +1154,29 @@ test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounde
  assert.equal(pilot.stats().limitCalls,2);
  assert.equal(pilot.stats().verifyCalls,1);
  assert.equal(pilot.stats().calls,2);
+});
+test('public evidence highlights follow a source-verified claim anchor',async()=>{
+ const anchor='The deeper cause of the war was stated to be anxiety over political change.';
+ const prompts=[];
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   prompts.push(input.messages);
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',evidence:[{id:'S1',
+       point:'The underlying cause was anxiety over political change.',quote:anchor,
+       speaker:'Thucydides',qualifier:'was stated to be'}]
+   })}}]};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'Thucydides identifies anxiety over political change as the deeper cause [S1].'}}]};
+ }});
+ const response=await pilot.post();
+ assert.equal(response.status,200);
+ const data=await response.json();
+ assert.equal(data.evidenceMap[0].quoteVerified,true);
+ assert.equal(data.evidenceMap[0].anchorQuote,anchor);
+ assert.equal(data.evidenceHighlights[0].quote,anchor);
+ assert.match(prompts[1][1].content,/speaker: Thucydides/);
+ assert.match(prompts[1][1].content,/qualifier: was stated to be/);
+ assert.match(prompts[1][1].content,/verified passage anchor/);
 });
 test('public pilot verifies and submits four source candidates to the bounded answer stage',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
@@ -1916,9 +1972,9 @@ test('review keeps concise source-linked points for answer synthesis',()=>{
    {id:'S2',point:'The passage connects faith with the possibility of offense.'}]}),sources);
  assert.deepEqual(review.selected.map(source=>source.id),['S1','S2']);
  assert.deepEqual(review.evidenceMap,[
-  {id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.'},
-  {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'},
-  {id:'S2',point:'The passage connects faith with the possibility of offense.'}
+  {id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.',quoteVerified:false},
+  {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.',quoteVerified:false},
+  {id:'S2',point:'The passage connects faith with the possibility of offense.',quoteVerified:false}
  ]);
 });
 
@@ -1937,7 +1993,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  }};
  const result=await composeVerifiedAnswer('What does Kierkegaard say about faith?',sources,ai);
  assert.equal(calls.length,2);
- assert.deepEqual(result.evidenceMap,[{id:'S1',point:'Christianity makes faith the opposite of sin, not virtue.'}]);
+ assert.deepEqual(result.evidenceMap,[{id:'S1',point:'Christianity makes faith the opposite of sin, not virtue.',quoteVerified:false}]);
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
  assert.match(calls[0].messages[0].content,/Keep each point atomic: one claim per point/);
@@ -1948,6 +2004,10 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[0].messages[0].content,/IDs may repeat only when the same passage supports a different point/);
  assert.match(calls[0].messages[0].content,/Treat footnotes, translator or editor notes, and introductions as separate speakers/);
  assert.match(calls[0].messages[0].content,/do not treat a translation note as Kierkegaard’s own distinction/);
+ assert.match(calls[0].messages[0].content,/short exact quote copied from that same excerpt/);
+ assert.match(calls[0].messages[0].content,/keep the condition and its consequence together/);
+ assert.match(calls[0].messages[0].content,/actual differentiating criterion/);
+ assert.match(calls[1].messages[0].content,/never detach a consequence from its “if,” “unless,” “only if,” or equivalent condition/);
  assert.match(calls[1].messages[0].content,/The evidence map is authoritative about this distinction/);
  assert.match(calls[1].messages[0].content,/do not turn a translator’s lexical gloss or capitalization convention into a claim about Kierkegaard’s theory/);
  assert.match(calls[1].messages[0].content,/State the central account once/);
