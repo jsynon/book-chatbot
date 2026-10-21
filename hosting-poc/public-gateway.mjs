@@ -1353,6 +1353,15 @@ function reconcileQuestionParts(questionParts,partChecks,answer) {
 function isComparisonQuestionPart(label){
   return /\b(?:compare|comparison|contrast|differ|difference|different|distinguish)\b/i.test(String(label||''));
 }
+function hasUncitedRequestedSourceGroup(groups,sources,answer){
+  if(!Array.isArray(groups)||groups.length<2)return false;
+  const citedIds=new Set([...String(answer||'').matchAll(/\[([^\]]+)\]/g)]
+    .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
+  return groups.some(group=>{
+    const groupSources=sources.filter(source=>group.bookIds.has(String(source.bookId)));
+    return groupSources.length>0&&!groupSources.some(source=>citedIds.has(source.id));
+  });
+}
 function answerContradictsSupportedPart(part,answer){
   if(part?.status!=='supported'||!isComparisonQuestionPart(part.part))return false;
   const text=String(answer||'');
@@ -1695,7 +1704,9 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     const hasUnassignedReviewedEvidence=[...mappedEvidenceIds].some(id=>!assignedEvidenceIds.has(id));
     const comparisonRequested=sourceGroups.length>1&&
       /\b(?:compare|comparison|contrast|differ|difference|different|versus|vs\.)\b/i.test(question);
-    const needsPartRepair=finalQuestionParts.some((part,index)=>{
+    // Recover a named work that was submitted but omitted by evidence selection.
+    const missingRequestedSourceGroup=hasUncitedRequestedSourceGroup(sourceGroups,sources,answer);
+    const needsPartRepair=missingRequestedSourceGroup||finalQuestionParts.some((part,index)=>{
       const hasSupportedEvidenceForEveryGroup=comparisonRequested&&
         sourceGroups.every(group=>finalQuestionParts.some(other=>other!==part&&
           other.status==='supported'&&(other.evidenceIds||[]).some(id=>sources.some(source=>
@@ -1716,7 +1727,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       try{repairedParts=await ai.run(MODEL,{
         messages:[
           {role:'system',content:
-            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. For an explicit comparison part, synthesize a concise contrast only when separately supported parts establish every requested side; cite each side and do not imply either author made the comparison. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
+            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. When a passage reports one character or speaker describing another’s view, attribute that description to the reporting speaker; distinguish it from the other speaker’s own reply or qualification. For an explicit comparison part, synthesize a concise contrast only when separately supported parts establish every requested side; cite each side and do not imply either author made the comparison. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
           {role:'user',content:
             'Question:\n'+question+'\n\nQuestion parts and evidence review status:\n'+
             review.questionParts.map(part=>'- '+part.part+' — '+part.status+
