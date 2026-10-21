@@ -1294,6 +1294,10 @@ function normalizedPartLabel(value) {
   return String(value||'').normalize('NFKC').toLocaleLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 }
+function sourceHasMeaningfulQualifier(source){
+  return /\b(?:until|unless|except|only|at least|no more than|rather than|although|even if|provided that|insofar as|because)\b/i
+    .test(String(source?.preview||''));
+}
 function sourceMentionsPart(part,sources) {
   const ignored=new Set(['about','after','also','among','both','each','explain',
     'from','into','more','part','role','same','that','their','them','then',
@@ -1381,6 +1385,12 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'A passage about an author is not automatically that author speaking: if the excerpt identifies a commentator, translator, narrator, or another speaker, attribute it accordingly. If the speaker is unclear, say so rather than assigning the claim to the author named in the catalog. '+
       'Treat footnotes, translator or editor notes, and introductions as separate speakers. If relevant, phrase the point as editorial context, such as “the translator’s note says”; do not treat a translation note as Kierkegaard’s own distinction or as direct evidence of his position unless the main text independently states it. '+
       'Never turn a statement that the text does not discuss a subject into a substantive claim about that subject. Do not infer how a sentence continues when the excerpt ends with an ellipsis, an unfinished clause, or a dangling word such as except, but, or because. Such a fragment cannot establish the missing thought. '+
+      'For a comparison between separately named works or authors, treat each '+
+      'side as its own requested component. A passage can support its own '+
+      'side without explicitly comparing it to the other work; when both sides '+
+      'are directly supported, mark both supported and allow the reader-facing '+
+      'answer to synthesize their difference while attributing each claim to '+
+      'its source. Do not require an author to make the comparison themselves. '+
       'Break every question into one to four distinct requested components and check '+
       'each component against the excerpts. For each component, return a '+
       'questionParts item with a short task-fragment label, status '+
@@ -1498,10 +1508,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Use prior conversation only to resolve references; '+
         'it is not evidence and must not support factual claims. Distinguish what the author says from your own '+ 
         'inference. A book record naming an author does not prove that every passage is the author’s own prose: attribute explicit commentary, translation notes, narrator speech, and reported opinions to their visible speaker. If the speaker is unclear, state that limitation. Treat footnotes, translator or editor notes, and introductions as separate speakers. The evidence map is authoritative about this distinction: label editorial points as such, and do not turn a translator’s lexical gloss or capitalization convention into a claim about Kierkegaard’s theory. '+
-        'Do not turn “the text has nothing to say about X” into a claim about what the author believed about X. Never complete a dangling clause or infer the words after an ellipsis or “except”; state that the excerpt is incomplete when that matters. '+
+        'Do not turn “the text has nothing to say about X” into a claim about what the author believed about X. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; do not remove them when paraphrasing a negated or limited claim, because that can reverse its meaning. Never complete a dangling clause or infer the words after an ellipsis or “except”; state that the excerpt is incomplete when that matters. '+
         'Do not invent facts, quotations, page numbers or sources. '+ 
         'Before writing, inspect EVERY verified excerpt, including any passage the evidence review did not select or marked partial/unsupported. The review checklist can miss a relevant passage. If an excerpt directly addresses a requested part, explain what it establishes and cite it; never say the passages contain no information about that part when they do. '+ 
-        'Return one compact JSON object with keys answer and partChecks. partChecks must contain exactly one object for every requested question-part label, copying each label exactly, with status (supported|partial|unsupported) and evidenceIds. Mark a part supported only when the answer explicitly explains it using the cited excerpt; mark it partial when the excerpt supports only part of the requested explanation; mark unsupported only when no verified excerpt supports it. Use only valid source IDs. Check that every supported part is actually explained in the answer before returning. '+ 
+        'Return one compact JSON object with keys answer and partChecks. partChecks must contain exactly one object for every requested question-part label, copying each label exactly, with status (supported|partial|unsupported) and evidenceIds. Mark a part supported only when the answer explicitly explains it using the cited excerpt; mark it partial when the excerpt supports only part of the requested explanation; mark unsupported only when no verified excerpt supports it. For a requested comparison across separately named works, each cited excerpt need only establish its own side; when the answer accurately attributes and cites both supported sides, it may synthesize the comparison without claiming either author made it. Mark the comparison supported when both requested sides are explicitly explained. For a distinction directly stated in an excerpt, an accurate paraphrase of that distinction is sufficient; do not mark it partial just because the answer adds no further example. Use only valid source IDs. Check that every supported part is actually explained in the answer before returning. '+ 
         'Paraphrase by default. Use quotation marks only for an exact phrase copied '+ 
         'from a verified excerpt; never use them for emphasis or invented wording. '+ 
         'Put [S1], [S2], etc. immediately after statements supported by those '+ 
@@ -1529,7 +1539,12 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'definition subordinate unless they clarify the account. Preserve stated '+
         'relations precisely; do not turn “X is the opposite of Y, not Z” into a '+
         'claim that X is not a kind of Z. Keep distinct claims '+ 
-        'separate; do not combine two reviewed points into a single definition, '+ 
+        'separate; for an explicitly requested comparison across works, combine '+
+        'separately supported and attributed positions into a clearly identified '+
+        'reader synthesis, citing each side; do not present that synthesis as '+
+        'a direct statement by either author. A direct textual distinction can '+
+        'be answered with a concise accurate paraphrase without adding an '+
+        'unsupported explanation or example. do not combine two reviewed points into a single definition, '+ 
         'opposition, cause, or equivalence unless the excerpt explicitly states '+ 
         'that relation. Explain connections cautiously and do not restate the '+ 
         'same point in multiple sentences. Avoid a book-by-book list of disconnected '+
@@ -1572,13 +1587,16 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     const needsPartRepair=finalQuestionParts.some((part,index)=>
       (review.questionParts[index].status==='supported'&&part.status!=='supported')||
       (review.questionParts[index].status==='partial'&&part.status==='unsupported')||
+      (review.questionParts[index].status==='partial'&&part.status==='partial'&&
+        (part.evidenceIds||[]).some(id=>sourceHasMeaningfulQualifier(
+          sources.find(source=>source.id===id))))||
       (part.status==='unsupported'&&sourceMentionsPart(part.part,sources)));
     if(needsPartRepair){
       let repairedParts;
       try{repairedParts=await ai.run(MODEL,{
         messages:[
           {role:'system',content:
-            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve accurate existing material and the requested scope. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
+            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
           {role:'user',content:
             'Question:\n'+question+'\n\nQuestion parts and evidence review status:\n'+
             review.questionParts.map(part=>'- '+part.part+' — '+part.status+
@@ -1816,6 +1834,47 @@ function containsPhrase(query,phrase){
 // AI-assisted SOURCE DISCOVERY ONLY. No facts, page numbers, citations or
 // book excerpts here: the website still retrieves the original v47 text and
 // the existing answer endpoint must independently verify exact SHA-256 pages.
+function namedGroupQueryTargets(question,bookTitle){
+  if(bookTitle)return [];
+  const groups=requestedSourceGroups(question,[]);
+  if(groups.length!==2)return [];
+  const text=String(question||'');
+  const {titleBooks,authorBooks}=sourceGroupMetadata();
+  const mentionFor=group=>{
+    const titleMentions=[];
+    for(const [key,value] of titleBooks){
+      if(![...value.bookIds].some(id=>group.bookIds.has(String(id))))continue;
+      const index=text.toLocaleLowerCase().indexOf(key.toLocaleLowerCase());
+      if(index>=0)titleMentions.push({phrase:text.slice(index,index+key.length),index,end:index+key.length});
+    }
+    const authorMentions=[];
+    for(const author of authorBooks.values()){
+      if(![...author.bookIds].some(id=>group.bookIds.has(String(id))))continue;
+      for(const phrase of [author.name,author.surname]){
+        const index=text.toLocaleLowerCase().indexOf(phrase.toLocaleLowerCase());
+        if(index>=0)authorMentions.push({phrase:text.slice(index,index+phrase.length),index,end:index+phrase.length});
+      }
+    }
+    return titleMentions.sort((a,b)=>a.index-b.index)[0]||
+      authorMentions.sort((a,b)=>a.index-b.index)[0]||null;
+  };
+  const mentions=groups.map(group=>({mention:mentionFor(group)})).filter(item=>item.mention)
+    .sort((a,b)=>a.mention.index-b.mention.index);
+  if(mentions.length!==2)return [];
+  const stopWords=new Set(('a an and are as at be because by can do does for from how in into is it of on or that the their them there these this to use using what when where which while with').split(' '));
+  return mentions.map((item,index)=>{
+    const next=mentions[index+1]?.mention.index??text.length;
+    const facet=text.slice(item.mention.end,next).replace(/^[\s,;:—–-]*(?:and|or|but|while|whereas)?[\s,;:—–-]*/i,'');
+    let terms=facet.match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu)||[];
+    terms=terms.filter(term=>!stopWords.has(term.toLocaleLowerCase())&&term.length>2);
+    if(terms.length<2){
+      terms=(text.match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu)||[])
+        .filter(term=>!stopWords.has(term.toLocaleLowerCase())&&term.length>2);
+    }
+    return {phrase:item.mention.phrase,query:[item.mention.phrase,...terms.slice(0,7)].join(' ').trim()};
+  });
+}
+
 export async function planSearchQueries(question,bookTitle,ai,history=[]){
   const response=await ai.run(MODEL,{
     messages:[
@@ -1847,7 +1906,13 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'questions, seek observations and predictions about that same subject. '+
         'One query should seek evidence for each part. When the reader names authors or '+
         'works, retain the relevant name in its corresponding query so source '+
-        'discovery can distinguish books in the full library. Do not simply '+
+        'discovery can distinguish books in the full library. For a question '+
+        'about two explicitly named works or authors, assign one query to each '+
+        'named source group and include that group’s work or author name plus '+
+        'its own requested facet. Do not write both queries about the first '+
+        'work; keep each clause attached to the work or author it describes. '+
+        'This rule applies when searching all books; for one selected work, '+
+        'keep the shared subject in both complementary queries. Do not simply '+
         'copy the question or fill queries with generic words. Do not invent '+
         'authors or works. No answers or invented citations. '+
         'When a follow-up uses a reference such as "this account", "that idea", '+
@@ -1876,6 +1941,14 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
        /^[\p{L}\p{N} .,;:'"?!()\-–]+$/u.test(q)))
     throw new Error('Invalid search plan');
   const queries=options.map(q=>q.trim().replace(/\s+/g,' '));
+  const namedTargets=namedGroupQueryTargets(question,bookTitle);
+  if(namedTargets.length===2){
+    const matches=(query,target)=>containsSourceGroupPhrase(query,target.phrase);
+    if(matches(queries[0],namedTargets[1])&&matches(queries[1],namedTargets[0]))queries.reverse();
+    else if(!matches(queries[0],namedTargets[0])||!matches(queries[1],namedTargets[1])){
+      for(let index=0;index<2;index++)queries[index]=namedTargets[index].query;
+    }
+  }
   if(queries[0].toLowerCase()===queries[1].toLowerCase())
     throw new Error('Duplicate search queries');
   const phrase=definitionPhrase(question);
