@@ -2210,3 +2210,45 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map and keep it concise/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
 });
+
+test('a final relation audit removes claims that a verified quote does not establish',async()=>{
+ const question='Is there a conflict between science and religion?';
+ const sources=[
+  {id:'S1',bookId:'38',title:'The Varieties of Religious Experience — William James',page:258,
+   preview:'Not only are the other sciences and the philosophy still far from being completed, but in their present state we find them full of conflicts.'},
+  {id:'S2',bookId:'317',title:'History of the Conflict Between Religion and Science — John William Draper',page:317,
+   preview:'Had that intention been accomplished, there would have been at this day no conflict between science and religion.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The passages do not settle the general relationship.',
+   evidence:[
+    {id:'S1',point:'James describes conflicts between sciences and philosophy.',
+     quote:'in their present state we find them full of conflicts.'},
+    {id:'S2',point:'Draper describes a counterfactual absence of conflict.',
+     quote:'Had that intention been accomplished, there would have been at this day no conflict between science and religion.'}
+   ]
+  })}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'James says science and religion conflict over spiritual presences [S1]. Draper says this conflict could have been avoided [S2].',
+   partChecks:[]
+  })}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/A literal quote match does not verify a stronger paraphrase/);
+  assert.match(input.messages[0].content,/a different conflict does not establish the requested relation/);
+  assert.match(input.messages[1].content,/All verified source excerpts/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'James describes conflicts between the sciences and philosophy, which does not by itself establish a conflict between science and religion [S1]. Draper imagines a counterfactual in which a religious council would have prevented such a conflict; that hypothetical does not settle whether a conflict exists [S2].',
+   partChecks:[]
+  })}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.reviewStatus,'citations_not_claim_verified');
+ assert.match(result.answer,/does not by itself establish a conflict between science and religion/);
+ assert.match(result.answer,/that hypothetical does not settle whether a conflict exists/);
+ assert.doesNotMatch(result.answer,/conflict over spiritual presences/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+});

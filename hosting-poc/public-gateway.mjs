@@ -1174,6 +1174,10 @@ function enforceRequestedSourceGroups(review,question,sources){
 function questionRequiresPartTracking(question){
   return /\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|relationship between|and how|and why|and what|as well as|versus|vs\.?)\b/i.test(String(question||''));
 }
+function questionNeedsRelationClaimAudit(question){
+  return /\b(?:conflict|compatib\w*|incompatib\w*|relationship|relation|influenc\w*|oppos\w*)\s+(?:between|among|of|with|to)\b/i
+    .test(String(question||''));
+}
 function parseQuestionParts(values,selected){
   if(!Array.isArray(values)||values.length<1||values.length>4)
     throw new Error('Invalid question-part coverage');
@@ -2089,6 +2093,64 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     finalMissing=questionPartMissingNote(finalQuestionParts)||finalMissing;
   }
   answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
+  // A verified quote proves that the words occur in the indexed passage; it
+  // does not prove that the answer's paraphrase or claimed relation follows
+  // from those words. Relation questions get a final pass over the finished
+  // prose and every submitted excerpt before citations are returned.
+  if(questionNeedsRelationClaimAudit(question)){
+    let audited;
+    try{audited=await ai.run(MODEL,{
+      messages:[
+        {role:'system',content:
+          'Audit and correct the finished answer against the supplied excerpts. '+
+          'For each sentence, check whether its exact claim and any relation it '+
+          'asserts are supported by the cited excerpt. A literal quote match '+
+          'does not verify a stronger paraphrase. For questions about a relation '+
+          'between concepts, an excerpt about only one concept or a different '+
+          'conflict does not establish the requested relation. Preserve '+
+          'hypotheticals as hypothetical. Remove or qualify unsupported claims; '+
+          'use all excerpts to correct omissions, but do not add background '+
+          'facts. Keep only citations whose excerpts support the nearby claims. '+
+          'Set each requested part to supported only if the corrected answer '+
+          'answers it with direct excerpt support; otherwise set it partial or '+
+          'unsupported and use only IDs that support the remaining claim. Return '+
+          'one JSON object with answer and partChecks, using exactly the supplied '+
+          'part labels.'},
+        {role:'user',content:
+          'Question:\n'+question+'\n\nFinished answer to audit:\n'+answer+
+          '\n\nRequested parts and current status:\n'+
+          finalQuestionParts.map(part=>'- '+part.part+' — '+part.status+
+            ' [evidence: '+(part.evidenceIds.join(', ')||'none')+']').join('\n')+
+          '\n\nAll verified source excerpts:\n'+
+          sources.map(source=>'['+source.id+'] '+source.title+
+            ', physical PDF page '+source.page+'\n'+source.preview).join('\n\n')}
+      ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:900,
+    });}catch(error){throw answerFailure('relation-claim-audit-request-failed',{
+      stage:'relation-claim-audit',...inferenceFailureDiagnostics(error)});}
+    if(['length','max_tokens'].includes(audited?.choices?.[0]?.finish_reason))
+      throw answerFailure('relation-claim-audit-truncated');
+    const auditedDraft=parseComposedDraft(modelText(audited),sources);
+    if(!auditedDraft.structured||!auditedDraft.answer)
+      throw answerFailure('relation-claim-audit-invalid');
+    if(auditedDraft.answer.length>2400)
+      throw answerFailure('relation-claim-audit-too-long');
+    if(finalQuestionParts.length&&auditedDraft.partChecks.length!==finalQuestionParts.length)
+      throw answerFailure('relation-claim-audit-incomplete');
+    answer=auditedDraft.answer;
+    if(auditedDraft.partChecks.length){
+      finalQuestionParts=reconcileQuestionParts(finalQuestionParts,
+        auditedDraft.partChecks,answer);
+      finalQuestionParts=enforceAuthorEvidenceByQuestionPart(
+        finalQuestionParts,question,sources);
+      if(finalQuestionParts.some(part=>part.status!=='supported')){
+        finalCoverage='partial';
+        finalMissing=questionPartMissingNote(finalQuestionParts)||finalMissing;
+      }
+      answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
+    }
+    answerNeurons+=Math.max(0,Number(audited?.usage?.neurons)||0);
+    second=audited;
+  }
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
   // Models sometimes group citations, e.g. [S1, S3]. Audit every source ID
   // inside each bracket group so an unknown citation cannot slip through
