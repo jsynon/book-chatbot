@@ -5,6 +5,7 @@
   "name": "antilogicalism-companion-public",
   "main": "./hosting-poc/public-gateway.mjs",
   "compatibility_date": "2026-10-18",
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "workers_dev": true,
   "ai": { "binding": "AI" },
   "vars": {
