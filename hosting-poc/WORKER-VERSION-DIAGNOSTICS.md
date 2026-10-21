@@ -2,7 +2,7 @@
 
 The public pilot planner and answer endpoints include these diagnostic fields:
 
-- `workerSourceBuild`: identifies the source instrumentation build.
+- `workerSourceBuild`: identifies the source-level behavior milestone included in the deployment. Update this marker when deploying a diagnostic or repair change so a live report can confirm which behavior is active.
 - `workerVersionId`: Cloudflare's immutable Worker version ID.
 - `workerVersionTag` and `workerVersionTimestamp`: optional Cloudflare metadata.
 

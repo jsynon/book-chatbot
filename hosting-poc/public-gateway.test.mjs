@@ -298,6 +298,44 @@ test('repairs an omitted but retrieved named-work passage before claiming it has
  assert.match(result.answer,/observed gamma-ray background/);
  assert.doesNotMatch(result.answer,/contains no information about Hawking/i);
 });
+test('still repairs an omitted retrieved work when the first answer lacks structured part checks',async()=>{
+ const question='How does Darwin explain natural selection in On the Origin of Species, and how does Hawking use observations in A Brief History of Time?';
+ const sources=[
+  {id:'S1',bookId:'529',title:'On the Origin of Species — Charles Darwin',page:96,
+   preview:'Darwin explains that natural selection preserves favorable individual variations.'},
+  {id:'S2',bookId:'102',title:'A Brief History of Time — Stephen Hawking',page:58,
+   preview:'Hawking compares the observed gamma-ray background with radiation expected from primordial black holes.'}
+ ];
+ const labels=['Darwin’s explanation of natural selection','Hawking’s use of observations'];
+ const inputs=[];
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);
+  if(inputs.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'Hawking is not covered.',questionParts:[
+    {part:labels[0],status:'supported',evidenceIds:['S1']},
+    {part:labels[1],status:'unsupported',evidenceIds:[]}
+   ],evidence:[{id:'S1',point:'Natural selection preserves favorable variation.'}]
+  })}}]};
+  if(inputs.length===2)return {choices:[{finish_reason:'stop',message:{content:
+   'Darwin says natural selection preserves favorable variations [S1]. The provided passages contain no information about Hawking.'}}]};
+  assert.equal(inputs.length,3);
+  assert.match(input.messages[1].content,/provided passages contain no information about Hawking/);
+  assert.match(input.messages[1].content,/page 58/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Darwin explains that natural selection preserves favorable variations [S1]. Hawking compares observed gamma rays with radiation expected from primordial black holes [S2].',
+   partChecks:[
+    {part:labels[0],status:'supported',evidenceIds:['S1']},
+    {part:labels[1],status:'supported',evidenceIds:['S2']}
+   ]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(inputs.length,3);
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.match(result.answer,/compares observed gamma rays/);
+});
 test('repairs literary summaries that blur a character theory with another speaker’s account',async()=>{
  const question='In Crime and Punishment, how does Raskolnikov try to justify murder, and how does the novel test or undermine his reasoning?';
  const sources=[
@@ -998,7 +1036,7 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
 test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
  const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
  assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
-  workerSourceBuild:'public-gateway-worker-version-diagnostics-v1',
+  workerSourceBuild:'public-gateway-source-group-repair-v2',
   workerVersionId:metadata.id,workerVersionTag:metadata.tag,
   workerVersionTimestamp:metadata.timestamp
  });
@@ -1011,7 +1049,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(planned.status,200);
  assert.equal(planData.workerVersionId,metadata.id);
  assert.equal(planData.workerVersionTag,metadata.tag);
- assert.equal(planData.workerSourceBuild,'public-gateway-worker-version-diagnostics-v1');
+ assert.equal(planData.workerSourceBuild,'public-gateway-source-group-repair-v2');
  const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
  const answered=await answerPilot.post();
  const answerData=await answered.json();

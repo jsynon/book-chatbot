@@ -688,7 +688,7 @@ export function workerVersionDiagnostics(env={}) {
   const metadata=env?.CF_VERSION_METADATA;
   const safe=(value,limit=128)=>typeof value==='string'&&value.length>0&&value.length<=limit?value:null;
   return {
-    workerSourceBuild:'public-gateway-worker-version-diagnostics-v1',
+    workerSourceBuild:'public-gateway-source-group-repair-v2',
     workerVersionId:safe(metadata?.id),
     workerVersionTag:safe(metadata?.tag),
     workerVersionTimestamp:safe(metadata?.timestamp,64),
@@ -1696,9 +1696,13 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let finalQuestionParts=review.questionParts||[];
   let finalCoverage=review.coverage;
   let finalMissing=review.missing;
-  if(composed.structured&&finalQuestionParts.length){
-    finalQuestionParts=reconcileQuestionParts(finalQuestionParts,composed.partChecks,answer);
-    finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
+  if(finalQuestionParts.length){
+    // Keep the bounded coverage repair available when the answer model returns
+    // usable prose but malformed or missing structured part checks.
+    if(composed.structured){
+      finalQuestionParts=reconcileQuestionParts(finalQuestionParts,composed.partChecks,answer);
+      finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
+    }
     const mappedEvidenceIds=new Set((review.evidenceMap||[]).map(item=>item.id));
     const assignedEvidenceIds=new Set(finalQuestionParts.flatMap(part=>part.evidenceIds||[]));
     const hasUnassignedReviewedEvidence=[...mappedEvidenceIds].some(id=>!assignedEvidenceIds.has(id));
