@@ -207,7 +207,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
 test('all-books planner assigns a named-work query to each side of a cross-work question',async()=>{
- const question="How does Darwin's On the Origin of Species explain inherited variation, and how does Hawking's A Brief History of Time use astronomical observations to explain black holes?";
+ const question="How does Darwin explain natural selection preserving favorable variations in On the Origin of Species, and how does Hawking use astronomical observations to support an explanation of black-hole phenomena in A Brief History of Time?";
  let prompt='';
  const ai={run:async(_model,input)=>{
    prompt=input.messages[0].content;
@@ -221,9 +221,10 @@ test('all-books planner assigns a named-work query to each side of a cross-work 
  const result=await planSearchQueries(question,'',ai);
  assert.match(prompt,/assign one query to each named source group/);
  assert.match(result.queries[0],/On the Origin of Species/i);
+ assert.match(result.queries[0],/natural selection|favorable variations/i);
  assert.match(result.queries[1],/A Brief History of Time/i);
  assert.doesNotMatch(result.queries[1],/On the Origin of Species/i);
- assert.match(result.queries[1],/astronomical observations|black holes/i);
+ assert.match(result.queries[1],/astronomical observations|black-hole phenomena/i);
 });
 
 test('selected-book planner preserves its own scope and model queries',async()=>{
@@ -273,8 +274,7 @@ test('separately supported accounts can support a cross-work synthesis',async()=
    if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      coverage:'full',missing:'',
      questionParts:[
-       {part:"Aristotle's account of political order",status:'supported',evidenceIds:['S1']},
-       {part:"Hobbes's account of political order",status:'supported',evidenceIds:['S2']}
+       {part:"Compare how Aristotle's and Hobbes's accounts secure political order",status:'partial',evidenceIds:['S1','S2']}
      ],
      evidence:[
        {id:'S1',point:'Aristotle connects political science with human good, happiness, and virtue.'},
@@ -284,8 +284,7 @@ test('separately supported accounts can support a cross-work synthesis',async()=
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      answer:"Aristotle connects political order to the human good and the cultivation of virtue, framing politics around the kind of life and character a community should support [S1]. This account makes the ethical end of civic life central to political inquiry.\n\nHobbes instead emphasizes the institution of a common power, which keeps people in awe and makes justice and the laws of nature more reliably observed [S2]. The contrast is a synthesis of these passages: Aristotle foregrounds the end politics serves, while Hobbes foregrounds the authority needed to secure order. The passages support those distinct emphases, though neither excerpt directly compares the two thinkers.",
      partChecks:[
-       {part:"Aristotle's account of political order",status:'supported',evidenceIds:['S1']},
-       {part:"Hobbes's account of political order",status:'supported',evidenceIds:['S2']}
+       {part:"Compare how Aristotle's and Hobbes's accounts secure political order",status:'partial',evidenceIds:['S1','S2']}
      ]
    })}}]};
  }};
@@ -294,8 +293,8 @@ test('separately supported accounts can support a cross-work synthesis',async()=
  assert.match(calls[0].messages[0].content,/A passage can support its own side without explicitly comparing it/);
  assert.match(calls[1].messages[0].content,/reader synthesis/);
  assert.equal(result.coverage,'full');
- assert.equal(result.questionParts.length,2);
- assert(result.questionParts.every(part=>part.status==='supported'));
+ assert.equal(result.questionParts.length,1);
+ assert.equal(result.questionParts[0].status,'supported');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
 
