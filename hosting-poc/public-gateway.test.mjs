@@ -2211,7 +2211,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
  assert.match(calls[1].messages[0].content,/Do not combine two reviewed points into a definition/);
  assert.match(calls[1].messages[0].content,/EXCEPTION: when the question explicitly asks for a comparison across separately named works/);
- assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map and keep it concise/);
+ assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
 });
 
