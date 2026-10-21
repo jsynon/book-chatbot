@@ -1383,6 +1383,20 @@ export function hasDanglingCitedSentence(answer) {
   });
 }
 
+export function removeDanglingCitedSentences(answer) {
+  const removedSourceIds=new Set();
+  const paragraphs=String(answer||'').split(/\r?\n\s*\r?\n/);
+  const cleaned=paragraphs.map(paragraph=>{
+    const sentences=paragraph.split(/(?<=[.!?])\s+(?=[A-Z“"'“\d])/);
+    return sentences.filter(sentence=>{
+      if(!hasDanglingCitedSentence(sentence))return true;
+      for(const match of sentence.matchAll(/\bS[1-9]\d*\b/g))removedSourceIds.add(match[0]);
+      return false;
+    }).join(' ').trim();
+  }).filter(Boolean);
+  return {answer:cleaned.join('\n\n'),removedSourceIds:[...removedSourceIds]};
+}
+
 export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const combined=sources.map(s=>'['+s.id+'] '+s.title+', physical PDF page '+s.page+'\n'+s.preview).join('\n\n');
   const sourceGroups=requestedSourceGroups(question,sources);
@@ -1614,19 +1628,32 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   if(composed.structured&&finalQuestionParts.length){
     finalQuestionParts=reconcileQuestionParts(finalQuestionParts,composed.partChecks,answer);
     finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
-    const needsPartRepair=finalQuestionParts.some((part,index)=>
-      (review.questionParts[index].status==='supported'&&part.status!=='supported')||
-      (review.questionParts[index].status==='partial'&&part.status==='unsupported')||
-      (review.questionParts[index].status==='partial'&&part.status==='partial'&&
-        (part.evidenceIds||[]).some(id=>sourceHasMeaningfulQualifier(
-          sources.find(source=>source.id===id))))||
-      (part.status==='unsupported'&&sourceMentionsPart(part.part,sources)));
+    const mappedEvidenceIds=new Set((review.evidenceMap||[]).map(item=>item.id));
+    const assignedEvidenceIds=new Set(finalQuestionParts.flatMap(part=>part.evidenceIds||[]));
+    const hasUnassignedReviewedEvidence=[...mappedEvidenceIds].some(id=>!assignedEvidenceIds.has(id));
+    const comparisonRequested=sourceGroups.length>1&&
+      /\b(?:compare|comparison|contrast|differ|difference|different|versus|vs\.)\b/i.test(question);
+    const needsPartRepair=finalQuestionParts.some((part,index)=>{
+      const hasSupportedEvidenceForEveryGroup=comparisonRequested&&
+        sourceGroups.every(group=>finalQuestionParts.some(other=>other!==part&&
+          other.status==='supported'&&(other.evidenceIds||[]).some(id=>sources.some(source=>
+            source.id===id&&group.bookIds.has(String(source.bookId))))));
+      const isComparisonPart=/\b(?:compare|comparison|contrast|differ|difference|different|distinguish|accounts?)\b/i.test(part.part);
+      return (review.questionParts[index].status==='supported'&&part.status!=='supported')||
+        (review.questionParts[index].status==='partial'&&part.status==='unsupported')||
+        (review.questionParts[index].status==='partial'&&part.status==='partial'&&
+          (part.evidenceIds||[]).some(id=>sourceHasMeaningfulQualifier(
+            sources.find(source=>source.id===id))))||
+        (part.status==='unsupported'&&(sourceMentionsPart(part.part,sources)||
+          hasUnassignedReviewedEvidence||
+          (isComparisonPart&&hasSupportedEvidenceForEveryGroup)));
+    });
     if(needsPartRepair){
       let repairedParts;
       try{repairedParts=await ai.run(MODEL,{
         messages:[
           {role:'system',content:
-            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
+            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. For an explicit comparison part, synthesize a concise contrast only when separately supported parts establish every requested side; cite each side and do not imply either author made the comparison. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
           {role:'user',content:
             'Question:\n'+question+'\n\nQuestion parts and evidence review status:\n'+
             review.questionParts.map(part=>'- '+part.part+' — '+part.status+
@@ -1789,8 +1816,22 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     second=repaired;
     answerNeurons+=Math.max(0,Number(repaired?.usage?.neurons)||0);
   }
-  if(hasDanglingCitedSentence(answer))
-    throw answerFailure('answer-incomplete-cited-claim');
+  if(hasDanglingCitedSentence(answer)){
+    const salvaged=removeDanglingCitedSentences(answer);
+    answer=salvaged.answer;
+    const removedIds=new Set(salvaged.removedSourceIds);
+    if(!answer&&salvaged.removedSourceIds.length){
+      answer='The generated sentence was incomplete, so the supplied passage does not establish that claim ['+
+        salvaged.removedSourceIds[0]+'].';
+    }
+    finalQuestionParts=finalQuestionParts.map(part=>
+      (part.evidenceIds||[]).some(id=>removedIds.has(id))&&part.status==='supported'?
+        {...part,status:'partial'}:part);
+    finalCoverage=finalQuestionParts.length&&finalQuestionParts.every(part=>part.status==='supported')?
+      'full':'partial';
+    finalMissing=questionPartMissingNote(finalQuestionParts)||
+      'An incomplete generated sentence was removed, leaving part of the answer unresolved.';
+  }
   answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
   // Models sometimes group citations, e.g. [S1, S3]. Audit every source ID
