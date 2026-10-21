@@ -1501,6 +1501,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'distinct pages from the same book when '+
         'they add different relevant evidence. Do not select pages merely to '+
         'reach a count. '+
+        'For a comparison across separately named works, assess each side '+
+        'against its own passages. When both sides are supported, allow the '+
+        'reader-facing answer to synthesize their difference while attributing '+
+        'each claim to its source. '+
         'For broad questions about what a person or work says on a topic, check for distinct supported themes: the central account, its explanation, and a separate implication, example, or contrast. These are candidates, not a checklist. Prioritize direct explanation of the concept, then examples or implications that clarify it. Treat criticism of another thinker and remarks that a term needs definition as context unless they explicitly clarify the concept; do not let those remarks displace substantive passages. '+
         'Follow-up questions must be grounded only in the evidence IDs you select; '+
         'do not introduce names or topics from unselected passages. Use [] when '+
@@ -1587,9 +1591,14 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'reader synthesis, citing each side; do not present that synthesis as '+
         'a direct statement by either author. A direct textual distinction can '+
         'be answered with a concise accurate paraphrase without adding an '+
-        'unsupported explanation or example. do not combine two reviewed points into a single definition, '+ 
-        'opposition, cause, or equivalence unless the excerpt explicitly states '+ 
-        'that relation. Explain connections cautiously and do not restate the '+ 
+        'unsupported explanation or example. Do not combine two reviewed points '+
+        'into a definition, opposition, cause, or equivalence unless the excerpt '+
+        'explicitly states that relation. EXCEPTION: when the question explicitly '+
+        'asks for a comparison across separately named works, synthesize a '+
+        'reader-level contrast from separately supported and attributed positions, '+
+        'label it as a comparison of the supplied passages, and cite each side; '+
+        'do not attribute the synthesis to either author. Explain other '+
+        'connections cautiously and do not restate the '+ 
         'same point in multiple sentences. Avoid a book-by-book list of disconnected '+
         'observations. Use plain text only: no Markdown, headings, asterisks, or bullet markers in the answer field. '+
         'For a narrow factual question, '+
