@@ -1294,6 +1294,10 @@ function normalizedPartLabel(value) {
   return String(value||'').normalize('NFKC').toLocaleLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 }
+function sourceHasMeaningfulQualifier(source){
+  return /\b(?:until|unless|except|only|at least|no more than|rather than|although|even if|provided that|insofar as|because)\b/i
+    .test(String(source?.preview||''));
+}
 function sourceMentionsPart(part,sources) {
   const ignored=new Set(['about','after','also','among','both','each','explain',
     'from','into','more','part','role','same','that','their','them','then',
@@ -1504,7 +1508,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Use prior conversation only to resolve references; '+
         'it is not evidence and must not support factual claims. Distinguish what the author says from your own '+ 
         'inference. A book record naming an author does not prove that every passage is the author’s own prose: attribute explicit commentary, translation notes, narrator speech, and reported opinions to their visible speaker. If the speaker is unclear, state that limitation. Treat footnotes, translator or editor notes, and introductions as separate speakers. The evidence map is authoritative about this distinction: label editorial points as such, and do not turn a translator’s lexical gloss or capitalization convention into a claim about Kierkegaard’s theory. '+
-        'Do not turn “the text has nothing to say about X” into a claim about what the author believed about X. Never complete a dangling clause or infer the words after an ellipsis or “except”; state that the excerpt is incomplete when that matters. '+
+        'Do not turn “the text has nothing to say about X” into a claim about what the author believed about X. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; do not remove them when paraphrasing a negated or limited claim, because that can reverse its meaning. Never complete a dangling clause or infer the words after an ellipsis or “except”; state that the excerpt is incomplete when that matters. '+
         'Do not invent facts, quotations, page numbers or sources. '+ 
         'Before writing, inspect EVERY verified excerpt, including any passage the evidence review did not select or marked partial/unsupported. The review checklist can miss a relevant passage. If an excerpt directly addresses a requested part, explain what it establishes and cite it; never say the passages contain no information about that part when they do. '+ 
         'Return one compact JSON object with keys answer and partChecks. partChecks must contain exactly one object for every requested question-part label, copying each label exactly, with status (supported|partial|unsupported) and evidenceIds. Mark a part supported only when the answer explicitly explains it using the cited excerpt; mark it partial when the excerpt supports only part of the requested explanation; mark unsupported only when no verified excerpt supports it. For a requested comparison across separately named works, each cited excerpt need only establish its own side; when the answer accurately attributes and cites both supported sides, it may synthesize the comparison without claiming either author made it. Mark the comparison supported when both requested sides are explicitly explained. For a distinction directly stated in an excerpt, an accurate paraphrase of that distinction is sufficient; do not mark it partial just because the answer adds no further example. Use only valid source IDs. Check that every supported part is actually explained in the answer before returning. '+ 
@@ -1583,13 +1587,16 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     const needsPartRepair=finalQuestionParts.some((part,index)=>
       (review.questionParts[index].status==='supported'&&part.status!=='supported')||
       (review.questionParts[index].status==='partial'&&part.status==='unsupported')||
+      (review.questionParts[index].status==='partial'&&part.status==='partial'&&
+        (part.evidenceIds||[]).some(id=>sourceHasMeaningfulQualifier(
+          sources.find(source=>source.id===id))))||
       (part.status==='unsupported'&&sourceMentionsPart(part.part,sources)));
     if(needsPartRepair){
       let repairedParts;
       try{repairedParts=await ai.run(MODEL,{
         messages:[
           {role:'system',content:
-            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve accurate existing material and the requested scope. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
+            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
           {role:'user',content:
             'Question:\n'+question+'\n\nQuestion parts and evidence review status:\n'+
             review.questionParts.map(part=>'- '+part.part+' — '+part.status+
