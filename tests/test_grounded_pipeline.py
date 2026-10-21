@@ -81,6 +81,53 @@ class GroundedPipelineTests(unittest.TestCase):
         self.assertEqual([c["stage"] for c in provider.calls],
                          ["evidence_selection", "composition", "review", "repair", "review"])
 
+    def test_nietzsche_style_topical_association_does_not_survive_review(self):
+        """A related passage cannot license a stronger interpretation."""
+        passages = [
+            "Zarathustra says the old saint has not yet heard that God is dead.",
+            "The speaker asks to be smitten more deeply by dull, indented arrows.",
+        ]
+        book = {**BOOK, "title": "Thus Spake Zarathustra — Friedrich Nietzsche"}
+        class SelectedPassageIndex(PassageIndex):
+            def search(self, question, facets, history=(), limit=24):
+                return [
+                    {**self.passages[0], "source_id": "S1"},
+                    {**self.passages[1], "source_id": "S2"},
+                ]
+
+        index = SelectedPassageIndex([(book, [
+            {"page": 2, "text": passages[0]},
+            {"page": 101, "text": passages[1]},
+        ])], app.tokenize)
+        bad_claims = {"claims": [
+            {"text": "Zarathustra tells the old saint that he has not heard that God is dead.",
+             "source_ids": ["S1"]},
+            {"text": "The torture passage shows that the death of God causes cultural disorientation and a search for new values.",
+             "source_ids": ["S2"]},
+        ]}
+        initial_review = {"reviews": [
+            {"claim_index": 1, "verdict": "supported", "reason": "The passage says this."},
+            {"claim_index": 2, "verdict": "unsupported", "reason": "The passage mentions torture but not God, cultural change, or new values."},
+        ], "complete": False, "missing": "The passages do not explain the phrase's meaning."}
+        repaired = {"claims": [
+            {"text": "The excerpt establishes that Zarathustra says the old saint has not heard that God is dead, but it does not explain the phrase's meaning.",
+             "source_ids": ["S1"]},
+        ]}
+        repaired_review = {"reviews": [
+            {"claim_index": 1, "verdict": "supported", "reason": "The first clause matches the excerpt and the limitation is accurate for these supplied passages."},
+        ], "complete": True, "missing": ""}
+        provider = ScriptedProvider([
+            {"source_ids": ["S1", "S2"]}, bad_claims, initial_review,
+            repaired, repaired_review,
+        ])
+        result = answer_question("What did Nietzsche mean by God is dead?", [], index,
+                                 ["What did Nietzsche mean by God is dead?"], provider, "test")
+        self.assertEqual(result["outcome"], "verified")
+        self.assertIn("old saint", result["answer"])
+        self.assertNotIn("cultural disorientation", result["answer"])
+        self.assertNotIn("new values", result["answer"])
+
+
     def test_failed_repair_never_displays_unsupported_or_unreviewed_content(self):
         result, provider = self.run_pipeline([
             {"source_ids": ["S1"]}, claim(), review("supported", False),
@@ -203,7 +250,7 @@ class ProviderAndHTTPTests(unittest.TestCase):
         self.assertEqual(provider.calls[0]["output_tokens"], 7)
         self.assertIn("elapsed_ms", provider.calls[0])
 
-    def post(self, provider, mode="grounded", diagnostics=True):
+    def post(self, provider, mode="grounded", diagnostics=True, scope="book"):
         index = PassageIndex([(BOOK, [{"page": 1, "text": TEXT}])], app.tokenize)
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -213,7 +260,8 @@ class ProviderAndHTTPTests(unittest.TestCase):
                  patch.object(app, "OllamaProvider", return_value=provider):
                 request = urllib.request.Request(
                     f"http://127.0.0.1:{server.server_port}/api/chat",
-                    data=json.dumps({"question": "What is calibration?", "diagnostics": diagnostics}).encode(),
+                    data=json.dumps({"question": "What is calibration?", "diagnostics": diagnostics,
+                                     "scope": scope}).encode(),
                     headers={"Content-Type": "application/json"})
                 with urllib.request.urlopen(request) as response:
                     return json.load(response)
@@ -234,6 +282,17 @@ class ProviderAndHTTPTests(unittest.TestCase):
         result = self.post(ScriptedProvider([{"source_ids": ["S1"]}, claim(), review()]), diagnostics=False)
         self.assertNotIn("diagnostics", result)
         self.assertEqual(result["sources"][0]["excerpt"], TEXT)
+
+    def test_claim_review_prototype_routes_across_library(self):
+        index = PassageIndex([(BOOK, [{"page": 1, "text": TEXT}])], app.tokenize)
+        discovery = {"scope": "library", "candidate_books": [{"book_id": "42"}]}
+        provider = ScriptedProvider([{"source_ids": ["S1"]}, claim(), review()])
+        with patch.object(app.WHOLE_LIBRARY, "search", return_value=(index, discovery)):
+            result = self.post(provider, scope="library")
+        self.assertEqual(result["outcome"], "verified")
+        self.assertEqual(result["scope"], "library")
+        self.assertEqual(result["diagnostics"]["pipeline"], "grounded")
+        self.assertEqual(result["library_discovery"], discovery)
 
     def test_legacy_route_is_still_available(self):
         with patch.object(app, "retrieve", return_value=[]):

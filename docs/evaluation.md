@@ -20,6 +20,26 @@ Score each answer from 0 to 3 in each category:
 
 Also record wall-clock latency and whether evidence selection brought in a decisive or merely tangential passage. These manual scores are not computed by the application.
 
+## Local claim-reviewed prototype
+
+The local app now exposes **Claim-reviewed prototype** in Advanced settings for
+both one-book and Across-library questions. It uses the existing grounded
+pipeline: the model drafts separate claims with passage IDs, a second model call
+checks each claim against only its cited passages, and one repair can replace
+rejected claims. Only claims accepted by that review are displayed. This costs
+more local inference than evidence-first mode and the review is fallible; it is
+a quality-control experiment, not a truth certificate. The default remains
+Evidence-first.
+
+For the Nietzsche regression, select **Across the Antilogicalism Library**,
+choose **Claim-reviewed prototype**, and ask: “What did Nietzsche mean by God
+is dead?” Inspect whether the returned claims stay within what the cited
+passages establish, especially whether suffering or slave-morality passages
+are being used to explain the phrase without a direct textual link. Compare the
+same question in Evidence-first mode. Save both diagnostics and compare the
+selected books/pages, review verdicts, final claims, and latency. No Cloudflare
+Worker request is involved in this local check.
+
 ## Checks for the Aristotle pilot
 
 These are **human review anchors**, not hardcoded answers or retrieval rules. They help expose errors that the v1.1 provenance validator cannot catch:

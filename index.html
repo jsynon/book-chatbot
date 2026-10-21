@@ -408,7 +408,7 @@
         <select id="pipeline">
           <option value="evidence">Evidence-first answers (v1.2)</option>
           <option value="direct">Direct synthesis (v1.1)</option>
-          <option value="grounded">Historical claim/review (comparison)</option>
+          <option value="grounded">Claim-reviewed prototype (local; extra model calls)</option>
         </select>
         <label class="diagnostic-control"><input id="diagnostics-toggle" type="checkbox"> Include troubleshooting details in responses</label>
         <span class="diagnostic-control">A citation identifies an actual passage, but does not independently verify an interpretation.</span>
@@ -905,11 +905,8 @@
         showBookOptions();
       }
       const book = libraryBooks.find(item => item.book_id === activeBookId);
-      if (acrossLibrary && !['evidence', 'direct'].includes(pipelineSelect.value)) {
-        pipelineSelect.value = 'evidence';
-      }
       const groundedOption = pipelineSelect.querySelector('option[value="grounded"]');
-      if (groundedOption) groundedOption.disabled = acrossLibrary;
+      if (groundedOption) groundedOption.disabled = false;
       bookSelect.disabled = acrossLibrary;
       bookFilter.disabled = acrossLibrary;
       bookPicker.hidden = acrossLibrary;
@@ -975,7 +972,7 @@
         notes.push(`Stages: ${data.stages.map(stage => `${stage.stage}: ${stage.elapsed_ms} ms (${stage.status})`).join('; ')}.`);
       }
       if (status === 'verified') {
-        notes.push('Historical model review accepted the answer; this is not a truth certification.');
+        notes.push('Claim review accepted the answer against its cited passages; this is a fallible model check, not a truth certification.');
       } else if (summary.final_issue) {
         notes.push(`Main issue (${summary.final_stage || 'review'}): ${summary.final_issue}`);
         if (summary.final_reason) notes.push(`Final checker finding: ${summary.final_reason}`);
@@ -1039,7 +1036,7 @@
           result.pipeline || 'unknown',
           result.question || '',
           result.error ? 'request error' : summary.outcome || 'not recorded',
-          summary.final_issue || (summary.outcome === 'verified' ? 'Historical model review passed (not independently verified).' : result.error || 'No final finding recorded.'),
+          summary.final_issue || (summary.outcome === 'verified' ? 'Claim review passed; the result is not independently verified.' : result.error || 'No final finding recorded.'),
           result.elapsed_ms == null ? '—' : `${(result.elapsed_ms / 1000).toFixed(1)} s`,
           '',
           (summary.attempt_history || []).map(attempt =>
