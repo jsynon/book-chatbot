@@ -544,6 +544,16 @@ test('long source excerpts keep complete relevant sentences and their nearby con
  assert(preview.length<=1080);
 });
 
+test('long source excerpts prioritize rare requested details beyond an earlier topic cluster',()=>{
+ const question='How does Darwin explain natural selection preserving favorable variations, and how does Hawking use astronomical observations to explain black-hole phenomena in A Brief History of Time?';
+ const early=('The discussion of black holes and their history explains how a black hole may lose mass over time. ').repeat(12);
+ const later='We do observe a background of gamma rays, and its intensity differs across frequencies. These observations do not provide positive evidence for primordial black holes, but they constrain how many can exist.';
+ const preview=sourceExcerpt('A Brief History of Time. Stephen Hawking. '+early+later,question,1080);
+ assert.match(preview,/observations do not provide positive evidence for primordial black holes/i);
+ assert.match(preview,/constrain how many can exist/i);
+ assert(preview.length<=1080);
+});
+
 test('long source excerpts without searchable question terms end on sentence boundaries',()=>{
  const text='A complete sentence gives background. '.repeat(8);
  const preview=sourceExcerpt(text,'the and for',82);
@@ -1036,7 +1046,7 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
 test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
  const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
  assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
-  workerSourceBuild:'public-gateway-source-group-repair-v2',
+  workerSourceBuild:'public-gateway-source-excerpt-relevance-v1',
   workerVersionId:metadata.id,workerVersionTag:metadata.tag,
   workerVersionTimestamp:metadata.timestamp
  });
@@ -1049,7 +1059,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(planned.status,200);
  assert.equal(planData.workerVersionId,metadata.id);
  assert.equal(planData.workerVersionTag,metadata.tag);
- assert.equal(planData.workerSourceBuild,'public-gateway-source-group-repair-v2');
+ assert.equal(planData.workerSourceBuild,'public-gateway-source-excerpt-relevance-v1');
  const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
  const answered=await answerPilot.post();
  const answerData=await answered.json();
