@@ -248,6 +248,17 @@ test('all-books planner assigns a named-work query to each side of a cross-work 
  assert.match(result.queries[1],/astronomical observations|black-hole phenomena/i);
 });
 
+test('all-books author comparison preserves useful expanded facets when both names are assigned',async()=>{
+ const question="what's the difference between the thought of kierkegaard and shestov?";
+ const expected=[
+  'Kierkegaard faith paradox individual relation to God',
+  'Shestov rational necessity freedom creative thought'
+ ];
+ const ai={run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:expected})}}]})};
+ const result=await planSearchQueries(question,'',ai);
+ assert.deepEqual(result.queries,expected);
+});
+
 test('selected-book planner preserves its own scope and model queries',async()=>{
  const question="How does Aristotle's Nicomachean Ethics explain virtue, and how does Hobbes's Leviathan explain political order?";
  const expected=['Nicomachean Ethics virtue habit','Nicomachean Ethics political science human good'];
