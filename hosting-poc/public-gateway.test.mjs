@@ -2251,6 +2251,7 @@ test('a final relation audit removes claims that a verified quote does not estab
  assert.equal(calls.length,3);
  assert.equal(result.coverage,'partial');
  assert.equal(result.reviewStatus,'claim_support_not_independently_verified');
+ assert.match(result.notice,/Exact indexed page text verified.*Individual AI claims still require assessment/);
  assert.match(result.answer,/does not by itself establish a conflict between science and religion/);
  assert.match(result.answer,/that hypothetical does not settle whether a conflict exists/);
  assert.doesNotMatch(result.answer,/conflict over spiritual presences/);
