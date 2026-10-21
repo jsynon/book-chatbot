@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -891,6 +891,30 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
  assert.equal(PILOT_BOOKS['102'],'A Brief History of Time — Stephen Hawking');
  assert.equal(details.turnstileSiteKey,pilotBaseEnv.TURNSTILE_SITE_KEY);
  assert.equal(JSON.stringify(details).includes(pilotBaseEnv.TURNSTILE_SECRET),false);
+});
+test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
+ const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
+ assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
+  workerSourceBuild:'public-gateway-worker-version-diagnostics-v1',
+  workerVersionId:metadata.id,workerVersionTag:metadata.tag,
+  workerVersionTimestamp:metadata.timestamp
+ });
+ assert.equal(workerVersionDiagnostics({}).workerVersionId,null);
+ const plannerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata},
+  model:async()=>({choices:[{finish_reason:'stop',message:{content:
+   '{"queries":["specific first event cause","distinct second event cause"]}'}}]})});
+ const planned=await plannerPilot.plan();
+ const planData=await planned.json();
+ assert.equal(planned.status,200);
+ assert.equal(planData.workerVersionId,metadata.id);
+ assert.equal(planData.workerVersionTag,metadata.tag);
+ assert.equal(planData.workerSourceBuild,'public-gateway-worker-version-diagnostics-v1');
+ const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
+ const answered=await answerPilot.post();
+ const answerData=await answered.json();
+ assert.equal(answered.status,200);
+ assert.equal(answerData.workerVersionId,metadata.id);
+ assert.equal(answerData.workerVersionTimestamp,metadata.timestamp);
 });
 test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounded AI',async()=>{
  const pilot=await pilotScenario();

@@ -684,6 +684,16 @@ function headers(origin) {
 function json(body,status=200,origin='') {
   return Response.json(body,{status,headers:headers(origin)});
 }
+export function workerVersionDiagnostics(env={}) {
+  const metadata=env?.CF_VERSION_METADATA;
+  const safe=(value,limit=128)=>typeof value==='string'&&value.length>0&&value.length<=limit?value:null;
+  return {
+    workerSourceBuild:'public-gateway-worker-version-diagnostics-v1',
+    workerVersionId:safe(metadata?.id),
+    workerVersionTag:safe(metadata?.tag),
+    workerVersionTimestamp:safe(metadata?.timestamp,64),
+  };
+}
 export function validRequest(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data) ||
       typeof data.question !== 'string' || data.question.trim().length < 5 ||
@@ -2082,78 +2092,80 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       scope:'full-public-catalog'},200,origin);
   }
   if(url.pathname==='/api/pilot-plan'){
-    if(origin!==FRONTEND_ORIGIN)return json({error:'Origin not allowed'},403,origin);
+    const reply=(body,status=200)=>json({...body,...workerVersionDiagnostics(env)},status,origin);
+    if(origin!==FRONTEND_ORIGIN)return reply({error:'Origin not allowed'},403,origin);
     if(request.method==='OPTIONS')
       return new Response(null,{status:204,headers:headers(origin)});
-    if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
-    if(!pilotReady)return json({error:'AI search planning is not enabled'},503,origin);
+    if(request.method!=='POST')return reply({error:'Method not allowed'},405,origin);
+    if(!pilotReady)return reply({error:'AI search planning is not enabled'},503,origin);
     const ip=request.headers.get('CF-Connecting-IP');
-    if(!ip||ip.length>64)return json({error:'Request identity unavailable'},403,origin);
+    if(!ip||ip.length>64)return reply({error:'Request identity unavailable'},403,origin);
     // Distinct keys from the answer route, but both limits are mandatory.
     // A plan consumes one bounded AI call, so rate limits must come FIRST.
     try{
       const visitor=await env.AI_RATE_LIMITER.limit({key:'reading-pilot:visitor:'+ip+':planner'});
       const total=await env.GLOBAL_RATE_LIMITER.limit({key:'reading-pilot:global'});
       if(!visitor.success||!total.success)
-        return json({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
-    }catch{return json({error:'Request limits unavailable'},503,origin);}
+        return reply({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
+    }catch{return reply({error:'Request limits unavailable'},503,origin);}
     if(Number(request.headers.get('Content-Length'))>8000)
-      return json({error:'Request too large'},413,origin);
+      return reply({error:'Request too large'},413,origin);
     let data;
     try{
       const raw=await request.text();
       if(new TextEncoder().encode(raw).byteLength>8000)
-        return json({error:'Request too large'},413,origin);
+        return reply({error:'Request too large'},413,origin);
       data=JSON.parse(raw);
-    }catch{return json({error:'Invalid JSON request'},400,origin);}
+    }catch{return reply({error:'Invalid JSON request'},400,origin);}
     if(!data||typeof data!=='object'||Array.isArray(data)||
       typeof data.question!=='string'||data.question.trim().length<5||
       data.question.length>400||!validConversationHistory(data.history)||
       typeof data.turnstileToken!=='string'||data.turnstileToken.length<5||
       data.turnstileToken.length>2048||
       !(data.bookId===''||PILOT_BOOK_SET.has(String(data.bookId))))
-      return json({error:'Invalid search-planning question or book scope'},400,origin);
+      return reply({error:'Invalid search-planning question or book scope'},400,origin);
     if(!await verifyPilotChallenge(request,data.turnstileToken,ip,env,fetcher))
-      return json({error:'Visitor verification failed; please retry the challenge'},403,origin);
+      return reply({error:'Visitor verification failed; please retry the challenge'},403,origin);
     const title=PILOT_BOOKS[String(data.bookId)]||'';
     try{
       const result=await planSearchQueries(data.question,title,env.AI,data.history||[]);
-      return json({queries:result.queries,usage:result.usage,
+      return reply({queries:result.queries,usage:result.usage,
         guidance:'Search terms only; citations must pass SHA-256 verification'},200,origin);
     }catch(error){
       // Record only sanitized provider status/category/code; never log raw
       // model output, error text, question, token, passage content, or IP.
       const diagnostics=inferenceFailureDiagnostics(error);
       console.warn('Reader pilot search planning failed',diagnostics);
-      return json({error:'Search planning unavailable; try direct passage search',
+      return reply({error:'Search planning unavailable; try direct passage search',
         failureCode:publicAiFailureCode(diagnostics.providerClass)||'search-planning-failed'},502,origin);
     }
   }
   if(url.pathname==='/api/pilot-answer'){
+    const reply=(body,status=200)=>json({...body,...workerVersionDiagnostics(env)},status,origin);
     if(origin!==FRONTEND_ORIGIN)
-      return json({error:'Origin not allowed'},403,origin);
+      return reply({error:'Origin not allowed'},403,origin);
     if(request.method==='OPTIONS')
       return new Response(null,{status:204,headers:headers(origin)});
-    if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
-    if(!pilotReady)return json({error:'AI answers are not yet enabled'},503,origin);
+    if(request.method!=='POST')return reply({error:'Method not allowed'},405,origin);
+    if(!pilotReady)return reply({error:'AI answers are not yet enabled'},503,origin);
     const ip=request.headers.get('CF-Connecting-IP');
-    if(!ip||ip.length>64)return json({error:'Request identity unavailable'},403,origin);
+    if(!ip||ip.length>64)return reply({error:'Request identity unavailable'},403,origin);
     // Apply BOTH limits before Turnstile, source downloads or AI.
     try{
       const visitor=await env.AI_RATE_LIMITER.limit({key:'reading-pilot:visitor:'+ip+':answer'});
       const total=await env.GLOBAL_RATE_LIMITER.limit({key:'reading-pilot:global'});
       if(!visitor.success||!total.success)
-        return json({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
-    }catch{return json({error:'Request limits unavailable'},503,origin);}
+        return reply({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
+    }catch{return reply({error:'Request limits unavailable'},503,origin);}
     if(Number(request.headers.get('Content-Length'))>32000)
-      return json({error:'Request too large'},413,origin);
+      return reply({error:'Request too large'},413,origin);
     let data;
     try{
       const raw=await request.text();
       if(new TextEncoder().encode(raw).byteLength>32000)
-        return json({error:'Request too large'},413,origin);
+        return reply({error:'Request too large'},413,origin);
       data=JSON.parse(raw);
-    }catch{return json({error:'Invalid JSON request'},400,origin);}
+    }catch{return reply({error:'Invalid JSON request'},400,origin);}
     if(!data||Array.isArray(data)||typeof data!=='object'||
       typeof data.question!=='string'||data.question.trim().length<5||
       data.question.length>400||!validConversationHistory(data.history)||typeof data.turnstileToken!=='string'||
@@ -2163,13 +2175,13 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       !data.sources.every(s=>s && PILOT_BOOK_SET.has(String(s.bookId)) &&
         Number.isSafeInteger(s.page) && s.page>=1 && s.page<=10000 &&
         typeof s.text==='string'))
-      return json({error:'Invalid question or unsupported pilot pages'},400,origin);
+      return reply({error:'Invalid question or unsupported pilot pages'},400,origin);
     if(!await verifyPilotChallenge(request,data.turnstileToken,ip,env,fetcher))
-      return json({error:'Visitor verification failed; please retry the challenge'},403,origin);
+      return reply({error:'Visitor verification failed; please retry the challenge'},403,origin);
     let sourcePages;
     try{sourcePages=await verifiedFingerprintSources(data.question,data.sources,fetcher);}
     catch{
-      return json({error:'The selected passages could not be verified'},422,origin);
+      return reply({error:'The selected passages could not be verified'},422,origin);
     }
     let output;
     try{output=await composeVerifiedAnswer(data.question,sourcePages,env.AI,data.history||[]);}
@@ -2196,7 +2208,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       const diagnostics=error?.diagnostics||{};
       const publicFailureCode=publicAiFailureCode(diagnostics.providerClass);
       console.error('Reader pilot answer failed',{failureCode,...diagnostics});
-      return json({error:'AI answer or citations unavailable; please try again later',
+      return reply({error:'AI answer or citations unavailable; please try again later',
         failureCode:publicFailureCode||failureCode},502,origin);
     }
     // Highlight original source excerpts, not fabricated model quotations.
@@ -2209,7 +2221,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     // or an implicit extra billable AI call. Fresh retrieval occurs each turn.
     const followUpQuestions=output.outcome==='verified-source-draft'?
       output.followUpQuestions:[];
-    return json({...output,verifiedPages:sourcePages.length,pilot:true,
+    return reply({...output,verifiedPages:sourcePages.length,pilot:true,
       evidenceHighlights,followUpQuestions},200,origin);
   }
   // Opt-in local test only; public AI remains disabled. This path accepts
