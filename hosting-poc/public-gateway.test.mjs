@@ -170,6 +170,26 @@ test('multi-source evidence review calls out each named group in normal and retr
    assert.match(prompt,/synthesize their difference while attributing each claim to its source/);
  }
 });
+test('evidence review can select a supported point when it cannot safely copy an exact quote',async()=>{
+ const question='How does Darwin explain natural selection?';
+ const sources=[{id:'S1',bookId:'529',title:'On the Origin of Species — Charles Darwin',page:96,
+  preview:'Natural selection preserves favorable variations across generations.'}];
+ const inputs=[];let call=0;
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',questionParts:[{part:'explain natural selection',status:'supported',evidenceIds:['S1']}],
+   evidence:[{id:'S1',point:'Natural selection preserves favorable variations across generations.',quote:'',speaker:'unknown',qualifier:''}]
+  })}}],usage:{neurons:2}};
+  return {choices:[{finish_reason:'stop',message:{content:
+   'Darwin describes natural selection as preserving favorable variations across generations [S1].'}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.evidenceMap[0].quoteVerified,false);
+ assert.match(inputs[0].messages[0].content,/Do not mark coverage none solely because an exact quote or qualifier is unavailable/);
+ assert.match(inputs[1].messages[0].content,/An evidence point without an exact verified passage anchor/);
+});
 test('same-book answers select complementary passages and synthesize every question part',async()=>{
  const question='How does Aristotle explain habituation, and how do repeated actions shape character?';
  const sources=[
@@ -1115,7 +1135,7 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
 test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
  const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
  assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
-  workerSourceBuild:'public-gateway-evidence-context-v2',
+  workerSourceBuild:'public-gateway-evidence-selection-v3',
   workerVersionId:metadata.id,workerVersionTag:metadata.tag,
   workerVersionTimestamp:metadata.timestamp
  });
@@ -1128,7 +1148,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(planned.status,200);
  assert.equal(planData.workerVersionId,metadata.id);
  assert.equal(planData.workerVersionTag,metadata.tag);
- assert.equal(planData.workerSourceBuild,'public-gateway-evidence-context-v2');
+ assert.equal(planData.workerSourceBuild,'public-gateway-evidence-selection-v3');
  const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
  const answered=await answerPilot.post();
  const answerData=await answered.json();
