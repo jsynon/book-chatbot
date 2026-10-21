@@ -221,9 +221,13 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
  assert.match(inputs[1].messages[0].content,/usually about 150–220 words/);
  assert.match(inputs[1].messages[0].content,/Open with a direct answer calibrated to the evidence/);
+ assert.match(inputs[1].messages[0].content,/You may also use reliable general knowledge/);
+ assert.match(inputs[1].messages[0].content,/Clearly mark this material with wording such as/);
+ assert.match(inputs[1].messages[0].content,/never attach a book citation to outside context/);
+ assert.match(inputs[1].messages[0].content,/about 120–200 words when the evidence supports that depth/);
  assert.match(inputs[1].messages[0].content,/every cited claim must support that particular relation/);
  assert.match(inputs[1].messages[0].content,/do not present two passages from one author as two independent perspectives/);
- assert.match(inputs[1].messages[0].content,/avoid repetition, padding, and adjacent topics/);
+ assert.match(inputs[1].messages[0].content,/Avoid repetition, padding, and adjacent topics/);
  assert.match(inputs[1].messages[0].content,/should explain the point, its reason or distinction/);
  assert.match(inputs[1].messages[0].content,/do not force a one-item-per-paragraph outline/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
@@ -2207,7 +2211,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
  assert.match(calls[1].messages[0].content,/Do not combine two reviewed points into a definition/);
  assert.match(calls[1].messages[0].content,/EXCEPTION: when the question explicitly asks for a comparison across separately named works/);
- assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map and keep it concise/);
+ assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
 });
 
