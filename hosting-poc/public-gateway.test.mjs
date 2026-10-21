@@ -2252,3 +2252,21 @@ test('a final relation audit removes claims that a verified quote does not estab
  assert.doesNotMatch(result.answer,/conflict over spiritual presences/);
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
+
+test('public pilot preserves relation-audit failure codes for diagnostics',async()=>{
+ let calls=0;
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   calls++;
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'partial',missing:'The excerpt does not address this relation.',
+     evidence:[{id:'S1',point:'The source passage is unrelated context.'}]
+   })}}]};
+   if(calls===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'The historical dispute involved causes of war [S1].',partChecks:[]
+   })}}]};
+   return {choices:[{finish_reason:'stop',message:{content:'audit response was not JSON'}}]};
+ }});
+ const response=await pilot.post({body:{question:'Is there a conflict between science and religion?'}});
+ assert.equal(response.status,502);
+ assert.equal((await response.json()).failureCode,'relation-claim-audit-invalid');
+});
