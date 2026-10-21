@@ -1046,7 +1046,7 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
 test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
  const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
  assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
-  workerSourceBuild:'public-gateway-source-group-repair-v2',
+  workerSourceBuild:'public-gateway-source-excerpt-relevance-v1',
   workerVersionId:metadata.id,workerVersionTag:metadata.tag,
   workerVersionTimestamp:metadata.timestamp
  });
