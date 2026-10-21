@@ -2281,8 +2281,13 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
   const queries=options.map(q=>q.trim().replace(/\s+/g,' '));
   const namedTargets=namedGroupQueryTargets(question,bookTitle);
   if(namedTargets.length===2){
-    const matches=(query,target)=>containsSourceGroupPhrase(query,target.phrase)&&
-      (!target.facetTerms.length||target.facetTerms.some(term=>containsSourceGroupPhrase(query,term)));
+    // The model may expand a broad user phrase into the author's actual
+    // concepts (for example, faith and paradox for Kierkegaard, necessity and
+    // freedom for Shestov). Requiring literal overlap with words such as
+    // "thought" or "difference" throws those useful queries away and reduces
+    // both queries to fragments copied from the question. Here, enforce source
+    // ownership mechanically and let the librarian's semantic terms stand.
+    const matches=(query,target)=>containsSourceGroupPhrase(query,target.phrase);
     if(matches(queries[0],namedTargets[1])&&matches(queries[1],namedTargets[0]))queries.reverse();
     if(!matches(queries[0],namedTargets[0])||!matches(queries[1],namedTargets[1])||
       namedTargets.some((target,index)=>containsSourceGroupPhrase(queries[index],namedTargets[1-index].phrase))){
