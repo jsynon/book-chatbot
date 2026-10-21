@@ -1112,7 +1112,11 @@ function requestedSourceGroups(question,sources){
     const capitalizedSurname=author.surname.replace(/^./,letter=>letter.toLocaleUpperCase());
     const surnamePattern=new RegExp('(?:^|[^\\p{L}\\p{N}])'+capitalizedSurname+
       '(?=$|[^\\p{L}\\p{N}])','u');
-    const surnameMatch=(surnameOwners.get(author.surname)?.size===1)&&surnamePattern.test(text);
+    const lowercaseSurnamePattern=new RegExp(
+      '(?:^|[^\\p{L}\\p{N}])(?:and|or|of|between|by|about|from|do|does|did|to)\\s+'+
+      author.surname+'(?=$|[^\\p{L}\\p{N}])','iu');
+    const surnameMatch=(surnameOwners.get(author.surname)?.size===1)&&
+      (surnamePattern.test(text)||lowercaseSurnamePattern.test(text));
     if(!fullMatch&&!surnameMatch)continue;
     if(workGroups.some(group=>[...author.bookIds].some(id=>group.bookIds.has(id))))continue;
     groups.push({kind:'author',key:normalizedSourceGroupText(author.name),
