@@ -1134,6 +1134,28 @@ function requestedSourceGroups(question,sources){
   if(deduped.length<2)return [];
   return deduped.map(group=>({...group,bookIds:new Set(group.bookIds)}));
 }
+function authorGroupForQuestionPart(part,question,sources){
+  const groups=requestedSourceGroups(question,sources).filter(group=>group.kind==='author');
+  const words=new Set(normalizedSourceGroupText(part).split(' '));
+  return groups.find(group=>words.has(group.key.split(' ').at(-1)))||null;
+}
+function questionPartHasAuthorEvidence(part,question,sources){
+  const group=authorGroupForQuestionPart(part.part,question,sources);
+  return !!group&&(part.evidenceIds||[]).some(id=>sources.some(source=>
+    source.id===id&&group.bookIds.has(String(source.bookId))));
+}
+function authorEvidenceGap(part,question,sources){
+  const group=authorGroupForQuestionPart(part.part,question,sources);
+  if(!group||questionPartHasAuthorEvidence(part,question,sources))return false;
+  return sources.some(source=>group.bookIds.has(String(source.bookId)));
+}
+function enforceAuthorEvidenceByQuestionPart(questionParts,question,sources){
+  return questionParts.map(part=>{
+    if(part.status!=='supported'||!authorGroupForQuestionPart(part.part,question,sources)||
+      questionPartHasAuthorEvidence(part,question,sources))return part;
+    return {...part,status:'partial'};
+  });
+}
 function enforceRequestedSourceGroups(review,question,sources){
   const groups=requestedSourceGroups(question,sources);
   if(!groups.length)return review;
@@ -1251,8 +1273,9 @@ export function parseReview(raw,sources,question='') {
   }
   if(questionRequiresPartTracking(question)&&!Array.isArray(review.questionParts))
     throw new Error('Missing question-part coverage');
-  const questionParts=Array.isArray(review.questionParts)?
-    parseQuestionParts(review.questionParts,selected):[];
+  const questionParts=enforceAuthorEvidenceByQuestionPart(
+    Array.isArray(review.questionParts)?parseQuestionParts(review.questionParts,selected):[],
+    question,sources);
   const allPartsSupported=questionParts.length>0&&
     questionParts.every(item=>item.status==='supported');
   let coverage=selected.length?review.coverage:'none';
@@ -1670,7 +1693,11 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'extra pages to meet a count. For an explicit comparison across named works, '+
       'assess each side against its own passages; when both sides are supported, '+
       'allow a reader-level synthesis: synthesize their difference while '+
-      'attributing each claim to its source. '+
+      'attributing each claim to its source. For each named author’s own thought, '+
+      'prefer evidence from that author’s own work when such an excerpt is supplied. '+
+      'A passage in another author’s book may establish that author’s report or '+
+      'interpretation, but do not use it as the named thinker’s own primary-text '+
+      'evidence when that thinker’s work is also supplied. '+
       'For broad questions about what a person or work says, identify distinct '+
       'supported themes and prioritize the central account. Keep evidence points '+
       'atomic and directly supported. Follow-up questions '+
@@ -1829,6 +1856,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     if(composed.structured){
       finalQuestionParts=reconcileQuestionParts(finalQuestionParts,composed.partChecks,answer);
       finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
+      finalQuestionParts=enforceAuthorEvidenceByQuestionPart(finalQuestionParts,question,sources);
     }
     const mappedEvidenceIds=new Set((review.evidenceMap||[]).map(item=>item.id));
     const assignedEvidenceIds=new Set(finalQuestionParts.flatMap(part=>part.evidenceIds||[]));
@@ -1838,6 +1866,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     // Recover a named work that was submitted but omitted by evidence selection.
     const missingRequestedSourceGroup=hasUncitedRequestedSourceGroup(sourceGroups,sources,answer);
     const needsPartRepair=missingRequestedSourceGroup||finalQuestionParts.some((part,index)=>{
+      if(authorEvidenceGap(part,question,sources))return true;
       const hasSupportedEvidenceForEveryGroup=comparisonRequested&&
         sourceGroups.every(group=>finalQuestionParts.some(other=>other!==part&&
           other.status==='supported'&&(other.evidenceIds||[]).some(id=>sources.some(source=>
@@ -1858,7 +1887,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       try{repairedParts=await ai.run(MODEL,{
         messages:[
           {role:'system',content:
-            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. When a question asks for each named author’s own thought, a passage from that author’s own work may support that side even when the author’s name is absent from the passage body. Attribute the author’s own argument to them; if they discuss the other thinker, identify it as their interpretation rather than the other thinker’s direct statement. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. When a passage reports one character or speaker describing another’s view, attribute that description to the reporting speaker; distinguish it from the other speaker’s own reply or qualification. For an explicit comparison part, synthesize a concise contrast only when separately supported parts establish every requested side; cite each side and do not imply either author made the comparison. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
+            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. When a question asks for each named author’s own thought, prefer that author’s own submitted work for that side when it contains a relevant argument, even if the passage does not repeat the author’s name. A passage in another author’s book can establish that author’s report of the thinker, not the thinker’s own primary-text position when their own work is supplied. Attribute each argument to the source that supports it. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. When a passage reports one character or speaker describing another’s view, attribute that description to the reporting speaker; distinguish it from the other speaker’s own reply or qualification. For an explicit comparison part, synthesize a concise contrast only when separately supported parts establish every requested side; cite each side and do not imply either author made the comparison. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
           {role:'user',content:
             'Question:\n'+question+'\n\nQuestion parts and evidence review status:\n'+
             review.questionParts.map(part=>'- '+part.part+' — '+part.status+
@@ -1882,6 +1911,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         finalQuestionParts=reconcileQuestionParts(review.questionParts,
           repairedDraft.partChecks,answer);
       finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
+      finalQuestionParts=enforceAuthorEvidenceByQuestionPart(finalQuestionParts,question,sources);
     }
     if(finalQuestionParts.length){
       finalCoverage=finalQuestionParts.every(part=>part.status==='supported')?
@@ -2051,6 +2081,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   // supported label never survives an explicit prose-level evidence gap.
   finalQuestionParts=finalQuestionParts.map(part=>
     answerContradictsSupportedPart(part,answer)?{...part,status:'partial'}:part);
+  finalQuestionParts=enforceAuthorEvidenceByQuestionPart(finalQuestionParts,question,sources);
   if(finalQuestionParts.some(part=>part.status!=='supported')){
     finalCoverage='partial';
     finalMissing=questionPartMissingNote(finalQuestionParts)||finalMissing;
