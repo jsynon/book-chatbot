@@ -688,7 +688,7 @@ export function workerVersionDiagnostics(env={}) {
   const metadata=env?.CF_VERSION_METADATA;
   const safe=(value,limit=128)=>typeof value==='string'&&value.length>0&&value.length<=limit?value:null;
   return {
-    workerSourceBuild:'public-gateway-source-group-repair-v2',
+    workerSourceBuild:'public-gateway-source-excerpt-relevance-v1',
     workerVersionId:safe(metadata?.id),
     workerVersionTag:safe(metadata?.tag),
     workerVersionTimestamp:safe(metadata?.timestamp,64),
@@ -732,7 +732,7 @@ async function corpusJson(filename,fetcher) {
 }
 function queryWords(question) {
   return [...new Set((question.toLowerCase().match(/[a-z0-9]+/g)||[])
-    .filter(w=>w.length>=3 && !STOP.has(w)))].slice(0,8);
+    .filter(w=>w.length>=3 && !STOP.has(w)))];
 }
 export function sourceExcerpt(text,question,max=1080) {
   const content=String(text||'').replace(/\s+/g,' ').trim();
@@ -750,8 +750,28 @@ export function sourceExcerpt(text,question,max=1080) {
   const tail=content.slice(start).trim();
   if(tail)sentences.push(tail);
   if(!sentences.length)sentences.push(content);
-  const score=sentence=>words.reduce((total,word)=>
-    total+(sentence.toLowerCase().includes(word)?1:0),0);
+  // Long pages often repeat broad topic words throughout while mentioning a
+  // question's discriminating detail only once. Weight matches by how rare
+  // each query term is on this page so a specific term such as "observations"
+  // can beat a generic cluster such as "black hole". Use the full question:
+  // an early-clause token limit can otherwise hide later named works.
+  const lowerSentences=sentences.map(sentence=>sentence.toLowerCase());
+  const edgeLabels=new Set();
+  const isShortLabel=sentence=>sentence.length<=80&&
+    !/\\b(?:am|are|is|was|were|be|been|being|do|does|did|has|have|had|can|could|will|would|shall|should|may|might|must|because|although|while|when|where|which|who|that)\\b/i.test(sentence);
+  // Scanned pages commonly begin or end with a short title/author line.
+  // Keep those labels as context, but do not let them anchor the excerpt.
+  for(let i=0;i<sentences.length&&i<3&&isShortLabel(sentences[i]);i++)edgeLabels.add(i);
+  for(let i=sentences.length-1;i>=0&&i>=sentences.length-3&&isShortLabel(sentences[i]);i--)edgeLabels.add(i);
+  const scoredSentences=lowerSentences.filter((_,index)=>!edgeLabels.has(index));
+  const frequencyText=scoredSentences.length?scoredSentences:lowerSentences;
+  const frequencies=new Map(words.map(word=>[word,
+    frequencyText.filter(sentence=>sentence.includes(word)).length]));
+  const score=sentence=>words.reduce((total,word)=>{
+    if(!sentence.toLowerCase().includes(word))return total;
+    const frequency=frequencies.get(word)||1;
+    return total+Math.log1p(sentences.length/frequency);
+  },0);
   let center=0,bestScore=-1;
   for(let i=0;i<sentences.length;i++) {
     const current=score(sentences[i]);
