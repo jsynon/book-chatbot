@@ -421,6 +421,39 @@ test('multi-author full coverage is downgraded when one requested author group i
  const both=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'}]}),sources,question);
  assert.equal(both.coverage,'full');
 });
+test('lowercase author surnames activate per-author evidence review for comparisons',async()=>{
+ const question="what's the difference between the thought of kierkegaard and shestov?";
+ const sources=[
+  {id:'S1',bookId:'96',title:'Athens and Jerusalem — Lev Shestov',page:70,
+   preview:'Shestov argues that rational necessity limits human freedom and that philosophy must struggle against it.'},
+  {id:'S2',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:12,
+   preview:'Kierkegaard describes faith as a paradox in which the individual stands in an absolute relation to God.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[
+    {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S2']},
+    {part:"Shestov's thought",status:'supported',evidenceIds:['S1']}
+   ],
+   evidence:[
+    {id:'S1',point:'Shestov criticizes rational necessity as a constraint on freedom.'},
+    {id:'S2',point:'Kierkegaard presents faith as the individual’s paradoxical relation to God.'}
+   ]
+  })}}],usage:{neurons:2}};
+  return {choices:[{finish_reason:'stop',message:{content:
+   'Kierkegaard presents faith as the individual’s paradoxical relation to God [S2]. His passage centers on the believer’s religious commitment and the individual’s relation to God. It frames his thought here through faith and the single person. The excerpt therefore offers a religious account tied to the individual’s relation with God, rather than an abstract definition of faith [S2].\n\nShestov attacks the authority of rational necessity [S1]. He treats necessary truths as limits on human freedom and calls for a struggle against that constraint. The difference in these excerpts is one of emphasis: Kierkegaard focuses on the individual’s relation to God through faith, while Shestov challenges reason’s claim that necessity sets the limits of possibility. This comparison synthesizes the two passages, rather than presenting a direct debate between the authors [S1, S2].'}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,2);
+ assert.match(calls[0].messages[0].content,/Lev Shestov \[S1\]/);
+ assert.match(calls[0].messages[0].content,/Søren Kierkegaard \[S2\]/);
+ assert.match(calls[0].messages[0].content,/select at least one relevant passage from that group/);
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
+});
 test('separately supported accounts can support a cross-work synthesis',async()=>{
  const question="How does Aristotle's Nicomachean Ethics differ from Hobbes's Leviathan on what secures political order?";
  const sources=[
