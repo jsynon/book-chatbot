@@ -1822,7 +1822,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'give a connected synthesis in two or three paragraphs, usually about 120–180 words. Explain the passages’ different contributions and then state what they jointly suggest. Keep it shorter when the evidence is thinner; do not pad or repeat. When distinct selected passages support different points, '+
         'use up to six of those passages and place each citation next to the '+
         'claim it supports. State the central account once; each later sentence must add a distinct qualification, implication, example, or contrast. Do not restate the same claim with expanded synonyms. Do not repeat evidence, pad the answer, or force a '+
-        'source that adds nothing. Keep direct quotations short and exact; '+
+        'source that adds nothing. Open with a direct answer calibrated to the evidence: distinguish what the excerpts establish from what they leave open. Treat a book title or an author’s conditional hypothetical as evidence only for what the passage actually says, not as a complete verdict on the topic. When several authors or works are selected, explain their positions separately and synthesize them only as a reader-level comparison; do not present two passages from one author as two independent perspectives. Prefer a passage from a distinct relevant work when it adds evidence, but do not cite a work merely to increase source count. '+
+        'Keep direct quotations short and exact; '+
         'paraphrase when OCR is unclear. Keep distinct symbols and physical '+
         'quantities distinct, and follow the source’s own definitions and sign '+
         'conventions. Do not treat related quantities as interchangeable; for '+
@@ -2458,12 +2459,12 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       if(!visitor.success||!total.success)
         return reply({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
     }catch{return reply({error:'Request limits unavailable'},503,origin);}
-    if(Number(request.headers.get('Content-Length'))>32000)
+    if(Number(request.headers.get('Content-Length'))>40000)
       return reply({error:'Request too large'},413,origin);
     let data;
     try{
       const raw=await request.text();
-      if(new TextEncoder().encode(raw).byteLength>32000)
+      if(new TextEncoder().encode(raw).byteLength>40000)
         return reply({error:'Request too large'},413,origin);
       data=JSON.parse(raw);
     }catch{return reply({error:'Invalid JSON request'},400,origin);}
