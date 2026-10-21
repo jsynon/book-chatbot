@@ -1260,6 +1260,45 @@ test('evidence review retries one truncated response with a compact bounded requ
  assert.equal(data.usage.neurons,12);
  assert.equal(calls,3);
 });
+test('evidence review retries one invalid structured response with a compact request',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const ai={run:async(_model,input)=>{
+  calls++;
+  if(calls===1){
+   assert.equal(input.max_completion_tokens,520);
+   return {choices:[{finish_reason:'stop',message:{content:'review output was not JSON'}}],usage:{neurons:2}};
+  }
+  if(calls===2){
+   assert.equal(input.max_completion_tokens,760);
+   assert.match(input.messages[0].content,/compact valid JSON/);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    coverage:'partial',missing:'The excerpt only gives part of the requested account.',
+    evidence:[{id:'S1',point:'Relevant supported passage point.'}],followUpQuestions:[]
+   })}}],usage:{neurons:3}};
+  }
+  return {choices:[{finish_reason:'stop',message:{content:
+   'The passage supports this limited account [S1].'}}],usage:{neurons:4}};
+ }};
+ const response=await fixture.response({overrideAI:ai});
+ assert.equal(response.status,200);
+ const data=await response.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.equal(data.usage.neurons,9);
+ assert.equal(calls,3);
+});
+test('second invalid evidence-review response reports only its safe failure class',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>({
+  choices:[{finish_reason:'stop',message:{content:input.max_completion_tokens===520?
+   'private first malformed output':'private second malformed output'}}],usage:{neurons:1}
+ })});
+ const response=await pilot.post();
+ assert.equal(response.status,502);
+ const body=await response.json();
+ assert.equal(body.failureCode,'evidence-review-invalid-response');
+ assert.equal(body.failureDetail,'retry_invalid_json');
+ assert.doesNotMatch(JSON.stringify(body),/private|malformed output/i);
+});
 test('a second evidence-review truncation returns a safe stage diagnostic in Worker logs',async()=>{
  const calls=[];
  const prompts=[];
@@ -1281,7 +1320,7 @@ test('a second evidence-review truncation returns a safe stage diagnostic in Wor
  assert.deepEqual(failure,{
    failureCode:'evidence-review-truncated',stage:'evidence-review',
    finishReason:'length',retryFinishReason:'length',
-   outputTokenLimit:760,sourceCount:1,retried:true
+   outputTokenLimit:760,sourceCount:1,retried:true,reviewFailureReason:'unknown'
  });
 });
 
@@ -1437,6 +1476,43 @@ test('repairs a missing comparison when each named work has a supported side',as
  assert.equal(result.coverage,'full');
  assert.match(result.answer,/synthesis of the two supplied passages/);
  assert.deepEqual(result.questionParts[2].evidenceIds,['S1','S2']);
+});
+
+test('recognizes a cited reader synthesis when coverage calls the comparison unsupported',async()=>{
+ const question='How does Aristotle describe political science in Nicomachean Ethics, how does Hobbes describe common power in Leviathan, and how do the accounts differ?';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:12,
+   preview:'The aim of political science is the human good and happiness; it makes citizens good and obedient to laws.'},
+  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes',page:104,
+   preview:'Common power keeps people in awe so they may observe justice and the laws of nature.'}
+ ];
+ let calls=0;
+ const answer='Aristotle describes political science as pursuing human good and happiness [S1]. The same passage connects that study with virtue of the soul and with making citizens good and obedient to laws [S1]. This presents political inquiry through the end it should serve and the kind of civic character it should cultivate [S1]. The passage gives human flourishing a central place in describing the aim of political science [S1].\n\nHobbes gives common power a different role: it keeps people in awe so that justice and the laws of nature can be observed [S2]. In this account, public authority supplies the condition that helps people follow those rules in practice [S2]. The passage says that without common power, justice and natural law would not be reliably observed [S2]. Hobbes therefore explains political order through the force that sustains public obedience [S2].\n\nThe accounts differ in what they emphasize: Aristotle connects political order with human good and civic formation, whereas Hobbes emphasizes common power as the condition that sustains justice [S1, S2]. This is a reader-level comparison of the two supplied passages, not a claim that either author directly compared his view with the other [S1, S2]. Their respective passages support the contrast between a human good that guides political inquiry and an authority that maintains order [S1, S2]. The comparison follows from those distinct emphases and remains limited to the excerpts supplied here [S1, S2].';
+ const ai={run:async(_model,input)=>{
+  calls++;
+  if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The comparison is not directly stated in either excerpt.',
+   questionParts:[
+    {part:'Aristotle’s account of political science',status:'supported',evidenceIds:['S1']},
+    {part:'Hobbes’s account of common power',status:'supported',evidenceIds:['S2']},
+    {part:'How the accounts differ',status:'unsupported',evidenceIds:[]}
+   ],evidence:[
+    {id:'S1',point:'Aristotle connects political science with human good and civic formation.'},
+    {id:'S2',point:'Hobbes connects common power with maintaining justice.'}
+   ]})}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/Mark the comparison supported when both requested sides are explicitly explained/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer,partChecks:[
+   {part:'Aristotle’s account of political science',status:'supported',evidenceIds:['S1']},
+   {part:'Hobbes’s account of common power',status:'supported',evidenceIds:['S2']},
+   {part:'How the accounts differ',status:'unsupported',evidenceIds:[]}
+  ]})}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls,2);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[2].status,'supported');
+ assert.deepEqual(result.questionParts[2].evidenceIds,['S1','S2']);
+ assert.doesNotMatch(result.answer,/do not fully address/i);
 });
 
 test('repairs a 120-plus-word single paragraph when three parts are supported',async()=>{
