@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -193,6 +193,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/up to four distinct passages, including passages from the same book/);
  assert.match(inputs[1].messages[0].content,/use the questionParts checklist to make sure/);
+ assert.match(inputs[1].messages[0].content,/For a distinction directly stated in an excerpt/);
  assert.match(inputs[1].messages[0].content,/normally have three to five complete sentences/);
  assert.match(inputs[1].messages[0].content,/exactly three developed, connected paragraphs/);
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
@@ -205,6 +206,34 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
+test('all-books planner assigns a named-work query to each side of a cross-work question',async()=>{
+ const question="How does Darwin's On the Origin of Species explain inherited variation, and how does Hawking's A Brief History of Time use astronomical observations to explain black holes?";
+ let prompt='';
+ const ai={run:async(_model,input)=>{
+   prompt=input.messages[0].content;
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     queries:[
+       'Darwin natural selection inherited variation survival',
+       'Darwin origin species variation struggle for existence'
+     ]
+   })}}]};
+ }};
+ const result=await planSearchQueries(question,'',ai);
+ assert.match(prompt,/assign one query to each named source group/);
+ assert.match(result.queries[0],/On the Origin of Species/i);
+ assert.match(result.queries[1],/A Brief History of Time/i);
+ assert.doesNotMatch(result.queries[1],/On the Origin of Species/i);
+ assert.match(result.queries[1],/astronomical observations|black holes/i);
+});
+
+test('selected-book planner preserves its own scope and model queries',async()=>{
+ const question="How does Aristotle's Nicomachean Ethics explain virtue, and how does Hobbes's Leviathan explain political order?";
+ const expected=['Nicomachean Ethics virtue habit','Nicomachean Ethics political science human good'];
+ const ai={run:async(_model,input)=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:expected})}}]})};
+ const result=await planSearchQueries(question,'Nicomachean Ethics — Aristotle',ai);
+ assert.deepEqual(result.queries,expected);
+});
+
 test('multi-work full coverage requires selected evidence from every named work group',()=>{
  const question='How do Darwin in On the Origin of Species and Hawking in A Brief History of Time explain change?';
  const sources=[
@@ -230,6 +259,46 @@ test('multi-author full coverage is downgraded when one requested author group i
  const both=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'}]}),sources,question);
  assert.equal(both.coverage,'full');
 });
+test('separately supported accounts can support a cross-work synthesis',async()=>{
+ const question="How does Aristotle's Nicomachean Ethics differ from Hobbes's Leviathan on what secures political order?";
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:2,
+   preview:'Political science aims at the human good and happiness, and studies virtue of the soul.'},
+  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes',page:90,
+   preview:'A common power is necessary to keep people in awe and secure observance of justice and the laws of nature.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+   calls.push(input);
+   if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',
+     questionParts:[
+       {part:"Aristotle's account of political order",status:'supported',evidenceIds:['S1']},
+       {part:"Hobbes's account of political order",status:'supported',evidenceIds:['S2']}
+     ],
+     evidence:[
+       {id:'S1',point:'Aristotle connects political science with human good, happiness, and virtue.'},
+       {id:'S2',point:'Hobbes says common power secures justice and observance of law.'}
+     ]
+   })}}]};
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:"Aristotle connects political order to the human good and the cultivation of virtue, framing politics around the kind of life and character a community should support [S1]. This account makes the ethical end of civic life central to political inquiry.\n\nHobbes instead emphasizes the institution of a common power, which keeps people in awe and makes justice and the laws of nature more reliably observed [S2]. The contrast is a synthesis of these passages: Aristotle foregrounds the end politics serves, while Hobbes foregrounds the authority needed to secure order. The passages support those distinct emphases, though neither excerpt directly compares the two thinkers.",
+     partChecks:[
+       {part:"Aristotle's account of political order",status:'supported',evidenceIds:['S1']},
+       {part:"Hobbes's account of political order",status:'supported',evidenceIds:['S2']}
+     ]
+   })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,2);
+ assert.match(calls[0].messages[0].content,/A passage can support its own side without explicitly comparing it/);
+ assert.match(calls[1].messages[0].content,/reader synthesis/);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts.length,2);
+ assert(result.questionParts.every(part=>part.status==='supported'));
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+});
+
 test('single named work keeps existing evidence-review coverage behavior',()=>{
  const sources=[{id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',preview:'Virtue develops through habit.'}];
  const result=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}),sources,
