@@ -900,14 +900,17 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
   workerVersionTimestamp:metadata.timestamp
  });
  assert.equal(workerVersionDiagnostics({}).workerVersionId,null);
- const pilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
- const planned=await pilot.plan();
+ const plannerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata},
+  model:async()=>({choices:[{finish_reason:'stop',message:{content:
+   '{"queries":["specific first event cause","distinct second event cause"]}'}}]})});
+ const planned=await plannerPilot.plan();
  const planData=await planned.json();
  assert.equal(planned.status,200);
  assert.equal(planData.workerVersionId,metadata.id);
  assert.equal(planData.workerVersionTag,metadata.tag);
  assert.equal(planData.workerSourceBuild,'public-gateway-worker-version-diagnostics-v1');
- const answered=await pilot.post();
+ const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
+ const answered=await answerPilot.post();
  const answerData=await answered.json();
  assert.equal(answered.status,200);
  assert.equal(answerData.workerVersionId,metadata.id);
