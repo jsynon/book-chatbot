@@ -1325,6 +1325,25 @@ function reconcileQuestionParts(questionParts,partChecks,answer) {
   });
 }
 
+function promoteSupportedCrossWorkSynthesis(questionParts,question,answer,sources){
+  if(!/\b(?:compare|comparison|contrast|differ|difference|different|versus|vs\.)\b/i.test(question)||
+    !/\b(?:whereas|while|by contrast|in contrast|unlike|instead|rather than|different from|differs?)\b/i.test(answer))
+    return questionParts;
+  const groups=requestedSourceGroups(question,sources);
+  if(groups.length<2)return questionParts;
+  const citedIds=new Set([...String(answer||'').matchAll(/\[([^\]]+)\]/g)]
+    .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
+  return questionParts.map(part=>{
+    if(part.status!=='partial'||
+      !/\b(?:compare|comparison|contrast|differ|difference|different|distinguish|accounts?)\b/i.test(part.part))
+      return part;
+    const partEvidence=new Set(part.evidenceIds||[]);
+    const everyGroupHasCitedEvidence=groups.every(group=>sources.some(source=>
+      group.bookIds.has(String(source.bookId))&&partEvidence.has(source.id)&&citedIds.has(source.id)));
+    return everyGroupHasCitedEvidence?{...part,status:'supported'}:part;
+  });
+}
+
 function normalizedEvidenceQuote(text) {
   return String(text||'').toLocaleLowerCase().normalize('NFKC')
     .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
@@ -1584,6 +1603,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let finalMissing=review.missing;
   if(composed.structured&&finalQuestionParts.length){
     finalQuestionParts=reconcileQuestionParts(finalQuestionParts,composed.partChecks,answer);
+    finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
     const needsPartRepair=finalQuestionParts.some((part,index)=>
       (review.questionParts[index].status==='supported'&&part.status!=='supported')||
       (review.questionParts[index].status==='partial'&&part.status==='unsupported')||
@@ -1619,6 +1639,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       if(repairedDraft.structured)
         finalQuestionParts=reconcileQuestionParts(review.questionParts,
           repairedDraft.partChecks,answer);
+      finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
     }
     if(finalQuestionParts.length){
       finalCoverage=finalQuestionParts.every(part=>part.status==='supported')?
