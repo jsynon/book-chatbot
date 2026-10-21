@@ -1353,6 +1353,18 @@ function reconcileQuestionParts(questionParts,partChecks,answer) {
 function isComparisonQuestionPart(label){
   return /\b(?:compare|comparison|contrast|differ|difference|different|distinguish)\b/i.test(String(label||''));
 }
+function answerContradictsSupportedPart(part,answer){
+  if(part?.status!=='supported'||!isComparisonQuestionPart(part.part))return false;
+  const text=String(answer||'');
+  const explicitGap=/(?:\b(?:cannot|can't|does not|doesn't|do not|don't|unable to|fails? to)\b.{0,90}\b(?:establish|demonstrate|support|show|provide|contain|identify|determine|compare|distinguish)\b.{0,70}\b(?:comparison|contrast|difference|distinction)\b|\b(?:no|not enough|insufficient)\s+(?:direct\s+)?(?:evidence|support|basis|comparison|contrast|difference|distinction)\b|\b(?:comparison|contrast|difference|distinction)\s+(?:is\s+)?(?:not directly stated|cannot be established|is not established)\b|\b(?:texts?|passages?|excerpts?|evidence)\b.{0,80}\b(?:do not|don't|does not|doesn't|cannot|can't)\b.{0,50}\b(?:contain|establish|support|show|provide)\b.{0,40}\b(?:comparison|contrast|difference|distinction)\b)/i.test(text);
+  if(!explicitGap)return false;
+  // A brief scope caveat (for example, “neither author directly compares
+  // them”) is compatible with a reader's own synthesis when the answer gives
+  // that synthesis explicitly. It is a contradiction only when the answer
+  // offers no affirmative contrast at all.
+  const givesContrast=/\b(?:whereas|by contrast|in contrast|unlike|differs? from|different from|the difference is|differ in|contrasts? with)\b/i.test(text);
+  return !givesContrast;
+}
 function promoteSupportedCrossWorkSynthesis(questionParts,question,answer,sources){
   if(!/\b(?:compare|comparison|contrast|differ|difference|different|versus|vs\.)\b/i.test(question)||
     !/\b(?:whereas|while|by contrast|in contrast|unlike|instead|rather than|different from|differs?)\b/i.test(answer))
@@ -1690,6 +1702,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
             source.id===id&&group.bookIds.has(String(source.bookId))))));
       const isComparisonPart=isComparisonQuestionPart(part.part);
       return (review.questionParts[index].status==='supported'&&part.status!=='supported')||
+        answerContradictsSupportedPart(part,answer)||
         (review.questionParts[index].status==='partial'&&part.status==='unsupported')||
         (review.questionParts[index].status==='partial'&&part.status==='partial'&&
           (part.evidenceIds||[]).some(id=>sourceHasMeaningfulQualifier(
@@ -1881,6 +1894,15 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'full':'partial';
     finalMissing=questionPartMissingNote(finalQuestionParts)||
       'An incomplete generated sentence was removed, leaving part of the answer unresolved.';
+  }
+  // Depth/quotation/dangling repairs can alter prose after the first
+  // coverage check. Reconcile once more at the response boundary so a
+  // supported label never survives an explicit prose-level evidence gap.
+  finalQuestionParts=finalQuestionParts.map(part=>
+    answerContradictsSupportedPart(part,answer)?{...part,status:'partial'}:part);
+  if(finalQuestionParts.some(part=>part.status!=='supported')){
+    finalCoverage='partial';
+    finalMissing=questionPartMissingNote(finalQuestionParts)||finalMissing;
   }
   answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
