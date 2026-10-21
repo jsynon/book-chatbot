@@ -758,7 +758,7 @@ export function sourceExcerpt(text,question,max=1080) {
   const lowerSentences=sentences.map(sentence=>sentence.toLowerCase());
   const edgeLabels=new Set();
   const isShortLabel=sentence=>sentence.length<=80&&
-    !/\\b(?:am|are|is|was|were|be|been|being|do|does|did|has|have|had|can|could|will|would|shall|should|may|might|must|because|although|while|when|where|which|who|that)\\b/i.test(sentence);
+    !/\b(?:am|are|is|was|were|be|been|being|do|does|did|has|have|had|can|could|will|would|shall|should|may|might|must|because|although|while|when|where|which|who|that)\b/i.test(sentence);
   // Scanned pages commonly begin or end with a short title/author line.
   // Keep those labels as context, but do not let them anchor the excerpt.
   for(let i=0;i<sentences.length&&i<3&&isShortLabel(sentences[i]);i++)edgeLabels.add(i);
@@ -774,6 +774,7 @@ export function sourceExcerpt(text,question,max=1080) {
   },0);
   let center=0,bestScore=-1;
   for(let i=0;i<sentences.length;i++) {
+    if(edgeLabels.has(i))continue;
     const current=score(sentences[i]);
     if(current>bestScore){center=i;bestScore=current;}
   }
