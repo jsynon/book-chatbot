@@ -2268,5 +2268,30 @@ test('public pilot preserves relation-audit failure codes for diagnostics',async
  }});
  const response=await pilot.post({body:{question:'Is there a conflict between science and religion?'}});
  assert.equal(response.status,502);
- assert.equal((await response.json()).failureCode,'relation-claim-audit-invalid');
+ assert.equal((await response.json()).failureCode,'relation-claim-audit-retry-invalid');
+});
+
+test('public pilot retries a malformed relation audit response once',async()=>{
+ let calls=0;
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   calls++;
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'partial',missing:'The source does not address this relation.',
+     evidence:[{id:'S1',point:'The source passage is unrelated context.'}]
+   })}}]};
+   if(calls===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'The passage explains causes of the Peloponnesian War [S1].',partChecks:[]
+   })}}]};
+   if(calls===3)return {choices:[{finish_reason:'stop',message:{content:'malformed first audit response'}}]};
+   assert.match(input.messages[0].content,/Required shape/);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'The supplied excerpt concerns causes of the Peloponnesian War, not science or religion [S1]. It cannot establish whether science and religion conflict.',
+     partChecks:[]
+   })}}],usage:{neurons:1}};
+ }});
+ const response=await pilot.post({body:{question:'Is there a conflict between science and religion?'}});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(calls,4);
+ assert.match(result.answer,/cannot establish whether science and religion conflict/);
 });
