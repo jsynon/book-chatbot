@@ -2566,7 +2566,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'answer-quotation-repair-request-failed','answer-quotation-repair-truncated',
         'answer-quotation-repair-empty','answer-quotation-repair-too-long',
         'answer-quotation-repair-failed','answer-citations-missing',
-        'answer-citations-invalid','answer-quotation-not-source-verified']);
+        'answer-citations-invalid','answer-quotation-not-source-verified',
+        'relation-claim-audit-request-failed','relation-claim-audit-truncated',
+        'relation-claim-audit-invalid','relation-claim-audit-too-long',
+        'relation-claim-audit-incomplete']);
       const failureCode=known.has(error?.failureCode)?error.failureCode:
         'answer-generation-or-citation-failed';
       const diagnostics=error?.diagnostics||{};
