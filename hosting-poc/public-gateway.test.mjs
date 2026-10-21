@@ -221,6 +221,10 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
  assert.match(inputs[1].messages[0].content,/usually about 150–220 words/);
  assert.match(inputs[1].messages[0].content,/Open with a direct answer calibrated to the evidence/);
+ assert.match(inputs[1].messages[0].content,/You may also use reliable general knowledge/);
+ assert.match(inputs[1].messages[0].content,/Clearly mark this material with wording such as/);
+ assert.match(inputs[1].messages[0].content,/never attach a book citation to outside context/);
+ assert.match(inputs[1].messages[0].content,/about 120–200 words when the evidence supports that depth/);
  assert.match(inputs[1].messages[0].content,/every cited claim must support that particular relation/);
  assert.match(inputs[1].messages[0].content,/do not present two passages from one author as two independent perspectives/);
  assert.match(inputs[1].messages[0].content,/avoid repetition, padding, and adjacent topics/);
