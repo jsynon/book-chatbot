@@ -1665,6 +1665,56 @@ test('composition checks every question part against all verified excerpts and r
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
 
+test('named-author comparison repairs an omitted side from a submitted source and develops the answer',async()=>{
+ const question="what's the difference between the thought of kierkegaard and shestov?";
+ const sources=[
+  {id:'S1',bookId:'96',title:'Athens and Jerusalem — Lev Shestov',page:75,
+   preview:'To tear oneself away from Necessity, it is necessary to dare everything. Beyond reason and knowledge, the enchained Parmenides will regain his primordial freedom.'},
+  {id:'S2',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:39,
+   preview:'If there is such a concealment, we are in the presence of the paradox that the individual as the individual is higher than the universal.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'Shestov’s thought is not addressed.',
+   questionParts:[
+    {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S2']},
+    {part:"Shestov's thought",status:'unsupported',evidenceIds:[]}
+   ],evidence:[{id:'S2',point:'Kierkegaard places the individual above the universal in faith.'}]
+  })}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Kierkegaard presents faith as a paradox in which the individual may stand above the ethical universal [S2]. Shestov’s page discusses Kierkegaard, but the answer cannot establish Shestov’s own thought from it [S1].',
+   partChecks:[
+    {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S2']},
+    {part:"Shestov's thought",status:'unsupported',evidenceIds:[]}
+   ]
+  })}}],usage:{neurons:3}};
+  if(calls.length===3){
+   assert.match(input.messages[0].content,/passage from that author’s own work may support that side/);
+   assert.match(input.messages[1].content,/Beyond reason and knowledge/);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    answer:'Kierkegaard’s passage presents faith as a paradox in which the individual can stand in an absolute relation to God beyond the ethical universal [S2]. Shestov argues that universal necessity and rational knowledge constrain human freedom, and he calls for a struggle to break their power [S1]. Read together, the passages suggest a difference in emphasis: Kierkegaard focuses on the individual’s paradoxical relation to God, while Shestov attacks the rule of necessary truths and stresses freedom beyond reason. This is a comparison of the supplied passages, not a claim that either author directly compared them.',
+    partChecks:[
+     {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S2']},
+     {part:"Shestov's thought",status:'supported',evidenceIds:['S1']}
+    ]
+   })}}],usage:{neurons:4}};
+  }
+  assert.match(input.messages[0].content,/exactly two developed paragraphs/);
+  assert.match(input.messages[0].content,/120–180 words/);
+  return {choices:[{finish_reason:'stop',message:{content:
+   'Kierkegaard describes faith through the paradox of the individual’s absolute relation to God. The individual may stand above the ethical universal, though Kierkegaard treats this as a terrifying exception rather than a general license to disregard ethics. His focus is the believer’s inward responsibility before God, which cannot be reduced to a public rule or explained away by a rational system [S2].\n\nShestov attacks the authority of universal and necessary truths, arguing that reason can make human beings accept constraint as inevitable. He calls for a struggle against Necessity so that freedom may be recovered beyond reason and knowledge [S1]. The difference in these passages is one of emphasis: Kierkegaard centers faith’s paradoxical relation between the individual and God, while Shestov emphasizes revolt against reason’s claim to define what is possible. This comparison synthesizes the two texts; neither passage presents a direct debate between the authors [S1, S2].'}}],usage:{neurons:5}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,4);
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
+ assert.equal(result.answer.split(/\n\s*\n/).length,2);
+ assert.match(result.answer,/Shestov attacks the authority/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+});
+
 test('repairs an unsupported part when review evidence was left unmapped',async()=>{
  const question='How is the protagonist’s view tested later in the novel?';
  const sources=[{id:'S2',bookId:'529',title:'Crime and Punishment — Fyodor Dostoevsky',page:814,
