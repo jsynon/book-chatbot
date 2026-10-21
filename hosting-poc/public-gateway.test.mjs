@@ -1258,6 +1258,36 @@ test('a second evidence-review truncation returns a safe stage diagnostic in Wor
  });
 });
 
+test('partial answer preserves a qualifying phrase and gets one conditional correction',async()=>{
+ const question='How does Darwin describe the timing of struggle for existence and natural selection?';
+ const sources=[{id:'S1',bookId:'529',title:'On the Origin of Species — Charles Darwin',page:140,
+   preview:'It is an error to suppose that there would be no struggle for existence, and, consequently, no natural selection, until many forms had been produced.'}];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+   calls.push(input);
+   if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'partial',missing:'The excerpt only addresses the timing of struggle and selection.',
+     questionParts:[{part:'explain when struggle and natural selection occur',status:'partial',evidenceIds:['S1']}],
+     evidence:[{id:'S1',point:'Darwin rejects the idea that struggle and selection only arise after many forms exist.'}]
+   })}}]};
+   if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'Darwin says natural selection would occur without any struggle for existence [S1].',
+     partChecks:[{part:'explain when struggle and natural selection occur',status:'partial',evidenceIds:['S1']}]
+   })}}]};
+   assert.match(input.messages[0].content,/Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”/);
+   assert.match(input.messages[0].content,/omitting a qualifier can reverse or overstate the source claim/);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'Darwin calls it an error to suppose that struggle and natural selection are absent until many forms have developed [S1]. The excerpt addresses when these processes appear; it does not establish that selection occurs without struggle.',
+     partChecks:[{part:'explain when struggle and natural selection occur',status:'partial',evidenceIds:['S1']}]
+   })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.equal(result.coverage,'partial');
+ assert.match(result.answer,/absent until many forms have developed/);
+ assert.doesNotMatch(result.answer,/would occur without any struggle/);
+});
+
 test('composition checks every question part against all verified excerpts and repairs a missed source',async()=>{
  const question='According to Darwin, how does natural selection operate, and what roles do inherited variation and struggle for existence play?';
  const sources=[
