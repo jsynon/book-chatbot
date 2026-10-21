@@ -732,7 +732,20 @@ async function corpusJson(filename,fetcher) {
 }
 function queryWords(question) {
   return [...new Set((question.toLowerCase().match(/[a-z0-9]+/g)||[])
-    .filter(w=>w.length>=3 && !STOP.has(w)))];
+    .filter(w=>w.length>=3 && !STOP.has(w)).map(excerptStem))];
+}
+function excerptStem(value){
+  let word=String(value||'').toLowerCase();
+  if(word.length>6&&word.endsWith('ation'))word=word.slice(0,-5)+'y';
+  else if(word.length>7&&word.endsWith('ance'))word=word.slice(0,-4);
+  else if(word.length>7&&word.endsWith('ence'))word=word.slice(0,-4);
+  else if(word.length>6&&word.endsWith('ing'))word=word.slice(0,-3);
+  else if(word.length>5&&word.endsWith('ied'))word=word.slice(0,-3)+'y';
+  else if(word.length>5&&word.endsWith('ed'))word=word.slice(0,-2);
+  else if(word.length>5&&word.endsWith('ies'))word=word.slice(0,-3)+'y';
+  else if(word.length>5&&word.endsWith('s'))word=word.slice(0,-1);
+  if(word.length>4&&word.endsWith('e'))word=word.slice(0,-1);
+  return word;
 }
 export function sourceExcerpt(text,question,max=1080) {
   const content=String(text||'').replace(/\s+/g,' ').trim();
@@ -767,37 +780,62 @@ export function sourceExcerpt(text,question,max=1080) {
   // Keep those labels as context, but do not let them anchor the excerpt.
   for(let i=0;i<sentences.length&&i<3&&isShortLabel(sentences[i]);i++)edgeLabels.add(i);
   for(let i=sentences.length-1;i>=0&&i>=sentences.length-3&&isShortLabel(sentences[i]);i--)edgeLabels.add(i);
-  const scoredSentences=lowerSentences.filter((_,index)=>!edgeLabels.has(index));
-  const frequencyText=scoredSentences.length?scoredSentences:lowerSentences;
+  const sentenceWords=lowerSentences.map(sentence=>
+    [...new Set((sentence.match(/[a-z0-9]+/g)||[]).map(excerptStem))]);
+  const frequencyText=sentenceWords.filter((_,index)=>!edgeLabels.has(index));
+  const searchableSentences=frequencyText.length?frequencyText:sentenceWords;
   const frequencies=new Map(words.map(word=>[word,
-    frequencyText.filter(sentence=>sentence.includes(word)).length]));
-  const score=sentence=>words.reduce((total,word)=>{
-    if(!sentence.toLowerCase().includes(word))return total;
-    const frequency=frequencies.get(word)||1;
-    return total+Math.log1p(sentences.length/frequency);
-  },0);
-  let center=0,bestScore=-1;
-  for(let i=0;i<sentences.length;i++) {
-    if(edgeLabels.has(i))continue;
-    const current=score(sentences[i]);
-    if(current>bestScore){center=i;bestScore=current;}
-  }
-  let first=center,last=center,preferAfter=true;
+    searchableSentences.filter(sentence=>sentence.includes(word)).length]));
+  const score=sentence=>{
+    const normalized=new Set((String(sentence).toLowerCase().match(/[a-z0-9]+/g)||[])
+      .map(excerptStem));
+    return words.reduce((total,word)=>{
+      if(!normalized.has(word))return total;
+      const frequency=frequencies.get(word)||1;
+      return total+Math.log1p(sentences.length/frequency);
+    },0);
+  };
   const length=(from,to)=>sentences.slice(from,to+1).join(' ').length+
     (from>0?1:0)+(to<sentences.length-1?1:0);
-  while(true) {
-    const options=[];
-    if(first>0&&length(first-1,last)<=max)
-      options.push({from:first-1,to:last,side:'before',score:score(sentences[first-1])});
-    if(last<sentences.length-1&&length(first,last+1)<=max)
-      options.push({from:first,to:last+1,side:'after',score:score(sentences[last+1])});
-    if(!options.length)break;
-    options.sort((a,b)=>b.score-a.score||
-      (((a.side==='after')===preferAfter)?-1:1));
-    if(options.length>1&&options[0].score===options[1].score)
-      preferAfter=!preferAfter;
-    const choice=options[0];
-    first=choice.from;last=choice.to;
+  const termWeights=new Map(words.map(word=>[word,
+    Math.log1p(sentences.length/(frequencies.get(word)||1))]));
+  const sentenceTerms=lowerSentences.map((_,index)=>edgeLabels.has(index)?[]:
+    sentenceWords[index].filter(word=>termWeights.has(word)));
+  const prefixLengths=[0];
+  for(const sentence of sentences)prefixLengths.push(prefixLengths.at(-1)+sentence.length);
+  let first=0,last=0,bestScore=-1;
+  for(let from=0;from<sentences.length;from++){
+    const found=new Set(),occurrences=new Map();
+    let total=0,relevantSentences=0,contextSentences=0;
+    for(let to=from;to<sentences.length;to++){
+      const windowLength=prefixLengths[to+1]-prefixLengths[from]+(to-from)+
+        (from>0?1:0)+(to<sentences.length-1?1:0);
+      if(windowLength>max)break;
+      let relevantHere=false;
+      for(const word of sentenceTerms[to]){
+        relevantHere=true;
+        const count=(occurrences.get(word)||0)+1;
+        occurrences.set(word,count);
+        if(!found.has(word)){
+          found.add(word);total+=termWeights.get(word)||0;
+        }
+        total+=Math.min(0.03,Math.max(0,0.18-Math.min(0.18,(count-1)*0.03)));
+      }
+      if(relevantHere)relevantSentences++;
+      else if((to>from&&sentenceTerms[to-1].length)||
+        (to+1<sentences.length&&sentenceTerms[to+1].length))contextSentences++;
+      // Prefer a window that connects evidence from several requested details,
+      // while giving a small tie-break to the surrounding explanation.
+      const current=total+Math.min(0.3,relevantSentences*0.04)+
+        Math.min(0.24,contextSentences*0.12);
+      if(current>bestScore){first=from;last=to;bestScore=current;}
+    }
+  }
+  // When no query term appears, retain the opening prose window. This is
+  // deterministic and avoids anchoring an excerpt on a title or page label.
+  if(bestScore<=0){
+    first=0;last=0;
+    while(last+1<sentences.length&&length(first,last+1)<=max)last++;
   }
   let excerpt=(first>0?'…':'')+sentences.slice(first,last+1).join(' ')+
     (last<sentences.length-1?'…':'');
