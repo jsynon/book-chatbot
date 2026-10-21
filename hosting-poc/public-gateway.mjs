@@ -1840,7 +1840,7 @@ function namedGroupQueryTargets(question,bookTitle){
   if(groups.length!==2)return [];
   const text=String(question||'');
   const {titleBooks,authorBooks}=sourceGroupMetadata();
-  const mentionFor=group=>{
+  const details=groups.map(group=>{
     const titleMentions=[];
     for(const [key,value] of titleBooks){
       if(![...value.bookIds].some(id=>group.bookIds.has(String(id))))continue;
@@ -1855,23 +1855,35 @@ function namedGroupQueryTargets(question,bookTitle){
         if(index>=0)authorMentions.push({phrase:text.slice(index,index+phrase.length),index,end:index+phrase.length});
       }
     }
-    return titleMentions.sort((a,b)=>a.index-b.index)[0]||
-      authorMentions.sort((a,b)=>a.index-b.index)[0]||null;
-  };
-  const mentions=groups.map(group=>({mention:mentionFor(group)})).filter(item=>item.mention)
-    .sort((a,b)=>a.mention.index-b.mention.index);
-  if(mentions.length!==2)return [];
-  const stopWords=new Set(('a an and are as at be because by can do does for from how in into is it of on or that the their them there these this to use using what when where which while with').split(' '));
-  return mentions.map((item,index)=>{
-    const next=mentions[index+1]?.mention.index??text.length;
-    const facet=text.slice(item.mention.end,next).replace(/^[\s,;:—–-]*(?:and|or|but|while|whereas)?[\s,;:—–-]*/i,'');
+    const title=titleMentions.sort((x,y)=>x.phrase.length-y.phrase.length||x.index-y.index)[0]||null;
+    const mention=[...titleMentions,...authorMentions].sort((x,y)=>x.index-y.index)[0]||title;
+    return {group,title,mention};
+  }).filter(item=>item.mention).sort((x,y)=>x.mention.index-y.mention.index);
+  if(details.length!==2)return [];
+  const stopWords=new Set(('a an and are as at be because by can do does for from how in into is it of on or that the their them there these this to use using was were what when where which while with explain explains explained account according support supports supporting evidence work works').split(' '));
+  const identityWords=new Set();
+  for(const group of groups){
+    for(const word of String(group.key||group.label||'').toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u))
+      if(word)identityWords.add(word);
+    const {authorBooks:authors}=sourceGroupMetadata();
+    for(const author of authors.values())
+      if([...author.bookIds].some(id=>group.bookIds.has(String(id))))
+        for(const word of author.name.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u))if(word)identityWords.add(word);
+  }
+  return details.map((item,index)=>{
+    const next=details[index+1]?.mention.index??text.length;
+    const facet=text.slice(item.mention.index,next);
     let terms=facet.match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu)||[];
-    terms=terms.filter(term=>!stopWords.has(term.toLocaleLowerCase())&&term.length>2);
+    terms=terms.filter(term=>!stopWords.has(term.toLocaleLowerCase())&&
+      !identityWords.has(term.toLocaleLowerCase())&&term.length>2);
     if(terms.length<2){
       terms=(text.match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu)||[])
-        .filter(term=>!stopWords.has(term.toLocaleLowerCase())&&term.length>2);
+        .filter(term=>!stopWords.has(term.toLocaleLowerCase())&&
+          !identityWords.has(term.toLocaleLowerCase())&&term.length>2);
     }
-    return {phrase:item.mention.phrase,query:[item.mention.phrase,...terms.slice(0,7)].join(' ').trim()};
+    const phrase=item.title?.phrase||item.mention.phrase;
+    return {phrase,facetTerms:terms.slice(0,5),
+      query:[phrase,...terms.slice(0,7)].join(' ').trim()};
   });
 }
 
@@ -1943,9 +1955,11 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
   const queries=options.map(q=>q.trim().replace(/\s+/g,' '));
   const namedTargets=namedGroupQueryTargets(question,bookTitle);
   if(namedTargets.length===2){
-    const matches=(query,target)=>containsSourceGroupPhrase(query,target.phrase);
+    const matches=(query,target)=>containsSourceGroupPhrase(query,target.phrase)&&
+      (!target.facetTerms.length||target.facetTerms.some(term=>containsSourceGroupPhrase(query,term)));
     if(matches(queries[0],namedTargets[1])&&matches(queries[1],namedTargets[0]))queries.reverse();
-    else if(!matches(queries[0],namedTargets[0])||!matches(queries[1],namedTargets[1])){
+    if(!matches(queries[0],namedTargets[0])||!matches(queries[1],namedTargets[1])||
+      namedTargets.some((target,index)=>containsSourceGroupPhrase(queries[index],namedTargets[1-index].phrase))){
       for(let index=0;index<2;index++)queries[index]=namedTargets[index].query;
     }
   }
