@@ -2213,7 +2213,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const citations=sources.filter(s=>cited.includes(s.id));
   return {outcome:'verified-source-draft',answer,coverage:finalCoverage,
     missing:finalMissing,citations,followUpQuestions:review.followUpQuestions,
-    evidenceMap:review.evidenceMap,questionParts:finalQuestionParts,reviewStatus:'citations_not_claim_verified',
+    evidenceMap:review.evidenceMap,questionParts:finalQuestionParts,reviewStatus:'claim_support_not_independently_verified',
     usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},
     model:MODEL,finishReason:second?.choices?.[0]?.finish_reason||'unknown',
     notice:'Exact indexed page text verified against owner-published SHA-256. Individual AI claims still require assessment.'};
@@ -2923,7 +2923,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
   return json({
     outcome:'grounded-draft',answer,coverage:review.coverage,missing:review.missing,
     citations,reviewStatus:invalid.length?'invalid_citation_ids':
-      citations.length?'citations_not_claim_verified':'missing_citations',
+      citations.length?'claim_support_not_independently_verified':'missing_citations',
     invalidCitations:invalid,
     finishReason:second?.choices?.[0]?.finish_reason||'unknown',
     usage:{neurons:firstNeurons+secondNeurons},model:MODEL,
