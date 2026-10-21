@@ -249,6 +249,108 @@ test('multi-work full coverage requires selected evidence from every named work 
  assert.equal(both.coverage,'full');
  assert.equal(both.missing,'');
 });
+test('repairs an omitted but retrieved named-work passage before claiming it has no information',async()=>{
+ const question='How does Darwin explain natural selection preserving favorable variations in On the Origin of Species, and how does Hawking use astronomical observations to explain black-hole phenomena in A Brief History of Time?';
+ const sources=[
+  {id:'S1',bookId:'529',title:'The Harvard Classics, Volume 11: On the Origin of Species — Charles Darwin',page:96,
+   preview:'Darwin explains that natural selection preserves favorable individual variations.'},
+  {id:'S2',bookId:'102',title:'A Brief History of Time — Stephen Hawking',page:58,
+   preview:'Hawking notes an observed gamma-ray background and compares its intensity at different frequencies while discussing radiation from primordial black holes.'}
+ ];
+ const labels=[
+  "Darwin's explanation of natural selection preserving favorable variations",
+  "Hawking's use of astronomical observations to explain black-hole phenomena"
+ ];
+ const inputs=[];
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);
+  if(inputs.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'Hawking evidence was not selected.',
+   questionParts:[
+    {part:labels[0],status:'supported',evidenceIds:['S1']},
+    {part:labels[1],status:'unsupported',evidenceIds:[]}
+   ],
+   evidence:[{id:'S1',point:'Darwin describes natural selection preserving favorable variation.'}]
+  })}}]};
+  if(inputs.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Darwin says natural selection preserves favorable variations [S1]. The provided text contains no information about Hawking or astronomical observations.',
+   partChecks:[
+    {part:labels[0],status:'supported',evidenceIds:['S1']},
+    {part:labels[1],status:'unsupported',evidenceIds:[]}
+   ]
+  })}}]};
+  assert.equal(inputs.length,3);
+  assert.match(input.messages[0].content,/including excerpts not selected by the first review/);
+  assert.match(input.messages[1].content,/page 58/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Darwin explains that natural selection preserves favorable variations [S1]. Hawking discusses whether primordial black holes could be observed through their radiation. He points to an observed gamma-ray background and compares its intensity across frequencies, using that observation to assess the proposed black-hole explanation [S2].',
+   partChecks:[
+    {part:labels[0],status:'supported',evidenceIds:['S1']},
+    {part:labels[1],status:'supported',evidenceIds:['S2']}
+   ]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(inputs.length,3);
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.match(result.answer,/observed gamma-ray background/);
+ assert.doesNotMatch(result.answer,/contains no information about Hawking/i);
+});
+test('repairs literary summaries that blur a character theory with another speaker’s account',async()=>{
+ const question='In Crime and Punishment, how does Raskolnikov try to justify murder, and how does the novel test or undermine his reasoning?';
+ const sources=[
+  {id:'S1',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',page:465,
+   preview:'Porfiry summarizes Raskolnikov’s extraordinary-person theory. Raskolnikov replies that this is not quite his contention: an extraordinary person has an inner right to cross certain limits only when essential to realizing an idea, perhaps for humanity’s benefit.'},
+  {id:'S2',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',page:814,
+   preview:'Porfiry tells Raskolnikov that he has ceased to believe in his theory and predicts that he will eventually choose to confess and accept suffering.'},
+  {id:'S3',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',page:941,
+   preview:'The epilogue reports Raskolnikov’s stated motives as poverty, helplessness, and the wish to get money for his first steps in life; he says heartfelt repentance led him to confess.'}
+ ];
+ const labels=['how Raskolnikov tries to justify murder','how the novel tests or undermines his reasoning'];
+ const inputs=[];
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);
+  if(inputs.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The account and its challenge need fuller explanation.',
+   questionParts:[
+    {part:labels[0],status:'partial',evidenceIds:['S1']},
+    {part:labels[1],status:'partial',evidenceIds:['S2','S3']}
+   ],
+   evidence:[
+    {id:'S1',point:'Raskolnikov qualifies Porfiry’s description of his theory.'},
+    {id:'S2',point:'Porfiry says Raskolnikov has ceased to believe the theory.'},
+    {id:'S3',point:'The epilogue gives poverty and helplessness as stated motives.'}
+   ]
+  })}}]};
+  if(inputs.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Raskolnikov has a perfect right to murder because extraordinary people can break the law [S1]. The novel demonstrates that he no longer believes his theory [S2]. His poverty and repentance explain the murder and confession [S3].',
+   partChecks:[
+    {part:labels[0],status:'partial',evidenceIds:['S1']},
+    {part:labels[1],status:'partial',evidenceIds:['S2','S3']}
+   ]
+  })}}]};
+  assert.equal(inputs.length,3);
+  assert.match(input.messages[0].content,/attribute that description to the reporting speaker/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Porfiry first summarizes the theory as giving extraordinary people license to transgress, but Raskolnikov qualifies that account: he claims an inner right to cross certain limits only when doing so is essential to realizing an idea, perhaps one that benefits humanity [S1]. The qualification matters; the passage does not say that extraordinary people must commit crimes or have an unrestricted right to do so.\n\nLater, Porfiry argues that Raskolnikov has stopped believing his theory and predicts that he will confess [S2]. That is Porfiry’s interpretation at this point. The epilogue later reports Raskolnikov’s stated motives as poverty and helplessness, and says he attributed his confession to repentance [S3]. Those motives complicate the extraordinary-person rationale by connecting the crime to personal desperation and remorse.',
+   partChecks:[
+    {part:labels[0],status:'supported',evidenceIds:['S1']},
+    {part:labels[1],status:'supported',evidenceIds:['S2','S3']}
+   ]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(inputs.length,3);
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
+ assert.match(result.answer,/Porfiry first summarizes/);
+ assert.match(result.answer,/Raskolnikov qualifies that account/);
+ assert.match(result.answer,/only when doing so is essential/);
+ assert.match(result.answer,/That is Porfiry’s interpretation/);
+ assert.doesNotMatch(result.answer,/Raskolnikov has a perfect right to murder/i);
+});
 test('multi-author full coverage is downgraded when one requested author group is absent',()=>{
  const question='How do Aristotle and Darwin explain change?';
  const sources=[
