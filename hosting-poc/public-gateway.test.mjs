@@ -1113,8 +1113,11 @@ test('public pilot preserves safe answer-validation failure codes',async()=>{
      'The text says that faith must not be [S1].'}}]};
  }});
  const response=await pilot.post();
- assert.equal(response.status,502);
- assert.equal((await response.json()).failureCode,'answer-incomplete-cited-claim');
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(result.coverage,'partial');
+ assert.match(result.answer,/generated sentence was incomplete/i);
+ assert.doesNotMatch(result.answer,/must not be/);
 });
 test('Worker reports quota and capacity failures with safe public codes',async()=>{
  const quota=await pilotScenario({model:async()=>{throw {name:'Error',message:
@@ -1360,6 +1363,81 @@ test('composition checks every question part against all verified excerpts and r
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
 
+test('repairs an unsupported part when review evidence was left unmapped',async()=>{
+ const question='How is the protagonist’s view tested later in the novel?';
+ const sources=[{id:'S2',bookId:'529',title:'Crime and Punishment — Fyodor Dostoevsky',page:814,
+  preview:'Porfiry predicts that Raskolnikov will choose to confess and take on suffering.'}];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The later test of his view is not addressed.',
+   questionParts:[{part:'How the protagonist’s view is tested later',status:'unsupported',evidenceIds:[]}],
+   evidence:[{id:'S2',point:'Porfiry predicts that Raskolnikov will choose confession and suffering.'}]
+  })}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'The excerpts do not explain how the protagonist’s view is tested later.',
+   partChecks:[{part:'How the protagonist’s view is tested later',status:'unsupported',evidenceIds:[]}]
+  })}}],usage:{neurons:3}};
+  assert.match(input.messages[0].content,/Use an excerpt if it directly supports the missing part/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'The later exchange puts the protagonist’s position under pressure: Porfiry predicts that Raskolnikov will choose confession and take on suffering [S2]. This presents confession and suffering as consequences he must confront, though the excerpt does not explain the full development of his reasoning.',
+   partChecks:[{part:'How the protagonist’s view is tested later',status:'partial',evidenceIds:['S2']}]
+  })}}],usage:{neurons:4}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.match(result.answer,/Porfiry predicts/);
+});
+
+test('repairs a missing comparison when each named work has a supported side',async()=>{
+ const question='Compare Aristotle’s and Hobbes’s accounts of political order.';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:1,
+   preview:'Politics aims at the human good and at making citizens good and obedient to laws.'},
+  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes',page:1,
+   preview:'A common power keeps men in awe and enables justice and obedience to laws.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'Comparison of the two accounts is not provided.',
+   questionParts:[
+    {part:'Aristotle’s account',status:'supported',evidenceIds:['S1']},
+    {part:'Hobbes’s account',status:'supported',evidenceIds:['S2']},
+    {part:'Comparison of the two accounts',status:'unsupported',evidenceIds:[]}
+   ],
+   evidence:[{id:'S1',point:'Aristotle connects political order with human good and good citizens.'},
+    {id:'S2',point:'Hobbes connects political order with a common power that secures justice.'}]
+  })}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Aristotle connects political order with human good and virtuous citizens [S1]. Hobbes says common power secures justice and obedience [S2]. The excerpts do not directly compare their accounts.',
+   partChecks:[
+    {part:'Aristotle’s account',status:'supported',evidenceIds:['S1']},
+    {part:'Hobbes’s account',status:'supported',evidenceIds:['S2']},
+    {part:'Comparison of the two accounts',status:'unsupported',evidenceIds:[]}
+   ]
+  })}}],usage:{neurons:3}};
+  assert.match(input.messages[0].content,/synthesize a concise contrast only when separately supported parts establish every requested side/i);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Aristotle presents political order as aiming at human good and at making citizens good and obedient to laws [S1]. The passage ties political judgment to a shared human end, and it treats citizens’ character and their relation to law as part of that end. The account therefore describes political order through the good it should pursue and the kind of citizen it should form. These points come from Aristotle’s passage, which speaks about political science and civic virtue [S1].\n\nHobbes presents political order through the institution of a common power. That power keeps people in awe and enables them to consent to justice and the laws of nature [S2]. In the excerpt, the role of authority is practical: it secures conditions under which those rules can be observed. Hobbes’s passage thus emphasizes the need for an effective power to sustain order among people [S2].\n\nRead together, the accounts place emphasis on different supports for political order. Aristotle connects it to human good and the formation of citizens, while Hobbes connects it to a common power that secures justice and obedience. This comparison is a synthesis of the two supplied passages; neither cited excerpt directly compares Aristotle with Hobbes. The distinction follows from the separate roles each passage assigns to political order [S1, S2].',
+   partChecks:[
+    {part:'Aristotle’s account',status:'supported',evidenceIds:['S1']},
+    {part:'Hobbes’s account',status:'supported',evidenceIds:['S2']},
+    {part:'Comparison of the two accounts',status:'supported',evidenceIds:['S1','S2']}
+   ]
+  })}}],usage:{neurons:4}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/synthesis of the two supplied passages/);
+ assert.deepEqual(result.questionParts[2].evidenceIds,['S1','S2']);
+});
+
 test('repairs a 120-plus-word single paragraph when three parts are supported',async()=>{
  const question='According to Aristotle, what is practical wisdom, and how does it differ from science and art?';
  const sources=[
@@ -1470,7 +1548,7 @@ test('repairs an incomplete cited answer sentence from verified excerpts',async(
  assert.equal(call,3);
 });
 
-test('rejects an incomplete cited answer that remains unfinished after repair',async()=>{
+test('removes a malformed cited fragment and returns a limitation instead of a 502',async()=>{
  const sources=[{id:'S1',bookId:'436',
   title:'Kierkegaard’s Attack Upon “Christendom,” 1854–1855 — Søren Kierkegaard',
   page:21,preview:'In the Instant he has nothing to say about faith, except…'}];
@@ -1482,10 +1560,14 @@ test('rejects an incomplete cited answer that remains unfinished after repair',a
    'The text says that faith must not be [S1].';
   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:2}};
  }};
- await assert.rejects(composeVerifiedAnswer(
+ const result=await composeVerifiedAnswer(
   'What did Kierkegaard have to say about faith?',sources,ai
- ),error=>error?.failureCode==='answer-incomplete-cited-claim');
+ );
  assert.equal(call,3);
+ assert.equal(result.coverage,'partial');
+ assert.match(result.answer,/generated sentence was incomplete/i);
+ assert.doesNotMatch(result.answer,/must not be/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1']);
 });
 
 
