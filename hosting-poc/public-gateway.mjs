@@ -1168,7 +1168,18 @@ function parseQuestionParts(values,selected){
 }
 function appendMissingQuestionPartNotice(answer,questionParts){
   const note=questionPartMissingNote(questionParts);
-  return note?answer.trim()+'\n\n'+note:answer;
+  const text=String(answer||'').trim();
+  if(!note)return text;
+  const gaps=questionParts.filter(item=>item.status!=='supported');
+  const normalizedText=normalizedPartLabel(text);
+  const alreadyExplained=gaps.length&&gaps.every(item=>{
+    const terms=normalizedPartLabel(item.part).split(' ').filter(term=>term.length>=5);
+    const labelPresent=!terms.length||terms.some(term=>normalizedText.split(' ').includes(term));
+    const statesGap=/\b(?:does not|doesn't|do not|don't|cannot|can't|unable|insufficient|not enough|lacks?|missing)\b/i.test(text);
+    return labelPresent&&statesGap;
+  });
+  // The client separately renders the structured missing-evidence notice.
+  return alreadyExplained?text:text+'\n\n'+note;
 }
 function questionPartMissingNote(questionParts){
   const gaps=questionParts.filter(item=>item.status!=='supported');
@@ -1414,7 +1425,8 @@ function sourceMentionsPart(part,sources) {
   const terms=[...new Set(normalizedPartLabel(part).split(' ')
     .filter(term=>term.length>=5&&!ignored.has(term)))];
   if(!terms.length)return false;
-  const sourceWords=sources.flatMap(source=>normalizedPartLabel(source.preview).split(' '));
+  const sourceWords=sources.flatMap(source=>
+    normalizedPartLabel([source.title,source.preview].join(' ')).split(' '));
   const matched=terms.filter(term=>sourceWords.some(word=>
     word===term||(term.length>=5&&word.length>=5&&word.slice(0,5)===term.slice(0,5))));
   return matched.length>=Math.max(1,Math.ceil(terms.length/2));
@@ -1842,7 +1854,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       try{repairedParts=await ai.run(MODEL,{
         messages:[
           {role:'system',content:
-            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. When a passage reports one character or speaker describing another’s view, attribute that description to the reporting speaker; distinguish it from the other speaker’s own reply or qualification. For an explicit comparison part, synthesize a concise contrast only when separately supported parts establish every requested side; cite each side and do not imply either author made the comparison. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
+            'Revise the answer to address each requested question part that the coverage check found missing or underexplained. Re-read every verified excerpt, including excerpts not selected by the first review. Use an excerpt if it directly supports the missing part; explain only what it establishes, cite its valid source ID, and remove any claim that the passages lack information when a passage does address the topic. When a question asks for each named author’s own thought, a passage from that author’s own work may support that side even when the author’s name is absent from the passage body. Attribute the author’s own argument to them; if they discuss the other thinker, identify it as their interpretation rather than the other thinker’s direct statement. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; omitting a qualifier can reverse or overstate the source claim. If an excerpt is incomplete, state only the complete claim it establishes and describe the remaining point as uncertain. Preserve accurate existing material and the requested scope. When a passage reports one character or speaker describing another’s view, attribute that description to the reporting speaker; distinguish it from the other speaker’s own reply or qualification. For an explicit comparison part, synthesize a concise contrast only when separately supported parts establish every requested side; cite each side and do not imply either author made the comparison. Return one compact JSON object with keys answer and partChecks. Include exactly one partChecks object for every requested label, copying the label exactly, with status (supported|partial|unsupported) and evidenceIds. A part is supported only if the revised answer explicitly explains it and cites evidence; partial if only partly explained or supported; otherwise unsupported. Use only IDs from the verified excerpts.'},
           {role:'user',content:
             'Question:\n'+question+'\n\nQuestion parts and evidence review status:\n'+
             review.questionParts.map(part=>'- '+part.part+' — '+part.status+
@@ -1876,6 +1888,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   }
   const supportedPartCount=finalQuestionParts
     .filter(item=>item.status==='supported'||item.status==='partial').length;
+  const explicitComparison=/\b(?:compare|comparison|contrast|differ|difference|different|versus|vs\.)\b/i.test(question);
   const wordCount=text=>(String(text||'').match(/[\p{L}\p{N}]+(?:[’'’-][\p{L}\p{N}]+)*/gu)||[]).length;
   const answerParagraphs=text=>String(text||'').trim().split(/\r?\n\s*\r?\n/).filter(Boolean);
   const paragraphCount=text=>answerParagraphs(text).length;
@@ -1883,12 +1896,18 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     (paragraph.match(/[.!?](?=\s|$)/g)||[]).length);
   const answerNeedsMoreDevelopment=text=>wordCount(text)<180||paragraphCount(text)<3||
     paragraphSentenceCounts(text).some(count=>count<3);
-  if(supportedPartCount>=3&&answerNeedsMoreDevelopment(answer)){
+  const comparisonNeedsMoreDevelopment=text=>wordCount(text)<120||paragraphCount(text)<2||
+    paragraphSentenceCounts(text).some(count=>count<3);
+  const needsMoreDevelopment=text=>explicitComparison&&supportedPartCount===2?
+    comparisonNeedsMoreDevelopment(text):supportedPartCount>=3&&answerNeedsMoreDevelopment(text);
+  if(needsMoreDevelopment(answer)){
     let expanded;
     try{expanded=await ai.run(MODEL,{
       messages:[
         {role:'system',content:
-          'Rewrite this underdeveloped answer as exactly three developed paragraphs separated by blank lines. Cover all three supported requested parts across the paragraphs, but make the explanation flow naturally rather than assigning one checklist item a two-sentence paragraph. Use at least three complete sentences in each paragraph, normally three to five, and develop the distinctions with reasons or examples directly supported by the verified excerpts. Aim for 180–260 words overall when the excerpts support that depth. Keep claims within the reviewed points and use only evidence IDs listed for each part. Preserve citations beside their claims. Remove tangents and redundancy. Do not pad or invent evidence. Return only the revised answer.'},
+          (explicitComparison&&supportedPartCount===2?
+            'Rewrite this underdeveloped comparison as exactly two developed paragraphs separated by a blank line, one centered on each supported author’s position. Use at least three complete sentences in each paragraph and explain the actual difference through the evidence, not just two summaries. Aim for 120–180 words total when the passages support that depth. Keep claims within the reviewed points and use only evidence IDs listed for each part. Preserve citations beside their claims. Explain that the comparison is a reader synthesis if neither author directly compares the two. Remove tangents and redundancy. Do not pad or invent evidence. Return only the revised answer.':
+            'Rewrite this underdeveloped answer as exactly three developed paragraphs separated by blank lines. Cover all three supported requested parts across the paragraphs, but make the explanation flow naturally rather than assigning one checklist item a two-sentence paragraph. Use at least three complete sentences in each paragraph, normally three to five, and develop the distinctions with reasons or examples directly supported by the verified excerpts. Aim for 180–260 words overall when the evidence supports that depth. Keep claims within the reviewed points and use only evidence IDs listed for each part. Preserve citations beside their claims. Remove tangents and redundancy. Do not pad or invent evidence. Return only the revised answer.')},
         {role:'user',content:
           'Question:\n'+question+'\nCoverage: '+review.coverage+
           '\nRequested question parts and their evidence IDs:\n'+
@@ -1911,13 +1930,15 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     answer=expandedAnswer;
     answerNeurons+=Math.max(0,Number(expanded?.usage?.neurons)||0);
   }
-  if(supportedPartCount>=3&&answerNeedsMoreDevelopment(answer)){
+  if(needsMoreDevelopment(answer)){
     const counts=paragraphSentenceCounts(answer);
     let expandedAgain;
     try{expandedAgain=await ai.run(MODEL,{
       messages:[
         {role:'system',content:
-          'The previous revision is still underdeveloped. Rewrite it as exactly three developed paragraphs separated by blank lines. Each paragraph must have at least three complete sentences, normally three to five. The previous version missed the requested depth; make each paragraph explain its point and reasoning from the supplied passages. Aim for 180–260 words overall when supported. Keep every claim within the reviewed evidence, use only the listed evidence IDs for each part, preserve citations, and remove tangents. Do not pad, repeat, or invent. Return only the revised answer.'},
+          (explicitComparison&&supportedPartCount===2?
+            'The previous comparison is still underdeveloped. Rewrite it as exactly two developed paragraphs separated by a blank line, one for each supported author. Each paragraph must have at least three complete sentences. Explain their difference through the supplied passages, and label it a reader synthesis if neither author directly compares them. Aim for 120–180 words overall when supported. Keep every claim within the reviewed evidence, use only the listed evidence IDs for each part, preserve citations, and remove tangents. Do not pad, repeat, or invent. Return only the revised answer.':
+            'The previous revision is still underdeveloped. Rewrite it as exactly three developed paragraphs separated by blank lines. Each paragraph must have at least three complete sentences, normally three to five. The previous version missed the requested depth; make each paragraph explain its point and reasoning from the supplied passages. Aim for 180–260 words overall when supported. Keep every claim within the reviewed evidence, use only the listed evidence IDs for each part, preserve citations, and remove tangents. Do not pad, repeat, or invent. Return only the revised answer.')},
         {role:'user',content:
           'Question:\n'+question+'\nCoverage: '+review.coverage+
           '\nRequested question parts and evidence IDs:\n'+
