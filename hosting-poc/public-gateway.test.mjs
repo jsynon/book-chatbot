@@ -227,7 +227,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/about 120–200 words when the evidence supports that depth/);
  assert.match(inputs[1].messages[0].content,/every cited claim must support that particular relation/);
  assert.match(inputs[1].messages[0].content,/do not present two passages from one author as two independent perspectives/);
- assert.match(inputs[1].messages[0].content,/avoid repetition, padding, and adjacent topics/);
+ assert.match(inputs[1].messages[0].content,/Avoid repetition, padding, and adjacent topics/);
  assert.match(inputs[1].messages[0].content,/should explain the point, its reason or distinction/);
  assert.match(inputs[1].messages[0].content,/do not force a one-item-per-paragraph outline/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
