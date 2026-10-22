@@ -1416,6 +1416,42 @@ function modelText(result) {
   return typeof result?.choices?.[0]?.message?.content==='string'?
     result.choices[0].message.content.trim():'';
 }
+function parseComposedEvidenceMap(values,sources,answer,partChecks) {
+  if(!Array.isArray(values))return [];
+  const validIds=new Set(sources.map(source=>source.id));
+  const citedIds=new Set([...String(answer||'').matchAll(/\[([^\]]+)\]/g)]
+    .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
+  const partIds=new Set(partChecks.flatMap(part=>part.evidenceIds||[]));
+  const byId=new Map(sources.map(source=>[source.id,source]));
+  const seen=new Set(),evidenceMap=[];
+  for(const value of values.slice(0,8)){
+    const id=value&&typeof value==='object'?value.id:'';
+    const point=value&&typeof value.point==='string'?value.point.trim().slice(0,220):'';
+    if(!validIds.has(id)||!citedIds.has(id)||!partIds.has(id)||!point)continue;
+    const source=byId.get(id);
+    const suppliedQuote=typeof value.quote==='string'?value.quote.trim():'';
+    const normalizedQuote=normalizedEvidenceQuote(suppliedQuote);
+    const normalizedSource=normalizedEvidenceQuote(source.preview);
+    const quoteVerified=suppliedQuote.length<=220&&normalizedQuote.length>=12&&
+      normalizedSource.includes(normalizedQuote);
+    const anchorQuote=quoteVerified?
+      completeEvidenceAnchor(source.preview,suppliedQuote):'';
+    const speaker=typeof value.speaker==='string'?value.speaker.trim().slice(0,80):'';
+    const suppliedQualifier=typeof value.qualifier==='string'?
+      value.qualifier.trim().slice(0,180):'';
+    const normalizedQualifier=normalizedEvidenceQuote(suppliedQualifier);
+    const qualifier=suppliedQualifier.length<=180&&normalizedQualifier.length>=8&&
+      normalizedSource.includes(normalizedQualifier)?suppliedQualifier:'';
+    const key=JSON.stringify([id,point.toLocaleLowerCase(),
+      quoteVerified?normalizedQuote:'']);
+    if(seen.has(key))continue;
+    seen.add(key);
+    evidenceMap.push({id,point,quoteVerified,
+      ...(quoteVerified?{anchorQuote}:{}),...(speaker?{speaker}:{}),
+      ...(qualifier?{qualifier}:{})});
+  }
+  return evidenceMap;
+}
 function parseComposedDraft(raw,sources) {
   const text=String(raw||'').trim();
   const start=text.indexOf('{'),end=text.lastIndexOf('}');
@@ -1434,7 +1470,10 @@ function parseComposedDraft(raw,sources) {
             'unsupported':item.status;
           return [{part:item.part.trim().slice(0,180),status,evidenceIds}];
         });
-        return {answer:parsed.answer.trim(),partChecks,structured:true};
+        const answer=parsed.answer.trim();
+        return {answer,partChecks,
+          evidenceMap:parseComposedEvidenceMap(parsed.evidence,sources,answer,partChecks),
+          structured:true};
       }
     }catch{}
   }
@@ -1603,7 +1642,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const combined=sources.map(s=>'['+s.id+'] '+s.title+', physical PDF page '+s.page+'\n'+s.preview).join('\n\n');
   const sourceGroups=requestedSourceGroups(question,sources);
   const emptyReviewAnswerPrompt=
-    'You are a careful academic Reading Companion. The first evidence reviewer selected no passages; that is not proof that the excerpts lack evidence. Independently inspect every verified excerpt below and answer each part the excerpts support. Cite each source-based claim immediately with the valid ID, such as [S1]. When separate passages support separate parts, explain their distinct contributions and synthesize only what their wording warrants; label any additional conclusion as your inference. Preserve the requested work and passage scope, the visible speaker, and every meaningful condition or qualification. Treat reported speech, hypotheticals, and editorial commentary as such; a parallel edition of the same work and passage is in scope when no edition is specified. Do not invent citations or use a citation for a claim its excerpt does not support. You may add brief, clearly labeled general context, without a book citation, only when it helps and is reliable. If the excerpts support only part of the question, explain that part and state what remains unresolved. Return only JSON with keys answer and partChecks. Include exactly one partChecks item for every requested part, with part, status (supported|partial|unsupported), and evidenceIds containing only cited IDs that support that part. If no question-part labels were supplied, derive one to four concise requested parts from the question. Give a useful, sufficiently detailed explanation when the excerpts support it; keep the answer concise when evidence is thin.';
+    'You are a careful academic Reading Companion. The first evidence reviewer selected no passages; that is not proof that the excerpts lack evidence. Independently inspect every verified excerpt below and answer each part the excerpts support. Cite each source-based claim immediately with the valid ID, such as [S1]. When separate passages support separate parts, explain their distinct contributions and synthesize only what their wording warrants; label any additional conclusion as your inference. Preserve the requested work and passage scope, the visible speaker, and every meaningful condition or qualification. Treat reported speech and hypotheticals as such. A parallel edition of the same work and passage is in scope when no edition is specified. Keep primary-text claims distinct from commentary: cite the primary passage for what it says, and identify an editorial note explicitly if you use it in a separate claim. Do not invent citations or use a citation for a claim its excerpt does not support. You may add brief, clearly labeled general context, without a book citation, only when it helps and is reliable. If the excerpts support only part of the question, explain that part and state what remains unresolved. Return only JSON with keys answer, partChecks, and evidence. Include exactly one partChecks item for every requested part, with part, status (supported|partial|unsupported), and evidenceIds containing only cited IDs that support that part. If no question-part labels were supplied, derive one to four concise requested parts from the question. The evidence array should contain up to eight atomic source-linked points with id and point; add an exact quote, visible speaker, and qualifier when useful. Include only cited source IDs and points that explain the adjacent answer claims. Give a useful, sufficiently detailed explanation when the excerpts support it; keep the answer concise when evidence is thin.';
   const sourceGroupInstruction=sourceGroups.length?
     'The question identifies one or more source groups; assess each requested group separately. '+
     'When the supplied excerpts contain directly relevant evidence for a group, '+
@@ -1875,6 +1914,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let answer=composed.answer;
   if(!answer)throw answerFailure('answer-composition-empty');
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
+  if(emptyReview&&!review.evidenceMap.length&&composed.evidenceMap.length)
+    review.evidenceMap=composed.evidenceMap;
   let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
   let finalQuestionParts=review.questionParts||[];
   if(emptyReview&&!finalQuestionParts.length&&composed.structured)
