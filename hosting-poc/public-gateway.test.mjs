@@ -1061,19 +1061,63 @@ test('v1.9.4 fails closed without AI binding, never accidentally opening public 
    async()=>{throw Error('No public source reads');});
  assert.equal(publicDisabled.status,503);
 });
-test('v1.9.4 absence of useful evidence skips composition',async()=>{
+test('an empty evidence review uses the existing composition call and still fails closed without support',async()=>{
  const fixture=await fingerprintTestFixture();
  let calls=0;
  const result=await fixture.response({aiRun:async()=>{
-   calls++;return {choices:[{finish_reason:'stop',
+   calls++;
+   if(calls===1)return {choices:[{finish_reason:'stop',
      message:{content:JSON.stringify({coverage:'none',missing:'Unsupported topic',
        evidence:[]})}}],usage:{neurons:4}};
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'The retrieved passages do not address the question.',
+     partChecks:[{part:'What were the immediate and underlying causes of war?',
+       status:'unsupported',evidenceIds:[]}]
+   })}}],usage:{neurons:3}};
  }});
  assert.equal(result.status,200);
  const data=await result.json();
  assert.equal(data.outcome,'insufficient-evidence');
  assert.equal(data.citations.length,0);
- assert.equal(calls,1);
+ assert.equal(data.coverage,'none');
+ assert.equal(calls,2);
+});
+test('composition recovers relevant submitted passages after a false-negative evidence review',async()=>{
+ const question='According to Thucydides, what were the underlying causes of the Peloponnesian War, and how did they differ from the immediate disputes that preceded it?';
+ const sources=[
+  {id:'S1',bookId:'152',title:'History of the Peloponnesian War — Thucydides',page:38,
+   preview:'The real cause I consider to be the one which was formally most kept out of sight: the growth of the power of Athens, and the alarm which this inspired in Lacedaemon, made war inevitable.'},
+  {id:'S2',bookId:'152',title:'History of the Peloponnesian War — Thucydides',page:59,
+   preview:'The Potidaeans, who inhabit the isthmus of Pallene, being a Corinthian colony, but tributary allies of Athens, were ordered to raze the wall looking towards Pallene, to give hostages, to dismiss the Corinthian magistrates, and in future not to receive the persons sent from Corinth annually to succeed them.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No selected passage was found.',
+   questionParts:[
+    {part:'underlying cause of the war',status:'unsupported',evidenceIds:[]},
+    {part:'immediate disputes and how they differ from the underlying cause',status:'unsupported',evidenceIds:[]}
+   ],evidence:[]
+  })}}],usage:{neurons:2}};
+  assert.match(input.messages[1].content,/growth of the power of Athens/);
+  assert.match(input.messages[1].content,/Potidaeans/);
+  assert.match(input.messages[0].content,/derive one to four concise requested parts/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Thucydides identifies the hidden underlying cause as “the growth of the power of Athens” and the alarm this caused in Lacedaemon [S1]. He presents that growth and fear as making war inevitable, distinguishing them from the complaints that appeared closer to the outbreak [S1]. The underlying cause is therefore the continuing shift in power and the fear it generated, rather than one isolated grievance [S1].\n\nThe immediate disputes included Athens’ orders to Potidaea, a Corinthian colony and Athenian tributary, to raze its walls, provide hostages, and dismiss Corinthian magistrates [S2]. Thucydides also notes that Athens ordered Potidaea not to receive the persons sent from Corinth annually to succeed those magistrates [S2]. These were concrete disputes preceding the war; the deeper cause was the growth of Athenian power and the alarm it inspired in Lacedaemon [S1, S2].',
+   partChecks:[
+    {part:'underlying cause of the war',status:'supported',evidenceIds:['S1']},
+    {part:'immediate disputes and how they differ from the underlying cause',status:'supported',evidenceIds:['S1','S2']}
+   ]
+  })}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,2);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
+ assert.match(result.answer,/growth of Athenian power/);
 });
 test('v1.9.4 bad or absent model citations never leave the server as an answer',async()=>{
  for(const fabricated of ['The answer is clear [S9].',
@@ -2300,3 +2344,4 @@ test('public pilot retries a malformed relation audit response once',async()=>{
  assert.equal(calls,4);
  assert.match(result.answer,/cannot establish whether science and religion conflict/);
 });
+
