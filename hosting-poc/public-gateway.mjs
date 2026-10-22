@@ -1601,6 +1601,49 @@ function reconcileEmptyReviewQuestionParts(questionParts,partChecks,answer,evide
     return evidenceIds.length?{...part,status:'partial',evidenceIds}:part;
   });
 }
+export function removeConflictingSpeakerAttributions(answer,evidenceMap) {
+  const speakersBySource=new Map();
+  for(const item of evidenceMap||[]){
+    if(!item.quoteVerified||!item.speaker||
+      /^(?:unknown|unclear|not stated)$/i.test(item.speaker))continue;
+    const speakers=speakersBySource.get(item.id)||new Set();
+    speakers.add(item.speaker.trim());
+    speakersBySource.set(item.id,speakers);
+  }
+  if(!speakersBySource.size)return {answer:String(answer||''),conflicts:[]};
+  const conflicts=[];
+  const paragraphs=String(answer||'').split(/\n\s*\n/);
+  const cleaned=paragraphs.map(paragraph=>{
+    // Keep paragraph structure while assessing one cited sentence at a time.
+    const sentences=paragraph.split(/(?<=[.!?])\s+(?=[A-Z“"'])/u);
+    return sentences.filter(sentence=>{
+      const citationIds=[...new Set([...sentence.matchAll(/\[([^\]]+)\]/g)]
+        .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]))];
+      if(!citationIds.length)return true;
+      for(const [sourceId,speakers] of speakersBySource){
+        for(const speaker of speakers){
+          const escaped=speaker.replace(/[.*+?^${}()|[\]\\]/g,'\\function isComparisonQuestionPart(label){');
+          const explicitAttribution=new RegExp(
+            `(?:\\baccording\\s+to\\s+|\\bas\\s+(?:stated|argued|reported|described)\\s+by\\s+)${escaped}(?=\\b|[,;:])|\\b${escaped}\\s+(?:says|states|argues|claims|believes|maintains|writes|reports|observes|concludes|suggests)\\b`,
+            'i');
+          if(!explicitAttribution.test(sentence))continue;
+          const conflictingIds=citationIds.filter(id=>{
+            const citedSpeakers=speakersBySource.get(id);
+            return id!==sourceId&&citedSpeakers&&
+              ![...citedSpeakers].some(value=>value.toLocaleLowerCase()===speaker.toLocaleLowerCase());
+          });
+          if(conflictingIds.length){
+            conflicts.push({sentence:sentence.trim(),speaker,
+              attributedSourceId:sourceId,sourceIds:conflictingIds});
+            return false;
+          }
+        }
+      }
+      return true;
+    }).join(' ').trim();
+  }).filter(Boolean);
+  return {answer:cleaned.join('\n\n'),conflicts};
+}
 function isComparisonQuestionPart(label){
   return /\b(?:compare|comparison|contrast|differ|difference|different|distinguish)\b/i.test(String(label||''));
 }
@@ -2363,6 +2406,27 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     }
     answerNeurons+=Math.max(0,Number(audited?.usage?.neurons)||0);
     second=audited;
+  }
+  // The model can still merge a reported interpretation with the named
+  // speaker's own statement. When the answer explicitly attributes a cited
+  // sentence to one speaker but also cites a verified passage spoken by
+  // another, omit that sentence and report the affected part as partial.
+  // This conservative guard uses the existing verified speaker anchors and
+  // does not make another inference request.
+  const speakerGuard=removeConflictingSpeakerAttributions(answer,review.evidenceMap);
+  if(speakerGuard.conflicts.length){
+    answer=speakerGuard.answer;
+    finalQuestionParts=finalQuestionParts.map(part=>{
+      const affected=speakerGuard.conflicts.some(item=>
+        part.evidenceIds.includes(item.attributedSourceId)&&
+        item.sourceIds.some(id=>part.evidenceIds.includes(id)));
+      return part.status==='supported'&&affected?{...part,status:'partial'}:part;
+    });
+    finalCoverage=finalQuestionParts.length&&
+      finalQuestionParts.every(part=>part.status==='supported')?'full':'partial';
+    finalMissing=questionPartMissingNote(finalQuestionParts)||
+      'A claim with conflicting passage speakers was omitted.';
+    answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
   }
   if(answer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-final-assembly-too-long',{
     stage:'final-answer-assembly',answerCharacters:answer.length,sourceCount:sources.length,
