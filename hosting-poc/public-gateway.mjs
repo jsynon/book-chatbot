@@ -1622,7 +1622,7 @@ export function removeConflictingSpeakerAttributions(answer,evidenceMap) {
       if(!citationIds.length)return true;
       for(const [sourceId,speakers] of speakersBySource){
         for(const speaker of speakers){
-          const escaped=speaker.replace(/[.*+?^${}()|[\]\\]/g,'\\function isComparisonQuestionPart(label){');
+          const escaped=speaker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
           const explicitAttribution=new RegExp(
             `(?:\\baccording\\s+to\\s+|\\bas\\s+(?:stated|argued|reported|described)\\s+by\\s+)${escaped}(?=\\b|[,;:])|\\b${escaped}\\s+(?:says|states|argues|claims|believes|maintains|writes|reports|observes|concludes|suggests)\\b`,
             'i');
