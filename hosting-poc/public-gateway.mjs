@@ -1399,11 +1399,15 @@ export function inferenceFailureDiagnostics(error){
   // no status/code fields. Classify only broad, fixed categories from that
   // message; never include its raw text in logs or responses.
   if(providerCode==='3036'||providerCodeNumber===3036||
-    /\b3036\b|daily free allocation|used up.{0,64}(?:daily|10,?000 neurons)|10,?000 neurons.{0,32}(?:daily|allocation)|quota|daily limit|neuron limit|credits? exhausted/.test(messages))
-    providerClass='quota-or-credit-limit';
+    /\b3036\b|daily free allocation|used up.{0,64}(?:daily|10,?000 neurons)|10,?000 neurons.{0,32}(?:daily|allocation)/.test(messages))
+    providerClass='daily-free-allocation';
   else if(providerCode==='3040'||providerCodeNumber===3040||
     /\b3040\b|out of capacity|capacity temporarily exceeded/.test(messages))
     providerClass='capacity-unavailable';
+  else if(/insufficient credits?|credits? (?:exhausted|depleted)|billing balance|payment required/.test(messages))
+    providerClass='credit-limit';
+  else if(/\bquota\b|daily limit|neuron limit|usage limit/.test(messages))
+    providerClass='provider-usage-limit';
   else if(providerStatus===429||/\b429\b|rate.?limit|too many requests/.test(messages))
     providerClass='rate-limited';
   else if(providerStatus===408||/\b504\b|gateway timeout|timed? ?out|deadline exceeded/.test(messages))
@@ -1432,7 +1436,9 @@ export function inferenceFailureDiagnostics(error){
   return diagnostics;
 }
 function publicAiFailureCode(providerClass){
-  if(providerClass==='quota-or-credit-limit')return 'ai-daily-limit-reached';
+  if(providerClass==='daily-free-allocation')return 'ai-daily-free-allocation';
+  if(providerClass==='credit-limit')return 'ai-credit-limit';
+  if(providerClass==='provider-usage-limit')return 'ai-provider-usage-limit';
   if(providerClass==='capacity-unavailable')return 'ai-capacity-unavailable';
   if(providerClass==='rate-limited')return 'ai-rate-limited';
   return '';
@@ -2545,6 +2551,20 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   // citations. Note that valid IDs alone do NOT validate factual support.
   if(emptyReview&&(!cited.length||!finalQuestionParts.some(part=>
     (part.status==='supported'||part.status==='partial')&&part.evidenceIds.length))){
+    const citableDraft=cited.length>0&&cited.every(id=>known.has(id))&&
+      answer.length>=40&&!/^\s*(?:the\s+(?:verified|available|provided)\s+passages?\s+(?:do not|don't|did not)|insufficient evidence\b|i\s+(?:cannot|can't|am unable to)\s+answer\b)/i.test(answer);
+    if(citableDraft){
+      const draftCitations=sources.filter(source=>cited.includes(source.id));
+      return {outcome:'unverified-source-draft',answer,
+        coverage:'none',
+        missing:'The answer has citations, but the evidence check did not confirm which requested parts they support. Treat this synthesis as provisional and inspect the cited passages.',
+        citations:draftCitations,
+        evidenceMap:(review.evidenceMap||[]).filter(item=>cited.includes(item.id)),
+        questionParts:finalQuestionParts,reviewStatus:'answer-draft-unverified',
+        followUpQuestions:[],
+        usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},model:MODEL,
+        notice:'The source pages and citation IDs were verified. The evidence check did not verify the answer claims.'};
+    }
     const recoveredPassages=retrievedPassageFallback(question,sources);
     if(recoveredPassages?.length){
       const passageCitations=recoveredPassages.map(item=>item.source);
@@ -3000,7 +3020,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       const diagnostics=inferenceFailureDiagnostics(error);
       console.warn('Reader pilot search planning failed',diagnostics);
       return reply({error:'Search planning unavailable; try direct passage search',
-        failureCode:publicAiFailureCode(diagnostics.providerClass)||'search-planning-failed'},502,origin);
+        failureCode:publicAiFailureCode(diagnostics.providerClass)||'search-planning-failed',
+        ...(typeof diagnostics.providerCode==='string'?
+          {failureProviderCode:diagnostics.providerCode}:{})},502,origin);
     }
   }
   if(url.pathname==='/api/pilot-answer'){
@@ -3082,6 +3104,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         failureStage:diagnostics.stage,
         ...(diagnostics.providerClass!=='unknown'?
           {failureProviderClass:diagnostics.providerClass}:{}),
+        ...(typeof diagnostics.providerCode==='string'?
+          {failureProviderCode:diagnostics.providerCode}:{}),
         ...(Number.isSafeInteger(diagnostics.answerCharacters)?
           {failureAnswerCharacters:diagnostics.answerCharacters}:{}),
         ...(typeof diagnostics.reviewFailureReason==='string'?

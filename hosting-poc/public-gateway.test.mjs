@@ -78,11 +78,17 @@ test('inference failure diagnostics classify provider errors without exposing ra
  assert.equal(networkError.providerClass,'network-error');
  const quotaError=inferenceFailureDiagnostics({name:'Error',message:
   'You have used up your daily free allocation of 10,000 Neurons.'});
- assert.equal(quotaError.providerClass,'quota-or-credit-limit');
+ assert.equal(quotaError.providerClass,'daily-free-allocation');
  assert.equal(JSON.stringify(quotaError).includes('10,000 Neurons'),false);
  const quotaCode=inferenceFailureDiagnostics({name:'AIError',code:3036,message:'request failed'});
- assert.equal(quotaCode.providerClass,'quota-or-credit-limit');
+ assert.equal(quotaCode.providerClass,'daily-free-allocation');
  assert.equal(quotaCode.providerCode,'3036');
+ assert.equal(inferenceFailureDiagnostics({name:'Error',message:'request quota exceeded'}).providerClass,
+  'provider-usage-limit');
+ assert.equal(inferenceFailureDiagnostics({name:'Error',message:'credits exhausted'}).providerClass,
+  'credit-limit');
+ assert.equal(inferenceFailureDiagnostics({name:'Error',status:429,
+  message:'daily AI usage limit reached'}).providerClass,'provider-usage-limit');
  const capacityError=inferenceFailureDiagnostics({name:'Error',status:429,code:3040,
   message:'Capacity temporarily exceeded, please try again.'});
  assert.equal(capacityError.providerClass,'capacity-unavailable');
@@ -1424,11 +1430,12 @@ test('empty-review recovery handles a plain-text composition without throwing',a
  }};
  const result=await composeVerifiedAnswer(question,[source],ai);
  assert.equal(calls,2);
- assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.coverage,'none');
- assert.equal(result.reviewStatus,'retrieved_passages_only');
+ assert.equal(result.reviewStatus,'answer-draft-unverified');
  assert.deepEqual(result.citations.map(item=>item.id),['S1']);
- assert.match(result.answer,/God is love/);
+ assert.match(result.answer,/describes God sending the Son/);
+ assert.match(result.missing,/provisional/);
 });
 test('empty-review fallback surfaces only query-matched verified passages without another AI call',async()=>{
  const cases=[
@@ -2139,12 +2146,28 @@ test('public pilot preserves safe answer-validation failure codes',async()=>{
  assert.match(result.answer,/generated sentence was incomplete/i);
  assert.doesNotMatch(result.answer,/must not be/);
 });
-test('Worker reports quota and capacity failures with safe public codes',async()=>{
+test('Worker distinguishes provider allocation, usage and capacity errors without claiming an app daily cap',async()=>{
  const quota=await pilotScenario({model:async()=>{throw {name:'Error',message:
   'You have used up your daily free allocation of 10,000 Neurons.'};}});
  const quotaResponse=await quota.post();
  assert.equal(quotaResponse.status,502);
- assert.equal((await quotaResponse.json()).failureCode,'ai-daily-limit-reached');
+ const quotaData=await quotaResponse.json();
+ assert.equal(quotaData.failureCode,'ai-daily-free-allocation');
+ assert.equal(quotaData.failureProviderClass,'daily-free-allocation');
+ assert.equal(quotaData.failureProviderCode,undefined);
+ const exactQuota=await pilotScenario({model:async()=>{throw {name:'AIError',status:429,
+  code:3036,message:'daily free allocation reached'};}});
+ const exactQuotaData=await (await exactQuota.post()).json();
+ assert.equal(exactQuotaData.failureCode,'ai-daily-free-allocation');
+ assert.equal(exactQuotaData.failureProviderCode,'3036');
+ const usage=await pilotScenario({model:async()=>{throw {name:'Error',message:'provider quota exceeded'};}});
+ const usageData=await (await usage.post()).json();
+ assert.equal(usageData.failureCode,'ai-provider-usage-limit');
+ assert.equal(usageData.failureProviderClass,'provider-usage-limit');
+ const credit=await pilotScenario({model:async()=>{throw {name:'Error',message:'credits exhausted'};}});
+ const creditData=await (await credit.post()).json();
+ assert.equal(creditData.failureCode,'ai-credit-limit');
+ assert.equal(creditData.failureProviderClass,'credit-limit');
  const capacity=await pilotScenario({model:async()=>{throw {name:'Error',status:429,code:3040,
   message:'Capacity temporarily exceeded, please try again.'};}});
  const capacityResponse=await capacity.post();
