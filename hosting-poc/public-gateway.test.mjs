@@ -1043,6 +1043,18 @@ test('a dialogue claim marked unverified cannot survive as unqualified when the 
  assert.equal(retained.answer,carefullyFramed);
 });
 
+test('recognizes the Dostoevsky excerpt correction written as “wasn’t quite my contention”',()=>{
+ const source={id:'S1',preview:'Crime and Punishment have no right to transgress the law, because, don’t you see, they are ordinary. But extraordinary men have a right to commit any crime and to transgress the law in any way, just because they are extraordinary. That was your idea, if I am not mistaken? What do you mean? That can’t be right? Razumihin muttered in bewilderment. Raskolnikov smiled again. He saw the point at once, and knew where they wanted to drive him. He decided to take up the challenge. That wasn’t quite my contention, he began simply and modestly. Yet I admit that you have stated it almost correctly; perhaps, if you like, perfectly so. The only difference is that I don’t contend that extraordinary people are always bound to commit breaches of morals, as you call it. I simply hinted that an extraordinary man has the right—not an official right, but an inner right to decide in his own conscience to overstep certain obstacles, and only in case it is…'};
+ const evidence=[{id:'S1',point:'A dialogue passage presents Raskolnikov’s theory through another speaker, then records his correction.',
+  quoteVerified:true,speakerUnverified:true}];
+ const unsafe='According to this idea, ordinary people have no right to transgress the law [S1]. In contrast, extraordinary men possess a right to commit any crime and violate the law in any way simply because of their extraordinary nature [S1].';
+ const result=removeUnqualifiedCorrectedClaims(unsafe,evidence,[source]);
+ assert.equal(result.conflicts.length,2);
+ assert.doesNotMatch(result.answer,/ordinary people have no right/i);
+ assert.doesNotMatch(result.answer,/extraordinary men possess a right to commit any crime/i);
+ assert.match(result.answer,/marks this reported account as distorted or corrected/i);
+});
+
 test('evidence-focused highlights choose the cited point instead of a topical opening',()=>{
  const text='Bees and ants live sociably one with another. '+
   'Background about their appetites and natural agreement. '.repeat(5)+
