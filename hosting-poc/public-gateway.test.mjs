@@ -1223,7 +1223,7 @@ test('empty-review recovery uses the primary parallel-edition passage for a scop
    ],
    evidence:[
     {id:'S1',point:'The passage says love is of God and describes God sending the Son so people might live through him.',quote:'love is of God; and everyone who loves is born of God',speaker:'The letter',qualifier:''},
-    {id:'S2',point:'The Oxford Annotated note identifies God’s love as the basis of the love command.',quote:'It is the basis of the love command',speaker:'Oxford Annotated Bible note',qualifier:''},
+    {id:'S2',point:'The Oxford Annotated note identifies God’s love as the basis of the love command.',speaker:'1 John 4:9',qualifier:''},
     {id:'S9',point:'This unknown ID must not enter the recovered evidence map.'}
    ]
   })}}]};
@@ -1234,7 +1234,8 @@ test('empty-review recovery uses the primary parallel-edition passage for a scop
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
  assert.deepEqual(result.evidenceMap.map(item=>item.id),['S1','S2']);
- assert.deepEqual(result.evidenceMap.map(item=>[item.id,item.quoteVerified]),[['S1',true],['S2',true]]);
+ assert.deepEqual(result.evidenceMap.map(item=>[item.id,item.quoteVerified]),[['S1',true],['S2',false]]);
+ assert.equal('speaker' in result.evidenceMap[1],false);
  assert.match(prompts[1].messages[0].content,/first evidence reviewer selected no passages/);
  assert.match(prompts[1].messages[0].content,/identify an editorial note explicitly/);
  assert.match(prompts[1].messages[0].content,/evidence array/);
@@ -2325,7 +2326,7 @@ test('review keeps concise source-linked points for answer synthesis',()=>{
   {id:'S2',bookId:'253',title:'The Sickness Unto Death',page:93,preview:'Faith is the opposite of sin.'}
  ];
  const review=parseReview(JSON.stringify({coverage:'partial',missing:'A broader account is not established.',
-  evidence:[{id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.'},
+  evidence:[{id:'S1',point:'Kierkegaard challenges Hegel’s account of faith.',speaker:'Kierkegaard'},
    {id:'S2',point:'Christianity makes faith the opposite of sin, not virtue.'},
    {id:'S2',point:'The passage connects faith with the possibility of offense.'}]}),sources);
  assert.deepEqual(review.selected.map(source=>source.id),['S1','S2']);
@@ -2344,7 +2345,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
   calls.push(input);
   if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    coverage:'partial',missing:'These passages give a limited account.',
-   evidence:[{id:'S1',point:'Christianity makes faith the opposite of sin, not virtue.'}]
+   evidence:[{id:'S1',point:'Christianity makes faith the opposite of sin, not virtue.',speaker:'Kierkegaard'}]
   })}}],usage:{neurons:2}};
   return {choices:[{finish_reason:'stop',message:{content:
    'In this passage, faith stands opposite sin rather than virtue [S1].'}}],usage:{neurons:3}};
@@ -2354,6 +2355,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.deepEqual(result.evidenceMap,[{id:'S1',point:'Christianity makes faith the opposite of sin, not virtue.',quoteVerified:false}]);
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
+ assert.doesNotMatch(calls[1].messages[1].content,/speaker: Kierkegaard/);
  assert.match(calls[0].messages[0].content,/Keep each point atomic: one claim per point/);
  assert.match(calls[0].messages[0].content,/make the evidence map include the definition and the passage’s stated reason, operation, or criterion for each requested distinction/);
  assert.match(calls[0].messages[0].content,/For broad questions asking what a person or work says about a topic/);
