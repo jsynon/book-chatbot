@@ -1862,9 +1862,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'claims; the system will '+
         'append the precise coverage notice. For a single-part question, organize '+
         'the answer around the evidence map. For a substantive single-part question, '+
-        'explain the central answer and its important reasoning, qualification, example, '+
-        'or implication in about 120–200 words when the evidence supports that depth; '+
-        'keep a narrow factual answer brief. Check source-based claims against the '+
+        'explain the central answer and its distinct supporting reasoning, qualification, '+
+        'example, or implication. When at least three distinct relevant evidence-map points '+
+        'support the answer, develop them in about 120–200 words, even if the question is '+
+        'narrowly framed; with only one or two relevant points, stay concise. Check source-based claims against the '+
         'excerpts and preserve meaningful differences between works. Explain technical '+
         'terms beyond the excerpts only as clearly labeled broader context, not as a '+
         'definition supplied by the source. Use concrete examples when the passages supply them. '+
@@ -1891,11 +1892,14 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'with enough detail to show how the evidence answers it and how the parts '+
         'relate; aim for about 150–220 words overall when the passages support that '+
         'depth, but continue when distinct evidence-supported qualifications, '+
-        'examples, or implications add value. Keep narrow factual answers brief '+
-        'when evidence is thin, and do not '+
+        'examples, or implications add value. Set depth by the distinct relevant evidence '+
+        'points: when at least three support the answer, aim for about 150–220 words, even '+
+        'for a narrowly framed question; when fewer points support it or evidence is thin, '+
+        'stay concise. Do not '+
         'pad or repeat material just to reach a word target. Use plain text only: no Markdown, headings, asterisks, or bullet markers in the answer field. '+
-        'For a narrow factual question, '+
-        'stay brief. For a broad question with at least three distinct selected passages that support different aspects, '+
+        'For a narrow factual question, stay concise when evidence is limited; when several '+
+        'distinct supported points explain the answer, develop those points. For a broad question '+
+        'with at least three distinct selected passages that support different aspects, '+
         'give a connected synthesis in two or three paragraphs, usually about 150–220 words. Explain the passages’ different contributions and then state what they jointly suggest. Keep it shorter when the evidence is thinner; do not pad or repeat. When distinct selected passages support different points, '+
         'use up to six of those passages and place each citation next to the '+
         'claim it supports. State the central account once; each later sentence must add a distinct qualification, implication, example, or contrast. Do not restate the same claim with expanded synonyms. Do not repeat evidence, pad the answer, or force a '+
