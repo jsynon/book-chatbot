@@ -1398,8 +1398,8 @@ test('empty-review recovery aligns quote-verified evidence with a cited answer',
  assert.equal(call,2);
  assert.match(prompts[1].messages[0].content,/cross-check answer, partChecks, and evidence for consistency/);
  assert.match(prompts[1].messages[0].content,/If a verified excerpt directly supports a requested part, do not mark that part unsupported/);
- assert.match(prompts[1].messages[0].content,/exact 12–220 character quote copied from that same excerpt/);
- assert.match(prompts[1].messages[0].content,/The quote is required whenever the point is used to support an answer claim/);
+ assert.match(prompts[1].messages[0].content,/Add an exact 12–220 character quote copied from that same excerpt when you can copy it confidently/);
+ assert.match(prompts[1].messages[0].content,/A missing or unverified quote does not invalidate an otherwise supported point or citation/);
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.coverage,'full');
  assert.equal(result.reviewStatus,'claim_support_not_independently_verified');
@@ -1430,7 +1430,7 @@ test('all-books empty-review recovery anchors claims to exact quotes from the ri
   })}}]};
   assert.match(input.messages[1].content,/page 5546/);
   assert.match(input.messages[1].content,/page 5547/);
-  assert.match(input.messages[0].content,/exact 12–220 character quote copied from that same excerpt/);
+  assert.match(input.messages[0].content,/Add an exact 12–220 character quote copied from that same excerpt when you can copy it confidently/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'The passage identifies love as originating in God and says that God is love; it illustrates this by describing God sending the Son so people might live [S1]. It also defines love through God’s initiative: God loved people and sent the Son for their sins [S1]. The passage then connects that prior love to believers’ obligation to love one another [S2]. It adds that when they do, God abides in them and divine love is perfected in them [S2].',
    partChecks:[
@@ -1454,6 +1454,40 @@ test('all-books empty-review recovery anchors claims to exact quotes from the ri
  assert.deepEqual(result.evidenceMap.map(item=>[item.id,item.quoteVerified]),[
   ['S1',true],['S1',true],['S1',true],['S2',true],['S2',true]
  ]);
+});
+
+test('empty-review recovery keeps cited partial answer when exact quote anchors are unavailable',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const source={id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+  preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'};
+ let calls=0;
+ const ai={run:async()=>{
+  calls++;
+  if(calls===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No requested part was supported.',questionParts:[
+    {part:'What does “God is love” mean?',status:'unsupported',evidenceIds:[]},
+    {part:'How does the passage connect God’s love with loving one another?',status:'unsupported',evidenceIds:[]}
+   ],evidence:[]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'The passage calls God love and describes love as shown through God sending the Son so people might live [S1]. It connects God’s prior love with the obligation to love one another [S1].',
+   partChecks:[
+    {part:'What does “God is love” mean?',status:'unsupported',evidenceIds:['S1']},
+    {part:'How does the passage connect God’s love with loving one another?',status:'unsupported',evidenceIds:['S1']}
+   ],evidence:[
+    {id:'S1',point:'God is called love, and the passage describes love through God sending the Son.'},
+    {id:'S1',point:'The passage grounds the obligation to love one another in God’s prior love.'}
+   ]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,[source],ai);
+ assert.equal(calls,2);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.deepEqual(result.citations.map(item=>item.id),['S1']);
+ assert.deepEqual(result.questionParts.map(item=>item.status),['partial','partial']);
+ assert.ok(result.evidenceMap.every(item=>item.quoteVerified===false));
+ assert.match(result.answer,/partially supported/);
 });
 
 test('empty-review recovery uses the primary parallel-edition passage for a scoped Bible question',async()=>{
