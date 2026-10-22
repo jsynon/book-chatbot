@@ -2375,7 +2375,7 @@ function applyExplicitBibleVerseScope(question,sources){
   const asksForInterpretiveSources=/\b(commentar(?:y|ies|ian|ians)|church fathers?|homil(?:y|ies)|sermon|Augustine)\b/i.test(question);
   const bookNeedle=(scope.work.normalize('NFKC').toLocaleLowerCase()
     .match(/[\p{L}\p{N}]+/gu)||[]).join(' ');
-  const verseMarker=/(?:^|\s)(\d{1,3})[ \t]+(?=[A-Z“"'‘])/g;
+  const verseMarker=/(?:^|[^\p{L}\p{N}])(\d{1,3})[ \t]+(?=[A-Z“"'‘])/gu;
   const filtered=[];
   for(const source of sources){
     const isScripture=/\b(?:bible|scripture|testament)\b/i.test(source.title||'');
@@ -2383,20 +2383,22 @@ function applyExplicitBibleVerseScope(question,sources){
     const text=String(source.preview||'');
     const normalized=(text.normalize('NFKC').toLocaleLowerCase()
       .match(/[\p{L}\p{N}]+/gu)||[]).join(' ');
-    // Annotated Bible notes often discuss the requested passage without
-    // repeating its book name in the excerpt. Preserve those notes; only
-    // clamp a scripture page when its own heading identifies the book/chapter.
-    if(!normalized.includes(`${bookNeedle} ${scope.startChapter}`)){
+    const hasPassageHeading=normalized.includes(`${bookNeedle} ${scope.startChapter}`);
+    if(!hasPassageHeading&&asksForInterpretiveSources){
       filtered.push(source);
       continue;
     }
     const escapedWork=scope.work.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
     const header=new RegExp('^\\s*'+escapedWork+
       '\\s+'+scope.startChapter+'(?:\\s*[-–—]\\s*\\d+)?\\s+\\d+\\s*$','i');
-    const lines=text.split(/\r?\n/).filter(line=>!header.test(line));
+    const lines=hasPassageHeading?
+      text.split(/\r?\n/).filter(line=>!header.test(line)):
+      text.split(/\r?\n/);
     const content=lines.join('\n');
     const markers=[...content.matchAll(verseMarker)];
-    if(!markers.length)continue;
+    if(!markers.length){
+      continue;
+    }
     const inRange=[];
     for(let i=0;i<markers.length;i++){
       const marker=markers[i],verse=Number(marker[1]);

@@ -203,7 +203,7 @@ test('causal comparison can draw on complementary passages from the same work',a
  assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides of a comparison or causal account/);
 });
 test('an unspecified Bible edition can support the requested verse range alongside commentary',async()=>{
- const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another? Also, what does the Oxford Annotated Bible commentary say about this passage?';
  const sources=[
   {id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
    preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'},
@@ -244,7 +244,11 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
   {id:'S3',bookId:'335',title:'New King James Version Bible — Various authors',page:5548,
    preview:'1 JOHN 4–5         15\n 21 And this commandment we have from Him: that he who loves God must love his brother also.'},
   {id:'S4',bookId:'367',title:'Nicene and Post-Nicene Fathers, First Series, Volume III — Edited by Philip Schaff',page:288,
-   preview:'And yet he seems to have passed by the love of God in silence; which he never would have done, unless because he intends God to be understood in brotherly love itself.'}
+   preview:'And yet he seems to have passed by the love of God in silence; which he never would have done, unless because he intends God to be understood in brotherly love itself.'},
+  {id:'S5',bookId:'638',title:'The New Oxford Annotated Bible, Fully Revised Fifth Edition — edited by Michael D. Coogan',page:1817,
+   preview:'Christians are reminded that their obligation to love one another is grounded in God’s nature as love (4.7–12).'},
+  {id:'S6',bookId:'638',title:'The New Oxford Annotated Bible, Fully Revised Fifth Edition — edited by Michael D. Coogan',page:1821,
+   preview:'…10 In this is love, not that we loved God, but that he loved us and sent his Son to be the atoning sacrifice for our sins. 11 Beloved, since God loved us, we also ought to love one another.'}
  ];
  const inputs=[];let call=0;
  const ai={run:async(_model,input)=>{
@@ -270,6 +274,9 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
  assert.deepEqual(result.citations.map(source=>source.id),['S1']);
  assert.match(inputs[0].messages[1].content,/7 Beloved, let us love one another/);
  assert.match(inputs[0].messages[1].content,/12 No one has seen God/);
+ assert.match(inputs[0].messages[1].content,/10 In this is love/);
+ assert.match(inputs[0].messages[1].content,/atoning sacrifice for our sins/);
+ assert.doesNotMatch(inputs[0].messages[1].content,/Christians are reminded that their obligation/);
  assert.doesNotMatch(inputs[0].messages[1].content,/13 By this we know/);
  assert.doesNotMatch(inputs[0].messages[1].content,/16 And we have known/);
  assert.doesNotMatch(inputs[0].messages[1].content,/21 And this commandment/);
@@ -1258,7 +1265,7 @@ test('composition recovers relevant submitted passages after a false-negative ev
  assert.match(result.answer,/growth of Athenian power/);
 });
 test('empty-review recovery uses the primary parallel-edition passage for a scoped Bible question',async()=>{
- const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another? Also, what does the Oxford Annotated Bible commentary say about this passage?';
  const sources=[
   {id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
    preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'},
