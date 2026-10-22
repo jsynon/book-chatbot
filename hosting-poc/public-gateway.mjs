@@ -1743,7 +1743,7 @@ export function removeConflictingSpeakerAttributions(answer,evidenceMap) {
 export function removeUnqualifiedCorrectedClaims(answer,evidenceMap,sources) {
   const sourceById=new Map((sources||[]).map(source=>[source.id,source]));
   const flaggedIds=new Set(),noticeIds=[];
-  const explicitCorrection=/\b(?:exaggerated|distort(?:ed|ion)|misrepresent(?:ed|ation)|misstate(?:d)?|not quite (?:my|his|her|their) contention|not exactly (?:my|his|her|their) (?:view|argument|contention)|correct(?:s|ed)? (?:that|the) (?:account|summary|claim)|qualif(?:y|ies|ied|ication))\b/i;
+  const explicitCorrection=/\b(?:exaggerated|distort(?:ed|ion)|misrepresent(?:ed|ation)|misstate(?:d)?|(?:not quite|was(?:n['’]t| not) quite) (?:my|his|her|their) contention|not exactly (?:my|his|her|their) (?:view|argument|contention)|correct(?:s|ed)? (?:that|the) (?:account|summary|claim)|qualif(?:y|ies|ied|ication))\b/i;
   for(const item of evidenceMap||[]){
     if(!item?.speakerUnverified)continue;
     const source=sourceById.get(item.id);
