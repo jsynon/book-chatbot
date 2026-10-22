@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -87,6 +87,22 @@ test('inference failure diagnostics classify provider errors without exposing ra
   message:'Capacity temporarily exceeded, please try again.'});
  assert.equal(capacityError.providerClass,'capacity-unavailable');
  assert.equal(capacityError.providerCode,'3040');
+});
+
+test('unexpected answer-pipeline errors retain a safe stage and failure class',()=>{
+ const error=new Error('private provider body and passage text');
+ const details=answerPipelineFailureDiagnostics(error);
+ assert.equal(details.stage,'answer-pipeline');
+ assert.equal(details.providerClass,'unknown');
+ assert.equal(details.providerErrorName,'Error');
+ assert.equal(JSON.stringify(details).includes('private provider body'),false);
+ assert.equal(JSON.stringify(details).includes('passage text'),false);
+ const known=new Error('answer-depth-repair-request-failed');
+ known.diagnostics={stage:'answer-depth-repair',providerClass:'timeout',providerStatus:408};
+ const knownDetails=answerPipelineFailureDiagnostics(known);
+ assert.equal(knownDetails.stage,'answer-depth-repair');
+ assert.equal(knownDetails.providerClass,'timeout');
+ assert.equal(knownDetails.providerStatus,408);
 });
 
 test('public endpoint fails closed by default and does not call AI',async()=>{
@@ -2535,6 +2551,33 @@ test('public pilot identifies and measures an oversized initial composition safe
  assert.equal(failure.failureCode,'answer-initial-composition-too-long');
  assert.equal(failure.failureStage,'initial-composition');
  assert(failure.failureAnswerCharacters>2400);
+ assert.equal(pilot.stats().calls,2);
+});
+
+test('public pilot labels unexpected answer-pipeline failures without exposing messages',async()=>{
+ let calls=0;
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   calls++;
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'partial',missing:'The excerpt supports only part of the question.',
+     evidence:[{id:'S1',point:'The source contains a relevant point.'}]
+   })}}],usage:{neurons:1}};
+   const result={choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'The passage makes a limited claim [S1].',partChecks:[]
+   })}}]};
+   Object.defineProperty(result,'usage',{get(){
+     throw new Error('private provider response body and passage text');
+   }});
+   return result;
+ }});
+ const response=await pilot.post({body:{question:'What does this passage say?'}});
+ assert.equal(response.status,502);
+ const failure=await response.json();
+ assert.equal(failure.failureCode,'answer-generation-or-citation-failed');
+ assert.equal(failure.failureStage,'answer-pipeline');
+ assert.equal(failure.failureProviderClass,undefined);
+ assert.equal(JSON.stringify(failure).includes('private provider response body'),false);
+ assert.equal(JSON.stringify(failure).includes('passage text'),false);
  assert.equal(pilot.stats().calls,2);
 });
 
