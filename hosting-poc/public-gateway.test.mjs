@@ -2617,7 +2617,7 @@ test('public pilot identifies and measures an oversized initial composition safe
      questionParts:[{part:'causes',status:'supported',evidenceIds:['S1']}],
      evidence:[{id:'S1',point:'The source passage gives a cause.'}]
    })}}]};
-   const answer=('The source passage explains a supported cause [S1]. ').repeat(70);
+   const answer=('The source passage explains a supported cause [S1]. ').repeat(110);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      answer,partChecks:[{part:'causes',status:'supported',evidenceIds:['S1']}]
    })}}]};
@@ -2627,10 +2627,30 @@ test('public pilot identifies and measures an oversized initial composition safe
  const failure=await response.json();
  assert.equal(failure.failureCode,'answer-initial-composition-too-long');
  assert.equal(failure.failureStage,'initial-composition');
- assert(failure.failureAnswerCharacters>2400);
+ assert(failure.failureAnswerCharacters>4800);
  assert.equal(pilot.stats().calls,2);
 });
 
+test('public pilot returns detailed cited answers above the former character ceiling',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',
+     questionParts:[{part:'causes',status:'supported',evidenceIds:['S1']}],
+     evidence:[{id:'S1',point:'The source passage gives a cause.'}]
+   })}}]};
+   const answer=('The source passage explains a supported cause and gives its reason [S1]. ').repeat(45);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer,partChecks:[{part:'causes',status:'supported',evidenceIds:['S1']}]
+   })}}]};
+ }});
+ const response=await pilot.post({body:{question:'What causes this event?'}});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(result.outcome,'verified-source-draft');
+ assert(result.answer.length>2400&&result.answer.length<=4800);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1']);
+ assert.equal(pilot.stats().calls,2);
+});
 test('public pilot labels unexpected answer-pipeline failures without exposing messages',async()=>{
  let calls=0;
  const pilot=await pilotScenario({model:async(_model,input)=>{
