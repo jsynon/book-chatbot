@@ -1118,7 +1118,7 @@ test('composition recovers relevant submitted passages after a false-negative ev
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
  assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
  assert.match(result.answer,/growth of Athenian power/);
- });
+});
 test('v1.9.4 bad or absent model citations never leave the server as an answer',async()=>{
  for(const fabricated of ['The answer is clear [S9].',
    'The answer is clear [S1, S9] [S1].',
@@ -2344,3 +2344,4 @@ test('public pilot retries a malformed relation audit response once',async()=>{
  assert.equal(calls,4);
  assert.match(result.answer,/cannot establish whether science and religion conflict/);
 });
+
