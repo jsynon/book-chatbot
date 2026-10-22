@@ -234,6 +234,48 @@ test('an unspecified Bible edition can support the requested verse range alongsi
  assert.match(inputs[1].messages[0].content,/a parallel edition of the same work and passage is in scope/);
  assert.match(inputs[1].messages[0].content,/Do not treat a commentary excerpt as the primary text/);
 });
+test('a scoped Bible answer is composed only from the requested verses',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const sources=[
+  {id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+   preview:'1 JOHN 4           13\n 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God.\n 8 He who does not love does not know God, for God is love.\n 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him.\n 10 In this is love, not that we loved God, but that He loved us and sent His Son to be the propitiation for our sins.\n 11 Beloved, if God so loved us, we also ought to love one another.\n 12 No one has seen God at any time. If we love one another, God abides in us, and His love has been perfected in us.\n 13 By this we know that we abide in Him, and He in us, because He has given us of His Spirit.'},
+  {id:'S2',bookId:'335',title:'New King James Version Bible — Various authors',page:5547,
+   preview:'1 JOHN 4           14\n 14 And we have seen and testify that the Father has sent the Son as Savior of the world.\n 15 Whoever confesses that Jesus is the Son of God, God abides in him, and he in God.\n 16 And we have known and believed the love that God has for us. God is love, and he who abides in love abides in God, and God in him.'},
+  {id:'S3',bookId:'335',title:'New King James Version Bible — Various authors',page:5548,
+   preview:'1 JOHN 4–5         15\n 21 And this commandment we have from Him: that he who loves God must love his brother also.'},
+  {id:'S4',bookId:'367',title:'Nicene and Post-Nicene Fathers, First Series, Volume III — Edited by Philip Schaff',page:288,
+   preview:'And yet he seems to have passed by the love of God in silence; which he never would have done, unless because he intends God to be understood in brotherly love itself.'}
+ ];
+ const inputs=[];let call=0;
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[
+    {part:'meaning of God is love',status:'supported',evidenceIds:['S1']},
+    {part:'connection with loving one another',status:'supported',evidenceIds:['S1']}
+   ],
+   evidence:[
+    {id:'S1',point:'Love comes from God, and those who love are born of God and know God.',quote:'and everyone who loves is born of God and knows God',speaker:'unknown',qualifier:''},
+    {id:'S1',point:'God loved us by sending the Son, so believers ought to love one another.',quote:'if God so loved us, we also ought to love one another',speaker:'unknown',qualifier:''},
+    {id:'S1',point:'When believers love one another, God abides in them and His love is perfected.',quote:'If we love one another, God abides in us, and His love has been perfected in us.',speaker:'unknown',qualifier:''}
+   ]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:
+   'In 1 John 4:7–12, love comes from God: those who love are born of God and know God, while the one who does not love does not know God [S1]. The passage shows God’s love in sending the Son so that we may live through him, and says that God loved us first [S1]. Because God loved us in this way, we ought to love one another; when we do, God abides in us and His love is perfected in us [S1].'}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(call,2);
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.citations.map(source=>source.id),['S1']);
+ assert.match(inputs[0].messages[1].content,/7 Beloved, let us love one another/);
+ assert.match(inputs[0].messages[1].content,/12 No one has seen God/);
+ assert.doesNotMatch(inputs[0].messages[1].content,/13 By this we know/);
+ assert.doesNotMatch(inputs[0].messages[1].content,/16 And we have known/);
+ assert.doesNotMatch(inputs[0].messages[1].content,/21 And this commandment/);
+ assert.doesNotMatch(inputs[0].messages[1].content,/brotherly love itself/);
+ assert.doesNotMatch(result.answer,/brother must love|abides in God/);
+});
 test('evidence review can select a supported point when it cannot safely copy an exact quote',async()=>{
  const question='How does Darwin explain natural selection?';
  const sources=[{id:'S1',bookId:'529',title:'On the Origin of Species — Charles Darwin',page:96,

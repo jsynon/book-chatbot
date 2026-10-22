@@ -1644,6 +1644,7 @@ export function removeDanglingCitedSentences(answer) {
 }
 
 export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
+  sources=applyExplicitBibleVerseScope(question,sources);
   const combined=sources.map(s=>'['+s.id+'] '+s.title+', physical PDF page '+s.page+'\n'+s.preview).join('\n\n');
   const sourceGroups=requestedSourceGroups(question,sources);
   const emptyReviewAnswerPrompt=
@@ -2341,13 +2342,22 @@ function containsPhrase(query,phrase){
   return Boolean(target&&candidate.includes(' '+target+' '));
 }
 
-function explicitVerseRange(question){
+function explicitVerseScope(question){
   const match=String(question||'').match(
-    /\b((?:[1-3]\s+)?[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\s+(\d{1,3}):(\d{1,3})(?:\s*[-–—]\s*(?:(\d{1,3}):)?(\d{1,3}))?/);
-  if(!match)return '';
+    /\b((?:[1-3]\s+)?[A-Z][A-Za-z]+(?:\s+(?:[A-Z][A-Za-z]+|of|the|and)){0,4})\s+(\d{1,3}):(\d{1,3})(?:\s*[-–—]\s*(?:(\d{1,3}):)?(\d{1,3}))?/);
+  if(!match)return null;
   const [,work,chapter,startVerse,endChapter,endVerse]=match;
-  const rangeEnd=endChapter?`${endChapter}:${endVerse}`:endVerse;
-  return `${work} ${chapter}:${startVerse}${rangeEnd?`-${rangeEnd}`:''}`;
+  return {work,chapter:Number(chapter),startChapter:Number(chapter),
+    startVerse:Number(startVerse),endChapter:Number(endChapter||chapter),
+    endVerse:Number(endVerse||startVerse)};
+}
+
+function explicitVerseRange(question){
+  const scope=explicitVerseScope(question);
+  if(!scope)return '';
+  const end=scope.endChapter===scope.startChapter?
+    String(scope.endVerse):`${scope.endChapter}:${scope.endVerse}`;
+  return `${scope.work} ${scope.startChapter}:${scope.startVerse}-${end}`;
 }
 
 function retainExplicitVerseRange(query,range){
@@ -2356,6 +2366,48 @@ function retainExplicitVerseRange(query,range){
   const maxPrefix=160-suffix.length;
   const prefix=String(query||'').slice(0,maxPrefix).replace(/\s+\S*$/,'').trim();
   return (prefix+suffix).trim();
+}
+
+function applyExplicitBibleVerseScope(question,sources){
+  const scope=explicitVerseScope(question);
+  if(!scope||scope.startChapter!==scope.endChapter||
+     !sources.some(source=>/\b(?:bible|scripture|testament)\b/i.test(source.title||'')))return sources;
+  const asksForInterpretiveSources=/\b(commentar(?:y|ies|ian|ians)|church fathers?|homil(?:y|ies)|sermon|Augustine)\b/i.test(question);
+  const bookNeedle=(scope.work.normalize('NFKC').toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]+/gu)||[]).join(' ');
+  const verseMarker=/(?:^|\s)(\d{1,3})[ \t]+(?=[A-Z“"'‘])/g;
+  const filtered=[];
+  for(const source of sources){
+    const isScripture=/\b(?:bible|scripture|testament)\b/i.test(source.title||'');
+    if(!isScripture){if(asksForInterpretiveSources)filtered.push(source);continue;}
+    const text=String(source.preview||'');
+    const normalized=(text.normalize('NFKC').toLocaleLowerCase()
+      .match(/[\p{L}\p{N}]+/gu)||[]).join(' ');
+    // Annotated Bible notes often discuss the requested passage without
+    // repeating its book name in the excerpt. Preserve those notes; only
+    // clamp a scripture page when its own heading identifies the book/chapter.
+    if(!normalized.includes(`${bookNeedle} ${scope.startChapter}`)){
+      filtered.push(source);
+      continue;
+    }
+    const escapedWork=scope.work.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const header=new RegExp('^\\s*'+escapedWork+
+      '\\s+'+scope.startChapter+'(?:\\s*[-–—]\\s*\\d+)?\\s+\\d+\\s*$','i');
+    const lines=text.split(/\r?\n/).filter(line=>!header.test(line));
+    const content=lines.join('\n');
+    const markers=[...content.matchAll(verseMarker)];
+    if(!markers.length)continue;
+    const inRange=[];
+    for(let i=0;i<markers.length;i++){
+      const marker=markers[i],verse=Number(marker[1]);
+      if(verse<scope.startVerse||verse>scope.endVerse)continue;
+      const start=marker.index+(marker[0].startsWith('\n')?1:0);
+      const end=i+1<markers.length?markers[i+1].index:content.length;
+      inRange.push(content.slice(start,end).trim());
+    }
+    if(inRange.length)filtered.push({...source,preview:inRange.join('\n')});
+  }
+  return filtered;
 }
 
 // AI-assisted SOURCE DISCOVERY ONLY. No facts, page numbers, citations or
