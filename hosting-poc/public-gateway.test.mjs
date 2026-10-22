@@ -445,6 +445,35 @@ test('planner preserves an explicit verse range in both complementary searches',
  assert.match(result.queries[1],/necessitates loving one another/);
 });
 
+test('planner keeps three distinct requested components as three targeted searches',async()=>{
+ const question="According to Darwin's On the Origin of Species, how does natural selection operate, and what roles do inherited variation and the struggle for existence play?";
+ const expected=[
+  'On the Origin of Species natural selection preserves advantageous variation',
+  'On the Origin of Species offspring inherit favorable variations',
+  'On the Origin of Species struggle for existence more offspring than survive'
+ ];
+ let prompt='';
+ const ai={run:async(_model,input)=>{
+  prompt=input.messages[0].content;
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:expected})}}]};
+ }};
+ const result=await planSearchQueries(question,'',ai);
+ assert.match(prompt,/two to four different, concise search phrases/);
+ assert.match(prompt,/Use one query per distinct component/);
+ assert.deepEqual(result.queries,expected);
+});
+
+test('planner rejects more than four facets and duplicate facets',async()=>{
+ const question='Explain the causes, events, results, and legacy of this conflict.';
+ for(const queries of [
+  ['facet one conflict cause','facet two conflict events','facet three conflict results','facet four conflict legacy','facet five conflict details'],
+  ['same conflict facet phrase','same conflict facet phrase']
+ ]){
+  const ai={run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries})}}]})};
+  await assert.rejects(()=>planSearchQueries(question,'',ai),/Invalid search plan|Duplicate search queries/);
+ }
+});
+
 test('multi-work full coverage requires selected evidence from every named work group',()=>{
  const question='How do Darwin in On the Origin of Species and Hawking in A Brief History of Time explain change?';
  const sources=[
@@ -2108,7 +2137,7 @@ test('v1.9.5 blocks requests before model when pilot rate limiter rejects',async
 test('opt-in evaluation bearer reaches real pilot endpoints without bypassing rate limits',async()=>{
  const token='evaluation-only-secret-'.repeat(3);
  const model=async(_model,input)=>({choices:[{finish_reason:'stop',message:{content:
-   input.max_completion_tokens===210?' {"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}':
+   input.max_completion_tokens===320?' {"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}':
    input.max_completion_tokens===520?JSON.stringify({coverage:'partial',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
    'The passage identifies the deeper cause as fear of growing power [S1].'}}],usage:{neurons:1}});
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
@@ -2137,7 +2166,7 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
 });
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
-   if(input.max_completion_tokens===210)return {choices:[{finish_reason:'stop',message:{content:
+   if(input.max_completion_tokens===320)return {choices:[{finish_reason:'stop',message:{content:
      '{"queries":["specific original event causes","political motives and context"]}'}}]};
    if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:
      '{"coverage":"full","missing":"","evidence":[{"id":"S1","point":"Relevant supported passage point."}]}'}}]};

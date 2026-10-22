@@ -2838,10 +2838,13 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
     messages:[
       {role:'system',content:
         'You are a scholarly digital librarian, not an answering assistant. '+
-        'Return EXACTLY one JSON object {"queries":["...","..."]}, with two '+
-        'different, concise search phrases (4-13 words apiece) that would '+
-        'locate complementary original passages addressing different parts '+
-        'of the reader question. Focus on distinctive arguments, scenes, '+
+        'Return EXACTLY one JSON object {"queries":["...","..."]}, with '+
+        'two to four different, concise search phrases (4-13 words apiece) '+
+        'that locate original passages addressing distinct requested parts '+
+        'of the question. Use one query per distinct component when there '+
+        'are three or four; do not collapse several components into only '+
+        'two broad searches. '+
+        'Focus on distinctive arguments, scenes, '+
         'characters, scientific mechanisms, events and near-synonyms likely '+
         'to appear in the PRIMARY SOURCE. For questions about how something '+
         'changes, forms, or causes an outcome, seek the concrete process and '+
@@ -2874,7 +2877,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'appear in the primary source; do not rely only on abstract labels such '+
         'as “immediate disputes” or “triggers.” Treat any event names used in a '+
         'search query as retrieval leads, never as evidence for the answer. '+
-        'One query should seek evidence for each part. When the reader names authors or '+
+        'When the reader names authors or '+
         'works, retain the relevant name in its corresponding query so source '+
         'discovery can distinguish books in the full library. For a question '+
         'about two explicitly named works or authors, assign one query to each '+
@@ -2896,7 +2899,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         '\nCurrent follow-up question: '+question}
     ],
     chat_template_kwargs:{enable_thinking:false},
-    max_completion_tokens:210,
+    max_completion_tokens:320,
   });
   if(['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
     throw new Error('Search plan truncated');
@@ -2905,7 +2908,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
   try{result=JSON.parse(raw.slice(start,end+1));}
   catch{throw new Error('Invalid search plan JSON');}
   const options=result?.queries;
-  if(!Array.isArray(options)||options.length!==2 ||
+  if(!Array.isArray(options)||options.length<2||options.length>4 ||
      !options.every(q=>typeof q==='string' &&
        q.trim().length>=12&&q.trim().length<=160 &&
        /^[\p{L}\p{N} .,;:'"?!()\-–]+$/u.test(q)))
@@ -2926,7 +2929,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
       for(let index=0;index<2;index++)queries[index]=namedTargets[index].query;
     }
   }
-  if(queries[0].toLowerCase()===queries[1].toLowerCase())
+  if(new Set(queries.map(query=>query.toLocaleLowerCase())).size!==queries.length)
     throw new Error('Duplicate search queries');
   const phrase=definitionPhrase(question);
   if(phrase&&!queries.some(query=>containsPhrase(query,phrase)))
