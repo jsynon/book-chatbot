@@ -992,6 +992,34 @@ test('evidence anchors preserve the speaker and conditional qualifier from the s
  assert.equal('anchorQuote' in bad.evidenceMap[0],false);
  assert.equal('qualifier' in bad.evidenceMap[0],false);
 });
+test('an exact dialogue quote does not verify a model-supplied speaker without a speech anchor',()=>{
+ const quote='But extraordinary men have a right to commit any crime and to transgress the law in any way, just because they are extraordinary.';
+ const preview='But extraordinary men have a right to commit any crime and to transgress the law in any way, just because they are extraordinary. That was your idea, if I am not mistaken?’ ‘What do you mean? That can’t be right?’ Razumihin muttered in bewilderment. Raskolnikov smiled again. He decided to take up the challenge. ‘That wasn’t quite my contention,’ he began simply and modestly.';
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
+  id:'S1',point:'Raskolnikov states the theory.',quote,speaker:'Raskolnikov'
+ }]}),[{id:'S1',preview}]);
+ assert.equal(review.evidenceMap[0].quoteVerified,true);
+ assert.equal(review.evidenceMap[0].speaker,undefined);
+ assert.equal(review.evidenceMap[0].speakerUnverified,true);
+ const explicitlyAttributed=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
+  id:'S1',point:'Raskolnikov states the line.',quote:'That is true',speaker:'Raskolnikov'
+ }]}),[{id:'S1',preview:'“That is true,” said Raskolnikov.'}]);
+ assert.equal(explicitlyAttributed.evidenceMap[0].speaker,'Raskolnikov');
+ assert.equal(explicitlyAttributed.evidenceMap[0].speakerUnverified,undefined);
+});
+test('omits speaker-attributed claims that cite dialogue without a verified speaker anchor',()=>{
+ const answer='Raskolnikov says extraordinary men may do anything they wish [S1]. He argues that the theory gives him an unrestricted right to kill [S1].';
+ const evidenceMap=[
+  {id:'S1',point:'A dialogue passage with several speakers.',quoteVerified:true,
+   anchorQuote:'But extraordinary men have a right to commit any crime.',speakerUnverified:true},
+  {id:'S2',point:'Raskolnikov later explains the theory.',quoteVerified:true,
+   anchorQuote:'I had a right to transgress.',speaker:'Raskolnikov'}
+ ];
+ const result=removeConflictingSpeakerAttributions(answer,evidenceMap);
+ assert.equal(result.conflicts.length,2);
+ assert(result.conflicts.every(item=>item.reason==='unverified-dialogue-speaker'));
+ assert.equal(result.answer,'');
+});
 
 test('evidence-focused highlights choose the cited point instead of a topical opening',()=>{
  const text='Bees and ants live sociably one with another. '+
