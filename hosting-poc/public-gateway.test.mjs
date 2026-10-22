@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -1025,6 +1025,22 @@ test('omits speaker-attributed claims that cite dialogue without a verified spea
  assert.equal(result.conflicts.length,2);
  assert(result.conflicts.every(item=>item.reason==='unverified-dialogue-speaker'));
  assert.equal(result.answer,'');
+});
+test('a dialogue claim marked unverified cannot survive as unqualified when the excerpt corrects it',()=>{
+ const source={id:'S1',preview:'A speaker summarizes Mara’s view. Mara says, “That is not quite my contention.” The narrator calls the summary an exaggerated distortion of her position.'};
+ const evidence=[{id:'S1',point:'The excerpt contains a disputed summary of Mara’s position.',
+  quoteVerified:true,speakerUnverified:true}];
+ const unsafe='Mara believes the rule grants an unrestricted right to ignore it [S1].';
+ const result=removeUnqualifiedCorrectedClaims(unsafe,evidence,[source]);
+ assert.equal(result.conflicts.length,1);
+ assert.doesNotMatch(result.answer,/Mara believes the rule grants an unrestricted right/i);
+ assert.match(result.answer,/marks this reported account as distorted or corrected/i);
+ assert.match(result.answer,/\[S1\]/);
+
+ const carefullyFramed='The excerpt calls the summary an exaggerated distortion and records Mara’s correction [S1].';
+ const retained=removeUnqualifiedCorrectedClaims(carefullyFramed,evidence,[source]);
+ assert.equal(retained.conflicts.length,0);
+ assert.equal(retained.answer,carefullyFramed);
 });
 
 test('evidence-focused highlights choose the cited point instead of a topical opening',()=>{

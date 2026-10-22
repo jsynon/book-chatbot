@@ -1740,6 +1740,39 @@ export function removeConflictingSpeakerAttributions(answer,evidenceMap) {
   }).filter(Boolean);
   return {answer:cleaned.join('\n\n'),conflicts};
 }
+export function removeUnqualifiedCorrectedClaims(answer,evidenceMap,sources) {
+  const sourceById=new Map((sources||[]).map(source=>[source.id,source]));
+  const flaggedIds=new Set(),noticeIds=[];
+  const explicitCorrection=/\b(?:exaggerated|distort(?:ed|ion)|misrepresent(?:ed|ation)|misstate(?:d)?|not quite (?:my|his|her|their) contention|not exactly (?:my|his|her|their) (?:view|argument|contention)|correct(?:s|ed)? (?:that|the) (?:account|summary|claim)|qualif(?:y|ies|ied|ication))\b/i;
+  for(const item of evidenceMap||[]){
+    if(!item?.speakerUnverified)continue;
+    const source=sourceById.get(item.id);
+    if(!source||!explicitCorrection.test(String(source.preview||'')))continue;
+    flaggedIds.add(item.id);
+    if(/\b(?:exaggerated|distort(?:ed|ion))\b/i.test(String(source.preview||'')))
+      noticeIds.unshift(item.id);
+    else noticeIds.push(item.id);
+  }
+  if(!flaggedIds.size)return {answer:String(answer||''),conflicts:[]};
+  const conflicts=[];
+  const caveat=/\b(?:reported|report|summary|distort(?:ed|ion)|exaggerat(?:ed|ion)|misrepresent(?:ed|ation)|misstate(?:d)?|qualif(?:y|ies|ied|ication)|correct(?:s|ed|ion)|not quite|not exactly|unqualified|uncertain|unclear)\b/i;
+  const paragraphs=String(answer||'').split(/\n\s*\n/);
+  const cleaned=paragraphs.map(paragraph=>{
+    const sentences=paragraph.split(/(?<=[.!?])\s+(?=[A-Z“"'])/u);
+    return sentences.filter(sentence=>{
+      const citationIds=[...new Set([...sentence.matchAll(/\[([^\]]+)\]/g)]
+        .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]))];
+      const correctedCitationIds=citationIds.filter(id=>flaggedIds.has(id));
+      if(!correctedCitationIds.length||caveat.test(sentence))return true;
+      conflicts.push({sentence:sentence.trim(),sourceIds:correctedCitationIds});
+      return false;
+    }).join(' ').trim();
+  }).filter(Boolean);
+  if(!conflicts.length)return {answer:String(answer||''),conflicts:[]};
+  const noticeId=noticeIds[0]||conflicts[0].sourceIds[0];
+  const notice='The cited excerpt marks this reported account as distorted or corrected, so it does not establish the unqualified version as the character’s position ['+noticeId+'].';
+  return {answer:[...cleaned,notice].filter(Boolean).join('\n\n'),conflicts};
+}
 function isComparisonQuestionPart(label){
   return /\b(?:compare|comparison|contrast|differ|difference|different|distinguish)\b/i.test(String(label||''));
 }
@@ -2540,6 +2573,23 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     finalMissing=questionPartMissingNote(finalQuestionParts)||
       'A speaker attribution could not be verified against the cited passage, so the claim was omitted.';
     if(!emptyReview)answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
+  }
+  // A dialogue quote with no verified speaker cannot be treated as the
+  // character's own view when the same excerpt explicitly calls that account
+  // distorted or records a correction. Remove only uncaveated claims citing
+  // that excerpt and expose the limitation without another model call.
+  const correctionGuard=removeUnqualifiedCorrectedClaims(
+    answer,review.evidenceMap,sources);
+  if(correctionGuard.conflicts.length){
+    answer=correctionGuard.answer;
+    const affectedIds=new Set(correctionGuard.conflicts.flatMap(item=>item.sourceIds));
+    finalQuestionParts=finalQuestionParts.map(part=>
+      part.evidenceIds.some(id=>affectedIds.has(id))&&part.status==='supported'?
+        {...part,status:'partial'}:part);
+    finalCoverage=finalQuestionParts.length&&
+      finalQuestionParts.every(part=>part.status==='supported')?'full':'partial';
+    finalMissing=questionPartMissingNote(finalQuestionParts)||
+      'The excerpt identifies the reported account as distorted or corrected, so its full limits remain unresolved.';
   }
   if(answer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-final-assembly-too-long',{
     stage:'final-answer-assembly',answerCharacters:answer.length,sourceCount:sources.length,
