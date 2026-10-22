@@ -1266,8 +1266,12 @@ export function parseReview(raw,sources,question='') {
     // anchors that point in this same source. Do not let an unverified
     // summary become authoritative metadata in the evidence map or later
     // answer prompts.
-    const speaker=quoteVerified&&value&&typeof value==='object'&&
-      typeof value.speaker==='string'?value.speaker.trim().slice(0,80):'';
+    const suppliedSpeaker=value&&typeof value==='object'&&typeof value.speaker==='string'?
+      value.speaker.trim().slice(0,80):'';
+    const dialogueSource=hasDialogueSpeech(source.preview);
+    const speaker=quoteVerified&&suppliedSpeaker&&
+      (!dialogueSource||speakerIsExplicitlyAnchored(source.preview,suppliedQuote,suppliedSpeaker))?
+      suppliedSpeaker:'';
     const suppliedQualifier=value&&typeof value==='object'&&typeof value.qualifier==='string'?
       value.qualifier.trim().slice(0,180):'';
     const normalizedQualifier=normalizedEvidenceQuote(suppliedQualifier);
@@ -1279,7 +1283,9 @@ export function parseReview(raw,sources,question='') {
       seenPoints.add(pointKey);
       evidenceMap.push({id,point,quoteVerified,
         ...(quoteVerified?{anchorQuote}:{}),
-        ...(speaker?{speaker}:{}),...(qualifier?{qualifier}:{})});
+        ...(speaker?{speaker}:{}),
+        ...(dialogueSource&&!speaker?{speakerUnverified:true}:{}),
+        ...(qualifier?{qualifier}:{})});
     }
   }
   if(questionRequiresPartTracking(question)&&!Array.isArray(review.questionParts))
@@ -1500,8 +1506,11 @@ function parseComposedEvidenceMap(values,sources,answer,partChecks) {
       normalizedSource.includes(normalizedQuote);
     const anchorQuote=quoteVerified?
       completeEvidenceAnchor(source.preview,suppliedQuote):'';
-    const speaker=quoteVerified&&typeof value.speaker==='string'?
-      value.speaker.trim().slice(0,80):'';
+    const suppliedSpeaker=typeof value.speaker==='string'?value.speaker.trim().slice(0,80):'';
+    const dialogueSource=hasDialogueSpeech(source.preview);
+    const speaker=quoteVerified&&suppliedSpeaker&&
+      (!dialogueSource||speakerIsExplicitlyAnchored(source.preview,suppliedQuote,suppliedSpeaker))?
+      suppliedSpeaker:'';
     const suppliedQualifier=typeof value.qualifier==='string'?
       value.qualifier.trim().slice(0,180):'';
     const normalizedQualifier=normalizedEvidenceQuote(suppliedQualifier);
@@ -1513,6 +1522,7 @@ function parseComposedEvidenceMap(values,sources,answer,partChecks) {
     seen.add(key);
     evidenceMap.push({id,point,quoteVerified,
       ...(quoteVerified?{anchorQuote}:{}),...(speaker?{speaker}:{}),
+      ...(dialogueSource&&!speaker?{speakerUnverified:true}:{}),
       ...(qualifier?{qualifier}:{})});
   }
   return evidenceMap;
@@ -1603,7 +1613,9 @@ function reconcileEmptyReviewQuestionParts(questionParts,partChecks,answer,evide
 }
 export function removeConflictingSpeakerAttributions(answer,evidenceMap) {
   const speakersBySource=new Map();
+  const unverifiedDialogueIds=new Set();
   for(const item of evidenceMap||[]){
+    if(item.speakerUnverified)unverifiedDialogueIds.add(item.id);
     if(!item.quoteVerified||!item.speaker||
       /^(?:unknown|unclear|not stated)$/i.test(item.speaker))continue;
     const speakers=speakersBySource.get(item.id)||new Set();
@@ -1659,10 +1671,24 @@ export function removeConflictingSpeakerAttributions(answer,evidenceMap) {
       const citedSpeakerKeys=new Set(citationIds.flatMap(id=>
         [...(speakersBySource.get(id)||[])].map(speaker=>speaker.toLocaleLowerCase())));
       if(representedSpeakers.size===0&&namedSpeakers.length===1)representedSpeakers.add(namedSpeakers[0].key);
-      if(representedSpeakers.size===0||!citedSpeakerKeys.size)return true;
+      if(representedSpeakers.size===0)return true;
+      const attributedKey=[...representedSpeakers][0];
+      const unanchoredCitations=citationIds.filter(id=>unverifiedDialogueIds.has(id));
+      if(unanchoredCitations.length&&
+        ![...(speakersBySource.get(unanchoredCitations[0])||[])].some(value=>
+          value.toLocaleLowerCase()===attributedKey)){
+        const sourceId=unanchoredCitations[0];
+        const speaker=[...(speakerSourceIds.get(attributedKey)||[])].flatMap(id=>
+          [...(speakersBySource.get(id)||[])])
+          .find(value=>value.toLocaleLowerCase()===attributedKey)||attributedKey;
+        conflicts.push({sentence:sentence.trim(),speaker,
+          attributedSourceId:sourceId,sourceIds:unanchoredCitations,
+          reason:'unverified-dialogue-speaker'});
+        return false;
+      }
+      if(!citedSpeakerKeys.size)return true;
       const conflictingKeys=[...citedSpeakerKeys].filter(key=>!representedSpeakers.has(key));
       if(!conflictingKeys.length)return true;
-      const attributedKey=[...representedSpeakers][0];
       const attributedSourceId=[...(speakerSourceIds.get(attributedKey)||[])].find(id=>citationIds.includes(id))||
         [...(speakerSourceIds.get(attributedKey)||[])][0];
       const sourceIds=citationIds.filter(id=>[...(speakersBySource.get(id)||[])].some(speaker=>
@@ -1761,6 +1787,20 @@ function completeEvidenceAnchor(text,quote,max=320) {
   if(tail&&normalizedEvidenceQuote(tail).includes(target))
     return tail.length<=max?tail:quote;
   return quote;
+}
+const SPEECH_ATTRIBUTION_VERBS='(?:said|says|asked|answered|replied|muttered|began|continued|cried|shouted|exclaimed|whispered|inquired|remarked|observed|added|interrupted|declared|asserted|suggested|argued|maintained)';
+function hasDialogueSpeech(text) {
+  const value=String(text||'');
+  const hasQuotedTurn=/(?:“[^”]{2,}”|‘[^’]{2,}’|"[^"]{2,}"|'[^']{2,}')/u.test(value);
+  return hasQuotedTurn&&new RegExp(`\\b${SPEECH_ATTRIBUTION_VERBS}\\b`,'i').test(value);
+}
+function speakerIsExplicitlyAnchored(text,quote,speaker) {
+  const anchor=completeEvidenceAnchor(text,quote,600);
+  if(!anchor)return false;
+  const name=speaker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const nameBeforeVerb=new RegExp(`(?<![\\p{L}])${name}(?![\\p{L}])[^.!?]{0,100}\\b${SPEECH_ATTRIBUTION_VERBS}\\b`,'iu');
+  const verbBeforeName=new RegExp(`\\b${SPEECH_ATTRIBUTION_VERBS}\\b[^.!?]{0,35}(?<![\\p{L}])${name}(?![\\p{L}])`,'iu');
+  return nameBeforeVerb.test(anchor)||verbBeforeName.test(anchor);
 }
 function quotedPhrasesMatchSources(answer,sources) {
   const matches=[...answer.matchAll(/“([^”]{12,320})”|"([^"]{12,320})"|‘([^’]{12,320})’/g)];
@@ -1959,6 +1999,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const selected=review.selected;
   const renderEvidenceMap=()=> (review.evidenceMap||[]).map(item=>{
     const details=[item.speaker?'speaker: '+item.speaker:'',
+      item.speakerUnverified?'dialogue speaker could not be anchored to the verified quote':'',
       item.qualifier?'qualifier: '+item.qualifier:'',
       item.anchorQuote?'verified quote and sentence context: “'+item.anchorQuote+'”':
         'no exact passage anchor verified']
@@ -2442,11 +2483,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     second=audited;
   }
   // The model can still merge a reported interpretation with the named
-  // speaker's own statement. When the answer explicitly attributes a cited
-  // sentence to one speaker but also cites a verified passage spoken by
-  // another, omit that sentence and report the affected part as partial.
-  // This conservative guard uses the existing verified speaker anchors and
-  // does not make another inference request.
+  // speaker's own statement. Use only explicitly anchored speakers in mixed
+  // dialogue excerpts; if an answer attributes a claim to a character but the
+  // cited excerpt's speaker cannot be verified, omit that claim and report
+  // the affected part as partial. This makes no inference request.
   const speakerGuard=removeConflictingSpeakerAttributions(answer,review.evidenceMap);
   if(speakerGuard.conflicts.length){
     answer=speakerGuard.answer;
@@ -2459,7 +2499,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     finalCoverage=finalQuestionParts.length&&
       finalQuestionParts.every(part=>part.status==='supported')?'full':'partial';
     finalMissing=questionPartMissingNote(finalQuestionParts)||
-      'A claim with conflicting passage speakers was omitted.';
+      'A speaker attribution could not be verified against the cited passage, so the claim was omitted.';
     answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
   }
   if(answer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-final-assembly-too-long',{
