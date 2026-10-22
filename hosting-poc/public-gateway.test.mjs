@@ -90,13 +90,18 @@ test('inference failure diagnostics classify provider errors without exposing ra
 });
 
 test('unexpected answer-pipeline errors retain a safe stage and failure class',()=>{
- const error=new Error('private provider body and passage text');
+ const error=new TypeError('private provider body and passage text');
+ error.stack='TypeError: private provider body and passage text\n'+
+  '    at compose (public-gateway.mjs:123:45)\n'+
+  '    at fetch (https://private.example/worker.js:9:11)';
  const details=answerPipelineFailureDiagnostics(error);
  assert.equal(details.stage,'answer-pipeline');
  assert.equal(details.providerClass,'unknown');
- assert.equal(details.providerErrorName,'Error');
+ assert.equal(details.providerErrorName,'TypeError');
+ assert.deepEqual(details.errorFrameLocations,['public-gateway.mjs:123:45','worker.js:9:11']);
  assert.equal(JSON.stringify(details).includes('private provider body'),false);
  assert.equal(JSON.stringify(details).includes('passage text'),false);
+ assert.equal(JSON.stringify(details).includes('private.example'),false);
  const known=new Error('answer-depth-repair-request-failed');
  known.diagnostics={stage:'answer-depth-repair',providerClass:'timeout',providerStatus:408};
  const knownDetails=answerPipelineFailureDiagnostics(known);

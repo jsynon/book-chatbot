@@ -1429,6 +1429,17 @@ export function answerPipelineFailureDiagnostics(error){
   const embedded=diagnosticPath(error,'diagnostics');
   const hasEmbedded=embedded!==null&&typeof embedded==='object';
   const diagnostics=hasEmbedded?{}:inferenceFailureDiagnostics(error);
+  // Unexpected runtime errors can otherwise collapse to the generic
+  // "answer-pipeline" label. Keep only source filenames and numeric locations
+  // from the stack; never log the exception message or arbitrary stack text.
+  const stack=diagnosticPath(error,'stack');
+  if(!hasEmbedded&&typeof stack==='string'){
+    const locations=stack.split(/\r?\n/).slice(1,9).flatMap(line=>{
+      const match=line.match(/(?:^|[(/])((?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:m?js|ts|wasm)):(\d+):(\d+)(?:\)|$)/);
+      return match?[match[1].split('/').pop()+':'+match[2]+':'+match[3]]:[];
+    }).slice(0,5);
+    if(locations.length)diagnostics.errorFrameLocations=locations;
+  }
   const stage=diagnosticPath(embedded,'stage');
   if(typeof stage==='string'&&/^[a-z0-9-]{1,48}$/.test(stage))
     diagnostics.stage=stage;
