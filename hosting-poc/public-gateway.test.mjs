@@ -2515,6 +2515,27 @@ test('public pilot preserves relation-audit failure codes for diagnostics',async
  assert.equal((await response.json()).failureCode,'relation-claim-audit-retry-invalid');
 });
 
+test('public pilot identifies and measures an oversized initial composition safely',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',
+     questionParts:[{part:'causes',status:'supported',evidenceIds:['S1']}],
+     evidence:[{id:'S1',point:'The source passage gives a cause.'}]
+   })}}]};
+   const answer=('The source passage explains a supported cause [S1]. ').repeat(70);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer,partChecks:[{part:'causes',status:'supported',evidenceIds:['S1']}]
+   })}}]};
+ }});
+ const response=await pilot.post({body:{question:'What causes this event?'}});
+ assert.equal(response.status,502);
+ const failure=await response.json();
+ assert.equal(failure.failureCode,'answer-initial-composition-too-long');
+ assert.equal(failure.failureStage,'initial-composition');
+ assert(failure.failureAnswerCharacters>2400);
+ assert.equal(pilot.stats().calls,2);
+});
+
 test('public pilot retries a malformed relation audit response once',async()=>{
  let calls=0;
  const pilot=await pilotScenario({model:async(_model,input)=>{
