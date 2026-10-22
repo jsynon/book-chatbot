@@ -1064,7 +1064,9 @@ test('v1.9.4 fails closed without AI binding, never accidentally opening public 
 test('an empty evidence review uses the existing composition call and still fails closed without support',async()=>{
  const fixture=await fingerprintTestFixture();
  let calls=0;
- const result=await fixture.response({aiRun:async()=>{
+ const prompts=[];
+ const result=await fixture.response({aiRun:async(_model,input)=>{
+   prompts.push(input.messages);
    calls++;
    if(calls===1)return {choices:[{finish_reason:'stop',
      message:{content:JSON.stringify({coverage:'none',missing:'Unsupported topic',
@@ -1081,6 +1083,10 @@ test('an empty evidence review uses the existing composition call and still fail
  assert.equal(data.citations.length,0);
  assert.equal(data.coverage,'none');
  assert.equal(calls,2);
+ assert.match(prompts[1][1].content,/initial evidence-selection pass selected no passages/);
+ assert.match(prompts[1][1].content,/Independently reassess every verified excerpt/);
+ assert.doesNotMatch(prompts[1][1].content,/Coverage: none/);
+ assert.doesNotMatch(prompts[1][1].content,/Missing: Unsupported topic/);
 });
 test('composition recovers relevant submitted passages after a false-negative evidence review',async()=>{
  const question='According to Thucydides, what were the underlying causes of the Peloponnesian War, and how did they differ from the immediate disputes that preceded it?';
@@ -1102,6 +1108,9 @@ test('composition recovers relevant submitted passages after a false-negative ev
   })}}],usage:{neurons:2}};
   assert.match(input.messages[1].content,/growth of the power of Athens/);
   assert.match(input.messages[1].content,/Potidaeans/);
+  assert.match(input.messages[1].content,/initial evidence-selection pass selected no passages/);
+  assert.doesNotMatch(input.messages[1].content,/Coverage: none/);
+  assert.doesNotMatch(input.messages[1].content,/Evidence map \(reviewed points\):/);
   assert.match(input.messages[0].content,/derive one to four concise requested parts/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Thucydides identifies the hidden underlying cause as “the growth of the power of Athens” and the alarm this caused in Lacedaemon [S1]. He presents that growth and fear as making war inevitable, distinguishing them from the complaints that appeared closer to the outbreak [S1]. The underlying cause is therefore the continuing shift in power and the fear it generated, rather than one isolated grievance [S1].\n\nThe immediate disputes included Athens’ orders to Potidaea, a Corinthian colony and Athenian tributary, to raze its walls, provide hostages, and dismiss Corinthian magistrates [S2]. Thucydides also notes that Athens ordered Potidaea not to receive the persons sent from Corinth annually to succeed those magistrates [S2]. These were concrete disputes preceding the war; the deeper cause was the growth of Athenian power and the alarm it inspired in Lacedaemon [S1, S2].',

@@ -1846,14 +1846,16 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'conventions. Do not treat related quantities as interchangeable; for '+
         'example, distinguish a potential function from stored field energy.'},
       {role:'user',content:
-        conversationContext(history)+'Current follow-up question:\n'+question+'\nCoverage: '+review.coverage+
-        '\nMissing: '+(review.missing||'Not identified')+
-        '\nRequested question parts (address each supported part explicitly):\n'+
-        (review.questionParts||[]).map(item=>'- '+item.part+' — '+item.status+
-          ' [evidence: '+(item.evidenceIds.join(', ')||'none')+']').join('\n')+
-        '\nEvidence map (reviewed points):\n'+
-        renderEvidenceMap()+
-        '\n\nVerified source excerpts (all submitted passages, including those not selected by the review):\n'+
+        conversationContext(history)+'Current follow-up question:\n'+question+
+        (emptyReview?
+          '\nThe initial evidence-selection pass selected no passages. That is not a finding that these submitted excerpts lack evidence. Independently reassess every verified excerpt below against the question. If an excerpt supports a requested part, answer that part and cite its source ID. Mark a part unsupported only after checking all excerpts and finding none that support it.\n':
+          '\nCoverage: '+review.coverage+'\nMissing: '+(review.missing||'Not identified')+
+          '\nRequested question parts (address each supported part explicitly):\n'+
+          (review.questionParts||[]).map(item=>'- '+item.part+' — '+item.status+
+            ' [evidence: '+(item.evidenceIds.join(', ')||'none')+']').join('\n')+
+          '\nEvidence map (reviewed points):\n'+renderEvidenceMap())+
+        '\n\nVerified source excerpts ('+(emptyReview?'all submitted passages':
+          'all submitted passages, including those not selected by the review')+'):\n'+
         sources.map(s=>'['+s.id+'] '+s.title+
           ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
     ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:1100,
