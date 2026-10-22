@@ -1332,7 +1332,7 @@ test('v1.9.4 fails closed without AI binding, never accidentally opening public 
    async()=>{throw Error('No public source reads');});
  assert.equal(publicDisabled.status,503);
 });
-test('an empty evidence review uses the existing composition call and still fails closed without support',async()=>{
+test('an empty evidence review shows a relevant verified passage without another model call',async()=>{
  const fixture=await fingerprintTestFixture();
  let calls=0;
  const prompts=[];
@@ -1351,7 +1351,9 @@ test('an empty evidence review uses the existing composition call and still fail
  assert.equal(result.status,200);
  const data=await result.json();
  assert.equal(data.outcome,'insufficient-evidence');
- assert.equal(data.citations.length,0);
+ assert.equal(data.reviewStatus,'retrieved_passages_only');
+ assert.deepEqual(data.citations.map(source=>source.id),['S1']);
+ assert.match(data.answer,/growing power created fear among competing cities/);
  assert.equal(data.coverage,'none');
  assert.equal(calls,2);
  assert.match(prompts[1][1].content,/initial evidence-selection pass selected no passages/);
@@ -1424,7 +1426,56 @@ test('empty-review recovery handles a plain-text composition without throwing',a
  assert.equal(calls,2);
  assert.equal(result.outcome,'insufficient-evidence');
  assert.equal(result.coverage,'none');
- assert.deepEqual(result.citations,[]);
+ assert.equal(result.reviewStatus,'retrieved_passages_only');
+ assert.deepEqual(result.citations.map(item=>item.id),['S1']);
+ assert.match(result.answer,/God is love/);
+});
+test('empty-review fallback surfaces only query-matched verified passages without another AI call',async()=>{
+ const cases=[
+  {
+   question:'According to Thucydides, what were the underlying causes of the Peloponnesian War, and how did they differ from the immediate disputes that preceded it?',
+   parts:['underlying causes of the Peloponnesian War','how they differed from the immediate disputes'],
+   sources:[
+    {id:'S1',bookId:'152',title:'History of the Peloponnesian War — Thucydides',page:38,
+     preview:'To the question why they broke I answer by placing first an account of their grounds of complaint and points of difference, that no one may ever have to ask the immediate cause which plunged the Hellenes into a war of such magnitude. The real cause I consider to be the one which was formally most kept out of sight: the growth of the power of Athens, and the alarm which this inspired in Lacedaemon, made war inevitable.'},
+    {id:'S2',bookId:'999',title:'An unrelated book',page:12,
+     preview:'The author considers the causes of sleep and the immediate needs of a child.'}
+   ],expected:'growth of the power of Athens'
+  },
+  {
+   question:'According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?',
+   parts:['What does “God is love” mean?','How does the passage connect God’s love with loving one another?'],
+   sources:[
+    {id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+     preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son to be the propitiation for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 No one has seen God at any time. If we love one another, God abides in us, and His love has been perfected in us.'},
+    {id:'S2',bookId:'638',title:'A commentary on an unrelated passage',page:88,
+     preview:'The note discusses the history of a manuscript and several editorial choices.'}
+   ],expected:'God is love'
+  }
+ ];
+ for(const item of cases){
+  const calls=[];
+  const ai={run:async(_model,input)=>{
+   calls.push(input);
+   if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    coverage:'none',missing:'No passages selected.',
+    questionParts:item.parts.map(part=>({part,status:'unsupported',evidenceIds:[]})),evidence:[]
+   })}}]};
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    answer:'The verified passages do not provide enough evidence to answer this question reliably.',
+    partChecks:item.parts.map(part=>({part,status:'unsupported',evidenceIds:[]})),evidence:[]
+   })}}]};
+  }};
+  const result=await composeVerifiedAnswer(item.question,item.sources,ai);
+  assert.equal(calls.length,2);
+  assert.equal(result.outcome,'insufficient-evidence');
+  assert.equal(result.coverage,'none');
+  assert.equal(result.reviewStatus,'retrieved_passages_only');
+  assert.match(result.answer,/did not produce a reliable synthesis/);
+  assert.match(result.answer,new RegExp(item.expected));
+  assert.deepEqual(result.citations.map(source=>source.id),['S1']);
+  assert.deepEqual(result.evidenceMap,[]);
+ }
 });
 test('source-linked evidence prevents a none review from entering empty-review recovery',async()=>{
  const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
