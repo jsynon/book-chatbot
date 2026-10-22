@@ -1996,16 +1996,16 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const runCompactReviewRetry=async(initialFailureReason)=>{
     let retry;
     try{retry=await ai.run(MODEL,{
-      messages:compactMessages,chat_template_kwargs:{enable_thinking:false},max_completion_tokens:760,
+      messages:compactMessages,chat_template_kwargs:{enable_thinking:false},max_completion_tokens:1200,
     });}catch(error){throw answerFailure('evidence-review-request-failed',{
-      stage:'evidence-review',finishReason:initialFinish,outputTokenLimit:760,
+      stage:'evidence-review',finishReason:initialFinish,outputTokenLimit:1200,
       sourceCount:sources.length,retried:true,
       reviewFailureReason:initialFailureReason,...inferenceFailureDiagnostics(error)});}
     const retryFinish=retry?.choices?.[0]?.finish_reason;
     if(['length','max_tokens'].includes(retryFinish))
       throw answerFailure('evidence-review-truncated',{
         stage:'evidence-review',finishReason:initialFinish,retryFinishReason:retryFinish,
-        outputTokenLimit:760,sourceCount:sources.length,retried:true,
+        outputTokenLimit:1200,sourceCount:sources.length,retried:true,
         reviewFailureReason:initialFailureReason});
     try{return {response:retry,review:parseReview(modelText(retry),sources,question)};}
     catch(error){throw answerFailure('evidence-review-invalid-response',{
@@ -2428,7 +2428,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     finalMissing=finalCoverage==='full'?'':
       questionPartMissingNote(finalQuestionParts)||finalMissing;
   }
-  answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
+  // An empty first review is not evidence that the cited draft is unsupported.
+  // Keep the provisional or partial explanation in the structured `missing`
+  // field; do not insert the reviewer’s unsupported labels into the answer.
+  if(!emptyReview)answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
   // A verified quote proves that the words occur in the indexed passage; it
   // does not prove that the answer's paraphrase or claimed relation follows
   // from those words. Relation questions get a final pass over the finished
@@ -2513,7 +2516,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         finalCoverage='partial';
         finalMissing=questionPartMissingNote(finalQuestionParts)||finalMissing;
       }
-      answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
+      if(!emptyReview)answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
     }
     answerNeurons+=Math.max(0,Number(audited?.usage?.neurons)||0);
     second=audited;
@@ -2536,7 +2539,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       finalQuestionParts.every(part=>part.status==='supported')?'full':'partial';
     finalMissing=questionPartMissingNote(finalQuestionParts)||
       'A speaker attribution could not be verified against the cited passage, so the claim was omitted.';
-    answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
+    if(!emptyReview)answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
   }
   if(answer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-final-assembly-too-long',{
     stage:'final-answer-assembly',answerCharacters:answer.length,sourceCount:sources.length,
