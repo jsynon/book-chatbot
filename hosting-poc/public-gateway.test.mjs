@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 40597)
-Total output lines: 2487
-
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
@@ -860,7 +857,766 @@ test('source probe fails closed when token binding is missing',async()=>{
  const e=env({PUBLIC_ENABLED:'false',AI:{run:async()=>{models++;}}});
  const response=await handleRequest(
    new Request(HOST+'/internal/source-probe',{method:'POST'}),
-   e,()=>{fetched++;return fetcher(...arguments);}…10597 tokens truncated…ilot endpoints without bypassing rate limits',async()=>{
+   e,()=>{fetched++;return fetcher(...arguments);}
+ );
+ assert.equal(response.status,503);
+ assert.equal(fetched,0);
+ assert.equal(models,0);
+});
+test('source probe rejects incorrect credentials before any corpus fetch',async()=>{
+ let fetched=0;
+ const e=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:'x'.repeat(40)});
+ const response=await handleRequest(
+   new Request(HOST+'/internal/source-probe',{method:'POST',headers:{Authorization:'Bearer wrong'}}),
+   e,()=>{fetched++;throw Error('No fetch should be made');}
+ );
+ assert.equal(response.status,401);
+ assert.equal(fetched,0);
+});
+test('source probe uses actual trustedSources under disabled public mode with no AI',async()=>{
+ let runs=0;
+ const token='protected-test-token-not-for-production-123456';
+ const e=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:token,
+  AI:{run:async()=>{runs++;throw Error('No AI should run');}}});
+ const response=await handleRequest(
+   new Request(HOST+'/internal/source-probe',{method:'POST',
+     headers:{Authorization:'Bearer '+token}}),
+   e,fetcher
+ );
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(result.status,'retrieved');
+ assert.equal(result.bookId,'152');
+ assert.equal(result.page,38);
+ assert.equal(result.globalPageId,0);
+ assert.equal(result.cpuTimeMs,null);
+ assert(result.sourceUrl.includes(PDF));
+ assert(result.excerptLength>30);
+ assert.equal(runs,0);
+});
+
+test('Cloudflare fetch(request,env,ctx) does not mistake ctx for a network fetcher',async()=>{
+ const saved=globalThis.fetch;
+ const token='protected-test-token-not-for-production-123456';
+ let fetched=0;
+ globalThis.fetch=(url,options)=>{
+   assert.equal(typeof url,'string');
+   fetched++;
+   return fetcher(url,options);
+ };
+ try{
+   const result=await gateway.fetch(
+     new Request(HOST+'/internal/source-probe',{method:'POST',headers:{
+       Authorization:'Bearer '+token
+     }}),
+     env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:token}),
+     {waitUntil:()=>{},passThroughOnException:()=>{}}
+   );
+   assert.equal(result.status,200);
+   assert.equal((await result.json()).page,38);
+   assert.equal(fetched,2);
+ }finally{
+   globalThis.fetch=saved;
+ }
+});
+
+test('authenticated static packet is bound to canonical cited source metadata',async()=>{
+ const saved=globalThis.fetch;
+ const packet={
+  schema:'antilogicalism-reader-packet-v1',libraryVersion:47,
+  bookId:'152',title:'History of the Peloponnesian War — Thucydides',
+  pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
+  pages:[{page:38,globalPageId:34403,
+    text:'The real cause of the conflict was increasing strength in one city and fear among the rival city leaders. The immediate disputes were different.'}]
+ };
+ const fetchPacket=async url=>{
+  assert.equal(url,'https://jsynon.github.io/antilogicalism-library-data/reader-packets-v1/books/152/1.json');
+  return new Response(JSON.stringify(packet),{status:200,headers:{'Content-Type':'application/json'}});
+ };
+ const loaded=await trustedPacketSources(question,[{bookId:'152',page:38}],fetchPacket);
+ assert.equal(loaded[0].page,38);
+ assert.equal(loaded[0].globalPageId,34403);
+ assert(loaded[0].preview.includes('real cause'));
+ assert(loaded[0].url.includes(PDF));
+ const token='protected-test-token-not-for-production-123456';
+ const response=await handleRequest(new Request(HOST+'/internal/packet-probe',
+   {method:'POST',headers:{Authorization:'Bearer '+token}}),
+   env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:token,
+     AI:{run:async()=>{throw Error('No AI allowed');}}}),fetchPacket);
+ assert.equal(response.status,200);
+ assert.equal((await response.json()).format,'static-packet-v1');
+});
+test('packet probe fails closed before any network traffic when token absent',async()=>{
+ let fetchCount=0;
+ const e=env({PUBLIC_ENABLED:'false'});
+ const response=await handleRequest(new Request(HOST+'/internal/packet-probe',
+  {method:'POST'}),e,async()=>{fetchCount++;throw Error('Must not fetch');});
+ assert.equal(response.status,503);assert.equal(fetchCount,0);
+});
+test('forged packet metadata and duplicate claimed physical pages fail closed',async()=>{
+ const original={
+  schema:'antilogicalism-reader-packet-v1',libraryVersion:47,
+  bookId:'152',title:'A Book',pdfDriveId:PDF,
+  chunk:1,firstPage:33,lastPage:64,pages:[
+   {page:38,globalPageId:34403,text:'This is the original indexed text copied into the packet. It contains historical sources.'}
+  ]
+ };
+ const mock=packet=>async()=>Response.json(packet);
+ await assert.rejects(trustedPacketSources(question,[{bookId:'152',page:38}],
+  mock({...original,pdfDriveId:'file/abc'})),/Invalid trusted packet format/);
+ await assert.rejects(trustedPacketSources(question,[{bookId:'152',page:38}],
+  mock({...original,pages:[...original.pages,...original.pages]})),/Requested page not found/);
+});
+
+
+test('native SHA-256 accepts exact UTF-8 and binds original PDF metadata',async()=>{
+ const content='The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes.';
+ const raw=new TextEncoder().encode(content);
+ const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',raw)),x=>x.toString(16).padStart(2,'0')).join('');
+ const canonical={
+   schema:'antilogicalism-reader-fingerprints-v1',hashAlgorithm:'SHA-256-utf8-exact',
+   libraryVersion:47,bookId:'152',chunk:1,firstPage:33,lastPage:64,
+   title:'Canonical History — Thucydides',pdfDriveId:PDF,
+   pages:[{page:38,globalPageId:34403,utf8Bytes:raw.byteLength,sha256:hash}]
+ };
+ const fetcher=async(url)=>{
+   assert.equal(url,'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/books/152/1.json');
+   return Response.json(canonical);
+ };
+ const sources=await verifiedFingerprintSources(question,[{bookId:'152',page:38,text:content,
+    title:'Forged Title',url:'https://attacker.example/forged.pdf'}],fetcher);
+ assert.equal(sources.length,1);
+ assert.equal(sources[0].title,canonical.title);
+ assert.equal(sources[0].globalPageId,34403);
+ assert(sources[0].url.includes(PDF));
+ assert(!sources[0].url.includes('attacker'));
+ assert(sources[0].preview.includes('real cause'));
+ await assert.rejects(verifiedFingerprintSources(question,[{
+   bookId:'152',page:38,text:content.replace('real','fake')
+ }],fetcher),/SHA-256 mismatch/);
+ await assert.rejects(verifiedFingerprintSources(question,[{
+   bookId:'152',page:38,text:content+' '
+ }],fetcher),/length mismatch/);
+});
+test('one-byte tamper is rejected before AI even when request is authenticated',async()=>{
+ const content='The original source passage is entirely different from text invented by the visitor. Its claim is grounded in this book page.';
+ const textBytes=new TextEncoder().encode(content);
+ const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',textBytes)),b=>b.toString(16).padStart(2,'0')).join('');
+ const meta={schema:'antilogicalism-reader-fingerprints-v1',hashAlgorithm:'SHA-256-utf8-exact',
+    libraryVersion:47,bookId:'152',title:'A Trusted Book',pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
+    pages:[{page:38,globalPageId:34403,utf8Bytes:textBytes.length,sha256:digest}]};
+ const url=HOST+'/internal/fingerprint-probe',secret='valid-long-local-fingerprint-test-secret-123';
+ let aiCalls=0,remoteFetches=0;
+ const environment=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:secret,AI:{run:async()=>{aiCalls++;}}});
+ const fetcher=async()=>{remoteFetches++;return Response.json(meta);};
+ const original=new Request(url,{method:'POST',headers:{
+    Origin:'http://127.0.0.1:8766',Authorization:'Bearer '+secret,
+    'Content-Type':'application/json'},
+    body:JSON.stringify({question,sources:[{bookId:'152',page:38,text:content}]})});
+ const accepted=await handleRequest(original,environment,fetcher);
+ assert.equal(accepted.status,200);
+ const acceptedData=await accepted.json();
+ assert.equal(acceptedData.status,'verified');
+ assert.equal(acceptedData.sources[0].globalPageId,34403);
+ assert.equal(accepted.headers.get('Access-Control-Allow-Origin'),'http://127.0.0.1:8766');
+ const tampered=new Request(url,{method:'POST',headers:{
+    Origin:'http://127.0.0.1:8766',Authorization:'Bearer '+secret,
+    'Content-Type':'application/json'},
+    body:JSON.stringify({question,sources:[{bookId:'152',page:38,text:content.replace('original','altered ')}]})});
+ const rejected=await handleRequest(tampered,environment,fetcher);
+ assert.equal(rejected.status,422);
+ assert.equal(aiCalls,0);
+ assert.equal(remoteFetches,2);
+});
+test('fingerprint route denies missing token and forbidden origins before fetching',async()=>{
+ let fetched=0;
+ const url=HOST+'/internal/fingerprint-probe';
+ const sent={question,sources:[{bookId:'152',page:38,text:'Original historical passage describes causes and consequences of conflict between cities.'}]};
+ const fetcher=async()=>{fetched++;throw Error('Must not fetch');};
+ const response=await handleRequest(new Request(url,{method:'POST',headers:{
+    Origin:'https://untrusted.invalid',Authorization:'Bearer test'},
+    body:JSON.stringify(sent)}),env(),fetcher);
+ assert.equal(response.status,403);
+ const absent=await handleRequest(new Request(url,{method:'POST',body:JSON.stringify(sent)}),env(),fetcher);
+ assert.equal(absent.status,503);
+ assert.equal(fetched,0);
+ const token='valid-long-local-fingerprint-test-secret-123';
+ const wrong=await handleRequest(new Request(url,{method:'POST',
+   headers:{Authorization:'Bearer not-the-secret'},body:JSON.stringify(sent)}),
+   env({SOURCE_PROBE_TOKEN:token}),fetcher);
+ assert.equal(wrong.status,401);
+ assert.equal(fetched,0);
+});
+test('fingerprint route supports local CORS preflight without touching AI',async()=>{
+ const response=await handleRequest(new Request(HOST+'/internal/fingerprint-probe',
+ {method:'OPTIONS',headers:{Origin:'http://127.0.0.1:8766'}}),
+ env({PUBLIC_ENABLED:'false'}),async()=>{throw Error('No network');});
+ assert.equal(response.status,204);
+ assert.equal(response.headers.get('Access-Control-Allow-Origin'),'http://127.0.0.1:8766');
+});
+
+
+async function fingerprintTestFixture() {
+ const text='The public disputes were over a breached agreement, whereas growing power created fear among competing cities. The deeper cause of the war was stated to be anxiety over political change.';
+ const bytes=new TextEncoder().encode(text);
+ const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),
+    b=>b.toString(16).padStart(2,'0')).join('');
+ const fingerprint={schema:'antilogicalism-reader-fingerprints-v1',
+    hashAlgorithm:'SHA-256-utf8-exact',libraryVersion:47,
+    bookId:'152',title:'History of the Peloponnesian War — Thucydides',
+    pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
+    pages:[38,39,40,41,42,43].map((page,index)=>({page,globalPageId:34403+index,
+      utf8Bytes:bytes.byteLength,sha256}))};
+ const url=HOST+'/internal/verified-answer',
+    secret='valid-private-token-for-the-verified-pilot-456';
+ const body={question:'What caused the Peloponnesian War?',
+    sources:[{bookId:'152',page:38,text}]};
+ let fetchCount=0,aiCount=0;
+ const fetcher=async requestUrl=>{
+    fetchCount++;
+    assert.equal(requestUrl,
+      'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/books/152/1.json');
+    return Response.json(fingerprint);
+ };
+ const run=async(_model,input)=>{
+    aiCount++;
+    const content=input.max_completion_tokens===520?
+       JSON.stringify({coverage:'partial',missing:'More history is not in this page',
+          evidence:[{id:'S1',point:'Relevant supported passage point.'}],followUpQuestions:[
+            'Which disputes does Thucydides identify as immediate causes?',
+            'How did Athens’ growing power affect Spartan fears?']})
+       :'The passage distinguishes an immediate dispute from fear caused by growing power [S1].';
+    return {choices:[{finish_reason:'stop',message:{content}}],
+       usage:{neurons:9}};
+ };
+ const response=async({overrideBody=body,overrideToken=secret,
+    origin='http://127.0.0.1:8766',aiRun=run,method='POST',overrideAI}={})=>{
+     const request=new Request(url,{method,headers:{
+       Origin:origin,Authorization:'Bearer '+overrideToken,
+       'Content-Type':'application/json'},
+       ...(method==='POST'?{body:JSON.stringify(overrideBody)}:{})});
+     const environment=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:secret,
+       AI:overrideAI===undefined?{run:aiRun}:overrideAI});
+     return handleRequest(request,environment,fetcher);
+ };
+ return {body,secret,response,fetcher,stats:()=>({aiCount,fetchCount}),run};
+}
+test('v1.9.4 exact v47 source generates two bounded AI stages with canonical citation',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const result=await fixture.response();
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.equal(data.verifiedPages,1);
+ assert.equal(data.citations.length,1);
+ assert.equal(data.citations[0].globalPageId,34403);
+ assert.equal(data.citations[0].page,38);
+ assert(data.citations[0].url.includes(PDF));
+ assert.equal(data.coverage,'partial');
+ assert.equal(data.reviewStatus,'claim_support_not_independently_verified');
+ assert.equal(data.usage.neurons,18);
+ assert.equal(fixture.stats().aiCount,2);
+ assert.equal(fixture.stats().fetchCount,1);
+ assert.equal(result.headers.get('Access-Control-Allow-Origin'),
+    'http://127.0.0.1:8766');
+});
+test('v1.9.4 rejects modified same-length text before any inference',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const forged={...fixture.body,sources:fixture.body.sources.map(s=>({
+   ...s,text:s.text.replace('power','xxxxx')}))};
+ const result=await fixture.response({overrideBody:forged});
+ assert.equal(result.status,422);
+ assert.equal((await result.json()).stage,'source-verification');
+ assert.equal(fixture.stats().aiCount,0);
+});
+test('v1.9.4 denies unauthorized and unapproved-origin requests before fetching or AI',async()=>{
+ const fixture=await fingerprintTestFixture();
+ assert.equal((await fixture.response({overrideToken:'wrong'})).status,401);
+ assert.equal((await fixture.response({origin:'https://evil.example'})).status,403);
+ assert.equal(fixture.stats().aiCount,0);
+ assert.equal(fixture.stats().fetchCount,0);
+});
+test('v1.9.4 fails closed without AI binding, never accidentally opening public endpoint',async()=>{
+ const fixture=await fingerprintTestFixture();
+ assert.equal((await fixture.response({overrideAI:null})).status,503);
+ assert.equal(fixture.stats().fetchCount,0);
+ const publicDisabled=await handleRequest(request(payload),
+   env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:fixture.secret}),
+   async()=>{throw Error('No public source reads');});
+ assert.equal(publicDisabled.status,503);
+});
+test('an empty evidence review uses the existing composition call and still fails closed without support',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const prompts=[];
+ const result=await fixture.response({aiRun:async(_model,input)=>{
+   prompts.push(input.messages);
+   calls++;
+   if(calls===1)return {choices:[{finish_reason:'stop',
+     message:{content:JSON.stringify({coverage:'none',missing:'Unsupported topic',
+       evidence:[]})}}],usage:{neurons:4}};
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'The retrieved passages do not address the question.',
+     partChecks:[{part:'What were the immediate and underlying causes of war?',
+       status:'unsupported',evidenceIds:[]}]
+   })}}],usage:{neurons:3}};
+ }});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'insufficient-evidence');
+ assert.equal(data.citations.length,0);
+ assert.equal(data.coverage,'none');
+ assert.equal(calls,2);
+ assert.match(prompts[1][1].content,/initial evidence-selection pass selected no passages/);
+ assert.match(prompts[1][1].content,/Independently reassess every verified excerpt/);
+ assert.doesNotMatch(prompts[1][1].content,/Coverage: none/);
+ assert.doesNotMatch(prompts[1][1].content,/Missing: Unsupported topic/);
+});
+test('composition recovers relevant submitted passages after a false-negative evidence review',async()=>{
+ const question='According to Thucydides, what were the underlying causes of the Peloponnesian War, and how did they differ from the immediate disputes that preceded it?';
+ const sources=[
+  {id:'S1',bookId:'152',title:'History of the Peloponnesian War — Thucydides',page:38,
+   preview:'The real cause I consider to be the one which was formally most kept out of sight: the growth of the power of Athens, and the alarm which this inspired in Lacedaemon, made war inevitable.'},
+  {id:'S2',bookId:'152',title:'History of the Peloponnesian War — Thucydides',page:59,
+   preview:'The Potidaeans, who inhabit the isthmus of Pallene, being a Corinthian colony, but tributary allies of Athens, were ordered to raze the wall looking towards Pallene, to give hostages, to dismiss the Corinthian magistrates, and in future not to receive the persons sent from Corinth annually to succeed them.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No selected passage was found.',
+   questionParts:[
+    {part:'underlying cause of the war',status:'unsupported',evidenceIds:[]},
+    {part:'immediate disputes and how they differ from the underlying cause',status:'unsupported',evidenceIds:[]}
+   ],evidence:[]
+  })}}],usage:{neurons:2}};
+  assert.match(input.messages[1].content,/growth of the power of Athens/);
+  assert.match(input.messages[1].content,/Potidaeans/);
+  assert.match(input.messages[1].content,/initial evidence-selection pass selected no passages/);
+  assert.doesNotMatch(input.messages[1].content,/Coverage: none/);
+  assert.doesNotMatch(input.messages[1].content,/Evidence map \(reviewed points\):/);
+  assert.match(input.messages[0].content,/derive one to four concise requested parts/);
+  assert.match(input.messages[0].content,/first evidence reviewer selected no passages/);
+  assert.doesNotMatch(input.messages[0].content,/questionParts checklist/);
+  assert.doesNotMatch(input.messages[0].content,/organize the answer around the evidence map/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Thucydides identifies the hidden underlying cause as “the growth of the power of Athens” and the alarm this caused in Lacedaemon [S1]. He presents that growth and fear as making war inevitable, distinguishing them from the complaints that appeared closer to the outbreak [S1]. The underlying cause is therefore the continuing shift in power and the fear it generated, rather than one isolated grievance [S1].\n\nThe immediate disputes included Athens’ orders to Potidaea, a Corinthian colony and Athenian tributary, to raze its walls, provide hostages, and dismiss Corinthian magistrates [S2]. Thucydides also notes that Athens ordered Potidaea not to receive the persons sent from Corinth annually to succeed those magistrates [S2]. These were concrete disputes preceding the war; the deeper cause was the growth of Athenian power and the alarm it inspired in Lacedaemon [S1, S2].',
+   partChecks:[
+    {part:'underlying cause of the war',status:'supported',evidenceIds:['S1']},
+    {part:'immediate disputes and how they differ from the underlying cause',status:'supported',evidenceIds:['S1','S2']}
+   ]
+  })}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,2);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
+ assert.match(result.answer,/growth of Athenian power/);
+});
+test('empty-review recovery uses the primary parallel-edition passage for a scoped Bible question',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const sources=[
+  {id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+   preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'},
+  {id:'S2',bookId:'638',title:'The New Oxford Annotated Bible — commentary',page:1821,
+   preview:'4. 7–21: God’s love as the basis of salvation. 7–9: Believers are to imitate the love God has shown in sending the Son to give life. 10–12: God’s love has been shown in the death of Jesus. It is the basis of the love command.'}
+ ];
+ const prompts=[];let call=0;
+ const ai={run:async(_model,input)=>{
+  prompts.push(input);call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No evidence selected',questionParts:[
+    {part:'meaning of God is love',status:'unsupported',evidenceIds:[]},
+    {part:'connection between God’s love and loving one another',status:'unsupported',evidenceIds:[]}
+   ],evidence:[]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'The passage describes God’s love as shown in sending the Son so that people might live through him [S1]. It says love originates in God and that one who loves is born of God and knows God [S1]. The passage connects this prior love to the command that believers should love one another; it also describes God as abiding in those who do so [S1]. The Oxford note summarizes the same connection as God’s love being the basis of the love command [S2].',
+   partChecks:[
+    {part:'meaning of God is love',status:'supported',evidenceIds:['S1']},
+    {part:'connection between God’s love and loving one another',status:'supported',evidenceIds:['S1','S2']}
+   ],
+   evidence:[
+    {id:'S1',point:'The passage says love is of God and describes God sending the Son so people might live through him.',quote:'love is of God; and everyone who loves is born of God',speaker:'The letter',qualifier:''},
+    {id:'S2',point:'The Oxford Annotated note identifies God’s love as the basis of the love command.',speaker:'1 John 4:9',qualifier:''},
+    {id:'S9',point:'This unknown ID must not enter the recovered evidence map.'}
+   ]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(call,2);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.deepEqual(result.evidenceMap.map(item=>item.id),['S1','S2']);
+ assert.deepEqual(result.evidenceMap.map(item=>[item.id,item.quoteVerified]),[['S1',true],['S2',false]]);
+ assert.equal('speaker' in result.evidenceMap[1],false);
+ assert.match(prompts[1].messages[0].content,/first evidence reviewer selected no passages/);
+ assert.match(prompts[1].messages[0].content,/identify an editorial note explicitly/);
+ assert.match(prompts[1].messages[0].content,/evidence array/);
+ assert.doesNotMatch(prompts[1].messages[0].content,/questionParts checklist/);
+});
+test('v1.9.4 bad or absent model citations never leave the server as an answer',async()=>{
+ for(const fabricated of ['The answer is clear [S9].',
+   'The answer is clear [S1, S9] [S1].',
+   'An unsupported claim without a source.']){
+   const fixture=await fingerprintTestFixture();
+   let calls=0;
+   const result=await fixture.response({aiRun:async()=>{
+      calls++;return {choices:[{finish_reason:'stop',message:{content:calls===1?
+         JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):fabricated}}],
+         usage:{neurons:4}};
+   }});
+   assert.equal(result.status,502);
+   const data=await result.json();
+   assert.equal(data.stage,'ai-answer');
+   assert.equal(data.answer,undefined);
+   assert.equal(calls,2);
+ }
+});
+test('v1.14 rejects an unsupported quotation after one bounded repair attempt',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const result=await fixture.response({aiRun:async()=>{
+   calls++;
+   const content=calls===1?
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
+     'The passage calls it “the atoning sacrifice because we obey his commandments and do for my sins” [S1].';
+   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
+ }});
+ assert.equal(result.status,502);
+ const data=await result.json();
+ assert.equal(data.stage,'ai-answer');
+ assert.equal(data.answer,undefined);
+ assert.equal(calls,3);
+});
+test('v1.14 repairs an unsupported quotation with a source-grounded paraphrase',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const prompts=[];
+ const result=await fixture.response({aiRun:async(_model,input)=>{
+   calls++;prompts.push(input.messages);
+   const content=calls===1?
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
+     calls===2?
+       'The passage calls it “the atoning sacrifice because we obey his commandments and do for my sins” [S1].':
+       'The passage describes a truce dispute and concern about growing power [S1].';
+   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
+ }});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.equal(data.answer,'The passage describes a truce dispute and concern about growing power [S1].');
+ assert.equal(calls,3);
+ assert.match(prompts[2][0].content,/use no quotation marks anywhere/i);
+});
+test('v1.12 accepts a source-verbatim quotation with normalized punctuation',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const result=await fixture.response({aiRun:async()=>{
+   calls++;
+   const content=calls===1?
+     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
+     'The excerpt says “growing power created fear among competing cities.” [S1].';
+   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
+ }});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.match(data.answer,/growing power created fear/);
+ assert.equal(calls,2);
+});
+test('v1.13 carries an explicit verse-range scope into review and composition prompts',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const question='According to 1 John 4:7–12, what does “God is love” mean?';
+ const prompts=[];
+ const result=await fixture.response({
+   overrideBody:{...fixture.body,question},
+   aiRun:async(_model,input)=>{
+     prompts.push(input.messages);
+     const content=input.max_completion_tokens===520?
+       JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
+       'The verified passage connects divine love with loving one another [S1].';
+     return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
+   }
+ });
+ assert.equal(result.status,200);
+ assert.equal(prompts.length,2);
+ const reviewSystem=prompts[0][0].content.toLowerCase();
+ const answerSystem=prompts[1][0].content.toLowerCase();
+ assert.match(reviewSystem,/explicit textual scope/);
+ assert.match(reviewSystem,/a parallel edition of the same work and passage is in scope/);
+ assert.match(reviewSystem,/verse range/);
+ assert.match(answerSystem,/honor any explicit work, chapter, verse, section, or page range/);
+ assert.match(answerSystem,/adjacent chapter/);
+ assert(prompts[0][1].content.includes(question));
+ assert(prompts[1][1].content.includes(question));
+});
+test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
+ const fixture=await fingerprintTestFixture();
+ const response=await fixture.response({method:'OPTIONS'});
+ assert.equal(response.status,204);
+ assert.equal(response.headers.get('Access-Control-Allow-Origin'),
+   'http://127.0.0.1:8766');
+ assert.equal(fixture.stats().aiCount,0);
+});
+
+
+const pilotBaseEnv={
+ PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
+ TURNSTILE_SITE_KEY:'0x4AAAAAA-test-public-pilot',
+ TURNSTILE_SECRET:'a-long-private-turnstile-test-secret',
+ AI_RATE_LIMITER:{limit:async()=>({success:true})},
+ GLOBAL_RATE_LIMITER:{limit:async()=>({success:true})},
+};
+async function pilotScenario({config={},model,turnstileValid=true}={}) {
+ const fixture=await fingerprintTestFixture();
+ let calls=0,verifyCalls=0,limitCalls=0;
+ const visitorKeys=[],globalKeys=[];
+ const validFetcher=async(url,init)=>{
+   if(String(url).includes('siteverify')){
+      verifyCalls++;
+      const params=new URLSearchParams(init.body);
+      return Response.json({success:turnstileValid&&params.get('response')==='one-time-challenge',
+          hostname:'jsynon.github.io',action:'companion_ask'});
+   }
+   return fixture.fetcher(url,init);
+ };
+ const ai={run:async(...args)=>{calls++;return (model||fixture.run)(...args);}};
+ const environment=env({...pilotBaseEnv, ...config,
+   AI:ai,
+   AI_RATE_LIMITER:{limit:async({key})=>{limitCalls++;visitorKeys.push(key);return {success:true}}},
+   GLOBAL_RATE_LIMITER:{limit:async({key})=>{limitCalls++;globalKeys.push(key);return {success:true}}},
+ });
+ const post=async({body={},origin='https://jsynon.github.io',ip='198.51.100.42',headers={}}={})=>{
+   const merged={...fixture.body,turnstileToken:'one-time-challenge',...body};
+   const request=new Request(HOST+'/api/pilot-answer',{method:'POST',
+      headers:{Origin:origin,'Content-Type':'application/json',
+        'CF-Connecting-IP':ip,...headers},
+      body:JSON.stringify(merged)});
+   return handleRequest(request,environment,validFetcher);
+ };
+ const plan=async({question='What causes this event?',origin='https://jsynon.github.io',ip='198.51.100.42',headers={}}={})=>{
+   const request=new Request(HOST+'/api/pilot-plan',{method:'POST',
+     headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':ip,...headers},
+     body:JSON.stringify({question,bookId:'',turnstileToken:'one-time-challenge'})});
+   return handleRequest(request,environment,validFetcher);
+ };
+ return {post,plan,environment,fixture,fetcher:validFetcher,
+   stats:()=>({calls,verifyCalls,limitCalls,visitorKeys:[...visitorKeys],globalKeys:[...globalKeys]})};
+}
+test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every guard exists',async()=>{
+ const off=await handleRequest(new Request(HOST+'/api/pilot-status',{
+   headers:{Origin:'https://jsynon.github.io'}
+ }),env({PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'false'}));
+ assert.equal(off.status,200);
+ assert.equal((await off.json()).enabled,false);
+ const on=await pilotScenario();
+ const good=await handleRequest(new Request(HOST+'/api/pilot-status',{
+   headers:{Origin:'https://jsynon.github.io'}
+ }),on.environment);
+ const details=await good.json();
+ assert.equal(details.enabled,true);
+ assert.equal(details.bookId,'152');
+ assert.equal(details.firstPage,33);
+ assert.equal(details.lastPage,64);
+ assert.equal(PILOT_BOOK_IDS.length,642);
+ assert(!PILOT_BOOK_IDS.includes('1'));
+ assert(!PILOT_BOOK_IDS.includes('628'));
+ assert.equal(PILOT_BOOKS['2'],'Fragments — Anaxagoras');
+ assert.equal(details.scope,'full-public-catalog');
+ assert.deepEqual(details.pilotBookIds,PILOT_BOOK_IDS);
+ assert(['7','114','152','529','102'].every(id=>PILOT_BOOK_IDS.includes(id)));
+ assert.equal(PILOT_BOOKS['102'],'A Brief History of Time — Stephen Hawking');
+ assert.equal(details.turnstileSiteKey,pilotBaseEnv.TURNSTILE_SITE_KEY);
+ assert.equal(JSON.stringify(details).includes(pilotBaseEnv.TURNSTILE_SECRET),false);
+});
+test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
+ const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
+ assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
+  workerSourceBuild:'public-gateway-evidence-selection-v3',
+  workerVersionId:metadata.id,workerVersionTag:metadata.tag,
+  workerVersionTimestamp:metadata.timestamp
+ });
+ assert.equal(workerVersionDiagnostics({}).workerVersionId,null);
+ const plannerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata},
+  model:async()=>({choices:[{finish_reason:'stop',message:{content:
+   '{"queries":["specific first event cause","distinct second event cause"]}'}}]})});
+ const planned=await plannerPilot.plan();
+ const planData=await planned.json();
+ assert.equal(planned.status,200);
+ assert.equal(planData.workerVersionId,metadata.id);
+ assert.equal(planData.workerVersionTag,metadata.tag);
+ assert.equal(planData.workerSourceBuild,'public-gateway-evidence-selection-v3');
+ const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
+ const answered=await answerPilot.post();
+ const answerData=await answered.json();
+ assert.equal(answered.status,200);
+ assert.equal(answerData.workerVersionId,metadata.id);
+ assert.equal(answerData.workerVersionTimestamp,metadata.timestamp);
+});
+test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounded AI',async()=>{
+ const pilot=await pilotScenario();
+ const result=await pilot.post();
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.equal(data.pilot,true);
+ assert.equal(data.evidenceHighlights.length,1);
+ assert.equal(data.evidenceHighlights[0].source_id,'S1');
+ assert(data.evidenceHighlights[0].quote.includes('growing power'));
+ // The selected page does not name Thucydides' immediate-dispute list or
+ // Athens/Sparta specifically, so the reviewer must not surface those prompts.
+ assert.deepEqual(data.followUpQuestions,[]);
+ assert.equal(data.verifiedPages,1);
+ assert.equal(data.citations[0].page,38);
+ assert.equal(data.citations[0].globalPageId,34403);
+ assert.equal(pilot.stats().limitCalls,2);
+ assert.equal(pilot.stats().verifyCalls,1);
+ assert.equal(pilot.stats().calls,2);
+});
+test('public evidence highlights follow a source-verified claim anchor',async()=>{
+ const anchor='The deeper cause of the war was stated to be anxiety over political change.';
+ const prompts=[];
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   prompts.push(input.messages);
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',evidence:[{id:'S1',
+       point:'The underlying cause was anxiety over political change.',quote:anchor,
+       speaker:'Thucydides',qualifier:'was stated to be'}]
+   })}}]};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'Thucydides identifies anxiety over political change as the deeper cause [S1].'}}]};
+ }});
+ const response=await pilot.post();
+ assert.equal(response.status,200);
+ const data=await response.json();
+ assert.equal(data.evidenceMap[0].quoteVerified,true);
+ assert.equal(data.evidenceMap[0].anchorQuote,anchor);
+ assert.equal(data.evidenceHighlights[0].quote,anchor);
+ assert.match(prompts[1][1].content,/speaker: Thucydides/);
+ assert.match(prompts[1][1].content,/qualifier: was stated to be/);
+ assert.match(prompts[1][1].content,/verified quote and sentence context/);
+});
+test('public pilot verifies and submits six source candidates to the bounded answer stage',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520){
+     const submitted=input.messages.at(-1).content;
+     assert.match(submitted,/\[S6\].*physical PDF page 43/);
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+       coverage:'full',missing:'',evidence:[{id:'S6',point:'Relevant supported passage point.'}]})}}]};
+   }
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The verified passage supports this explanation [S6].'}}]};
+ }});
+ const six=pilot.fixture.body.sources[0];
+ const result=await pilot.post({body:{sources:[38,39,40,41,42,43].map(page=>({...six,page}))}});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.verifiedPages,6);
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.deepEqual(data.citations.map(source=>({id:source.id,page:source.page,
+   globalPageId:source.globalPageId})),[{id:'S6',page:43,globalPageId:34408}]);
+ assert.equal(data.citations[0].url,'https://drive.google.com/file/d/'+PDF+'/view?usp=sharing#page=43');
+ assert.equal(pilot.stats().verifyCalls,1);
+ assert.equal(pilot.stats().calls,2);
+});
+test('public pilot selects and synthesizes six complementary pages from one book',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520){
+     const submitted=input.messages.at(-1).content;
+     for(let i=1;i<=6;i++)assert.match(submitted,new RegExp('\\[S'+i+'\\].*physical PDF page '+(37+i)));
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+       coverage:'full',missing:'',evidence:[
+        {id:'S1',point:'First distinct supported point.'},{id:'S2',point:'Second distinct supported point.'},
+        {id:'S3',point:'Third distinct supported point.'},{id:'S4',point:'Fourth distinct supported point.'},
+        {id:'S5',point:'Fifth distinct supported point.'},{id:'S6',point:'Sixth distinct supported point.'}
+       ]
+     })}}]};
+   }
+   assert.equal(input.max_completion_tokens,1100);
+   const answer=input.messages.at(-1).content;
+   for(let i=1;i<=6;i++)assert(answer.includes('[S'+i+']'));
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The six passages provide distinct parts of the explanation [S1] [S2] [S3] [S4] [S5] [S6].'}}]};
+ }});
+ const source=pilot.fixture.body.sources[0];
+ const response=await pilot.post({body:{sources:[38,39,40,41,42,43].map(page=>({...source,page}))}});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(result.verifiedPages,6);
+ assert.deepEqual(result.citations.map(item=>item.id),['S1','S2','S3','S4','S5','S6']);
+ assert.deepEqual(result.citations.map(item=>item.page),[38,39,40,41,42,43]);
+});
+test('public pilot resolves grouped citation IDs and rejects unknown IDs in a group',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520)
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+       coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S3',point:'Relevant supported passage point.'}]})}}]};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The passages support this claim [S1, S3].'}}]};
+ }});
+ const source=pilot.fixture.body.sources[0];
+ const result=await pilot.post({body:{sources:[38,39,40].map(page=>({...source,page}))}});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.deepEqual(data.citations.map(item=>item.id),['S1','S3']);
+ assert.deepEqual(data.evidenceHighlights.map(item=>item.source_id),['S1','S3']);
+
+ const invalid=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520)
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+       coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]})}}]};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The passages support this claim [S1, S9] [S1].'}}]};
+ }});
+ const rejected=await invalid.post();
+ assert.equal(rejected.status,502);
+ assert.equal((await rejected.json()).failureCode,'answer-citations-invalid');
+});
+test('v1.9.5 public pilot rejects unknown book/page, tampered text, and bad Turnstile',async()=>{
+ const pilot=await pilotScenario();
+ const source=pilot.fixture.body.sources[0];
+ const unsupported=await pilot.post({body:{sources:[{...source,bookId:'800'}]}});
+ assert.equal(unsupported.status,400);
+ assert.equal(pilot.stats().calls,0);
+ const corrupted=await pilot.post({body:{sources:[{...source,text:source.text.replace('power','xxxxx')}] }});
+ assert.equal(corrupted.status,422);
+ assert.equal(pilot.stats().calls,0);
+ const invalid=await pilotScenario({turnstileValid:false});
+ assert.equal((await invalid.post()).status,403);
+ assert.equal(invalid.stats().calls,0);
+ assert.equal(invalid.fixture.stats().fetchCount,0);
+});
+test('v1.9.5 refuses public AI without configuration, approved Origin, limits or AI',async()=>{
+ const off=await pilotScenario({config:{PUBLIC_PILOT_ENABLED:'false'}});
+ assert.equal((await off.post()).status,503);
+ assert.equal(off.stats().calls,0);
+ const badOrigin=await pilotScenario();
+ assert.equal((await badOrigin.post({origin:'https://evil.invalid'})).status,403);
+ assert.equal(badOrigin.stats().calls,0);
+ const noLimit=await pilotScenario({config:{}});
+ noLimit.environment.AI_RATE_LIMITER=null;
+ assert.equal((await noLimit.post()).status,503);
+ assert.equal(noLimit.stats().calls,0);
+ const publicRoute=await handleRequest(request(payload),env({
+   PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
+ }),async()=>{throw Error('No public legacy source fetch')});
+ assert.equal(publicRoute.status,503);
+});
+test('v1.9.5 blocks requests before model when pilot rate limiter rejects',async()=>{
+ const pilot=await pilotScenario();
+ pilot.environment.AI_RATE_LIMITER={limit:async()=>({success:false})};
+ const response=await pilot.post();
+ assert.equal(response.status,429);
+ assert.equal((await response.json()).failureCode,'rate-limited');
+ assert.equal(pilot.stats().calls,0);
+ assert.equal(pilot.stats().verifyCalls,0);
+ assert.equal(pilot.fixture.stats().fetchCount,0);
+});
+test('opt-in evaluation bearer reaches real pilot endpoints without bypassing rate limits',async()=>{
  const token='evaluation-only-secret-'.repeat(3);
  const model=async(_model,input)=>({choices:[{finish_reason:'stop',message:{content:
    input.max_completion_tokens===210?' {"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}':
