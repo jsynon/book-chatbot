@@ -284,7 +284,7 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
    ]
   })}}]};
   return {choices:[{finish_reason:'stop',message:{content:
-   'In 1 John 4:7–12, love comes from God: those who love are born of God and know God, while the one who does not love does not know God [S1]. The passage shows God’s love in sending the Son so that we may live through him, and says that God loved us first [S1]. Because God loved us in this way, we ought to love one another; when we do, God abides in us and His love is perfected in us [S1].'}}]};
+   'In 1 John 4:7–12, “God is love” is linked to the claim that love comes from God: those who love are born of God and know God, while the one who does not love does not know God [S1]. The passage illustrates this claim through God’s act of sending the Son so that people might live through him [S1]. It adds that love began with God’s action toward humanity, not with humanity loving God first [S1]. This makes the phrase more than an abstract description: the passage explains it through what God does and the life that action makes possible [S1].\n\nThat prior act grounds the obligation to love one another: “if God so loved us,” believers “also ought to love one another” [S1]. The passage then describes a consequence of mutual love: God abides in those who love one another [S1]. It concludes that God’s love is perfected in them, connecting their conduct with the continuing presence of divine love [S1]. In this way, the passage moves from God’s initiating love, to the community’s response, to the sign of God’s presence among them [S1].'}}]};
  }};
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(call,2);
@@ -294,6 +294,9 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
  assert.match(inputs[0].messages[1].content,/12 No one has seen God/);
  assert.match(inputs[0].messages[1].content,/10 In this is love/);
  assert.match(inputs[0].messages[1].content,/atoning sacrifice for our sins/);
+ assert.match(inputs[1].messages[0].content,/when at least three distinct points support exactly two requested parts, write exactly two paragraphs, one for each part/);
+ assert.match(inputs[1].messages[0].content,/with three to five complete sentences in each paragraph and usually 150–220 words overall/);
+ assert.match(inputs[1].messages[0].content,/This is the exception to the general instruction not to force one item per paragraph/);
  assert.doesNotMatch(inputs[0].messages[1].content,/Christians are reminded that their obligation/);
  assert.doesNotMatch(inputs[0].messages[1].content,/truth and action/);
  assert.doesNotMatch(inputs[0].messages[1].content,/will reassure our hearts before him/);
@@ -302,6 +305,8 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
  assert.doesNotMatch(inputs[0].messages[1].content,/21 And this commandment/);
  assert.doesNotMatch(inputs[0].messages[1].content,/brotherly love itself/);
  assert.doesNotMatch(result.answer,/brother must love|abides in God/);
+ assert.equal(result.answer.split('\n\n').length,2);
+ assert(result.answer.split('\n\n').every(paragraph=>(paragraph.match(/[.!?](?:\s|$)/g)||[]).length>=3));
 });
 test('evidence review can select a supported point when it cannot safely copy an exact quote',async()=>{
  const question='How does Darwin explain natural selection?';
@@ -351,7 +356,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/normally have three to five complete sentences/);
  assert.match(inputs[1].messages[0].content,/When exactly two distinct question parts are supported/);
  assert.match(inputs[1].messages[0].content,/aim for about 150–220 words overall when the passages support that depth, but continue when distinct evidence-supported qualifications, examples, or implications add value/);
- assert.match(inputs[1].messages[0].content,/when at least three support the answer, aim for about 150–220 words, even for a narrowly framed question/);
+ assert.match(inputs[1].messages[0].content,/when at least three distinct points support exactly two requested parts, write exactly two paragraphs/);
  assert.doesNotMatch(inputs[1].messages[0].content,/For a narrow factual question, stay brief/);
  assert.match(inputs[1].messages[0].content,/exactly three developed, connected paragraphs/);
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
