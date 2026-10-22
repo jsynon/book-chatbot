@@ -1611,33 +1611,67 @@ export function removeConflictingSpeakerAttributions(answer,evidenceMap) {
     speakersBySource.set(item.id,speakers);
   }
   if(!speakersBySource.size)return {answer:String(answer||''),conflicts:[]};
+  const speakerSourceIds=new Map();
+  for(const [sourceId,speakers] of speakersBySource){
+    for(const speaker of speakers){
+      const key=speaker.toLocaleLowerCase();
+      const ids=speakerSourceIds.get(key)||new Set();
+      ids.add(sourceId);
+      speakerSourceIds.set(key,ids);
+    }
+  }
+  const speakerNames=[...speakerSourceIds.keys()];
+  const attributionVerb='(?:says|states|argues|claims|believes|maintains|writes|reports|observes|concludes|suggests|posits|justifies|describes|characterizes|explains|concedes|contends|asserts|proposes|holds|qualifies|acknowledges)';
+  const speakerNamePattern=speakerNames.map(name=>({
+    key:name,
+    pattern:new RegExp(`(?<![\\p{L}])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?![\\p{L}])`,'iu'),
+    subjectPattern:new RegExp(`^\\s*(?:according\\s+to\\s+)?${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?=\\b|[,;:])`,'iu'),
+    prefixedAttribution:new RegExp(`^\\s*(?:according\\s+to\\s+|as\\s+(?:stated|argued|reported|described)\\s+by\\s+)${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?=\\b|[,;:])`,'iu'),
+    attributionPattern:new RegExp(`(?<![\\p{L}])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:['’]s)?\\b[^.!?]{0,90}\\b${attributionVerb}\\b`,'iu')
+  }));
   const conflicts=[];
   const paragraphs=String(answer||'').split(/\n\s*\n/);
   const cleaned=paragraphs.map(paragraph=>{
     // Keep paragraph structure while assessing one cited sentence at a time.
     const sentences=paragraph.split(/(?<=[.!?])\s+(?=[A-Z“"'])/u);
+    let priorSpeaker=null;
     return sentences.filter(sentence=>{
       const citationIds=[...new Set([...sentence.matchAll(/\[([^\]]+)\]/g)]
         .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]))];
+      const namedSpeakers=speakerNamePattern.filter(item=>item.pattern.test(sentence));
+      const prefixedAttribution=namedSpeakers.find(item=>item.prefixedAttribution.test(sentence));
+      let attributedSpeakers=prefixedAttribution?[prefixedAttribution]:
+        namedSpeakers.filter(item=>item.attributionPattern.test(sentence));
+      // A short follow-up such as “He argues…” inherits the named subject from
+      // the preceding sentence. Track only clear sentence-leading speaker
+      // references to avoid guessing across unrelated prose.
+      const pronounAttribution=/^\s*(?:he|she|they)\s+\b(?:says|states|argues|claims|believes|maintains|writes|reports|observes|concludes|suggests|posits|justifies|describes|characterizes|explains|concedes|contends|asserts|proposes|holds)\b/i.test(sentence);
+      if(pronounAttribution&&priorSpeaker&&!attributedSpeakers.some(item=>item.key===priorSpeaker)){
+        attributedSpeakers=[...attributedSpeakers,{key:priorSpeaker}];
+      }
+      const representedSpeakers=new Set(attributedSpeakers.map(item=>item.key));
+      const subjectSpeaker=namedSpeakers.find(item=>
+        item.subjectPattern.test(sentence)||item.attributionPattern.test(sentence));
+      if(subjectSpeaker)priorSpeaker=subjectSpeaker.key;
+      else if(!(pronounAttribution&&priorSpeaker)&&namedSpeakers.length===1)priorSpeaker=namedSpeakers[0].key;
+      else if(namedSpeakers.length>1)priorSpeaker=null;
       if(!citationIds.length)return true;
-      for(const [sourceId,speakers] of speakersBySource){
-        for(const speaker of speakers){
-          const escaped=speaker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-          const explicitAttribution=new RegExp(
-            `(?:\\baccording\\s+to\\s+|\\bas\\s+(?:stated|argued|reported|described)\\s+by\\s+)${escaped}(?=\\b|[,;:])|\\b${escaped}\\s+(?:says|states|argues|claims|believes|maintains|writes|reports|observes|concludes|suggests)\\b`,
-            'i');
-          if(!explicitAttribution.test(sentence))continue;
-          const conflictingIds=citationIds.filter(id=>{
-            const citedSpeakers=speakersBySource.get(id);
-            return id!==sourceId&&citedSpeakers&&
-              ![...citedSpeakers].some(value=>value.toLocaleLowerCase()===speaker.toLocaleLowerCase());
-          });
-          if(conflictingIds.length){
-            conflicts.push({sentence:sentence.trim(),speaker,
-              attributedSourceId:sourceId,sourceIds:conflictingIds});
-            return false;
-          }
-        }
+      const citedSpeakerKeys=new Set(citationIds.flatMap(id=>
+        [...(speakersBySource.get(id)||[])].map(speaker=>speaker.toLocaleLowerCase())));
+      if(representedSpeakers.size===0&&namedSpeakers.length===1)representedSpeakers.add(namedSpeakers[0].key);
+      if(representedSpeakers.size===0||!citedSpeakerKeys.size)return true;
+      const conflictingKeys=[...citedSpeakerKeys].filter(key=>!representedSpeakers.has(key));
+      if(!conflictingKeys.length)return true;
+      const attributedKey=[...representedSpeakers][0];
+      const attributedSourceId=[...(speakerSourceIds.get(attributedKey)||[])].find(id=>citationIds.includes(id))||
+        [...(speakerSourceIds.get(attributedKey)||[])][0];
+      const sourceIds=citationIds.filter(id=>[...(speakersBySource.get(id)||[])].some(speaker=>
+        conflictingKeys.includes(speaker.toLocaleLowerCase())));
+      if(attributedSourceId&&sourceIds.length){
+        const speaker=[...speakersBySource.get(attributedSourceId)]
+          .find(value=>value.toLocaleLowerCase()===attributedKey);
+        conflicts.push({sentence:sentence.trim(),speaker,attributedSourceId,sourceIds});
+        return false;
       }
       return true;
     }).join(' ').trim();

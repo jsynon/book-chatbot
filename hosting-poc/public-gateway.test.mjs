@@ -611,6 +611,31 @@ test('omits an explicitly attributed claim that cites a conflicting verified spe
  assert.match(result.answer,/Porfiry separately reports/);
  assert.match(result.answer,/Raskolnikov’s own quoted line/);
 });
+test('carries a clear speaker into a pronoun-led claim and rejects a second speaker citation',()=>{
+ const answer='Raskolnikov justifies his actions through a theory that distinguishes ordinary and extraordinary people [S1]. He posits that extraordinary men have an unrestricted right to commit crimes [S1, S4]. According to Porfiry, that was an exaggerated summary of the article [S4].';
+ const evidenceMap=[
+  {id:'S1',point:'Raskolnikov qualifies the theory and describes a limited inner right.',
+   quoteVerified:true,speaker:'Raskolnikov'},
+  {id:'S4',point:'Porfiry says his earlier summary exaggerated the theory.',
+   quoteVerified:true,speaker:'Porfiry'}
+ ];
+ const result=removeConflictingSpeakerAttributions(answer,evidenceMap);
+ assert.equal(result.conflicts.length,1);
+ assert.equal(result.conflicts[0].speaker,'Raskolnikov');
+ assert.deepEqual(result.conflicts[0].sourceIds,['S4']);
+ assert.doesNotMatch(result.answer,/unrestricted right/i);
+ assert.match(result.answer,/According to Porfiry/);
+});
+test('keeps a sentence that explicitly distinguishes both cited speakers',()=>{
+ const answer='Raskolnikov qualifies the idea, while Porfiry acknowledges that his summary exaggerated it [S1, S4].';
+ const evidenceMap=[
+  {id:'S1',point:'Raskolnikov qualifies the theory.',quoteVerified:true,speaker:'Raskolnikov'},
+  {id:'S4',point:'Porfiry acknowledges his summary was exaggerated.',quoteVerified:true,speaker:'Porfiry'}
+ ];
+ const result=removeConflictingSpeakerAttributions(answer,evidenceMap);
+ assert.deepEqual(result.conflicts,[]);
+ assert.equal(result.answer,answer);
+});
 test('speaker attribution guard downgrades the affected answer part without another model call',async()=>{
  const question='How does Mara describe the proposal, and what does Elias say about her account?';
  const sources=[
