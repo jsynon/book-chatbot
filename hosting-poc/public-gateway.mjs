@@ -2849,7 +2849,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       console.error('Reader pilot answer failed',{failureCode,...diagnostics});
       return reply({error:'AI answer or citations unavailable; please try again later',
         failureCode:publicFailureCode||failureCode,
-        failureStage:diagnostics.stage,\n        ...(diagnostics.providerClass!=='unknown'?\n          {failureProviderClass:diagnostics.providerClass}:{}),
+        failureStage:diagnostics.stage,
+        ...(diagnostics.providerClass!=='unknown'?
+          {failureProviderClass:diagnostics.providerClass}:{}),
         ...(Number.isSafeInteger(diagnostics.answerCharacters)?
           {failureAnswerCharacters:diagnostics.answerCharacters}:{}),
         ...(typeof diagnostics.reviewFailureReason==='string'?
