@@ -1288,6 +1288,49 @@ test('composition recovers relevant submitted passages after a false-negative ev
  assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
  assert.match(result.answer,/growth of Athenian power/);
 });
+test('source-linked evidence prevents a none review from entering empty-review recovery',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const source={id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+  preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'};
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No requested part is supported.',
+   questionParts:[
+    {part:'What does “God is love” mean?',status:'unsupported',evidenceIds:[]},
+    {part:'How does the passage connect God’s love with loving one another?',status:'unsupported',evidenceIds:[]}
+   ],
+   evidence:[
+    {id:'S1',point:'Love originates in God, and those who love are born of God and know God.',quote:'love is of God; and everyone who loves is born of God and knows God.'},
+    {id:'S1',point:'God manifested love by sending the Son so people might live through him.',quote:'God has sent His only begotten Son into the world, that we might live through Him.'},
+    {id:'S1',point:'God loved humanity first and sent the Son for sins.',quote:'not that we loved God, but that He loved us and sent His Son for our sins.'},
+    {id:'S1',point:'Because God loved humanity, believers ought to love one another.',quote:'Beloved, if God so loved us, we also ought to love one another.'},
+    {id:'S1',point:'When believers love one another, God abides in them and love is perfected.',quote:'If we love one another, God abides in us, and His love has been perfected in us.'}
+   ]
+  })}}]};
+  assert.match(input.messages[1].content,/Evidence map \(reviewed points\):/);
+  assert.match(input.messages[1].content,/Coverage: partial/);
+  assert.doesNotMatch(input.messages[1].content,/initial evidence-selection pass selected no passages/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'The passage says love originates in God, so those who love are born of God and know God [S1]. It explains “God is love” through God’s action: sending the Son so people might live, and sending him for their sins [S1]. It then connects God’s prior love with the obligation to love one another [S1]. The passage adds that when believers love one another, God abides in them and divine love is perfected in them [S1].',
+   partChecks:[
+    {part:'What does “God is love” mean?',status:'supported',evidenceIds:['S1']},
+    {part:'How does the passage connect God’s love with loving one another?',status:'supported',evidenceIds:['S1']}
+   ],
+   evidence:[{id:'S1',point:'The passage grounds the command to love one another in God’s prior love.',quote:'if God so loved us, we also ought to love one another.'}]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,[source],ai);
+ assert.equal(calls.length,2);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.reviewStatus,'claim_support_not_independently_verified');
+ assert.deepEqual(result.citations.map(item=>item.id),['S1']);
+ assert.deepEqual(result.questionParts.map(item=>item.status),['supported','supported']);
+ assert.equal(result.evidenceMap.length,5);
+});
+
 test('empty-review recovery uses the primary parallel-edition passage for a scoped Bible question',async()=>{
  const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another? Also, what does the Oxford Annotated Bible commentary say about this passage?';
  const sources=[
