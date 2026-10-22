@@ -68,6 +68,23 @@ test('process-focused planning requires source-level actions as well as topic la
  assert.match(systemPrompt,/source-level descriptions of what people or things do over abstract labels alone/i);
  assert.match(systemPrompt,/repeated actions or doing just acts/i);
 });
+test('cause-versus-trigger planning seeks concrete incidents instead of abstract labels',async()=>{
+ let systemPrompt='';
+ await planSearchQueries(
+  'What caused the conflict, and how did its underlying cause differ from the immediate disputes?', '', {
+   run:async(_model,options)=>{
+    systemPrompt=options.messages[0].content;
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
+     'underlying cause and structural conflict','specific events actors actions precipitating the conflict'
+    ]})}}]};
+   }
+  }
+ );
+ assert.match(systemPrompt,/distinguishes an underlying or structural cause from/i);
+ assert.match(systemPrompt,/concrete incidents that brought the conflict about/i);
+ assert.match(systemPrompt,/do not rely only on abstract labels/i);
+ assert.match(systemPrompt,/search query as retrieval leads, never as evidence/i);
+});
 test('definition questions preserve the exact phrase instead of broad planner paraphrases',async()=>{
  let systemPrompt='';
  const answer=await planSearchQueries('What does “God is love” mean?','',{
