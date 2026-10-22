@@ -1960,9 +1960,13 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'relate; aim for about 150–220 words overall when the passages support that '+
         'depth, but continue when distinct evidence-supported qualifications, '+
         'examples, or implications add value. Set depth by the distinct relevant evidence '+
-        'points: when at least three support the answer, aim for about 150–220 words, even '+
-        'for a narrowly framed question; when fewer points support it or evidence is thin, '+
-        'stay concise. Do not '+
+        'points: when at least three distinct points support exactly two requested parts, '+
+        'write exactly two paragraphs, one for each part, with three to five complete '+
+        'sentences in each paragraph and usually 150–220 words overall. Each sentence must '+
+        'add a different evidence-supported detail, reason, qualification, example, or '+
+        'carefully labeled inference; cite it where it appears. This is the exception to '+
+        'the general instruction not to force one item per paragraph. When fewer points '+
+        'support the answer or evidence is thin, stay concise. Do not '+
         'pad or repeat material just to reach a word target. Use plain text only: no Markdown, headings, asterisks, or bullet markers in the answer field. '+
         'For a narrow factual question, stay concise when evidence is limited; when several '+
         'distinct supported points explain the answer, develop those points. For a broad question '+
