@@ -335,6 +335,8 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/normally have three to five complete sentences/);
  assert.match(inputs[1].messages[0].content,/When exactly two distinct question parts are supported/);
  assert.match(inputs[1].messages[0].content,/aim for about 150–220 words overall when the passages support that depth, but continue when distinct evidence-supported qualifications, examples, or implications add value/);
+ assert.match(inputs[1].messages[0].content,/when at least three support the answer, aim for about 150–220 words, even for a narrowly framed question/);
+ assert.doesNotMatch(inputs[1].messages[0].content,/For a narrow factual question, stay brief/);
  assert.match(inputs[1].messages[0].content,/exactly three developed, connected paragraphs/);
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
  assert.match(inputs[1].messages[0].content,/usually about 150–220 words/);
@@ -342,7 +344,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/You may also use reliable general knowledge/);
  assert.match(inputs[1].messages[0].content,/Clearly mark this material with wording such as/);
  assert.match(inputs[1].messages[0].content,/never attach a book citation to outside context/);
- assert.match(inputs[1].messages[0].content,/about 120–200 words when the evidence supports that depth/);
+ assert.match(inputs[1].messages[0].content,/When at least three distinct relevant evidence-map points support the answer, develop them in about 120–200 words, even if the question is narrowly framed/);
  assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides of a comparison or causal account/);
  assert.match(inputs[1].messages[0].content,/do not present two passages from one author as two independent perspectives/);
  assert.match(inputs[1].messages[0].content,/Avoid repetition, padding, and adjacent topics/);
