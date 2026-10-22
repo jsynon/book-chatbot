@@ -2399,6 +2399,12 @@ function applyExplicitBibleVerseScope(question,sources){
     if(!markers.length){
       continue;
     }
+    const verseNumbers=markers.map(marker=>Number(marker[1]));
+    if(verseNumbers.some((verse,index)=>index>0&&verse<=verseNumbers[index-1])){
+      // Two-column OCR can interleave adjacent passages (for example 18, 7,
+      // 19, 8). Verse-number clipping cannot separate those lines reliably.
+      continue;
+    }
     const inRange=[];
     for(let i=0;i<markers.length;i++){
       const marker=markers[i],verse=Number(marker[1]);

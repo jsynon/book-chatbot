@@ -248,7 +248,9 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
   {id:'S5',bookId:'638',title:'The New Oxford Annotated Bible, Fully Revised Fifth Edition — edited by Michael D. Coogan',page:1817,
    preview:'Christians are reminded that their obligation to love one another is grounded in God’s nature as love (4.7–12).'},
   {id:'S6',bookId:'638',title:'The New Oxford Annotated Bible, Fully Revised Fifth Edition — edited by Michael D. Coogan',page:1821,
-   preview:'…10 In this is love, not that we loved God, but that he loved us and sent his Son to be the atoning sacrifice for our sins. 11 Beloved, since God loved us, we also ought to love one another.'}
+   preview:'…10 In this is love, not that we loved God, but that he loved us and sent his Son to be the atoning sacrifice for our sins. 11 Beloved, since God loved us, we also ought to love one another.'},
+  {id:'S7',bookId:'638',title:'The New Oxford Annotated Bible, Fully Revised Fifth Edition — edited by Michael D. Coogan',page:1821,
+   preview:'1 JOHN 4\n18 Little children, let us love, not in word or speech, but in truth and action.\n 7 Beloved, let us love one another, because love is from God.\n19 And by this we will know that we are from the truth and will reassure our hearts before him.\n 8 Whoever does not love does not know God, for God is love.\n20 Whenever our hearts condemn us; for God is greater than our hearts.'}
  ];
  const inputs=[];let call=0;
  const ai={run:async(_model,input)=>{
@@ -277,6 +279,8 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
  assert.match(inputs[0].messages[1].content,/10 In this is love/);
  assert.match(inputs[0].messages[1].content,/atoning sacrifice for our sins/);
  assert.doesNotMatch(inputs[0].messages[1].content,/Christians are reminded that their obligation/);
+ assert.doesNotMatch(inputs[0].messages[1].content,/truth and action/);
+ assert.doesNotMatch(inputs[0].messages[1].content,/will reassure our hearts before him/);
  assert.doesNotMatch(inputs[0].messages[1].content,/13 By this we know/);
  assert.doesNotMatch(inputs[0].messages[1].content,/16 And we have known/);
  assert.doesNotMatch(inputs[0].messages[1].content,/21 And this commandment/);
