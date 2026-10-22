@@ -1259,8 +1259,12 @@ export function parseReview(raw,sources,question='') {
       normalizedSource.includes(normalizedQuote);
     const anchorQuote=quoteVerified?
       completeEvidenceAnchor(source.preview,suppliedQuote):'';
-    const speaker=value&&typeof value==='object'&&typeof value.speaker==='string'?
-      value.speaker.trim().slice(0,80):'';
+    // A model's speaker label is only a review summary until an exact quote
+    // anchors that point in this same source. Do not let an unverified
+    // summary become authoritative metadata in the evidence map or later
+    // answer prompts.
+    const speaker=quoteVerified&&value&&typeof value==='object'&&
+      typeof value.speaker==='string'?value.speaker.trim().slice(0,80):'';
     const suppliedQualifier=value&&typeof value==='object'&&typeof value.qualifier==='string'?
       value.qualifier.trim().slice(0,180):'';
     const normalizedQualifier=normalizedEvidenceQuote(suppliedQualifier);
@@ -1436,7 +1440,8 @@ function parseComposedEvidenceMap(values,sources,answer,partChecks) {
       normalizedSource.includes(normalizedQuote);
     const anchorQuote=quoteVerified?
       completeEvidenceAnchor(source.preview,suppliedQuote):'';
-    const speaker=typeof value.speaker==='string'?value.speaker.trim().slice(0,80):'';
+    const speaker=quoteVerified&&typeof value.speaker==='string'?
+      value.speaker.trim().slice(0,80):'';
     const suppliedQualifier=typeof value.qualifier==='string'?
       value.qualifier.trim().slice(0,180):'';
     const normalizedQualifier=normalizedEvidenceQuote(suppliedQualifier);
@@ -1694,7 +1699,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'components, select those pages; prefer distinct useful pages over '+
       'repeated or overlapping excerpts. Do not select extra pages just to meet '+
       'a count. '+
-      'For every evidence point, include an exact quote copied from that same excerpt as quote (12–220 characters, preserving its wording), identify its visible speaker in speaker (use “unknown” when unclear), and copy any condition, limitation, exception, or qualification that changes the claim into qualifier (use an empty string if none). Evidence selection depends on relevance and support in the passage, not on whether you can provide a quote, speaker, or qualifier: if a passage directly supports a useful point but you cannot confidently copy an exact quote, still select it and provide the accurate point, with quote set to an empty string. Do not mark coverage none solely because an exact quote or qualifier is unavailable. The Worker will verify any supplied quote before displaying it. For conditional claims, keep the condition and its consequence together by quoting enough of the sentence to include both; never quote only the consequence. Do not supply a quote from a neighboring passage or use a paraphrase as a quote. When one speaker reports or distorts another person’s position, keep the reporting speaker and the other person’s reply or correction distinct. When a passage explicitly calls a reported account exaggerated, distorted, or inaccurate, or immediately gives the named person’s rejection or correction, record that reply as a separate evidence point; do not let the reported account stand alone as the person’s view. '+
+      'For every evidence point, include an exact quote copied from that same excerpt as quote (12–220 characters, preserving its wording), identify its visible speaker in speaker (use “unknown” when unclear), and copy any condition, limitation, exception, or qualification that changes the claim into qualifier (use an empty string if none). Evidence selection depends on relevance and support in the passage, not on whether you can provide a quote, speaker, or qualifier: if a passage directly supports a useful point but you cannot confidently copy an exact quote, still select it and provide the accurate point, with quote set to an empty string. Do not mark coverage none solely because an exact quote or qualifier is unavailable. The Worker will verify any supplied quote before displaying it; speaker metadata from a point without a verified quote will not be carried forward, so use an exact quote whenever attribution matters. For conditional claims, keep the condition and its consequence together by quoting enough of the sentence to include both; never quote only the consequence. Do not supply a quote from a neighboring passage or use a paraphrase as a quote. When one speaker reports or distorts another person’s position, keep the reporting speaker and the other person’s reply or correction distinct. When a passage explicitly calls a reported account exaggerated, distorted, or inaccurate, or immediately gives the named person’s rejection or correction, record that reply as a separate evidence point; do not let the reported account stand alone as the person’s view. '+
       'When the question asks how two ideas differ, identify the source’s actual differentiating criterion for each requested contrast. Do not substitute a nearby property of one idea for the explicit reason the passage says they differ. Anchor that criterion in the quote when the excerpt states it directly. '+
       'For concept or comparison questions, make the evidence map include the '+
       'definition and the passage’s stated reason, operation, or criterion for '+
