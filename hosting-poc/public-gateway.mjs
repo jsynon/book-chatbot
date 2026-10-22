@@ -1742,16 +1742,12 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       first=retried.response;review=retried.review;
     }
   }
-  // A model listing a source while declaring no coverage is not sufficient
-  // to permit composition. We do not silently override this decision.
+  // A no-evidence review can be a false negative even when retrieved excerpts
+  // directly address the question. Let the already-budgeted answer call inspect
+  // every submitted excerpt and independently decide whether any part is
+  // answerable; this does not add an inference request to the normal pipeline.
   const reviewNeurons=retryNeurons+Math.max(0,Number(first?.usage?.neurons)||0);
-  if(review.coverage==='none'||review.selected.length===0)
-    return {outcome:'insufficient-evidence',answer:
-      'The verified passage does not provide enough evidence to answer this question reliably.',
-      coverage:review.coverage,missing:review.missing,citations:[],evidenceMap:review.evidenceMap,
-      reviewStatus:'no_selected_sources',followUpQuestions:[],
-      usage:{neurons:reviewNeurons,reviewNeurons,answerNeurons:0},model:MODEL,
-      notice:'Book-page provenance was verified; AI claim entailment was not assessed.'};
+  const emptyReview=review.coverage==='none'||review.selected.length===0;
   const selected=review.selected;
   const renderEvidenceMap=()=> (review.evidenceMap||[]).map(item=>{
     const details=[item.speaker?'speaker: '+item.speaker:'',
@@ -1789,7 +1785,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Do not turn “the text has nothing to say about X” into a claim about what the author believed about X. Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”; do not remove them when paraphrasing a negated or limited claim, because that can reverse its meaning. Never complete a dangling clause or infer the words after an ellipsis or “except”; state that the excerpt is incomplete when that matters. '+
         'Do not invent facts, quotations, page numbers or sources. For questions about a relation between named concepts, every cited claim must support that particular relation; a passage about one concept or a different conflict does not establish it. Preserve conditional and counterfactual statements as hypotheticals; do not infer actual-world conditions from an imagined alternative alone. For every conditional claim, state its condition and consequence together; never detach a consequence from its “if,” “unless,” “only if,” or equivalent condition. Keep the complete verified quote and sentence context together when using it; do not reduce a conditional sentence to its consequence. Keep reported claims, replies, and corrections attributed to their actual speakers. If the text explicitly calls a reported account exaggerated, distorted, or inaccurate, or records the named person’s rejection or correction, include that qualification when relevant to the question and do not present the report as the person’s unqualified view. Check the verified speaker, qualifier, and passage anchor in the evidence map. An evidence point without an exact verified passage anchor is only a review summary: verify it directly against the excerpt before relying on it, and state uncertainty if the excerpt does not establish it. When asked to explain a distinction, state the passage’s actual differentiating criterion, not a related fact that leaves the requested distinction unexplained. '+
         'Before writing, inspect EVERY verified excerpt, including any passage the evidence review did not select or marked partial/unsupported. The review checklist can miss a relevant passage. If an excerpt directly addresses a requested part, explain what it establishes and cite it; never say the passages contain no information about that part when they do. '+ 
-        'Return one compact JSON object with keys answer and partChecks. partChecks must contain exactly one object for every requested question-part label, copying each label exactly, with status (supported|partial|unsupported) and evidenceIds. Mark a part supported only when the answer explicitly explains it using the cited excerpt; mark it partial when the excerpt supports only part of the requested explanation; mark unsupported only when no verified excerpt supports it. For a requested comparison across separately named works, each cited excerpt need only establish its own side; when the answer accurately attributes and cites both supported sides, it may synthesize the comparison without claiming either author made it. Mark the comparison supported when both requested sides are explicitly explained. For a distinction directly stated in an excerpt, an accurate paraphrase of that distinction is sufficient; do not mark it partial just because the answer adds no further example. Use only valid source IDs. Check that every supported part is actually explained in the answer before returning. '+ 
+        'Return one compact JSON object with keys answer and partChecks. partChecks must contain exactly one object for every requested question-part label, copying each label exactly, with status (supported|partial|unsupported) and evidenceIds. If the evidence review supplied no question-part labels because it found no selected evidence, derive one to four concise requested parts from the question and assess each against every verified excerpt. Mark a part supported only when the answer explicitly explains it using the cited excerpt; mark it partial when the excerpt supports only part of the requested explanation; mark unsupported only when no verified excerpt supports it. For a requested comparison across separately named works, each cited excerpt need only establish its own side; when the answer accurately attributes and cites both supported sides, it may synthesize the comparison without claiming either author made it. Mark the comparison supported when both requested sides are explicitly explained. For a distinction directly stated in an excerpt, an accurate paraphrase of that distinction is sufficient; do not mark it partial just because the answer adds no further example. Use only valid source IDs. Check that every supported part is actually explained in the answer before returning. '+ 
         'Paraphrase by default. Use quotation marks only for an exact phrase copied '+ 
         'from a verified excerpt; never use them for emphasis or invented wording. '+ 
         'Put [S1], [S2], etc. immediately after statements supported by those '+ 
@@ -1871,6 +1867,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   if(answer.length>2400)throw answerFailure('answer-composition-too-long');
   let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
   let finalQuestionParts=review.questionParts||[];
+  if(emptyReview&&!finalQuestionParts.length&&composed.structured)
+    finalQuestionParts=composed.partChecks;
   let finalCoverage=review.coverage;
   let finalMissing=review.missing;
   if(finalQuestionParts.length){
@@ -1888,7 +1886,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       /\b(?:compare|comparison|contrast|differ|difference|different|versus|vs\.)\b/i.test(question);
     // Recover a named work that was submitted but omitted by evidence selection.
     const missingRequestedSourceGroup=hasUncitedRequestedSourceGroup(sourceGroups,sources,answer);
-    const needsPartRepair=missingRequestedSourceGroup||finalQuestionParts.some((part,index)=>{
+    const needsPartRepair=!emptyReview&&(missingRequestedSourceGroup||finalQuestionParts.some((part,index)=>{
       if(authorEvidenceGap(part,question,sources))return true;
       const hasSupportedEvidenceForEveryGroup=comparisonRequested&&
         sourceGroups.every(group=>finalQuestionParts.some(other=>other!==part&&
@@ -1904,7 +1902,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         (part.status==='unsupported'&&(sourceMentionsPart(part.part,sources)||
           hasUnassignedReviewedEvidence||
           (isComparisonPart&&hasSupportedEvidenceForEveryGroup)));
-    });
+    }));
     if(needsPartRepair){
       let repairedParts;
       try{repairedParts=await ai.run(MODEL,{
@@ -2109,6 +2107,15 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     finalCoverage='partial';
     finalMissing=questionPartMissingNote(finalQuestionParts)||finalMissing;
   }
+  if(emptyReview){
+    const answerableParts=finalQuestionParts.filter(part=>
+      (part.status==='supported'||part.status==='partial')&&part.evidenceIds.length);
+    finalCoverage=!answerableParts.length?'none':
+      answerableParts.length===finalQuestionParts.length&&
+      finalQuestionParts.every(part=>part.status==='supported')?'full':'partial';
+    finalMissing=finalCoverage==='full'?'':
+      questionPartMissingNote(finalQuestionParts)||finalMissing;
+  }
   answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
   // A verified quote proves that the words occur in the indexed passage; it
   // does not prove that the answer's paraphrase or claimed relation follows
@@ -2208,6 +2215,15 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const known=new Set(sources.map(s=>s.id));
   // Do not return an apparently sourced answer with fabricated or missing
   // citations. Note that valid IDs alone do NOT validate factual support.
+  if(emptyReview&&(!cited.length||!finalQuestionParts.some(part=>
+    (part.status==='supported'||part.status==='partial')&&part.evidenceIds.length)))
+    return {outcome:'insufficient-evidence',answer:
+      'The verified passages do not provide enough evidence to answer this question reliably.',
+      coverage:'none',missing:finalMissing||review.missing,citations:[],
+      evidenceMap:review.evidenceMap,questionParts:finalQuestionParts,
+      reviewStatus:'no_selected_sources',followUpQuestions:[],
+      usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},model:MODEL,
+      notice:'Book-page provenance was verified; AI claim entailment was not assessed.'};
   if(cited.length===0)throw answerFailure('answer-citations-missing');
   if(cited.some(id=>!known.has(id)))throw answerFailure('answer-citations-invalid');
   const citations=sources.filter(s=>cited.includes(s.id));
