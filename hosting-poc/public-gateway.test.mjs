@@ -334,7 +334,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/For a distinction directly stated in an excerpt/);
  assert.match(inputs[1].messages[0].content,/normally have three to five complete sentences/);
  assert.match(inputs[1].messages[0].content,/When exactly two distinct question parts are supported/);
- assert.match(inputs[1].messages[0].content,/aim for about 120–180 words overall when the passages support that depth/);
+ assert.match(inputs[1].messages[0].content,/aim for about 150–220 words overall when the passages support that depth/);
  assert.match(inputs[1].messages[0].content,/exactly three developed, connected paragraphs/);
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
  assert.match(inputs[1].messages[0].content,/usually about 150–220 words/);
