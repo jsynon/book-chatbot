@@ -1566,6 +1566,25 @@ function reconcileQuestionParts(questionParts,partChecks,answer) {
   });
 }
 
+function reconcileEmptyReviewQuestionParts(questionParts,partChecks,answer,evidenceMap) {
+  const reconciled=reconcileQuestionParts(questionParts,partChecks,answer);
+  const checks=new Map(partChecks.map(item=>[normalizedPartLabel(item.part),item]));
+  const citedIds=new Set([...String(answer||'').matchAll(/\[([^\]]+)\]/g)]
+    .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
+  const quotedIds=new Set(evidenceMap.filter(item=>item.quoteVerified)
+    .map(item=>item.id));
+  return reconciled.map(part=>{
+    if(part.status!=='unsupported')return part;
+    const check=checks.get(normalizedPartLabel(part.part));
+    if(!check)return part;
+    // Empty-review recovery can return an unsupported label alongside a
+    // cited source and a point whose exact quote is verified in that source.
+    // Preserve this contradictory evidence as partial coverage so the answer
+    // can be shown with its citation and an explicit limitation.
+    const evidenceIds=check.evidenceIds.filter(id=>citedIds.has(id)&&quotedIds.has(id));
+    return evidenceIds.length?{...part,status:'partial',evidenceIds}:part;
+  });
+}
 function isComparisonQuestionPart(label){
   return /\b(?:compare|comparison|contrast|differ|difference|different|distinguish)\b/i.test(String(label||''));
 }
@@ -1991,7 +2010,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     // Keep the bounded coverage repair available when the answer model returns
     // usable prose but malformed or missing structured part checks.
     if(composed.structured){
-      finalQuestionParts=reconcileQuestionParts(finalQuestionParts,composed.partChecks,answer);
+      finalQuestionParts=emptyReview?
+        reconcileEmptyReviewQuestionParts(finalQuestionParts,composed.partChecks,answer,
+          composed.evidenceMap):
+        reconcileQuestionParts(finalQuestionParts,composed.partChecks,answer);
       finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
       finalQuestionParts=enforceAuthorEvidenceByQuestionPart(finalQuestionParts,question,sources);
     }
