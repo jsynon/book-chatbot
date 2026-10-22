@@ -1753,6 +1753,24 @@ export function removeUnqualifiedCorrectedClaims(answer,evidenceMap,sources) {
       noticeIds.unshift(item.id);
     else noticeIds.push(item.id);
   }
+  // A correction often falls at the end of one scanned page while the
+  // reported version begins on the next. Carry that correction across the
+  // page break only when both excerpts are from the same book, adjacent,
+  // marked as dialogue, and the answer cites both excerpts.
+  const answerCitationIds=new Set([...String(answer||'').matchAll(/\[([^\]]+)\]/g)]
+    .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
+  const directlyCorrectedIds=[...flaggedIds].filter(id=>answerCitationIds.has(id));
+  for(const item of evidenceMap||[]){
+    if(!item?.speakerUnverified||flaggedIds.has(item.id))continue;
+    const source=sourceById.get(item.id);
+    if(!source||!Number.isInteger(source.page))continue;
+    const adjacentCorrection=directlyCorrectedIds.some(id=>{
+      const corrected=sourceById.get(id);
+      return corrected&&String(corrected.bookId)===String(source.bookId)&&
+        Number.isInteger(corrected.page)&&Math.abs(corrected.page-source.page)===1;
+    });
+    if(adjacentCorrection)flaggedIds.add(item.id);
+  }
   if(!flaggedIds.size)return {answer:String(answer||''),conflicts:[]};
   const conflicts=[];
   const caveat=/\b(?:reported|report|summary|distort(?:ed|ion)|exaggerat(?:ed|ion)|misrepresent(?:ed|ation)|misstate(?:d)?|qualif(?:y|ies|ied|ication)|correct(?:s|ed|ion)|not quite|not exactly|unqualified|uncertain|unclear)\b/i;
@@ -1833,6 +1851,13 @@ function promoteSupportedCrossWorkSynthesis(questionParts,question,answer,source
       [...supportedSideIds].slice(0,4);
     return {...part,status:'supported',evidenceIds};
   });
+}
+function removeStaleQuestionPartNotice(answer,questionParts){
+  if(!questionParts.length||questionParts.some(part=>part.status!=='supported'))
+    return String(answer||'');
+  return String(answer||'').split(/\n\s*\n/).filter(paragraph=>
+    !/^The available passages do not fully address:/i.test(paragraph.trim()))
+    .join('\n\n').trim();
 }
 
 function normalizedEvidenceQuote(text) {
@@ -2222,6 +2247,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
           composed.evidenceMap):
         reconcileQuestionParts(finalQuestionParts,composed.partChecks,answer);
       finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
+      answer=removeStaleQuestionPartNotice(answer,finalQuestionParts);
       finalQuestionParts=enforceAuthorEvidenceByQuestionPart(finalQuestionParts,question,sources);
     }
     const mappedEvidenceIds=new Set((review.evidenceMap||[]).map(item=>item.id));
@@ -2277,6 +2303,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         finalQuestionParts=reconcileQuestionParts(review.questionParts,
           repairedDraft.partChecks,answer);
       finalQuestionParts=promoteSupportedCrossWorkSynthesis(finalQuestionParts,question,answer,sources);
+      answer=removeStaleQuestionPartNotice(answer,finalQuestionParts);
       finalQuestionParts=enforceAuthorEvidenceByQuestionPart(finalQuestionParts,question,sources);
     }
     if(finalQuestionParts.length){
@@ -2447,7 +2474,17 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   // supported label never survives an explicit prose-level evidence gap.
   finalQuestionParts=finalQuestionParts.map(part=>
     answerContradictsSupportedPart(part,answer)?{...part,status:'partial'}:part);
+  // Reconcile once more after all optional prose repairs: those revisions can
+  // retain a stale partial label even when the final answer and cited side
+  // evidence support a reader-level comparison.
+  finalQuestionParts=promoteSupportedCrossWorkSynthesis(
+    finalQuestionParts,question,answer,sources);
   finalQuestionParts=enforceAuthorEvidenceByQuestionPart(finalQuestionParts,question,sources);
+  if(finalQuestionParts.length&&finalQuestionParts.every(part=>part.status==='supported')){
+    answer=removeStaleQuestionPartNotice(answer,finalQuestionParts);
+    finalCoverage='full';
+    finalMissing='';
+  }
   if(finalQuestionParts.some(part=>part.status!=='supported')){
     finalCoverage='partial';
     finalMissing=questionPartMissingNote(finalQuestionParts)||finalMissing;

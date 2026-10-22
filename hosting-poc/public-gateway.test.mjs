@@ -1084,6 +1084,23 @@ test('recognizes the Dostoevsky excerpt correction written as “wasn’t quite 
  assert.match(result.answer,/marks this reported account as distorted or corrected/i);
 });
 
+test('carries a dialogue correction across adjacent cited pages in the same book',()=>{
+ const sources=[
+  {id:'S1',bookId:'114',page:465,preview:'Porfiry says extraordinary men have a right to commit any crime because they are extraordinary. Raskolnikov replies that this is not quite his contention.'},
+  {id:'S2',bookId:'114',page:464,preview:'Porfiry says the account is an exaggerated and intentional distortion of Raskolnikov’s idea.'}
+ ];
+ const evidence=[
+  {id:'S1',point:'A dialogue passage gives Porfiry’s reported summary.',speakerUnverified:true},
+  {id:'S2',point:'The surrounding dialogue identifies Porfiry’s summary as distorted.',speakerUnverified:true}
+ ];
+ const answer='Extraordinary people have a right to commit any crime simply because they are extraordinary [S1]. The excerpt marks this reported account as an exaggerated distortion [S2].';
+ const result=removeUnqualifiedCorrectedClaims(answer,evidence,sources);
+ assert.equal(result.conflicts.length,1);
+ assert.match(result.conflicts[0].sourceIds.join(','),/S1/);
+ assert.doesNotMatch(result.answer,/Extraordinary people have a right to commit any crime/);
+ assert.match(result.answer,/marks this reported account as distorted or corrected/i);
+});
+
 test('evidence-focused highlights choose the cited point instead of a topical opening',()=>{
  const text='Bees and ants live sociably one with another. '+
   'Background about their appetites and natural agreement. '.repeat(5)+
@@ -2638,7 +2655,7 @@ test('recognizes a cited reader synthesis when coverage calls the comparison uns
    preview:'Common power keeps people in awe so they may observe justice and the laws of nature.'}
  ];
  let calls=0;
- const answer='Aristotle describes political science as pursuing human good and happiness [S1]. The same passage connects that study with virtue of the soul and with making citizens good and obedient to laws [S1]. This presents political inquiry through the end it should serve and the kind of civic character it should cultivate [S1]. The passage gives human flourishing a central place in describing the aim of political science [S1].\n\nHobbes gives common power a different role: it keeps people in awe so that justice and the laws of nature can be observed [S2]. In this account, public authority supplies the condition that helps people follow those rules in practice [S2]. The passage says that without common power, justice and natural law would not be reliably observed [S2]. Hobbes therefore explains political order through the force that sustains public obedience [S2].\n\nThe accounts differ in what they emphasize: Aristotle connects political order with human good and civic formation, whereas Hobbes emphasizes common power as the condition that sustains justice [S1, S2]. This is a reader-level comparison of the two supplied passages, not a claim that either author directly compared his view with the other [S1, S2]. Their respective passages support the contrast between a human good that guides political inquiry and an authority that maintains order [S1, S2]. The comparison follows from those distinct emphases and remains limited to the excerpts supplied here [S1, S2].';
+ const answer='Aristotle describes political science as pursuing human good and happiness [S1]. The same passage connects that study with virtue of the soul and with making citizens good and obedient to laws [S1]. This presents political inquiry through the end it should serve and the kind of civic character it should cultivate [S1]. The passage gives human flourishing a central place in describing the aim of political science [S1].\n\nHobbes gives common power a different role: it keeps people in awe so that justice and the laws of nature can be observed [S2]. In this account, public authority supplies the condition that helps people follow those rules in practice [S2]. The passage says that without common power, justice and natural law would not be reliably observed [S2]. Hobbes therefore explains political order through the force that sustains public obedience [S2].\n\nThe accounts differ in what they emphasize: Aristotle connects political order with human good and civic formation, whereas Hobbes emphasizes common power as the condition that sustains justice [S1, S2]. This is a reader-level comparison of the two supplied passages, not a claim that either author directly compared his view with the other [S1, S2]. Their respective passages support the contrast between a human good that guides political inquiry and an authority that maintains order [S1, S2]. The comparison follows from those distinct emphases and remains limited to the excerpts supplied here [S1, S2].\n\nThe available passages do not fully address: How the accounts differ (partially supported).';
  const ai={run:async(_model,input)=>{
   calls++;
   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
