@@ -1204,7 +1204,7 @@ test('empty-review recovery uses the primary parallel-edition passage for a scop
   {id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
    preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'},
   {id:'S2',bookId:'638',title:'The New Oxford Annotated Bible — commentary',page:1821,
-   preview:'4. 7–21: God’s love as the basis of salvation. 7–9: Believers are to imitate the love God has shown in sending the Son to give life. 10–12: God’s love is the basis of the love command.'}
+   preview:'4. 7–21: God’s love as the basis of salvation. 7–9: Believers are to imitate the love God has shown in sending the Son to give life. 10–12: God’s love has been shown in the death of Jesus. It is the basis of the love command.'}
  ];
  const prompts=[];let call=0;
  const ai={run:async(_model,input)=>{
@@ -1220,6 +1220,11 @@ test('empty-review recovery uses the primary parallel-edition passage for a scop
    partChecks:[
     {part:'meaning of God is love',status:'supported',evidenceIds:['S1']},
     {part:'connection between God’s love and loving one another',status:'supported',evidenceIds:['S1','S2']}
+   ],
+   evidence:[
+    {id:'S1',point:'The passage says love is of God and describes God sending the Son so people might live through him.',quote:'love is of God; and everyone who loves is born of God',speaker:'The letter',qualifier:''},
+    {id:'S2',point:'The Oxford Annotated note identifies God’s love as the basis of the love command.',quote:'It is the basis of the love command',speaker:'Oxford Annotated Bible note',qualifier:''},
+    {id:'S9',point:'This unknown ID must not enter the recovered evidence map.'}
    ]
   })}}]};
  }};
@@ -1228,7 +1233,11 @@ test('empty-review recovery uses the primary parallel-edition passage for a scop
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.deepEqual(result.evidenceMap.map(item=>item.id),['S1','S2']);
+ assert.deepEqual(result.evidenceMap.map(item=>[item.id,item.quoteVerified]),[['S1',true],['S2',true]]);
  assert.match(prompts[1].messages[0].content,/first evidence reviewer selected no passages/);
+ assert.match(prompts[1].messages[0].content,/identify an editorial note explicitly/);
+ assert.match(prompts[1].messages[0].content,/evidence array/);
  assert.doesNotMatch(prompts[1].messages[0].content,/questionParts checklist/);
 });
 test('v1.9.4 bad or absent model citations never leave the server as an answer',async()=>{
