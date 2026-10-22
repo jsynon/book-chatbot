@@ -1886,7 +1886,11 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'do not attribute the synthesis to either author. Explain other '+
         'connections cautiously and do not restate the '+ 
         'same point in multiple sentences. Avoid a book-by-book list of disconnected '+
-        'observations. Use plain text only: no Markdown, headings, asterisks, or bullet markers in the answer field. '+
+        'observations. When exactly two distinct question parts are supported, explain each part '+
+        'with enough detail to show how the evidence answers it and how the parts '+
+        'relate; aim for about 150–220 words overall when the passages support that '+
+        'depth. Keep narrow factual answers brief when evidence is thin, and do not '+
+        'pad or repeat material just to reach a word target. Use plain text only: no Markdown, headings, asterisks, or bullet markers in the answer field. '+
         'For a narrow factual question, '+
         'stay brief. For a broad question with at least three distinct selected passages that support different aspects, '+
         'give a connected synthesis in two or three paragraphs, usually about 150–220 words. Explain the passages’ different contributions and then state what they jointly suggest. Keep it shorter when the evidence is thinner; do not pad or repeat. When distinct selected passages support different points, '+
