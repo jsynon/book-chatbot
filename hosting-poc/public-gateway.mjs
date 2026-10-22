@@ -2902,6 +2902,11 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'a substitute for the requested passage. '+
         'For theory-versus-observation questions, prefer passages '+
         'that explicitly compare models or predictions with observed evidence. '+
+        'When the question asks how observations support an inference about a '+
+        'phenomenon, search for the concrete observable signal, measurement, '+
+        'motion, or named example and the inference drawn from it. Do not '+
+        'substitute a general statement that models can be compared with '+
+        'observations for evidence identifying or explaining the phenomenon. '+
         'For two-part questions, keep the central subject or phenomenon in BOTH '+
         'queries, adding each facet’s distinguishing terms instead of dropping '+
         'the subject from a general-purpose query. For theory-versus-observation '+

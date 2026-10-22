@@ -402,6 +402,8 @@ test('all-books planner assigns a named-work query to each side of a cross-work 
  }};
  const result=await planSearchQueries(question,'',ai);
  assert.match(prompt,/assign one query to each named source group/);
+ assert.match(prompt,/concrete observable signal, measurement, motion, or named example/);
+ assert.match(prompt,/Do not substitute a general statement that models can be compared with observations/);
  assert.match(result.queries[0],/On the Origin of Species/i);
  assert.match(result.queries[0],/natural selection|favorable variations/i);
  assert.match(result.queries[1],/A Brief History of Time/i);
