@@ -402,15 +402,19 @@ test('repairs literary summaries that blur a character theory with another speak
     {id:'S3',point:'The epilogue gives poverty and helplessness as stated motives.'}
    ]
   })}}]};
-  if(inputs.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+  if(inputs.length===2){
+   assert.match(input.messages[0].content,/Preserve the passage’s rhetorical force: a question, conjecture, hypothetical, accusation, reported opinion, or character’s theory is not automatically an asserted fact/);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Raskolnikov has a perfect right to murder because extraordinary people can break the law [S1]. The novel demonstrates that he no longer believes his theory [S2]. His poverty and repentance explain the murder and confession [S3].',
    partChecks:[
     {part:labels[0],status:'partial',evidenceIds:['S1']},
     {part:labels[1],status:'partial',evidenceIds:['S2','S3']}
    ]
   })}}]};
+  }
   assert.equal(inputs.length,3);
   assert.match(input.messages[0].content,/attribute that description to the reporting speaker/);
+  assert.match(input.messages[0].content,/do not merge that summary with the other person’s reply or qualification into a stronger, unqualified claim/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Porfiry first summarizes the theory as giving extraordinary people license to transgress, but Raskolnikov qualifies that account: he claims an inner right to cross certain limits only when doing so is essential to realizing an idea, perhaps one that benefits humanity [S1]. The qualification matters; the passage does not say that extraordinary people must commit crimes or have an unrestricted right to do so.\n\nLater, Porfiry argues that Raskolnikov has stopped believing his theory and predicts that he will confess [S2]. That is Porfiry’s interpretation at this point. The epilogue later reports Raskolnikov’s stated motives as poverty and helplessness, and says he attributed his confession to repentance [S3]. Those motives complicate the extraordinary-person rationale by connecting the crime to personal desperation and remorse.',
    partChecks:[
