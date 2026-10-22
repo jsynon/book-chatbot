@@ -14,6 +14,9 @@
  * The Free Workers CPU limit (10ms) requires real deployment measurement.
  */
 export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v47/';
+// Keep a generous character ceiling that fits the bounded model output while
+// allowing detailed, evidence-supported answers without turning them into 502s.
+const MAX_ANSWER_CHARACTERS=4800;
 const FRONTEND_ORIGIN = 'https://jsynon.github.io';
 const EXPECTED_TURNSTILE_HOST = 'jsynon.github.io';
 const TURNSTILE_ACTION = 'companion_ask';
@@ -1994,7 +1997,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let composed=parseComposedDraft(modelText(second),sources);
   let answer=composed.answer;
   if(!answer)throw answerFailure('answer-composition-empty');
-  if(answer.length>2400)throw answerFailure('answer-initial-composition-too-long',{
+  if(answer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-initial-composition-too-long',{
     stage:'initial-composition',answerCharacters:answer.length,
     outputTokenLimit:1100,sourceCount:sources.length,
   });
@@ -2063,7 +2066,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         throw answerFailure('answer-part-repair-truncated');
       const repairedDraft=parseComposedDraft(modelText(repairedParts),sources);
       if(!repairedDraft.answer)throw answerFailure('answer-part-repair-empty');
-      if(repairedDraft.answer.length>2400)throw answerFailure('answer-part-repair-too-long');
+      if(repairedDraft.answer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-part-repair-too-long');
       answer=repairedDraft.answer;
       answerNeurons+=Math.max(0,Number(repairedParts?.usage?.neurons)||0);
       if(repairedDraft.structured)
@@ -2119,7 +2122,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       throw answerFailure('answer-depth-repair-truncated');
     const expandedAnswer=modelText(expanded);
     if(!expandedAnswer)throw answerFailure('answer-depth-repair-empty');
-    if(expandedAnswer.length>2400)throw answerFailure('answer-depth-repair-too-long');
+    if(expandedAnswer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-depth-repair-too-long');
     answer=expandedAnswer;
     answerNeurons+=Math.max(0,Number(expanded?.usage?.neurons)||0);
   }
@@ -2152,7 +2155,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       throw answerFailure('answer-depth-retry-truncated');
     const finalExpandedAnswer=modelText(expandedAgain);
     if(!finalExpandedAnswer)throw answerFailure('answer-depth-retry-empty');
-    if(finalExpandedAnswer.length>2400)throw answerFailure('answer-depth-retry-too-long');
+    if(finalExpandedAnswer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-depth-retry-too-long');
     answer=finalExpandedAnswer;
     answerNeurons+=Math.max(0,Number(expandedAgain?.usage?.neurons)||0);
   }
@@ -2181,7 +2184,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       throw answerFailure('answer-incomplete-claim-repair-truncated');
     const repairedAnswer=modelText(repaired);
     if(!repairedAnswer)throw answerFailure('answer-incomplete-claim-repair-empty');
-    if(repairedAnswer.length>2400)throw answerFailure('answer-incomplete-claim-repair-too-long');
+    if(repairedAnswer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-incomplete-claim-repair-too-long');
     answer=repairedAnswer;
     answerNeurons+=Math.max(0,Number(repaired?.usage?.neurons)||0);
   }
@@ -2212,7 +2215,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       throw answerFailure('answer-quotation-repair-truncated');
     const repairedAnswer=modelText(repaired);
     if(!repairedAnswer)throw answerFailure('answer-quotation-repair-empty');
-    if(repairedAnswer.length>2400)throw answerFailure('answer-quotation-repair-too-long');
+    if(repairedAnswer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-quotation-repair-too-long');
     if(!quotedPhrasesMatchSources(repairedAnswer,emptyReview?sources:selected))
       throw answerFailure('answer-quotation-repair-failed');
     answer=repairedAnswer;
@@ -2327,7 +2330,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         throw answerFailure('relation-claim-audit-retry-incomplete');
       audited=retry;
     }
-    if(auditedDraft.answer.length>2400)
+    if(auditedDraft.answer.length>MAX_ANSWER_CHARACTERS)
       throw answerFailure('relation-claim-audit-too-long');
     answer=auditedDraft.answer;
     if(auditedDraft.partChecks.length){
@@ -2344,7 +2347,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     answerNeurons+=Math.max(0,Number(audited?.usage?.neurons)||0);
     second=audited;
   }
-  if(answer.length>2400)throw answerFailure('answer-final-assembly-too-long',{
+  if(answer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-final-assembly-too-long',{
     stage:'final-answer-assembly',answerCharacters:answer.length,sourceCount:sources.length,
   });
   // Models sometimes group citations, e.g. [S1, S3]. Audit every source ID
