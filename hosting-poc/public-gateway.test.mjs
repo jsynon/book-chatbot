@@ -1650,6 +1650,28 @@ test('public evidence highlights follow a source-verified claim anchor',async()=
  assert.match(prompts[1][1].content,/qualifier: was stated to be/);
  assert.match(prompts[1][1].content,/verified quote and sentence context/);
 });
+test('public highlights show multiple distinct verified passages from one cited page',async()=>{
+ const first='The public disputes were over a breached agreement, whereas growing power created fear among competing cities.';
+ const second='The deeper cause of the war was stated to be anxiety over political change.';
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',evidence:[
+       {id:'S1',point:'The public disputes involved an agreement and fear.',quote:first},
+       {id:'S1',point:'The deeper cause was anxiety over political change.',quote:second}
+     ]
+   })}}]};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The page distinguishes immediate disputes from the deeper cause [S1].'}}]};
+ }});
+ const response=await pilot.post();
+ assert.equal(response.status,200);
+ const data=await response.json();
+ assert.equal(data.citations.length,1);
+ assert.equal(data.evidenceMap.filter(item=>item.quoteVerified).length,2);
+ assert.deepEqual(data.evidenceHighlights.map(item=>item.quote),[first,second]);
+ assert.equal(data.evidenceHighlights.every(item=>item.source_id==='S1'&&item.page===38),true);
+ assert.equal(pilot.stats().calls,2);
+});
 test('public pilot verifies and submits six source candidates to the bounded answer stage',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===520){

@@ -2889,14 +2889,42 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     }
     // Highlight original source excerpts, not fabricated model quotations.
     // The exact page text was independently fingerprint-verified above.
-    const evidenceHighlights=(output.citations||[]).slice(0,3).map(s=>{
-      const points=(output.evidenceMap||[]).filter(item=>item.id===s.id);
-      const anchor=points.find(item=>item.quoteVerified&&item.anchorQuote)?.anchorQuote;
-      const focus=points.map(item=>[item.point,item.speaker,item.qualifier]
-        .filter(Boolean).join(' ')).join(' ');
-      return {source_id:s.id,title:s.title,page:s.page,url:s.url,
-        quote:anchor||sourceExcerpt(s.preview,focus||data.question,320)};
-    });
+    const highlightedSources=(output.citations||[]).slice(0,3);
+    const evidenceHighlights=[];
+    const verifiedAnchors=new Map(highlightedSources.map(source=>[source.id,
+      [...new Set((output.evidenceMap||[]).filter(item=>item.id===source.id&&
+        item.quoteVerified&&typeof item.anchorQuote==='string'&&item.anchorQuote.trim())
+        .map(item=>item.anchorQuote.trim()))]]));
+    const usedAnchors=new Map();
+    const addHighlight=(source,quote)=>{
+      if(evidenceHighlights.length>=3)return false;
+      const key=source.id+'|'+quote;
+      if(evidenceHighlights.some(item=>item.source_id+'|'+item.quote===key))return false;
+      evidenceHighlights.push({source_id:source.id,title:source.title,
+        page:source.page,url:source.url,quote});
+      return true;
+    };
+    // Give every cited page one visible passage first, then use any remaining
+    // slots for additional distinct verified anchors from those same pages.
+    for(const source of highlightedSources){
+      const anchors=verifiedAnchors.get(source.id)||[];
+      const quote=anchors[0]||sourceExcerpt(
+        source.preview,
+        (output.evidenceMap||[]).filter(item=>item.id===source.id)
+          .map(item=>[item.point,item.speaker,item.qualifier]
+            .filter(Boolean).join(' ')).join(' ')||data.question,320);
+      addHighlight(source,quote);
+      usedAnchors.set(source.id,new Set(anchors.length?[anchors[0]]:[]));
+    }
+    for(const source of highlightedSources){
+      if(evidenceHighlights.length>=3)break;
+      const used=usedAnchors.get(source.id)||new Set();
+      for(const quote of verifiedAnchors.get(source.id)||[]){
+        if(used.has(quote))continue;
+        if(addHighlight(source,quote))used.add(quote);
+        if(evidenceHighlights.length>=3)break;
+      }
+    }
     // Suggestions only populate the next question; they are not model claims
     // or an implicit extra billable AI call. Fresh retrieval occurs each turn.
     const followUpQuestions=output.outcome==='verified-source-draft'?
