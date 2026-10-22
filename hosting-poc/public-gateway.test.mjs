@@ -339,6 +339,23 @@ test('selected-book planner preserves its own scope and model queries',async()=>
  assert.deepEqual(result.queries,expected);
 });
 
+test('planner preserves an explicit verse range in both complementary searches',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ let plannerPrompt='';
+ const ai={run:async(_model,input)=>{
+  plannerPrompt=input.messages[0].content;
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
+   'definition of God is love in 1 John 4:7-12',
+   'how Gods love necessitates loving one another 1 John 4'
+  ]})}}]};
+ }};
+ const result=await planSearchQueries(question,'New King James Version Bible — Various authors',ai);
+ assert.match(plannerPrompt,/keep the full book, chapter, and verse range in BOTH queries/);
+ assert.match(result.queries[0],/1 John 4:7-12/);
+ assert.match(result.queries[1],/1 John 4:7-12/);
+ assert.match(result.queries[1],/necessitates loving one another/);
+});
+
 test('multi-work full coverage requires selected evidence from every named work group',()=>{
  const question='How do Darwin in On the Origin of Species and Hawking in A Brief History of Time explain change?';
  const sources=[

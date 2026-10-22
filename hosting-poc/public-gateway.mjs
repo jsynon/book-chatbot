@@ -2341,6 +2341,23 @@ function containsPhrase(query,phrase){
   return Boolean(target&&candidate.includes(' '+target+' '));
 }
 
+function explicitVerseRange(question){
+  const match=String(question||'').match(
+    /\b((?:[1-3]\s+)?[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\s+(\d{1,3}):(\d{1,3})(?:\s*[-–—]\s*(?:(\d{1,3}):)?(\d{1,3}))?/);
+  if(!match)return '';
+  const [,work,chapter,startVerse,endChapter,endVerse]=match;
+  const rangeEnd=endChapter?`${endChapter}:${endVerse}`:endVerse;
+  return `${work} ${chapter}:${startVerse}${rangeEnd?`-${rangeEnd}`:''}`;
+}
+
+function retainExplicitVerseRange(query,range){
+  if(!range||containsPhrase(query,range))return query;
+  const suffix=' '+range;
+  const maxPrefix=160-suffix.length;
+  const prefix=String(query||'').slice(0,maxPrefix).replace(/\s+\S*$/,'').trim();
+  return (prefix+suffix).trim();
+}
+
 // AI-assisted SOURCE DISCOVERY ONLY. No facts, page numbers, citations or
 // book excerpts here: the website still retrieves the original v47 text and
 // the existing answer endpoint must independently verify exact SHA-256 pages.
@@ -2420,6 +2437,10 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'consequences. When the reader asks what a phrase or expression means, '+
         'preserve that exact phrase in one search query and search for its direct '+
         'explanation in the other; do not replace it with a broad abstract theme. '+
+        'When a question gives an explicit chapter-and-verse range, keep the full '+
+        'book, chapter, and verse range in BOTH queries. Search for distinct details '+
+        'inside that range, and do not use a repeated phrase from a nearby verse as '+
+        'a substitute for the requested passage. '+
         'For theory-versus-observation questions, prefer passages '+
         'that explicitly compare models or predictions with observed evidence. '+
         'For two-part questions, keep the central subject or phenomenon in BOTH '+
@@ -2491,6 +2512,10 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
   const phrase=definitionPhrase(question);
   if(phrase&&!queries.some(query=>containsPhrase(query,phrase)))
     queries[0]=phrase.length>=12?phrase:phrase+' meaning';
+  const verseRange=explicitVerseRange(question);
+  if(verseRange)
+    for(let index=0;index<queries.length;index++)
+      queries[index]=retainExplicitVerseRange(queries[index],verseRange);
   return {queries,usage:{neurons:Math.max(0,Number(response?.usage?.neurons)||0)}};
 }
 async function verifyTurnstile(token,ip,secret,fetcher) {
