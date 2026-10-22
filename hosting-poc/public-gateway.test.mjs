@@ -165,11 +165,74 @@ test('multi-source evidence review calls out each named group in normal and retr
  assert.equal(prompts.length,3);
  for(const prompt of prompts.slice(0,2)){
    assert.match(prompt,/directly relevant evidence for a group/);
-   assert.match(prompt,/For questions about a relation between named concepts/);
+   assert.match(prompt,/complementary passages/);
    assert(prompt.includes('On the Origin of Species [S1]'));
    assert(prompt.includes('A Brief History of Time [S2]'));
    assert.match(prompt,/synthesize their difference while attributing each claim to its source/);
  }
+});
+test('causal comparison can draw on complementary passages from the same work',async()=>{
+ const question='According to Thucydides, what were the underlying causes of the Peloponnesian War, and how did they differ from the immediate disputes that preceded it?';
+ const sources=[
+  {id:'S1',bookId:'152',title:'History of the Peloponnesian War — Thucydides',page:38,
+   preview:'The real cause was the growth of the power of Athens and the alarm which this inspired in Lacedaemon. The grounds alleged by either side led to the breaking out of the war.'},
+  {id:'S2',bookId:'152',title:'History of the Peloponnesian War — Thucydides',page:59,
+   preview:'Corcyra and Corinth fought; Athens aided the Corcyraeans. Soon afterward, Athens ordered Potidaea to raze its wall and dismiss its Corinthian magistrates.'}
+ ];
+ const inputs=[];let call=0;
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[
+    {part:'underlying causes',status:'supported',evidenceIds:['S1']},
+    {part:'immediate disputes',status:'supported',evidenceIds:['S2']}
+   ],
+   evidence:[
+    {id:'S1',point:'Thucydides distinguishes the underlying cause from the grounds alleged by either side.',quote:'The real cause was the growth of the power of Athens',speaker:'Thucydides',qualifier:''},
+    {id:'S2',point:'The Corcyra and Potidaea disputes were immediate disputes preceding the war.',quote:'Athens ordered Potidaea to raze its wall',speaker:'Thucydides',qualifier:''}
+   ]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:
+   'Thucydides identifies the growth of Athenian power and the fear it caused in Sparta as the underlying cause, while treating the stated grievances as the immediate grounds for war [S1]. The Corcyra and Potidaea disputes were among those immediate conflicts [S2].'}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.match(inputs[0].messages[0].content,/do not require one passage to establish the whole relation/);
+ assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides of a comparison or causal account/);
+});
+test('an unspecified Bible edition can support the requested verse range alongside commentary',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const sources=[
+  {id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+   preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'},
+  {id:'S2',bookId:'638',title:'The New Oxford Annotated Bible, Fully Revised Fifth Edition — edited by Michael D. Coogan',page:1821,
+   preview:'4. 7–21: God’s love as the basis of salvation. 7–9: Believers are to imitate the love God has shown in sending the Son to give life. 10–12: God’s love is the basis of the love command.'}
+ ];
+ const inputs=[];let call=0;
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[
+    {part:'meaning of God is love',status:'supported',evidenceIds:['S1','S2']},
+    {part:'connection to loving one another',status:'supported',evidenceIds:['S1','S2']}
+   ],
+   evidence:[
+    {id:'S1',point:'The passage grounds love in God’s prior love shown by sending the Son and commands believers to love one another.',quote:'for God is love',speaker:'The letter',qualifier:''},
+    {id:'S2',point:'The Oxford notes say God’s love is the basis of the love command.',quote:'God’s love is the basis of the love command',speaker:'Oxford Annotated Bible note',qualifier:''}
+   ]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:
+   'In 1 John 4:7–12, “God is love” means that love is grounded in God’s own nature and shown in sending the Son so that people may live [S1]. The passage then makes that prior divine love the basis of an obligation: believers ought to love one another, and their mutual love is described as God abiding in them [S1]. The Oxford note summarizes the same link as God’s love being the basis of the love command [S2].'}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.match(inputs[0].messages[0].content,/a parallel edition of the same work and passage is in scope/);
+ assert.match(inputs[1].messages[0].content,/a parallel edition of the same work and passage is in scope/);
+ assert.match(inputs[1].messages[0].content,/Do not treat a commentary excerpt as the primary text/);
 });
 test('evidence review can select a supported point when it cannot safely copy an exact quote',async()=>{
  const question='How does Darwin explain natural selection?';
@@ -225,7 +288,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/Clearly mark this material with wording such as/);
  assert.match(inputs[1].messages[0].content,/never attach a book citation to outside context/);
  assert.match(inputs[1].messages[0].content,/about 120–200 words when the evidence supports that depth/);
- assert.match(inputs[1].messages[0].content,/every cited claim must support that particular relation/);
+ assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides of a comparison or causal account/);
  assert.match(inputs[1].messages[0].content,/do not present two passages from one author as two independent perspectives/);
  assert.match(inputs[1].messages[0].content,/Avoid repetition, padding, and adjacent topics/);
  assert.match(inputs[1].messages[0].content,/should explain the point, its reason or distinction/);
@@ -1221,7 +1284,7 @@ test('v1.13 carries an explicit verse-range scope into review and composition pr
  const reviewSystem=prompts[0][0].content.toLowerCase();
  const answerSystem=prompts[1][0].content.toLowerCase();
  assert.match(reviewSystem,/explicit textual scope/);
- assert.match(reviewSystem,/parallel edition/);
+ assert.match(reviewSystem,/a parallel edition of the same work and passage is in scope/);
  assert.match(reviewSystem,/verse range/);
  assert.match(answerSystem,/honor any explicit work, chapter, verse, section, or page range/);
  assert.match(answerSystem,/adjacent chapter/);
