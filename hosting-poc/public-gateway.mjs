@@ -1542,7 +1542,10 @@ function parseComposedDraft(raw,sources) {
       }
     }catch{}
   }
-  return {answer:text,partChecks:[],structured:false};
+  // Keep the parser result shape stable when a model ignores the requested
+  // JSON format. Empty-review recovery reads evidenceMap before it decides
+  // whether the plain-text answer has enough structured support to return.
+  return {answer:text,partChecks:[],evidenceMap:[],structured:false};
 }
 function normalizedPartLabel(value) {
   return String(value||'').normalize('NFKC').toLocaleLowerCase()

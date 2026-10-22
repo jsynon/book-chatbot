@@ -1298,6 +1298,30 @@ test('composition recovers relevant submitted passages after a false-negative ev
  assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
  assert.match(result.answer,/growth of Athenian power/);
 });
+test('empty-review recovery handles a plain-text composition without throwing',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const source={id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+  preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'};
+ let calls=0;
+ const ai={run:async()=>{
+  calls++;
+  if(calls===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No requested part was supported.',questionParts:[
+    {part:'What does “God is love” mean?',status:'unsupported',evidenceIds:[]},
+    {part:'How does the passage connect God’s love with loving one another?',status:'unsupported',evidenceIds:[]}
+   ],evidence:[]
+  })}}]};
+  // A provider can return usable prose while ignoring the requested JSON
+  // schema. It must not crash while the empty-review path inspects metadata.
+  return {choices:[{finish_reason:'stop',message:{content:
+   'The passage says God is love and describes God sending the Son so people might live [S1].'}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,[source],ai);
+ assert.equal(calls,2);
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.coverage,'none');
+ assert.deepEqual(result.citations,[]);
+});
 test('source-linked evidence prevents a none review from entering empty-review recovery',async()=>{
  const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
  const source={id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
