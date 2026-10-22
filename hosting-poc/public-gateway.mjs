@@ -2426,6 +2426,14 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'queries, adding each facet’s distinguishing terms instead of dropping '+
         'the subject from a general-purpose query. For theory-versus-observation '+
         'questions, seek observations and predictions about that same subject. '+
+        'When a question distinguishes an underlying or structural cause from '+
+        'immediate disputes, triggers, or precipitating events, dedicate one '+
+        'query to the underlying cause and the other to the concrete incidents '+
+        'that brought the conflict about. For the immediate-cause query, use '+
+        'specific actors, events, actions, and source-native terms likely to '+
+        'appear in the primary source; do not rely only on abstract labels such '+
+        'as “immediate disputes” or “triggers.” Treat any event names used in a '+
+        'search query as retrieval leads, never as evidence for the answer. '+
         'One query should seek evidence for each part. When the reader names authors or '+
         'works, retain the relevant name in its corresponding query so source '+
         'discovery can distinguish books in the full library. For a question '+
