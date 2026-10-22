@@ -1179,6 +1179,9 @@ test('composition recovers relevant submitted passages after a false-negative ev
   assert.doesNotMatch(input.messages[1].content,/Coverage: none/);
   assert.doesNotMatch(input.messages[1].content,/Evidence map \(reviewed points\):/);
   assert.match(input.messages[0].content,/derive one to four concise requested parts/);
+  assert.match(input.messages[0].content,/first evidence reviewer selected no passages/);
+  assert.doesNotMatch(input.messages[0].content,/questionParts checklist/);
+  assert.doesNotMatch(input.messages[0].content,/organize the answer around the evidence map/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Thucydides identifies the hidden underlying cause as “the growth of the power of Athens” and the alarm this caused in Lacedaemon [S1]. He presents that growth and fear as making war inevitable, distinguishing them from the complaints that appeared closer to the outbreak [S1]. The underlying cause is therefore the continuing shift in power and the fear it generated, rather than one isolated grievance [S1].\n\nThe immediate disputes included Athens’ orders to Potidaea, a Corinthian colony and Athenian tributary, to raze its walls, provide hostages, and dismiss Corinthian magistrates [S2]. Thucydides also notes that Athens ordered Potidaea not to receive the persons sent from Corinth annually to succeed those magistrates [S2]. These were concrete disputes preceding the war; the deeper cause was the growth of Athenian power and the alarm it inspired in Lacedaemon [S1, S2].',
    partChecks:[
@@ -1194,6 +1197,39 @@ test('composition recovers relevant submitted passages after a false-negative ev
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
  assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
  assert.match(result.answer,/growth of Athenian power/);
+});
+test('empty-review recovery uses the primary parallel-edition passage for a scoped Bible question',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const sources=[
+  {id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+   preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'},
+  {id:'S2',bookId:'638',title:'The New Oxford Annotated Bible — commentary',page:1821,
+   preview:'4. 7–21: God’s love as the basis of salvation. 7–9: Believers are to imitate the love God has shown in sending the Son to give life. 10–12: God’s love is the basis of the love command.'}
+ ];
+ const prompts=[];let call=0;
+ const ai={run:async(_model,input)=>{
+  prompts.push(input);call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No evidence selected',questionParts:[
+    {part:'meaning of God is love',status:'unsupported',evidenceIds:[]},
+    {part:'connection between God’s love and loving one another',status:'unsupported',evidenceIds:[]}
+   ],evidence:[]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'The passage describes God’s love as shown in sending the Son so that people might live through him [S1]. It says love originates in God and that one who loves is born of God and knows God [S1]. The passage connects this prior love to the command that believers should love one another; it also describes God as abiding in those who do so [S1]. The Oxford note summarizes the same connection as God’s love being the basis of the love command [S2].',
+   partChecks:[
+    {part:'meaning of God is love',status:'supported',evidenceIds:['S1']},
+    {part:'connection between God’s love and loving one another',status:'supported',evidenceIds:['S1','S2']}
+   ]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(call,2);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.match(prompts[1].messages[0].content,/first evidence reviewer selected no passages/);
+ assert.doesNotMatch(prompts[1].messages[0].content,/questionParts checklist/);
 });
 test('v1.9.4 bad or absent model citations never leave the server as an answer',async()=>{
  for(const fabricated of ['The answer is clear [S9].',
