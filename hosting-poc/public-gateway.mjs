@@ -1888,7 +1888,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'same point in multiple sentences. Avoid a book-by-book list of disconnected '+
         'observations. When exactly two distinct question parts are supported, explain each part '+
         'with enough detail to show how the evidence answers it and how the parts '+
-        'relate; aim for about 120–180 words overall when the passages support that '+
+        'relate; aim for about 150–220 words overall when the passages support that '+
         'depth. Keep narrow factual answers brief when evidence is thin, and do not '+
         'pad or repeat material just to reach a word target. Use plain text only: no Markdown, headings, asterisks, or bullet markers in the answer field. '+
         'For a narrow factual question, '+
