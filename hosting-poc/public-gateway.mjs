@@ -864,6 +864,36 @@ export function sourceExcerpt(text,question,max=1080) {
     (end<content.length?'…':'');
   return excerpt.length<=max?excerpt:excerpt.slice(0,max-1)+'…';
 }
+function retrievedPassageFallback(question,sources) {
+  const terms=queryWords(question);
+  if(terms.length<2)return null;
+  const candidates=sources.map((source,index)=>{
+    const words=new Set((String(source.preview||'').toLowerCase().match(/[a-z0-9]+/g)||[])
+      .map(excerptStem));
+    const matched=terms.filter(term=>words.has(term));
+    if(matched.length<2)return null;
+    return {source,index,matched,snippet:sourceExcerpt(source.preview,question,900)};
+  }).filter(item=>item?.snippet);
+  if(!candidates.length)return null;
+
+  // Prefer the smallest set of excerpts that covers different question terms.
+  // A lexical match is only a cue for surfacing text; it is not treated as
+  // semantic evidence that the passage answers the question.
+  const selected=[],covered=new Set();
+  while(selected.length<3){
+    const remaining=candidates.filter(candidate=>
+      !selected.includes(candidate)&&candidate.matched.some(term=>!covered.has(term)));
+    if(!remaining.length)break;
+    remaining.sort((a,b)=>
+      b.matched.filter(term=>!covered.has(term)).length-
+      a.matched.filter(term=>!covered.has(term)).length||a.index-b.index);
+    const next=remaining[0];
+    selected.push(next);
+    next.matched.forEach(term=>covered.add(term));
+  }
+  if(!selected.length)return null;
+  return selected;
+}
 export async function trustedSources(question,locators,fetcher=(url,opt)=>globalThis.fetch(url,opt)) {
   const manifest=await corpusJson('manifest.json',fetcher);
   if (manifest.version!==47 || !manifest.books ||
@@ -2514,7 +2544,21 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   // Do not return an apparently sourced answer with fabricated or missing
   // citations. Note that valid IDs alone do NOT validate factual support.
   if(emptyReview&&(!cited.length||!finalQuestionParts.some(part=>
-    (part.status==='supported'||part.status==='partial')&&part.evidenceIds.length)))
+    (part.status==='supported'||part.status==='partial')&&part.evidenceIds.length))){
+    const recoveredPassages=retrievedPassageFallback(question,sources);
+    if(recoveredPassages?.length){
+      const passageCitations=recoveredPassages.map(item=>item.source);
+      const passageText=recoveredPassages.map(item=>'['+item.source.id+'] “'+
+        item.snippet+'”').join('\n\n');
+      return {outcome:'insufficient-evidence',answer:
+        'The answer step did not produce a reliable synthesis. These retrieved excerpts match terms from your question and may help you check the source:\n\n'+passageText,
+        coverage:'none',
+        missing:'The chatbot did not synthesize these source excerpts into an answer.',
+        citations:passageCitations,evidenceMap:[],questionParts:finalQuestionParts,
+        reviewStatus:'retrieved_passages_only',followUpQuestions:[],
+        usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},model:MODEL,
+        notice:'Source page provenance was verified. The excerpts were selected by text matching, not semantic review.'};
+    }
     return {outcome:'insufficient-evidence',answer:
       'The verified passages do not provide enough evidence to answer this question reliably.',
       coverage:'none',missing:finalMissing||review.missing,citations:[],
@@ -2522,6 +2566,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       reviewStatus:'no_selected_sources',followUpQuestions:[],
       usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},model:MODEL,
       notice:'Book-page provenance was verified; AI claim entailment was not assessed.'};
+  }
   if(cited.length===0)throw answerFailure('answer-citations-missing');
   if(cited.some(id=>!known.has(id)))throw answerFailure('answer-citations-invalid');
   const citations=sources.filter(s=>cited.includes(s.id));
