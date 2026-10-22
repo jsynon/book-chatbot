@@ -2050,7 +2050,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   // Exact source-page provenance does not make model quotations reliable.
   // If a quote fails exact matching, make one bounded repair attempt. This path
   // is conditional, so normal answers keep the two-request inference budget.
-  if(!quotedPhrasesMatchSources(answer,selected)){
+  if(!quotedPhrasesMatchSources(answer,emptyReview?sources:selected)){
     let repaired;
     try{repaired=await ai.run(MODEL,{
       messages:[
@@ -2075,7 +2075,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     const repairedAnswer=modelText(repaired);
     if(!repairedAnswer)throw answerFailure('answer-quotation-repair-empty');
     if(repairedAnswer.length>2400)throw answerFailure('answer-quotation-repair-too-long');
-    if(!quotedPhrasesMatchSources(repairedAnswer,selected))
+    if(!quotedPhrasesMatchSources(repairedAnswer,emptyReview?sources:selected))
       throw answerFailure('answer-quotation-repair-failed');
     answer=repairedAnswer;
     second=repaired;
