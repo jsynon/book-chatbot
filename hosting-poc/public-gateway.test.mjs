@@ -1331,6 +1331,40 @@ test('source-linked evidence prevents a none review from entering empty-review r
  assert.equal(result.evidenceMap.length,5);
 });
 
+test('empty-review recovery preserves cited quote-verified evidence as partial coverage',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const source={id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+  preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'};
+ let call=0;
+ const ai={run:async()=>{
+  call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No requested part is supported.',questionParts:[
+    {part:'What does “God is love” mean?',status:'unsupported',evidenceIds:[]},
+    {part:'How does the passage connect God’s love with loving one another?',status:'unsupported',evidenceIds:[]}
+   ],evidence:[]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'The passage shows God’s love through the sending of the Son [S1]. It connects that love to believers’ conduct: because God loved them, they ought to love one another [S1].',
+   partChecks:[
+    {part:'What does “God is love” mean?',status:'unsupported',evidenceIds:['S1']},
+    {part:'How does the passage connect God’s love with loving one another?',status:'unsupported',evidenceIds:['S1']}
+   ],evidence:[
+    {id:'S1',point:'God is love and manifests that love by sending the Son.',quote:'God is love.'},
+    {id:'S1',point:'God’s prior love grounds the command to love one another.',quote:'if God so loved us, we also ought to love one another.'}
+   ]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,[source],ai);
+ assert.equal(call,2);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.reviewStatus,'claim_support_not_independently_verified');
+ assert.deepEqual(result.citations.map(item=>item.id),['S1']);
+ assert.deepEqual(result.questionParts.map(item=>item.status),['partial','partial']);
+ assert.ok(result.questionParts.every(part=>part.evidenceIds.includes('S1')));
+ assert.equal(result.evidenceMap.length,2);
+});
 test('empty-review recovery uses the primary parallel-edition passage for a scoped Bible question',async()=>{
  const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another? Also, what does the Oxford Annotated Bible commentary say about this passage?';
  const sources=[
