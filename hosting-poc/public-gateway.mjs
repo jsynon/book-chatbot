@@ -1417,6 +1417,46 @@ function answerFailure(code,diagnostics={}){
   if(Object.keys(safe).length)error.diagnostics=safe;
   return error;
 }
+export function answerPipelineFailureDiagnostics(error){
+  const embedded=diagnosticPath(error,'diagnostics');
+  const hasEmbedded=embedded!==null&&typeof embedded==='object';
+  const diagnostics=hasEmbedded?{}:inferenceFailureDiagnostics(error);
+  const stage=diagnosticPath(embedded,'stage');
+  if(typeof stage==='string'&&/^[a-z0-9-]{1,48}$/.test(stage))
+    diagnostics.stage=stage;
+  const stringFields=['finishReason','retryFinishReason','providerClass','providerCode'];
+  for(const key of stringFields){
+    const value=diagnosticPath(embedded,key);
+    if(typeof value==='string'&&value.length<=48&&/^[A-Za-z0-9_.-]+$/.test(value))
+      diagnostics[key]=value;
+  }
+  const integerFields=['answerCharacters','outputTokenLimit','sourceCount','providerStatus'];
+  for(const key of integerFields){
+    const value=diagnosticPath(embedded,key);
+    if(Number.isSafeInteger(value)&&value>=0)diagnostics[key]=value;
+  }
+  const retried=diagnosticPath(embedded,'retried');
+  if(typeof retried==='boolean')diagnostics.retried=retried;
+  const reviewFailureReason=diagnosticPath(embedded,'reviewFailureReason');
+  if(typeof reviewFailureReason==='string'&&/^[a-z_]{1,48}$/.test(reviewFailureReason))
+    diagnostics.reviewFailureReason=reviewFailureReason;
+  if(typeof diagnostics.stage!=='string'){
+    const code=diagnosticPath(error,'failureCode')||'';
+    const stages=[
+      ['evidence-review-','evidence-review'],
+      ['relation-claim-audit-','relation-claim-audit'],
+      ['answer-depth-','answer-depth-repair'],
+      ['answer-part-repair-','answer-part-repair'],
+      ['answer-quotation-','quotation-repair'],
+      ['answer-incomplete-claim-repair-','answer-repair'],
+      ['answer-initial-composition-too-long','initial-composition'],
+      ['answer-final-assembly-too-long','final-answer-assembly'],
+      ['answer-composition-','answer-composition'],
+    ];
+    diagnostics.stage=stages.find(([prefix])=>code.startsWith(prefix))?.[1]||'answer-pipeline';
+  }
+  return diagnostics;
+}
 function modelText(result) {
   return typeof result?.choices?.[0]?.message?.content==='string'?
     result.choices[0].message.content.trim():'';
@@ -2804,12 +2844,14 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'relation-claim-audit-retry-incomplete']);
       const failureCode=known.has(error?.failureCode)?error.failureCode:
         'answer-generation-or-citation-failed';
-      const diagnostics=error?.diagnostics||{};
+      const diagnostics=answerPipelineFailureDiagnostics(error);
       const publicFailureCode=publicAiFailureCode(diagnostics.providerClass);
       console.error('Reader pilot answer failed',{failureCode,...diagnostics});
       return reply({error:'AI answer or citations unavailable; please try again later',
         failureCode:publicFailureCode||failureCode,
-        ...(typeof diagnostics.stage==='string'?{failureStage:diagnostics.stage}:{}),
+        failureStage:diagnostics.stage,
+        ...(diagnostics.providerClass!=='unknown'?
+          {failureProviderClass:diagnostics.providerClass}:{}),
         ...(Number.isSafeInteger(diagnostics.answerCharacters)?
           {failureAnswerCharacters:diagnostics.answerCharacters}:{}),
         ...(typeof diagnostics.reviewFailureReason==='string'?
