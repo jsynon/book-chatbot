@@ -334,7 +334,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/For a distinction directly stated in an excerpt/);
  assert.match(inputs[1].messages[0].content,/normally have three to five complete sentences/);
  assert.match(inputs[1].messages[0].content,/When exactly two distinct question parts are supported/);
- assert.match(inputs[1].messages[0].content,/write about 150–220 words overall when the passages support that depth, and never exceed 220 words or 2,000 characters in the answer field/);
+ assert.match(inputs[1].messages[0].content,/aim for about 150–220 words overall when the passages support that depth, but continue when distinct evidence-supported qualifications, examples, or implications add value/);
  assert.match(inputs[1].messages[0].content,/exactly three developed, connected paragraphs/);
  assert.match(inputs[1].messages[0].content,/180–260 words overall/);
  assert.match(inputs[1].messages[0].content,/usually about 150–220 words/);
@@ -2513,6 +2513,27 @@ test('public pilot preserves relation-audit failure codes for diagnostics',async
  const response=await pilot.post({body:{question:'Is there a conflict between science and religion?'}});
  assert.equal(response.status,502);
  assert.equal((await response.json()).failureCode,'relation-claim-audit-retry-invalid');
+});
+
+test('public pilot identifies and measures an oversized initial composition safely',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',
+     questionParts:[{part:'causes',status:'supported',evidenceIds:['S1']}],
+     evidence:[{id:'S1',point:'The source passage gives a cause.'}]
+   })}}]};
+   const answer=('The source passage explains a supported cause [S1]. ').repeat(70);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer,partChecks:[{part:'causes',status:'supported',evidenceIds:['S1']}]
+   })}}]};
+ }});
+ const response=await pilot.post({body:{question:'What causes this event?'}});
+ assert.equal(response.status,502);
+ const failure=await response.json();
+ assert.equal(failure.failureCode,'answer-initial-composition-too-long');
+ assert.equal(failure.failureStage,'initial-composition');
+ assert(failure.failureAnswerCharacters>2400);
+ assert.equal(pilot.stats().calls,2);
 });
 
 test('public pilot retries a malformed relation audit response once',async()=>{

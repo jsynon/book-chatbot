@@ -1400,6 +1400,7 @@ function answerFailure(code,diagnostics={}){
   if(typeof diagnostics.stage==='string')safe.stage=diagnostics.stage;
   if(typeof diagnostics.finishReason==='string')safe.finishReason=diagnostics.finishReason.slice(0,32);
   if(typeof diagnostics.retryFinishReason==='string')safe.retryFinishReason=diagnostics.retryFinishReason.slice(0,32);
+  if(Number.isSafeInteger(diagnostics.answerCharacters))safe.answerCharacters=diagnostics.answerCharacters;
   if(Number.isSafeInteger(diagnostics.outputTokenLimit))safe.outputTokenLimit=diagnostics.outputTokenLimit;
   if(Number.isSafeInteger(diagnostics.sourceCount))safe.sourceCount=diagnostics.sourceCount;
   if(typeof diagnostics.retried==='boolean')safe.retried=diagnostics.retried;
@@ -1888,9 +1889,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'same point in multiple sentences. Avoid a book-by-book list of disconnected '+
         'observations. When exactly two distinct question parts are supported, explain each part '+
         'with enough detail to show how the evidence answers it and how the parts '+
-        'relate; write about 150–220 words overall when the passages support that '+
-        'depth, and never exceed 220 words or 2,000 characters in the answer field. '+
-        'Keep narrow factual answers brief when evidence is thin, and do not '+
+        'relate; aim for about 150–220 words overall when the passages support that '+
+        'depth, but continue when distinct evidence-supported qualifications, '+
+        'examples, or implications add value. Keep narrow factual answers brief '+
+        'when evidence is thin, and do not '+
         'pad or repeat material just to reach a word target. Use plain text only: no Markdown, headings, asterisks, or bullet markers in the answer field. '+
         'For a narrow factual question, '+
         'stay brief. For a broad question with at least three distinct selected passages that support different aspects, '+
@@ -1924,7 +1926,10 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   let composed=parseComposedDraft(modelText(second),sources);
   let answer=composed.answer;
   if(!answer)throw answerFailure('answer-composition-empty');
-  if(answer.length>2400)throw answerFailure('answer-composition-too-long');
+  if(answer.length>2400)throw answerFailure('answer-initial-composition-too-long',{
+    stage:'initial-composition',answerCharacters:answer.length,
+    outputTokenLimit:1100,sourceCount:sources.length,
+  });
   if(emptyReview&&!review.evidenceMap.length&&composed.evidenceMap.length)
     review.evidenceMap=composed.evidenceMap;
   let answerNeurons=Math.max(0,Number(second?.usage?.neurons)||0);
@@ -2268,7 +2273,9 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     answerNeurons+=Math.max(0,Number(audited?.usage?.neurons)||0);
     second=audited;
   }
-  if(answer.length>2400)throw answerFailure('answer-composition-too-long');
+  if(answer.length>2400)throw answerFailure('answer-final-assembly-too-long',{
+    stage:'final-answer-assembly',answerCharacters:answer.length,sourceCount:sources.length,
+  });
   // Models sometimes group citations, e.g. [S1, S3]. Audit every source ID
   // inside each bracket group so an unknown citation cannot slip through
   // merely because it was not written as a standalone [S1] token.
@@ -2771,7 +2778,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       const known=new Set(['evidence-review-request-failed','evidence-review-truncated',
         'evidence-review-invalid-response','answer-composition-request-failed',
         'answer-composition-truncated','answer-composition-empty',
-        'answer-composition-too-long','answer-incomplete-cited-claim',
+        'answer-initial-composition-too-long','answer-final-assembly-too-long',
+        'answer-incomplete-cited-claim',
         'answer-part-repair-request-failed','answer-part-repair-truncated',
         'answer-part-repair-empty','answer-part-repair-too-long',
         'answer-depth-repair-request-failed','answer-depth-repair-truncated',
@@ -2797,6 +2805,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       console.error('Reader pilot answer failed',{failureCode,...diagnostics});
       return reply({error:'AI answer or citations unavailable; please try again later',
         failureCode:publicFailureCode||failureCode,
+        ...(typeof diagnostics.stage==='string'?{failureStage:diagnostics.stage}:{}),
+        ...(Number.isSafeInteger(diagnostics.answerCharacters)?
+          {failureAnswerCharacters:diagnostics.answerCharacters}:{}),
         ...(typeof diagnostics.reviewFailureReason==='string'?
           {failureDetail:diagnostics.reviewFailureReason}:{})},502,origin);
     }
