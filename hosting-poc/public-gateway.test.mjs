@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -595,6 +595,57 @@ test('repairs literary summaries that blur a character theory with another speak
  assert.match(result.answer,/only when doing so is essential/);
  assert.match(result.answer,/That is Porfiry’s interpretation/);
  assert.doesNotMatch(result.answer,/Raskolnikov has a perfect right to murder/i);
+});
+test('omits an explicitly attributed claim that cites a conflicting verified speaker',()=>{
+ const answer='According to Raskolnikov, ordinary people have no right to transgress the law, while extraordinary people have a perfect right to commit crimes [S1, S4]. Porfiry separately reports that the article gives certain people a perfect right to commit crimes [S4]. Raskolnikov’s own quoted line says extraordinary men have a right to transgress [S1].';
+ const evidenceMap=[
+  {id:'S1',point:'Raskolnikov states that extraordinary men may transgress.',
+   quoteVerified:true,speaker:'Raskolnikov'},
+  {id:'S4',point:'Porfiry reports his interpretation of Raskolnikov’s article.',
+   quoteVerified:true,speaker:'Porfiry'}
+ ];
+ const result=removeConflictingSpeakerAttributions(answer,evidenceMap);
+ assert.equal(result.conflicts.length,1);
+ assert.deepEqual(result.conflicts[0].sourceIds,['S4']);
+ assert.doesNotMatch(result.answer,/ordinary people have no right/i);
+ assert.match(result.answer,/Porfiry separately reports/);
+ assert.match(result.answer,/Raskolnikov’s own quoted line/);
+});
+test('speaker attribution guard downgrades the affected answer part without another model call',async()=>{
+ const question='How does Mara describe the proposal, and what does Elias say about her account?';
+ const sources=[
+  {id:'S1',bookId:'114',title:'Test dialogue',page:10,
+   preview:'Mara says the proposal allows only a limited exception. The excerpt identifies Mara as the speaker.'},
+  {id:'S2',bookId:'114',title:'Test dialogue',page:11,
+   preview:'Elias says Mara’s account is broader than the written proposal. The excerpt identifies Elias as the speaker.'}
+ ];
+ let calls=0;
+ const ai={run:async()=>{
+  calls++;
+  if(calls===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',questionParts:[
+    {part:'Mara’s description',status:'supported',evidenceIds:['S1']},
+    {part:'Elias’s account',status:'supported',evidenceIds:['S2']}
+   ],evidence:[
+    {id:'S1',point:'Mara says the proposal allows a limited exception.',quote:'Mara says the proposal allows only a limited exception.',speaker:'Mara'},
+    {id:'S2',point:'Elias says Mara’s account is broader than the proposal.',quote:'Elias says Mara’s account is broader than the written proposal.',speaker:'Elias'}
+   ]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'According to Mara, Elias says the proposal allows an unlimited exception [S1, S2]. Mara’s own statement describes only a limited exception [S1]. Elias separately says Mara’s account is broader than the written proposal [S2]. These descriptions differ, so the answer should keep each speaker’s account distinct [S1, S2].',
+   partChecks:[
+    {part:'Mara’s description',status:'supported',evidenceIds:['S1','S2']},
+    {part:'Elias’s account',status:'supported',evidenceIds:['S2']}
+   ]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls,2);
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.equal(result.questionParts[1].status,'supported');
+ assert.doesNotMatch(result.answer,/unlimited exception/i);
+ assert.match(result.answer,/Mara’s own statement/);
+ assert.match(result.answer,/Elias separately says/);
 });
 test('multi-author full coverage is downgraded when one requested author group is absent',()=>{
  const question='How do Aristotle and Darwin explain change?';
