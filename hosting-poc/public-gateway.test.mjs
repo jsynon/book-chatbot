@@ -1435,6 +1435,7 @@ test('empty-review recovery handles a plain-text composition without throwing',a
  assert.equal(result.reviewStatus,'answer-draft-unverified');
  assert.deepEqual(result.citations.map(item=>item.id),['S1']);
  assert.match(result.answer,/describes God sending the Son/);
+ assert.doesNotMatch(result.answer,/available passages do not fully address/i);
  assert.match(result.missing,/provisional/);
 });
 test('empty-review fallback surfaces only query-matched verified passages without another AI call',async()=>{
@@ -1649,7 +1650,8 @@ test('empty-review recovery keeps cited partial answer when exact quote anchors 
  assert.deepEqual(result.citations.map(item=>item.id),['S1']);
  assert.deepEqual(result.questionParts.map(item=>item.status),['partial','partial']);
  assert.ok(result.evidenceMap.every(item=>item.quoteVerified===false));
- assert.match(result.answer,/partially supported/);
+ assert.doesNotMatch(result.answer,/available passages do not fully address|partially supported/i);
+ assert.match(result.missing,/provisional|partially supported/i);
 });
 
 test('empty-review recovery uses the primary parallel-edition passage for a scoped Bible question',async()=>{
@@ -2284,7 +2286,7 @@ test('evidence review retries one truncated response with a compact bounded requ
      return {choices:[{finish_reason:'length',message:{content:''}}],usage:{neurons:3}};
    }
    if(calls===2){
-     assert.equal(input.max_completion_tokens,760);
+     assert.equal(input.max_completion_tokens,1200);
      assert(input.messages[0].content.includes('compact valid JSON'));
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
        coverage:'partial',missing:'The excerpt does not cover the entire question.',
@@ -2312,7 +2314,7 @@ test('evidence review retries one invalid structured response with a compact req
    return {choices:[{finish_reason:'stop',message:{content:'review output was not JSON'}}],usage:{neurons:2}};
   }
   if(calls===2){
-   assert.equal(input.max_completion_tokens,760);
+   assert.equal(input.max_completion_tokens,1200);
    assert.match(input.messages[0].content,/compact valid JSON/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
     coverage:'partial',missing:'The excerpt only gives part of the requested account.',
@@ -2355,14 +2357,14 @@ test('a second evidence-review truncation returns a safe stage diagnostic in Wor
    const response=await pilot.post();
    assert.equal(response.status,502);
    assert.equal((await response.json()).failureCode,'evidence-review-truncated');
-   assert.deepEqual(calls,[520,760]);
+   assert.deepEqual(calls,[520,1200]);
    assert.match(prompts[1],/For broad questions about what a person or work says/);
  }finally{console.error=original;}
  const failure=logged.find(entry=>entry[0]==='Reader pilot answer failed')?.[1];
  assert.deepEqual(failure,{
    failureCode:'evidence-review-truncated',stage:'evidence-review',
    finishReason:'length',retryFinishReason:'length',
-   outputTokenLimit:760,sourceCount:1,retried:true,reviewFailureReason:'unknown'
+   outputTokenLimit:1200,sourceCount:1,retried:true,reviewFailureReason:'unknown'
  });
 });
 
