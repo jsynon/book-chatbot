@@ -1286,7 +1286,12 @@ export function parseReview(raw,sources,question='') {
     question,sources);
   const allPartsSupported=questionParts.length>0&&
     questionParts.every(item=>item.status==='supported');
-  let coverage=selected.length?review.coverage:'none';
+  // A reviewer cannot coherently report no coverage while also supplying
+  // source-linked evidence points. Keep those points available to answer
+  // composition, and let per-part checks decide whether they answer the
+  // question; a selected page alone does not make any part supported.
+  let coverage=selected.length?
+    (review.coverage==='none'&&evidenceMap.length?'partial':review.coverage):'none';
   if(coverage!=='none'&&questionParts.length)
     coverage=allPartsSupported&&review.coverage==='full'?'full':'partial';
   let parsedMissing=selected.length?completeMissingNote(review.missing):
