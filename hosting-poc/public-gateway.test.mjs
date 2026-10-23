@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -2912,6 +2912,17 @@ test('discloses a retrieved comparison source omitted from final citations',()=>
   answer+' Hume’s Enquiry treats causal inference as grounded in experience [S1].',groups,sources);
  assert.deepEqual(complete.missingGroups,[]);
  assert.equal(complete.answer,answer+' Hume’s Enquiry treats causal inference as grounded in experience [S1].');
+});
+
+test('keeps both requested works when one is named by a shortened author reference',()=>{
+ const question='How do Hume’s Enquiry and Kant’s Critique of Pure Reason differ over causal necessity?';
+ const sources=[
+  {id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume'},
+  {id:'S2',bookId:'40',title:'Critique of Pure Reason — Immanuel Kant'},
+  {id:'S3',bookId:'245',title:'The Social Contract — Jean-Jacques Rousseau'}
+ ];
+ const scoped=applyExplicitWorkScope(question,sources);
+ assert.deepEqual(scoped.map(source=>source.id),['S1','S2']);
 });
 
 test('a partial cross-work comparison cannot substitute an author attack for the missing position',()=>{
