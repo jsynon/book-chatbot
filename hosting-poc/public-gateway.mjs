@@ -2904,9 +2904,9 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     if(recoveredPassages?.length){
       const passageCitations=recoveredPassages.map(item=>item.source);
       const passageText=recoveredPassages.map(item=>'['+item.source.id+'] “'+
-        item.snippet+'”').join('\\n\\n');
+        item.snippet+'”').join('\n\n');
       return {outcome:'insufficient-evidence',answer:
-        'The answer could not be safely completed after an unverified quotation was removed. These retrieved excerpts may help you check the source:\\n\\n'+passageText,
+        'The answer could not be safely completed after an unverified quotation was removed. These retrieved excerpts may help you check the source:\n\n'+passageText,
         coverage:'none',missing:'The remaining draft did not contain a cited answer after its unverified quotation was removed.',
         citations:passageCitations,evidenceMap:[],questionParts:finalQuestionParts,
         reviewStatus:'retrieved_passages_only',followUpQuestions:[],quotationRepairFallback,
