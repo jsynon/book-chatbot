@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -805,7 +805,7 @@ test('author comparison repair replaces a secondary report with both authors’ 
   assert.match(input.messages[1].content,/Philosophical Fragments — Søren Kierkegaard/);
   assert.match(input.messages[1].content,/Athens and Jerusalem — Lev Shestov, physical PDF page 55/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-   answer:'Kierkegaard’s Philosophical Fragments warns that consequences founded on a paradox lose their value if later generations treat them as an inherited settled estate [S1]. The passage says their meaning depends on keeping the paradox visible, like a city whose foundations would be forgotten at one’s peril. It therefore presents thought as returning to the original paradox rather than accepting inherited consequences uncritically. This shows one feature of Kierkegaard’s account in this text, though the excerpt does not define his whole philosophy [S1].\n\nShestov, by contrast, argues that human beings fear freedom and try to bind even God to eternal principles [S3]. He contrasts divine creative power with the human tendency to imitate and to accept rational limits. In the same passage he criticizes the idea that necessity makes some possibilities impossible even for God [S3]. The difference in emphasis is that Kierkegaard’s excerpt focuses on preserving the paradox, while Shestov challenges the rational necessity that would restrict creative freedom. This is a synthesis of these passages, not a direct exchange between the authors [S1, S3].',
+   answer:'Kierkegaard’s Philosophical Fragments warns that consequences founded on a paradox lose their value if later generations treat them as an inherited settled estate [S1]. The passage says their meaning depends on keeping the paradox visible, like a city whose foundations would be forgotten at one’s peril. It therefore presents thought as returning to the original paradox rather than accepting inherited consequences uncritically. This shows one feature of Kierkegaard’s account in this text, though the excerpt does not define his whole philosophy [S1].\n\nShestov, by contrast, argues that human beings fear freedom and try to bind even God to eternal principles [S3]. He contrasts divine creative power with the human tendency to imitate and to accept rational limits. In the same passage he criticizes the idea that necessity makes some possibilities impossible even for God [S3]. The difference in emphasis is that Kierkegaard’s excerpt focuses on preserving the paradox, while Shestov challenges the rational necessity that would restrict creative freedom [S1, S3]. This is a synthesis of these passages, not a direct exchange between the authors [S1, S3].',
    partChecks:[
     {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S1']},
     {part:"Shestov's thought",status:'supported',evidenceIds:['S3']}
@@ -841,7 +841,7 @@ test('separately supported accounts can support a cross-work synthesis',async()=
      ]
    })}}]};
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-     answer:"Aristotle connects political order to the human good and the cultivation of virtue, framing politics around the kind of life and character a community should support [S1]. This account makes the ethical end of civic life central to political inquiry.\n\nHobbes instead emphasizes the institution of a common power, which keeps people in awe and makes justice and the laws of nature more reliably observed [S2]. The contrast is a synthesis of these passages: Aristotle foregrounds the end politics serves, while Hobbes foregrounds the authority needed to secure order. The passages support those distinct emphases, though neither excerpt directly compares the two thinkers.",
+     answer:"Aristotle connects political order to the human good and the cultivation of virtue, framing politics around the kind of life and character a community should support [S1]. This account makes the ethical end of civic life central to political inquiry.\n\nHobbes instead emphasizes the institution of a common power, which keeps people in awe and makes justice and the laws of nature more reliably observed [S2]. The contrast is a synthesis of these passages: Aristotle foregrounds the end politics serves, while Hobbes foregrounds the authority needed to secure order [S1, S2]. The passages support those distinct emphases, though neither excerpt directly compares the two thinkers.",
      partChecks:[
        {part:"Compare how Aristotle's and Hobbes's accounts secure political order",status:'partial',evidenceIds:['S1','S2']}
      ]
@@ -1084,6 +1084,19 @@ test('recognizes the Dostoevsky excerpt correction written as “wasn’t quite 
  assert.doesNotMatch(result.answer,/ordinary people have no right/i);
  assert.doesNotMatch(result.answer,/extraordinary men possess a right to commit any crime/i);
  assert.match(result.answer,/marks this reported account as distorted or corrected/i);
+});
+
+test('removes uncited author-specific claims and preserves cited statements',()=>{
+ const sources=[
+  {id:'S1',title:'Nicomachean Ethics — Aristotle',preview:'Aristotle connects political inquiry with the human good.'},
+  {id:'S2',title:'Leviathan — Thomas Hobbes',preview:'Hobbes explains the role of common power.'}
+ ];
+ const answer='Aristotle connects political inquiry with a human good [S1]. Hobbes identifies common power as protection against enemies [S2]. While Aristotle seeks the highest good, Hobbes expresses significant disdain for the Aristotelian tradition.';
+ const result=removeUncitedAuthorClaims(answer,sources);
+ assert.deepEqual(result.removed,[
+  'While Aristotle seeks the highest good, Hobbes expresses significant disdain for the Aristotelian tradition.'
+ ]);
+ assert.equal(result.answer,'Aristotle connects political inquiry with a human good [S1]. Hobbes identifies common power as protection against enemies [S2].');
 });
 
 test('carries a dialogue correction across adjacent cited pages in the same book',()=>{
@@ -1513,6 +1526,60 @@ test('empty-review recovery handles a plain-text composition without throwing',a
  assert.match(result.answer,/describes God sending the Son/);
  assert.doesNotMatch(result.answer,/available passages do not fully address/i);
  assert.match(result.missing,/provisional/);
+});
+test('empty-review recovery exposes a cited lexical draft only as partial and unverified',async()=>{
+ const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
+ const parts=['What does “God is love” mean?',
+  'How does the passage connect God’s love with loving one another?'];
+ const source={id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
+  preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son to be the propitiation for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'};
+ let calls=0;
+ const ai={run:async()=>{
+  calls++;
+  if(calls===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No requested part was supported.',
+   questionParts:parts.map(part=>({part,status:'unsupported',evidenceIds:[]})),evidence:[]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'In 1 John 4:7–12, the statement that God is love is evidenced by the fact that God demonstrated His love by sending His only begotten Son into the world to serve as the propitiation for sins so that humanity might live through Him [S1]. Because God showed this type of love toward humanity, believers have an obligation to love one another [S1]. Additionally, the passage indicates that when people love one another, God abides in them and His love is perfected in them [S1].',
+   partChecks:parts.map(part=>({part,status:'unsupported',evidenceIds:[]})),evidence:[]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,[source],ai);
+ assert.equal(calls,2);
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.reviewStatus,'answer-draft-lexical-match');
+ assert.deepEqual(result.citations.map(item=>item.id),['S1']);
+ assert.deepEqual(result.questionParts.map(part=>part.status),['partial','partial']);
+ assert.ok(result.evidenceMap.every(item=>item.lexicalMatchOnly&&item.quoteVerified===false));
+ assert.match(result.missing,/did not verify the claims/);
+ assert.match(result.notice,/not semantic claim verification/);
+});
+test('empty-review lexical recovery rejects a draft with only broad topic-word overlap',async()=>{
+ const question='According to Darwin, how does natural selection preserve inherited variation?';
+ const parts=['how natural selection preserves inherited variation'];
+ const source={id:'S1',bookId:'529',title:'On the Origin of Species — Charles Darwin',page:101,
+  preview:'If it profit a plant to have its seeds more and more widely disseminated by the wind, I can see no greater difficulty in this being effected through natural selection, than in the cotton planter increasing and improving by selection the down in the pods on his cotton trees.'};
+ let calls=0;
+ const ai={run:async()=>{
+  calls++;
+  if(calls===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'none',missing:'No requested part was supported.',
+   questionParts:parts.map(part=>({part,status:'unsupported',evidenceIds:[]})),evidence:[]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Natural selection preserves inherited variations that help a species survive and reproduce [S1].',
+   partChecks:parts.map(part=>({part,status:'unsupported',evidenceIds:[]})),evidence:[]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,[source],ai);
+ assert.equal(calls,2);
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'none');
+ assert.equal(result.reviewStatus,'answer-draft-unverified');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['unsupported']);
+ assert.deepEqual(result.evidenceMap,[]);
 });
 test('empty-review fallback surfaces only query-matched verified passages without another AI call',async()=>{
  const cases=[
@@ -2633,7 +2700,7 @@ test('repairs a missing comparison when each named work has a supported side',as
   })}}],usage:{neurons:3}};
   assert.match(input.messages[0].content,/synthesize a concise contrast only when separately supported parts establish every requested side/i);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-   answer:'Aristotle presents political order as aiming at human good and at making citizens good and obedient to laws [S1]. The passage ties political judgment to a shared human end, and it treats citizens’ character and their relation to law as part of that end. The account therefore describes political order through the good it should pursue and the kind of citizen it should form. These points come from Aristotle’s passage, which speaks about political science and civic virtue [S1].\n\nHobbes presents political order through the institution of a common power. That power keeps people in awe and enables them to consent to justice and the laws of nature [S2]. In the excerpt, the role of authority is practical: it secures conditions under which those rules can be observed. Hobbes’s passage thus emphasizes the need for an effective power to sustain order among people [S2].\n\nRead together, the accounts place emphasis on different supports for political order. Aristotle connects it to human good and the formation of citizens, while Hobbes connects it to a common power that secures justice and obedience. This comparison is a synthesis of the two supplied passages; neither cited excerpt directly compares Aristotle with Hobbes. The distinction follows from the separate roles each passage assigns to political order [S1, S2].',
+   answer:'Aristotle presents political order as aiming at human good and at making citizens good and obedient to laws [S1]. The passage ties political judgment to a shared human end, and it treats citizens’ character and their relation to law as part of that end. The account therefore describes political order through the good it should pursue and the kind of citizen it should form. These points come from Aristotle’s passage, which speaks about political science and civic virtue [S1].\n\nHobbes presents political order through the institution of a common power. That power keeps people in awe and enables them to consent to justice and the laws of nature [S2]. In the excerpt, the role of authority is practical: it secures conditions under which those rules can be observed. Hobbes’s passage thus emphasizes the need for an effective power to sustain order among people [S2].\n\nRead together, the accounts place emphasis on different supports for political order [S1, S2]. Aristotle connects it to human good and the formation of citizens, while Hobbes connects it to a common power that secures justice and obedience [S1, S2]. This comparison is a synthesis of the two supplied passages; neither cited excerpt directly compares Aristotle with Hobbes [S1, S2]. The distinction follows from the separate roles each passage assigns to political order [S1, S2].',
    partChecks:[
     {part:'Aristotle’s account',status:'supported',evidenceIds:['S1']},
     {part:'Hobbes’s account',status:'supported',evidenceIds:['S2']},
@@ -2927,6 +2994,8 @@ test('answer composition explicitly requests plain text instead of Markdown arti
  assert.match(source,/developed, connected paragraphs, one for each part/);
  assert.match(source,/Aim for 120–180 words overall when the/);
  assert.match(source,/excerpts support that depth/);
+ assert.match(source,/Cite every source-based sentence, including reader-level comparisons/);
+ assert.match(source,/a comparison sentence must cite the evidence for each work/);
  assert.doesNotMatch(source,/brief bullets/);
 });
 

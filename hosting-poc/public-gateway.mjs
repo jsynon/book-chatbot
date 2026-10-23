@@ -1597,6 +1597,60 @@ function normalizedPartLabel(value) {
   return String(value||'').normalize('NFKC').toLocaleLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 }
+const answerEvidenceStopwords=new Set([
+  'about','after','again','also','among','because','been','being','both','could',
+  'does','each','from','have','into','just','more','most','only','other','over',
+  'same','some','such','than','that','their','them','then','there','these','they',
+  'this','those','through','under','very','what','when','where','which','while',
+  'with','would','your','according','passage','passages','question','statement',
+  'according','people','humanity','believers','humans'
+]);
+function answerEvidenceTerms(value){
+  return new Set(normalizedPartLabel(value).split(' ').filter(term=>
+    term.length>=3&&!answerEvidenceStopwords.has(term)).map(term=>{
+      if(term==='sent'||term==='sends'||term==='sending')return 'send';
+      if(/^lov(?:e|es|ed|ing)$/.test(term))return 'love';
+      return term.replace(/(?:ing|ed|es|s)$/,'');
+    }));
+}
+function recoverLexicallyCitedDraftEvidence(answer,questionParts,sources){
+  const byId=new Map(sources.map(source=>[source.id,source]));
+  const paragraphs=String(answer||'').split(/\n+/).flatMap(paragraph=>
+    paragraph.split(/(?<=[.!?])\s+(?=[A-Z“])/u)).map(sentence=>sentence.trim())
+      .filter(Boolean);
+  const evidenceMap=[],partEvidence=new Map();
+  for(const sentence of paragraphs){
+    const ids=[...new Set([...sentence.matchAll(/\[([^\]]+)\]/g)]
+      .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]))];
+    if(!ids.length)continue;
+    const sentenceTerms=answerEvidenceTerms(sentence.replace(/\[[^\]]+\]/g,''));
+    for(const id of ids){
+      const source=byId.get(id);
+      if(!source)continue;
+      const sourceTerms=answerEvidenceTerms(source.preview);
+      const shared=[...sentenceTerms].filter(term=>sourceTerms.has(term));
+      // This is only a cautious lexical recovery path after an empty review.
+      // It never upgrades coverage to supported or verifies entailment.
+      if(shared.length<4)continue;
+      evidenceMap.push({id,point:sentence.slice(0,220),quoteVerified:false,
+        lexicalMatchOnly:true});
+      for(const part of questionParts){
+        if(part.status==='supported')continue;
+        const partTerms=answerEvidenceTerms(part.part);
+        const questionOverlap=[...partTerms].some(term=>sentenceTerms.has(term)&&sourceTerms.has(term));
+        if(!questionOverlap)continue;
+        const idsForPart=partEvidence.get(part.part)||new Set();
+        idsForPart.add(id);partEvidence.set(part.part,idsForPart);
+      }
+    }
+  }
+  const recoveredParts=questionParts.map(part=>{
+    if(part.status==='supported')return part;
+    const evidenceIds=[...(partEvidence.get(part.part)||[])];
+    return evidenceIds.length?{...part,status:'partial',evidenceIds}:part;
+  });
+  return {evidenceMap,questionParts:recoveredParts};
+}
 function sourceHasMeaningfulQualifier(source){
   return /\b(?:until|unless|except|only|at least|no more than|rather than|although|even if|provided that|insofar as|because)\b/i
     .test(String(source?.preview||''));
@@ -1791,6 +1845,30 @@ export function removeUnqualifiedCorrectedClaims(answer,evidenceMap,sources) {
   const notice='The cited excerpt marks this reported account as distorted or corrected, so it does not establish the unqualified version as the character’s position ['+noticeId+'].';
   return {answer:[...cleaned,notice].filter(Boolean).join('\n\n'),conflicts};
 }
+export function removeUncitedAuthorClaims(answer,sources){
+  const authors=(sources||[]).map(source=>{
+    const match=String(source.title||'').match(/\s+[—–]\s+(.+)$/);
+    const name=match?.[1]?.replace(/^(?:edited|translated|compiled) by\s+/i,'').trim()||'';
+    return name&&!/^various authors$/i.test(name)?[...new Set(name.split(/[^\p{L}]+/u)
+      .filter(token=>token.length>=3))]:[];
+  });
+  if(!authors.some(tokens=>tokens.length))return {answer:String(answer||''),removed:[]};
+  const removed=[];
+  const cleaned=String(answer||'').split(/\n\s*\n/).map(paragraph=>
+    paragraph.split(/(?<=[.!?])\s+(?=[A-Z“"'])/u).filter(sentence=>{
+      const hasCitation=/\[\s*S[1-9]\d*(?:\s*,\s*S[1-9]\d*)*\s*\]/.test(sentence);
+      const namedAuthors=authors.filter(tokens=>tokens.some(author=>{
+        const escaped=author.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+        return new RegExp(`(?<![\\p{L}])${escaped}(?![\\p{L}])`,'iu').test(sentence);
+      }));
+      const comparesAuthors=/\b(?:while|whereas|in contrast|by contrast|unlike|differ(?:s|ed|ent|ence)?|compare(?:d|s)?|versus|vs\.|disdain)\b/i.test(sentence);
+      if(!hasCitation&&namedAuthors.length>=2&&comparesAuthors){
+        removed.push(sentence.trim());return false;
+      }
+      return true;
+    }).join(' ').trim()).filter(Boolean);
+  return {answer:cleaned.join('\n\n'),removed};
+}
 function isComparisonQuestionPart(label){
   return /\b(?:compare|comparison|contrast|differ|difference|different|distinguish)\b/i.test(String(label||''));
 }
@@ -1940,7 +2018,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const combined=sources.map(s=>'['+s.id+'] '+s.title+', physical PDF page '+s.page+'\n'+s.preview).join('\n\n');
   const sourceGroups=requestedSourceGroups(question,sources);
   const emptyReviewAnswerPrompt=
-    'You are a careful academic Reading Companion. The first evidence reviewer selected no passages; that is not proof that the excerpts lack evidence. Independently inspect every verified excerpt below and answer each part the excerpts support. Cite each source-based claim immediately with the valid ID, such as [S1]. When separate passages support separate parts, explain their distinct contributions and synthesize only what their wording warrants; label any additional conclusion as your inference. Preserve the requested work and passage scope, the visible speaker, and every meaningful condition or qualification. Treat reported speech and hypotheticals as such. A parallel edition of the same work and passage is in scope when no edition is specified. Keep primary-text claims distinct from commentary: cite the primary passage for what it says, and identify an editorial note explicitly if you use it in a separate claim. Do not invent citations or use a citation for a claim its excerpt does not support. You may add brief, clearly labeled general context, without a book citation, only when it helps and is reliable. If the excerpts support only part of the question, explain that part and state what remains unresolved. Return only JSON with keys answer, partChecks, and evidence. Include exactly one partChecks item for every requested part, with part, status (supported|partial|unsupported), and evidenceIds containing only cited IDs that support that part. If no question-part labels were supplied, derive one to four concise requested parts from the question. Before returning JSON, cross-check answer, partChecks, and evidence for consistency. Every evidence point must support an explicit answer claim cited with that point’s source ID, and the matching requested part must list that ID in evidenceIds. If a verified excerpt directly supports a requested part, do not mark that part unsupported; answer the supported portion, cite the source, and mark it supported or partial according to how much of the part the excerpt establishes. If you cannot make a supported answer claim, omit the evidence point. For every source-based answer claim, include an atomic evidence point with the exact cited source ID and a concise point. Add an exact 12–220 character quote copied from that same excerpt when you can copy it confidently. A missing or unverified quote does not invalidate an otherwise supported point or citation; leave quote empty if needed. Include a visible speaker and exact qualifier when either affects the claim. The evidence array should contain up to eight atomic source-linked points. Include only cited source IDs and points that explain the adjacent answer claims. Give a useful, sufficiently detailed explanation when the excerpts support it; keep the answer concise when evidence is thin.';
+    'You are a careful academic Reading Companion. The first evidence reviewer selected no passages; that is not proof that the excerpts lack evidence. Independently inspect every verified excerpt below and answer each part the excerpts support. Cite each source-based claim immediately with the valid ID, such as [S1]. Cite every sentence that states or synthesizes a source-based claim in that sentence; a comparison sentence must cite the evidence for each work it compares. Omit source-based sentences that have no supporting citation instead of leaving them as uncited conclusions. When separate passages support separate parts, explain their distinct contributions and synthesize only what their wording warrants; label any additional conclusion as your inference. Preserve the requested work and passage scope, the visible speaker, and every meaningful condition or qualification. Treat reported speech and hypotheticals as such. A parallel edition of the same work and passage is in scope when no edition is specified. Keep primary-text claims distinct from commentary: cite the primary passage for what it says, and identify an editorial note explicitly if you use it in a separate claim. Do not invent citations or use a citation for a claim its excerpt does not support. You may add brief, clearly labeled general context, without a book citation, only when it helps and is reliable. If the excerpts support only part of the question, explain that part and state what remains unresolved. Return only JSON with keys answer, partChecks, and evidence. Include exactly one partChecks item for every requested part, with part, status (supported|partial|unsupported), and evidenceIds containing only cited IDs that support that part. If no question-part labels were supplied, derive one to four concise requested parts from the question. Before returning JSON, cross-check answer, partChecks, and evidence for consistency. Every evidence point must support an explicit answer claim cited with that point’s source ID, and the matching requested part must list that ID in evidenceIds. If a verified excerpt directly supports a requested part, do not mark that part unsupported; answer the supported portion, cite the source, and mark it supported or partial according to how much of the part the excerpt establishes. If you cannot make a supported answer claim, omit the evidence point. For every source-based answer claim, include an atomic evidence point with the exact cited source ID and a concise point. Add an exact 12–220 character quote copied from that same excerpt when you can copy it confidently. A missing or unverified quote does not invalidate an otherwise supported point or citation; leave quote empty if needed. Include a visible speaker and exact qualifier when either affects the claim. The evidence array should contain up to eight atomic source-linked points. Include only cited source IDs and points that explain the adjacent answer claims. Give a useful, sufficiently detailed explanation when the excerpts support it; keep the answer concise when evidence is thin.';
   const sourceGroupInstruction=sourceGroups.length?
     'The question identifies one or more source groups; assess each requested group separately. '+
     'When the supplied excerpts contain directly relevant evidence for a group, '+
@@ -2135,7 +2213,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Paraphrase by default. Use quotation marks only for an exact phrase copied '+ 
         'from a verified excerpt; never use them for emphasis or invented wording. '+ 
         'Put [S1], [S2], etc. immediately after statements supported by those '+ 
-        'sources. If evidence is partial, explain the supported part and say '+ 
+        'sources. Cite every source-based sentence, including reader-level comparisons, in that same sentence; for a comparison cite evidence for each work. Omit an uncited source claim rather than presenting it as established. If evidence is partial, explain the supported part and say '+
         'what remains uncertain. Do not invent missing evidence. '+ 
         'For multi-part questions, use the questionParts checklist to make sure '+
         'every supported part is answered, but do not force a one-item-per-'+
@@ -2646,6 +2724,19 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     finalMissing=questionPartMissingNote(finalQuestionParts)||
       'The excerpt identifies the reported account as distorted or corrected, so its full limits remain unresolved.';
   }
+  const uncitedAuthorGuard=removeUncitedAuthorClaims(answer,sources);
+  if(uncitedAuthorGuard.removed.length&&
+    /\[\s*S[1-9]\d*(?:\s*,\s*S[1-9]\d*)*\s*\]/.test(uncitedAuthorGuard.answer)){
+    answer=uncitedAuthorGuard.answer;
+    finalQuestionParts=finalQuestionParts.map(part=>
+      part.status==='supported'&&isComparisonQuestionPart(part.part)?
+        {...part,status:'partial'}:part);
+    finalCoverage=finalQuestionParts.length&&
+      finalQuestionParts.every(part=>part.status==='supported')?'full':'partial';
+    finalMissing=questionPartMissingNote(finalQuestionParts)||
+      'An uncited author-specific claim was removed; the comparison remains only partly established.';
+    if(!emptyReview)answer=appendMissingQuestionPartNotice(answer,finalQuestionParts);
+  }
   if(answer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-final-assembly-too-long',{
     stage:'final-answer-assembly',answerCharacters:answer.length,sourceCount:sources.length,
   });
@@ -2657,6 +2748,21 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const known=new Set(sources.map(s=>s.id));
   // Do not return an apparently sourced answer with fabricated or missing
   // citations. Note that valid IDs alone do NOT validate factual support.
+  if(emptyReview&&composed.structured&&cited.length&&cited.every(id=>known.has(id))&&
+    !finalQuestionParts.some(part=>part.status==='supported'||part.status==='partial')){
+    const lexicalRecovery=recoverLexicallyCitedDraftEvidence(
+      answer,finalQuestionParts,sources);
+    if(lexicalRecovery.questionParts.some(part=>part.status==='partial')){
+      const draftCitations=sources.filter(source=>cited.includes(source.id));
+      return {outcome:'unverified-source-draft',answer,coverage:'partial',
+        missing:'Cited excerpts share specific wording with the draft, but the evidence review did not verify the claims. Treat this answer as provisional and check each cited passage.',
+        citations:draftCitations,evidenceMap:lexicalRecovery.evidenceMap,
+        questionParts:lexicalRecovery.questionParts,
+        reviewStatus:'answer-draft-lexical-match',followUpQuestions:[],
+        usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},model:MODEL,
+        notice:'The source pages and citation IDs were verified. Lexical overlap is not semantic claim verification.'};
+    }
+  }
   if(emptyReview&&(!cited.length||!finalQuestionParts.some(part=>
     (part.status==='supported'||part.status==='partial')&&part.evidenceIds.length))){
     const citableDraft=cited.length>0&&cited.every(id=>known.has(id))&&
