@@ -1100,6 +1100,29 @@ function containsSourceGroupPhrase(haystack,phrase){
   const needle=' '+normalizedSourceGroupText(phrase)+' ';
   return needle.length>2&&text.includes(needle);
 }
+function stanceSourceAuthor(question,authorBooks){
+  const text=String(question||'');
+  if(/\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|between|versus|vs\.?)\b/i.test(text)||
+    /\band\s+(?:how|what|why|where)\b/i.test(text))return null;
+  const stance=/\b(?:think|thinks|thought|say|says|said|write|writes|wrote|argue|argues|argued|believe|believes|believed|consider|considers|considered|view|views|opinion|interpretation|criticism|critique|describe|describes|described)\b[^?!.]{0,70}\b(?:about|of|on|regarding|concerning)\b/giu;
+  const subjects=new Map();
+  for(const match of text.matchAll(stance)){
+    const prefix=text.slice(0,match.index);
+    const candidates=[...authorBooks.values()].filter(author=>
+      containsSourceGroupPhrase(prefix,author.name)||
+      (author.name.split(' ').length>1&&author.surnameOwners===1&&
+        new RegExp('(?:^|[^\\p{L}\\p{N}])'+author.surname.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&')+
+          '(?=$|[^\\p{L}\\p{N}])','iu').test(prefix)));
+    const surnames=new Set(candidates.map(author=>author.surname));
+    if(surnames.size===1){
+      const surname=[...surnames][0];
+      const matching=candidates.find(author=>author.surname===surname);
+      subjects.set(surname,matching);
+    }
+  }
+  if(subjects.size!==1)return null;
+  return [...subjects.values()][0];
+}
 function sourceGroupMetadata(){
   const books=Object.entries(PILOT_BOOKS).map(([bookId,title])=>({bookId,title}));
   const authorBooks=new Map();
@@ -1109,6 +1132,12 @@ function sourceGroupMetadata(){
     const work=divider>=0?book.title.slice(0,divider).trim():book.title.trim();
     const contributor=divider>=0?book.title.slice(divider+3).replace(/\s*\([^)]*\)/g,'').trim():'';
     const workAliases=new Set([work]);
+    const withoutArticle=work.replace(/^(?:the|a|an)\s+/i,'');
+    if(withoutArticle!==work)workAliases.add(withoutArticle);
+    // Parenthetical alternate titles (for example, "On the Soul (De Anima)")
+    // are common in the catalog. Let readers scope evidence using either name.
+    for(const alias of work.matchAll(/\(([^()]{3,100})\)/g))
+      workAliases.add(alias[1].trim());
     // Collection records often put the actual work after a colon, as in
     // "The Harvard Classics, Volume 11: On the Origin of Species".
     for(const part of work.split(':').slice(1)){
@@ -1117,7 +1146,7 @@ function sourceGroupMetadata(){
     }
     for(const alias of workAliases){
       const key=normalizedSourceGroupText(alias);
-      if(key.length<8||key.split(' ').length<2)continue;
+      if(key.length<8)continue;
       if(!titleBooks.has(key))titleBooks.set(key,{label:alias,bookIds:new Set()});
       titleBooks.get(key).bookIds.add(book.bookId);
     }
@@ -1136,6 +1165,8 @@ function sourceGroupMetadata(){
     if(!surnameOwners.has(author.surname))surnameOwners.set(author.surname,new Set());
     surnameOwners.get(author.surname).add(normalizedSourceGroupText(author.name));
   }
+  for(const author of authorBooks.values())
+    author.surnameOwners=surnameOwners.get(author.surname)?.size||0;
   return {titleBooks,authorBooks,surnameOwners};
 }
 function requestedSourceGroups(question,sources){
@@ -1170,6 +1201,9 @@ function requestedSourceGroups(question,sources){
     groups.push({kind:'author',key:normalizedSourceGroupText(author.name),
       label:author.name,bookIds:author.bookIds});
   }
+  const stanceAuthor=stanceSourceAuthor(text,authorBooks);
+  if(stanceAuthor)return [{kind:'author',key:normalizedSourceGroupText(stanceAuthor.name),
+    label:stanceAuthor.name,bookIds:new Set(stanceAuthor.bookIds)}];
   // If an author name maps to multiple spellings in catalog metadata, merge
   // the IDs into one author group rather than treating it as multiple people.
   const deduped=[];
@@ -1181,6 +1215,37 @@ function requestedSourceGroups(question,sources){
   // Only enforce when at least two distinct named works/authors are explicit.
   if(deduped.length<2)return [];
   return deduped.map(group=>({...group,bookIds:new Set(group.bookIds)}));
+}
+function explicitNamedWorkBookIds(question){
+  const {titleBooks}=sourceGroupMetadata();
+  const text=String(question||'');
+  const matches=[];
+  for(const [key,value] of titleBooks){
+    if(key.split(' ').length===1){
+      const name=value.label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+      if(!new RegExp('(?:^|[^\\p{L}\\p{N}])'+name+'(?=$|[^\\p{L}\\p{N}])','u').test(text))continue;
+    }
+    if(containsSourceGroupPhrase(text,key))matches.push({key,bookIds:value.bookIds});
+  }
+  if(!matches.length)return null;
+  matches.sort((a,b)=>b.key.length-a.key.length);
+  return new Set(matches.flatMap(match=>[...match.bookIds].map(String)));
+}
+function applyExplicitWorkScope(question,sources){
+  const namedBookIds=explicitNamedWorkBookIds(question);
+  if(!namedBookIds?.size)return sources;
+  const scoped=sources.filter(source=>namedBookIds.has(String(source.bookId)));
+  // Fail open if catalog aliasing does not match any supplied page; this
+  // guard should prevent cross-work citations without erasing usable evidence.
+  return scoped.length?scoped:sources;
+}
+function applyStanceSourceScope(question,sources){
+  const {authorBooks}=sourceGroupMetadata();
+  const author=stanceSourceAuthor(question,authorBooks);
+  if(!author)return sources;
+  const ids=new Set([...author.bookIds].map(String));
+  const scoped=sources.filter(source=>ids.has(String(source.bookId)));
+  return scoped.length?scoped:sources;
 }
 function authorGroupForQuestionPart(part,question,sources){
   const groups=requestedSourceGroups(question,sources).filter(group=>group.kind==='author');
@@ -2108,6 +2173,8 @@ export function removeDanglingCitedSentences(answer) {
 
 export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   sources=applyExplicitBibleVerseScope(question,sources);
+  sources=applyStanceSourceScope(question,sources);
+  sources=applyExplicitWorkScope(question,sources);
   const combined=sources.map(s=>'['+s.id+'] '+s.title+', physical PDF page '+s.page+'\n'+s.preview).join('\n\n');
   const sourceGroups=requestedSourceGroups(question,sources);
   const answerCompositionPrompt=emptyReview=>[
@@ -3210,10 +3277,10 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'When the reader names authors or '+
         'works, retain the relevant name in its corresponding query so source '+
         'discovery can distinguish books in the full library. For a question '+
-        'about two explicitly named works or authors, assign one query to each '+
-        'named source group and include that group’s work or author name plus '+
-        'its own requested facet. Do not write both queries about the first '+
-        'work; keep each clause attached to the work or author it describes. '+
+        'about two named works or authors, use one query per source and retain ' +
+        'all requested facets that apply to it, including later clauses and ' +
+        'the relation being compared. Attach each query only to its named ' +
+        'work or author. '+
         'For a comparison about a specific disputed concept, keep that exact '+
         'concept in each source query and seek that source’s own definition, '+
         'criterion, or explanation of it. Do not substitute a nearby doctrine, '+
