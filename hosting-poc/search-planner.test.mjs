@@ -188,6 +188,8 @@ test('literary passage planning prefers the canonical primary work',async()=>{
  assert.deepEqual(result.queries,queries);
  assert.match(systemPrompt,/For a literary scene or quoted line/i);
  assert.match(systemPrompt,/canonical work or author/i);
+ assert.match(systemPrompt,/inside collected works, include its canonical author even if the reader names only the scene/i);
+ assert.match(systemPrompt,/search Hamlet with William Shakespeare/i);
  assert.match(systemPrompt,/primary text over commentary or anthologies/i);
 });
 test('definition questions preserve the exact phrase instead of broad planner paraphrases',async()=>{
