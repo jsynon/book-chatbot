@@ -2899,6 +2899,28 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const known=new Set(sources.map(s=>s.id));
   // Do not return an apparently sourced answer with fabricated or missing
   // citations. Note that valid IDs alone do NOT validate factual support.
+  if(!cited.length&&quotationRepairFallback){
+    const recoveredPassages=retrievedPassageFallback(question,sources);
+    if(recoveredPassages?.length){
+      const passageCitations=recoveredPassages.map(item=>item.source);
+      const passageText=recoveredPassages.map(item=>'['+item.source.id+'] “'+
+        item.snippet+'”').join('\\n\\n');
+      return {outcome:'insufficient-evidence',answer:
+        'The answer could not be safely completed after an unverified quotation was removed. These retrieved excerpts may help you check the source:\\n\\n'+passageText,
+        coverage:'none',missing:'The remaining draft did not contain a cited answer after its unverified quotation was removed.',
+        citations:passageCitations,evidenceMap:[],questionParts:finalQuestionParts,
+        reviewStatus:'retrieved_passages_only',followUpQuestions:[],quotationRepairFallback,
+        usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},model:MODEL,
+        notice:'Source page provenance was verified. The answer draft contained an unverified quotation, so its sentence was removed.'};
+    }
+    return {outcome:'insufficient-evidence',answer:
+      'The answer could not be safely completed because its remaining sentence contained an unverified quotation.',
+      coverage:'none',missing:'The remaining draft did not contain a cited answer after its unverified quotation was removed.',
+      citations:[],evidenceMap:review.evidenceMap,questionParts:finalQuestionParts,
+      reviewStatus:'no_selected_sources',followUpQuestions:[],quotationRepairFallback,
+      usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},model:MODEL,
+      notice:'Book-page provenance was verified; the answer draft contained an unverified quotation.'};
+  }
   if(emptyReview&&composed.structured&&cited.length&&cited.every(id=>known.has(id))&&
     !finalQuestionParts.some(part=>part.status==='supported'||part.status==='partial')){
     const lexicalRecovery=recoverLexicallyCitedDraftEvidence(
