@@ -1827,7 +1827,10 @@ export function removeUnqualifiedCorrectedClaims(answer,evidenceMap,sources) {
   }
   if(!flaggedIds.size)return {answer:String(answer||''),conflicts:[]};
   const conflicts=[];
-  const caveat=/\b(?:reported|report|summary|distort(?:ed|ion)|exaggerat(?:ed|ion)|misrepresent(?:ed|ation)|misstate(?:d)?|qualif(?:y|ies|ied|ication)|correct(?:s|ed|ion)|not quite|not exactly|unqualified|uncertain|unclear)\b/i;
+  // A report can be qualified as nearly correct before the speaker narrows
+  // it. Recognize those explicit acknowledgements and clarifications so the
+  // guard does not discard a bounded account along with an exaggerated one.
+  const caveat=/\b(?:reported|report|summary|distort(?:ed|ion)|exaggerat(?:ed|ion)|misrepresent(?:ed|ation)|misstate(?:d)?|qualif(?:y|ies|ied|ication)|correct(?:ly|s|ed|ion)?|not quite|not exactly|unqualified|uncertain|unclear|clarif(?:y|ies|ied|ication)|acknowledg\w*|(?:almost|nearly)\s+(?:correct(?:ly)?|accurate(?:ly)?|perfectly)|only difference|inner right)\b/i;
   const paragraphs=String(answer||'').split(/\n\s*\n/);
   const cleaned=paragraphs.map(paragraph=>{
     const sentences=paragraph.split(/(?<=[.!?])\s+(?=[A-Z“"'])/u);

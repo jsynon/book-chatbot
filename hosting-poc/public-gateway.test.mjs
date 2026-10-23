@@ -1089,6 +1089,11 @@ test('recognizes the Dostoevsky excerpt correction written as “wasn’t quite 
  assert.doesNotMatch(result.answer,/ordinary people have no right/i);
  assert.doesNotMatch(result.answer,/extraordinary men possess a right to commit any crime/i);
  assert.match(result.answer,/marks this reported account as distorted or corrected/i);
+
+ const bounded='Raskolnikov acknowledges that the restatement is nearly correct, but clarifies that he means an inner right of conscience rather than an official right [S1].';
+ const retained=removeUnqualifiedCorrectedClaims(bounded,evidence,[source]);
+ assert.equal(retained.conflicts.length,0);
+ assert.equal(retained.answer,bounded);
 });
 
 test('removes uncited author-specific claims and preserves cited statements',()=>{
