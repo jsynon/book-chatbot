@@ -2123,6 +2123,11 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       'the theory and any direct counterpoint, qualification, consequence, or '+
       'later test supplied by the excerpts. Do not substitute a character’s motive '+
       'or later plot outcome for a textual challenge unless the passage connects them. '+
+      'For a question asking for a general rule, principle, or mechanism, map the '+
+      'source’s general explanation separately from any concrete example. Prefer a '+
+      'passage that states the general operation when available; if an example is '+
+      'the only relevant evidence, label it as an example and preserve its specific '+
+      'conditions rather than generalizing from it. '+
       'For broad questions asking what a person or work says about a topic, identify distinct supported answer themes: the central account, how it works or what it means, and any separate implication, example, or contrast the excerpts support. These are candidate themes, not a required checklist. Prioritize direct explanation of the concept, followed by an example or implication that clarifies it. Treat criticism of another thinker and remarks that a term needs definition as context, not core answer themes, unless they explicitly clarify the concept. Do not let those remarks displace substantive passages that explain what the concept involves. '+
       sourceGroupInstruction+ 
       'Return ONLY compact JSON with keys coverage (full|partial|none), missing '+ 
@@ -3132,6 +3137,16 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'source-level descriptions of what people or things do over abstract '+
         'labels alone; for example, seek repeated actions or doing just acts '+
         'when investigating how a disposition is formed. '+
+        'When the reader asks for a general rule, principle, or mechanism, '+
+        'reserve a query for the source’s general explanation or causal rule; '+
+        'do not spend every query on a memorable or narrow example. Use another '+
+        'query for an example, condition, or qualification when it helps explain '+
+        'the rule. Keep the example’s stated conditions attached to it; an example '+
+        'is a search lead, not proof that its details are the general rule. '+
+        'When the reader asks for a person’s theory and how the text tests or '+
+        'corrects it, use separate queries for the proposition and the reply, '+
+        'counterpoint, or correction. Do not substitute motive or aftermath for '+
+        'the correction unless the question requests those topics. '+
         'For questions asking what role or function a named concept plays, keep '+
         'the exact concept in its query and add likely source-native operational '+
         'wording: who acts, what the concept does, and what result it produces. '+
