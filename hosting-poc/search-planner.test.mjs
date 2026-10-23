@@ -68,6 +68,45 @@ test('process-focused planning requires source-level actions as well as topic la
  assert.match(systemPrompt,/source-level descriptions of what people or things do over abstract labels alone/i);
  assert.match(systemPrompt,/repeated actions or doing just acts/i);
 });
+test('splits bundled coordinated role queries into separate search facets without another AI call',async()=>{
+ const cases=[
+  {
+   question:'According to Darwin, how does natural selection operate, and what roles do inherited variation and the struggle for existence play?',
+   planned:[
+    'Darwin On the Origin of Species natural selection operation',
+    'Darwin On the Origin of Species inherited variation and struggle for existence'
+   ],
+   expected:[
+    'Darwin On the Origin of Species natural selection operation',
+    'Darwin On the Origin of Species inherited variation',
+    'Darwin On the Origin of Species the struggle for existence'
+   ]
+  },
+  {
+   question:'What roles do habituation and practical reason play in developing virtue according to Aristotle?',
+   planned:[
+    'Aristotle repeated actions form virtue',
+    'Aristotle habituation and practical reason developing virtue'
+   ],
+   expected:[
+    'Aristotle repeated actions form virtue',
+    'Aristotle habituation',
+    'Aristotle practical reason'
+   ]
+  }
+ ];
+ for(const item of cases){
+  let calls=0;
+  const answer=await planSearchQueries(item.question,'',{
+   run:async()=>{
+    calls++;
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:item.planned})}}]};
+   }
+  });
+  assert.equal(calls,1);
+  assert.deepEqual(answer.queries,item.expected);
+ }
+});
 test('cause-versus-trigger planning seeks concrete incidents instead of abstract labels',async()=>{
  let systemPrompt='';
  await planSearchQueries(

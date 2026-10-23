@@ -2782,6 +2782,42 @@ function retainExplicitVerseRange(query,range){
   return (prefix+suffix).trim();
 }
 
+// A planner can bundle coordinated concepts into one phrase even when the
+// question asks for their separate roles. Split that facet into parallel
+// searches while retaining the source/work prefix. This is deterministic and
+// does not spend another inference call.
+function expandCoordinatedRoleQueries(question,queries){
+  const match=String(question||'').match(/\bwhat\s+roles?\s+do\s+(.+?)\s+play\b/i);
+  if(!match)return queries;
+  const facets=match[1].split(/\s+and\s+/i).map(value=>value.trim())
+    .filter(Boolean);
+  if(facets.length<2||facets.length>3)return queries;
+  const termsFor=value=>[...new Set((value.toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]+/gu)||[])
+    .filter(term=>term.length>=3&&!STOP.has(term)).map(excerptStem))];
+  const facetTerms=facets.map(termsFor);
+  if(facetTerms.some(terms=>terms.length===0))return queries;
+  const queryTerms=queries.map(termsFor);
+  const candidateIndex=queryTerms.findIndex(terms=>facetTerms.every(facet=>{
+    const overlap=facet.filter(term=>terms.includes(term)).length;
+    return overlap>=Math.max(1,Math.ceil(facet.length*0.6));
+  }));
+  if(candidateIndex<0||queries.length+facets.length-1>4)return queries;
+  const candidate=queries[candidateIndex];
+  const rawTokens=[...candidate.matchAll(/[\p{L}\p{N}]+/gu)];
+  const firstFacetToken=rawTokens.find(token=>
+    facetTerms[0].includes(excerptStem(token[0])));
+  if(!firstFacetToken)return queries;
+  const prefix=candidate.slice(0,firstFacetToken.index).trim();
+  if(!prefix)return queries;
+  const splitQueries=facets.map(facet=>`${prefix} ${facet}`.trim());
+  const result=[...queries.slice(0,candidateIndex),...splitQueries,
+    ...queries.slice(candidateIndex+1)];
+  if(new Set(result.map(query=>query.toLocaleLowerCase())).size!==result.length)
+    return queries;
+  return result;
+}
+
 function applyExplicitBibleVerseScope(question,sources){
   const scope=explicitVerseScope(question);
   if(!scope||scope.startChapter!==scope.endChapter||
@@ -2973,7 +3009,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
        q.trim().length>=12&&q.trim().length<=160 &&
        /^[\p{L}\p{N} .,;:'"?!()\-–]+$/u.test(q)))
     throw new Error('Invalid search plan');
-  const queries=options.map(q=>q.trim().replace(/\s+/g,' '));
+  let queries=options.map(q=>q.trim().replace(/\s+/g,' '));
   const namedTargets=namedGroupQueryTargets(question,bookTitle);
   if(namedTargets.length===2){
     // The model may expand a broad user phrase into the author's actual
@@ -2994,6 +3030,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
   const phrase=definitionPhrase(question);
   if(phrase&&!queries.some(query=>containsPhrase(query,phrase)))
     queries[0]=phrase.length>=12?phrase:phrase+' meaning';
+  queries=expandCoordinatedRoleQueries(question,queries);
   const verseRange=explicitVerseRange(question);
   if(verseRange)
     for(let index=0;index<queries.length;index++)
