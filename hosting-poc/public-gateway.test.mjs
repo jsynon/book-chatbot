@@ -1138,6 +1138,17 @@ test('evidence-focused highlights choose the cited point instead of a topical op
  assert.doesNotMatch(quote,/Bees and ants/);
 });
 
+test('evidence highlights crop a long relevant sentence instead of choosing a weaker sentence',()=>{
+ const text='Background about species and prior observations. '+
+  'It is, however, an error to suppose that there would be no struggle for existence, and, consequently, no natural selection, until many forms had been produced: variations in a single species inhabiting an isolated station might be beneficial, and thus the whole mass of individuals might be modified, or two distinct forms might arise. '+
+  'But no one ought to feel surprise at much remaining unexplained, given our profound ignorance about the mutual relations of inhabitants across past ages.';
+ const quote=sourceExcerpt(text,
+  'Darwin says struggle for existence and natural selection occur before many forms, through beneficial variations in an isolated station.',320);
+ assert.match(quote,/no struggle for existence/);
+ assert.match(quote,/isolated station/);
+ assert.doesNotMatch(quote,/profound ignorance/);
+});
+
 test('long source excerpts without searchable question terms end on sentence boundaries',()=>{
  const text='A complete sentence gives background. '.repeat(8);
  const preview=sourceExcerpt(text,'the and for',82);
