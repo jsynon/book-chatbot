@@ -3555,3 +3555,36 @@ test('public pilot retries a malformed relation audit response once',async()=>{
  assert.match(result.answer,/cannot establish whether science and religion conflict/);
 });
 
+
+
+test('a mapped point with an unverified quote still triggers the existing evidence repair',async()=>{
+ const question='In Hamlet’s soliloquy, how does uncertainty about death affect his reasoning?';
+ const source={id:'S1',bookId:'212',title:'Hamlet — William Shakespeare',page:140,
+  preview:'To die, to sleep; perchance to dream: ay, there is the rub; for in that sleep of death what dreams may come must give us pause.'};
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The uncertainty is only partly explained.',
+   questionParts:[{part:'effect of uncertainty about death',status:'partial',evidenceIds:['S1']}],
+   evidence:[{id:'S1',point:'The possibility of dreams after death makes Hamlet pause.',
+    quote:'perchance to dream of the unknown afterlife'}]
+  })}}]};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Hamlet considers whether the possibility of dreams in death should make him hesitate [S1].',
+   partChecks:[{part:'effect of uncertainty about death',status:'partial',evidenceIds:['S1']}]
+  })}}]};
+  assert.match(input.messages[0].content,/Repair only the requested parts/);
+  assert.match(input.messages[1].content,/proposed quote not verified; recheck the point against the full excerpt/);
+  assert.match(calls[1].messages[0].content,/quote-unverified means only that its proposed quotation could not be matched exactly/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Hamlet weighs ending suffering through death against enduring life, but the unknown possibility of dreams after death makes him pause [S1]. The passage presents that uncertainty as a reason he hesitates before choosing death.',
+   partChecks:[{part:'effect of uncertainty about death',status:'supported',evidenceIds:['S1']}]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,[source],ai);
+ assert.equal(calls.length,3,'reuse the existing conditional part-repair request');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.match(result.answer,/unknown possibility of dreams after death makes him pause/);
+});

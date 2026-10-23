@@ -2112,7 +2112,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     'Answer each requested part directly, using the passage that most directly answers it; do not substitute related background, motives, or consequences for the requested account. Develop the explanation with relevant reasons, distinctions, qualifications, or examples when the excerpts support them; keep it concise when evidence is thin and do not pad or repeat.',
     'Ground every claim about a source in the excerpt that directly supports it and cite each source-based sentence with its valid [S#] ID. Complementary passages may support separate sides of a comparison or causal account; explain the concrete difference and cite each work. Do not treat two passages from one author as independent perspectives. Label reader synthesis or reliable broader context clearly; you may add brief reliable general context when useful, without presenting it as a source claim.',
     'Attribute claims to the visible speaker; a catalog author is not automatically the speaker. Keep an author’s account distinct from a narrator, character, reported view, reply, correction, or editorial/commentary note. Preserve meaningful qualifications, conditions, uncertainty, and requested work or passage scope. Preserve reported-source chains: if one speaker says that another person supplied an account, identify the intermediary and do not present the report as direct testimony. Honor explicit work, chapter, verse, section, or page limits; if no edition is named, a parallel edition of the same work and passage is in scope. Keep commentary separate from primary text. When asked how a text tests a theory, explain the theory and its direct counterpoint; a character’s motive alone is not a rebuttal. Use the evidence map as a guide, verify each point against the full excerpt, and do not complete a cut-off sentence. Do not turn a question, hypothetical, reported opinion, or possible cause into an asserted fact.',
-    'Use prior conversation only to resolve references; it is not evidence. Paraphrase; do not use source wording as a direct quotation. Do not invent claims, quotes, or citations. If evidence supports only part of a request, explain that part and state what remains unsupported. Open with the direct answer, then develop distinct supported reasons and limits. Use plain text without headings or bullets; let answer length follow the evidence.',
+    'Use prior conversation only to resolve references; it is not evidence. Paraphrase; do not use source wording as a direct quotation. Do not invent claims, quotes, or citations. An evidence point marked quote-unverified means only that its proposed quotation could not be matched exactly; it does not mean the point lacks support. Recheck that point against the full excerpt and answer it when the passage supports it. If evidence supports only part of a request, explain that part and state what remains unsupported. Open with the direct answer, then develop distinct supported reasons and limits. Use plain text without headings or bullets; let answer length follow the evidence.',
     emptyReview?'For each cited source claim, include an atomic evidence point in an evidence array with its source ID and a concise point; add an exact short quote only when it can be copied confidently. Return JSON keys answer, partChecks, and evidence.':'Return JSON keys answer and partChecks.',
     'Include exactly one partChecks item per requested part (derive one to four concise parts if none were supplied), with the exact part label, status (supported|partial|unsupported), and evidenceIds containing only cited sources that support that part. Mark a part supported only if the answer explains it with cited evidence. Cross-check answer and partChecks for consistency.'
   ].join(' ');
@@ -2296,7 +2296,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       item.speakerUnverified?'dialogue speaker could not be anchored to the verified quote':'',
       item.qualifier?'qualifier: '+item.qualifier:'',
       item.anchorQuote?'verified quote and sentence context: “'+item.anchorQuote+'”':
-        'no exact passage anchor verified']
+        'proposed quote not verified; recheck the point against the full excerpt']
       .filter(Boolean).join('; ');
     return '['+item.id+'] '+item.point+(details?' ('+details+')':'');
   }).join('\n');
@@ -2369,6 +2369,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       const partEvidenceIds=(part.evidenceIds||[]).map(String);
       const quoteAnchoredPartEvidenceIds=partEvidenceIds.filter(id=>(review.evidenceMap||[])
         .some(item=>item.id===id&&item.quoteVerified));
+      const unanchoredPartEvidence=(review.evidenceMap||[]).filter(item=>
+        partEvidenceIds.includes(String(item.id))&&!item.quoteVerified);
       const answerCitesPartEvidence=quoteAnchoredPartEvidenceIds.some(id=>draftCitationIds.has(id));
       const primaryEvidenceId=primaryQuoteAnchoredPartEvidenceId(reviewedPart,review.evidenceMap);
       const answerCitesPrimaryEvidence=!!primaryEvidenceId&&draftCitationIds.has(primaryEvidenceId);
@@ -2380,6 +2382,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
           !answerCitesPrimaryEvidence)||
         ((part.status==='supported'||part.status==='partial')&&quoteAnchoredPartEvidenceIds.length>0&&
           !answerCitesPartEvidence)||
+        (part.status!=='supported'&&unanchoredPartEvidence.length>0)||
         (isComparisonPart&&!comparisonHasSynthesis&&hasSupportedEvidenceForEveryGroup)||
         (review.questionParts[index].status==='partial'&&part.status==='unsupported')||
         (review.questionParts[index].status==='partial'&&part.status==='partial'&&
@@ -2406,14 +2409,16 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
               const primaryEvidenceId=primaryQuoteAnchoredPartEvidenceId(part,review.evidenceMap);
               const primaryEvidenceMissing=primaryEvidenceId&&!draftCitationIds.has(primaryEvidenceId);
               if(part.status==='supported'&&!primaryEvidenceMissing)return '';
-              const omitted=(review.evidenceMap||[]).filter(item=>
-                part.evidenceIds.includes(item.id)&&item.quoteVerified&&
-                !draftCitationIds.has(item.id));
+              const mappedNotCited=(review.evidenceMap||[]).filter(item=>
+                part.evidenceIds.includes(item.id)&&!draftCitationIds.has(item.id));
+              const omitted=mappedNotCited.filter(item=>item.quoteVerified);
+              const unanchored=mappedNotCited.filter(item=>!item.quoteVerified);
               const prioritized=primaryEvidenceMissing?
                 omitted.filter(item=>item.id===primaryEvidenceId):omitted;
-              const points=prioritized.length?prioritized:omitted;
+              const points=prioritized.length?prioritized:omitted.length?omitted:unanchored;
               return points.length?'- '+part.part+': '+points.map(item=>
-                '['+item.id+'] '+item.point+(item.anchorQuote?' — “'+item.anchorQuote+'”':''))
+                '['+item.id+'] '+item.point+(item.anchorQuote?' — “'+item.anchorQuote+'”':
+                  ' — quote unverified; verify this lead against the excerpt'))
                 .join('; '):'';
             }).filter(Boolean).join('\n')+
             '\n\nInitial answer and coverage check:\n'+JSON.stringify({
