@@ -590,7 +590,9 @@ test('repairs literary summaries that blur a character theory with another speak
  const inputs=[];
  const ai={run:async(_model,input)=>{
   inputs.push(input);
-  if(inputs.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+  if(inputs.length===1){
+   assert.match(input.messages[0].content,/For questions about how a work tests or undermines a theory/);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    coverage:'partial',missing:'The account and its challenge need fuller explanation.',
    questionParts:[
     {part:labels[0],status:'partial',evidenceIds:['S1']},
@@ -602,6 +604,7 @@ test('repairs literary summaries that blur a character theory with another speak
     {id:'S3',point:'The epilogue gives poverty and helplessness as stated motives.'}
    ]
   })}}]};
+  }
   if(inputs.length===2){
    assert.match(input.messages[0].content,/Preserve the passage’s rhetorical force: a question, conjecture, hypothetical, accusation, reported opinion, or character’s theory is not automatically an asserted fact/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
@@ -1704,6 +1707,8 @@ test('empty-review recovery aligns quote-verified evidence with a cited answer',
  const result=await composeVerifiedAnswer(question,[source],ai);
  assert.equal(call,2);
  assert.match(prompts[1].messages[0].content,/cross-check answer, partChecks, and evidence for consistency/);
+ assert.match(prompts[1].messages[0].content,/state the concrete basis of difference on the same requested issue/);
+ assert.match(prompts[1].messages[0].content,/direct counterpoint or qualification/);
  assert.match(prompts[1].messages[0].content,/If a verified excerpt directly supports a requested part, do not mark that part unsupported/);
  assert.match(prompts[1].messages[0].content,/Add an exact 12–220 character quote copied from that same excerpt when you can copy it confidently/);
  assert.match(prompts[1].messages[0].content,/A missing or unverified quote does not invalidate an otherwise supported point or citation/);
@@ -2815,6 +2820,7 @@ test('repairs prose that denies a comparison while coverage marks it supported',
   })}}],usage:{neurons:2}};
   if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:refusal,partChecks:parts})}}],usage:{neurons:2}};
   assert.match(input.messages[0].content,/Revise the answer to address each requested question part/);
+  assert.match(calls[1].messages[0].content,/state the concrete basis of difference on the same requested issue/);
   assert.match(input.messages[1].content,/Initial answer and coverage check/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:repaired,partChecks:parts})}}],usage:{neurons:3}};
  }};
