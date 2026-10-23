@@ -1231,7 +1231,19 @@ function explicitNamedWorkBookIds(question){
   matches.sort((a,b)=>b.key.length-a.key.length);
   return new Set(matches.flatMap(match=>[...match.bookIds].map(String)));
 }
-function applyExplicitWorkScope(question,sources){
+export function applyExplicitWorkScope(question,sources){
+  // In comparisons, readers often give one work's full title and refer to
+  // another by author plus a shortened title (for example, "Hume's Enquiry
+  // and Kant's Critique of Pure Reason"). A title-only filter can recognize
+  // the latter and silently discard the already-retrieved former. Preserve
+  // all requested groups, then let evidence review select among those works.
+  const requestedGroups=requestedSourceGroups(question,sources);
+  if(requestedGroups.length>1){
+    const requestedIds=new Set(requestedGroups.flatMap(group=>[...group.bookIds])
+      .map(String));
+    const scoped=sources.filter(source=>requestedIds.has(String(source.bookId)));
+    if(scoped.length)return scoped;
+  }
   const namedBookIds=explicitNamedWorkBookIds(question);
   if(!namedBookIds?.size)return sources;
   const scoped=sources.filter(source=>namedBookIds.has(String(source.bookId)));
