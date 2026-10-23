@@ -456,6 +456,32 @@ test('planner preserves an explicit verse range in both complementary searches',
  assert.match(result.queries[1],/necessitates loving one another/);
 });
 
+test('all-books scripture references keep Bible search context and the exact verse range',async()=>{
+ const question='According to James 2:14–26, how does James relate faith to works, and what do Abraham and Rahab illustrate?';
+ const ai={run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
+  'James 2:14-26 faith without works dead',
+  'James 2:14-26 Abraham Rahab examples'
+ ]})}}]})};
+ const result=await planSearchQueries(question,'',ai);
+ assert.equal(result.queries.length,2);
+ for(const query of result.queries){
+  assert.match(query,/James 2:14-26/i);
+  assert.match(query,/\bBible\b/i);
+ }
+ assert.match(result.queries[0],/faith without works dead/i);
+ assert.match(result.queries[1],/Abraham Rahab examples/i);
+});
+
+test('all-books planner does not label non-scriptural chapter-and-verse references as Bible searches',async()=>{
+ const question='According to Hamlet 3:1, how does the speaker describe the choice before him?';
+ const ai={run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
+  'Hamlet 3:1 choice before him',
+  'Hamlet 3:1 speaker describes alternatives'
+ ]})}}]})};
+ const result=await planSearchQueries(question,'',ai);
+ assert.ok(result.queries.every(query=>! /\bBible\b/i.test(query)));
+});
+
 test('planner keeps three distinct requested components as three targeted searches',async()=>{
  const question="According to Darwin's On the Origin of Species, how does natural selection operate, and what roles do inherited variation and the struggle for existence play?";
  const expected=[
