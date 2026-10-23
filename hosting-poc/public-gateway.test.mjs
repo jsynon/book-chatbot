@@ -2894,6 +2894,53 @@ test('repairs a requested part when its reviewed evidence is absent from the dra
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
 
+test('repairs a supported part that cites related evidence but omits its primary mapped passage',async()=>{
+ const question='What theory does Raskolnikov use to justify the murder, and what motive is later given?';
+ const sources=[
+  {id:'S1',bookId:'529',title:'Crime and Punishment — Fyodor Dostoevsky',page:464,
+   preview:'Extraordinary men have a right to commit any crime and to transgress the law in any way, just because they are extraordinary.'},
+  {id:'S2',bookId:'529',title:'Crime and Punishment — Fyodor Dostoevsky',page:941,
+   preview:'The cause was his miserable position, his poverty and helplessness, and his desire to provide for his first steps in life.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[
+    {part:'the theory used to justify the murder',status:'supported',evidenceIds:['S1','S2']},
+    {part:'the later motive given',status:'supported',evidenceIds:['S2']}
+   ],evidence:[
+    {id:'S1',point:'The reported theory gives extraordinary people a right to transgress the law.',
+     quote:'Extraordinary men have a right to commit any crime and to transgress the law in any way, just because they are extraordinary.'},
+    {id:'S2',point:'A later account cites poverty and helplessness as motives.',
+     quote:'The cause was his miserable position, his poverty and helplessness, and his desire to provide for his first steps in life.'}
+   ]})}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'The account connects Raskolnikov’s decision with his poverty and helplessness [S2]. The later explanation also presents his desire to provide for his first steps in life as a motive [S2].',
+   partChecks:[
+    {part:'the theory used to justify the murder',status:'supported',evidenceIds:['S2']},
+    {part:'the later motive given',status:'supported',evidenceIds:['S2']}
+   ]
+  })}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/Put direct definitions, theories, and roles before related motives/);
+  assert.match(input.messages[1].content,/Direct mapped points for incomplete parts/);
+  assert.match(input.messages[1].content,/the theory used to justify the murder: \[S1\] The reported theory gives extraordinary people a right to transgress the law/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Raskolnikov’s theory is that “extraordinary” people may transgress the law because of their exceptional status [S1]. The passage presents this as the theory attributed to him, not as a rule endorsed by the novel. A later explanation also identifies poverty, helplessness, and the desire to provide for his first steps in life as motives [S2]. The two passages distinguish his stated justification from the material circumstances later named as motives.',
+   partChecks:[
+    {part:'the theory used to justify the murder',status:'supported',evidenceIds:['S1']},
+    {part:'the later motive given',status:'supported',evidenceIds:['S2']}
+   ]
+  })}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.match(result.answer,/extraordinary.*may transgress the law/i);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ assert.equal(result.coverage,'full');
+});
+
 test('repairs a partial comparison when supported source positions are only summarized separately',async()=>{
  const question='How does Aristotle describe the aim of political science in the Nicomachean Ethics, and what role does Hobbes give common power in Leviathan? How do these accounts differ?';
  const sources=[
