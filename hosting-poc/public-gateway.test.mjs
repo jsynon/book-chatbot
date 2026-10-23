@@ -259,7 +259,7 @@ test('an unspecified Bible edition can support the requested verse range alongsi
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
  assert.match(inputs[0].messages[0].content,/a parallel edition of the same work and passage is in scope/);
  assert.match(inputs[1].messages[0].content,/a parallel edition of the same work and passage is in scope/);
- assert.match(inputs[1].messages[0].content,/Do not treat a commentary excerpt as the primary text/);
+ assert.match(inputs[1].messages[0].content,/Keep commentary separate from primary text/);
 });
 test('a scoped Bible answer is composed only from the requested verses',async()=>{
  const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
@@ -305,9 +305,9 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
  assert.match(inputs[0].messages[1].content,/12 No one has seen God/);
  assert.match(inputs[0].messages[1].content,/10 In this is love/);
  assert.match(inputs[0].messages[1].content,/atoning sacrifice for our sins/);
- assert.match(inputs[1].messages[0].content,/when at least three distinct points support exactly two requested parts, write exactly two paragraphs, one for each part/);
- assert.match(inputs[1].messages[0].content,/with three to five complete sentences in each paragraph and usually 150–220 words overall/);
- assert.match(inputs[1].messages[0].content,/This is the exception to the general instruction not to force one item per paragraph/);
+ assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
+ assert.match(inputs[1].messages[0].content,/Develop the explanation with relevant reasons/);
+ assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
  assert.doesNotMatch(inputs[0].messages[1].content,/Christians are reminded that their obligation/);
  assert.doesNotMatch(inputs[0].messages[1].content,/truth and action/);
  assert.doesNotMatch(inputs[0].messages[1].content,/will reassure our hearts before him/);
@@ -330,7 +330,7 @@ test('evidence review can select a supported point when it cannot safely copy an
    coverage:'full',missing:'',questionParts:[{part:'explain natural selection',status:'supported',evidenceIds:['S1']}],
    evidence:[{id:'S1',point:'Natural selection preserves favorable variations across generations.',quote:'',speaker:'unknown',qualifier:''}]
   })}}],usage:{neurons:2}};
-  assert.match(input.messages[0].content,/general explanation from a special-case example/);
+  assert.match(input.messages[0].content,/verify each point against the full excerpt/);
   return {choices:[{finish_reason:'stop',message:{content:
    'Darwin describes natural selection as preserving favorable variations across generations [S1].'}}],usage:{neurons:3}};
  }};
@@ -338,7 +338,7 @@ test('evidence review can select a supported point when it cannot safely copy an
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.evidenceMap[0].quoteVerified,false);
  assert.match(inputs[0].messages[0].content,/Do not mark coverage none solely because an exact quote or qualifier is unavailable/);
- assert.match(inputs[1].messages[0].content,/An evidence point without an exact verified passage anchor/);
+ assert.match(inputs[1].messages[0].content,/Use the evidence map as a guide/);
 });
 test('same-book answers select complementary passages and synthesize every question part',async()=>{
  const question='How does Aristotle explain habituation, and how do repeated actions shape character?';
@@ -363,29 +363,28 @@ test('same-book answers select complementary passages and synthesize every quest
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/up to six distinct passages, including passages from the same book/);
- assert.match(inputs[1].messages[0].content,/use the questionParts checklist to make sure/);
- assert.match(inputs[1].messages[0].content,/For a distinction directly stated in an excerpt/);
- assert.match(inputs[1].messages[0].content,/normally have three to five complete sentences/);
- assert.match(inputs[1].messages[0].content,/When exactly two distinct question parts are supported/);
- assert.match(inputs[1].messages[0].content,/aim for about 150–220 words overall when the passages support that depth, but continue when distinct evidence-supported qualifications, examples, or implications add value/);
- assert.match(inputs[1].messages[0].content,/when at least three distinct points support exactly two requested parts, write exactly two paragraphs/);
- assert.doesNotMatch(inputs[1].messages[0].content,/For a narrow factual question, stay brief/);
- assert.match(inputs[1].messages[0].content,/exactly three developed, connected paragraphs/);
- assert.match(inputs[1].messages[0].content,/180–260 words overall/);
- assert.match(inputs[1].messages[0].content,/usually about 150–220 words/);
- assert.match(inputs[1].messages[0].content,/Open with a direct answer calibrated to the evidence/);
- assert.match(inputs[1].messages[0].content,/You may also use reliable general knowledge/);
- assert.match(inputs[1].messages[0].content,/Clearly mark this material with wording such as/);
- assert.match(inputs[1].messages[0].content,/never attach a book citation to outside context/);
- assert.match(inputs[1].messages[0].content,/When at least three distinct relevant evidence-map points support the answer, develop them in about 120–200 words, even if the question is narrowly framed/);
+ assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
+ assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
+ assert.match(inputs[1].messages[0].content,/Develop the explanation/);
+ assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
+ assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
+ assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
+ assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
+ assert.match(inputs[1].messages[0].content,/Develop the explanation/);
+ assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
+ assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
+ assert.match(inputs[1].messages[0].content,/Open with the direct answer/);
+ assert.match(inputs[1].messages[0].content,/brief reliable general context/);
+ assert.match(inputs[1].messages[0].content,/Label reader synthesis or reliable broader context clearly/);
+ assert.match(inputs[1].messages[0].content,/cite each source-based sentence/);
+ assert.match(inputs[1].messages[0].content,/Develop the explanation with relevant reasons/);
  assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides of a comparison or causal account/);
- assert.match(inputs[1].messages[0].content,/do not present two passages from one author as two independent perspectives/);
- assert.match(inputs[1].messages[0].content,/Avoid repetition and adjacent topics/);
- assert.match(inputs[1].messages[0].content,/should explain the point, its reason or distinction/);
- assert.match(inputs[1].messages[0].content,/do not force a one-item-per-paragraph outline/);
- assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
- assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to six/);
- assert.match(inputs[1].messages[0].content,/Final completeness priority: answer the actual claim, reason, or function asked about before adding a related motive, consequence, or procedural detail/);
+ assert.match(inputs[1].messages[0].content,/Do not treat two passages from one author as independent perspectives/);
+ assert.match(inputs[1].messages[0].content,/do not pad or repeat/);
+ assert.match(inputs[1].messages[0].content,/relevant reasons, distinctions/);
+ assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
+ assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides/);
+ assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
  assert.equal(inputs[1].max_completion_tokens,1100);
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
@@ -522,7 +521,7 @@ test('repairs an omitted but retrieved named-work passage before claiming it has
    ]
   })}}]};
   assert.equal(inputs.length,3);
-  assert.match(input.messages[0].content,/including excerpts not selected by the first review/);
+  assert.match(input.messages[0].content,/Re-read all verified excerpts/);
   assert.match(input.messages[1].content,/page 58/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Darwin explains that natural selection preserves favorable variations [S1]. Hawking discusses whether primordial black holes could be observed through their radiation. He points to an observed gamma-ray background and compares its intensity across frequencies, using that observation to assess the proposed black-hole explanation [S2].',
@@ -608,7 +607,7 @@ test('repairs literary summaries that blur a character theory with another speak
   })}}]};
   }
   if(inputs.length===2){
-   assert.match(input.messages[0].content,/Preserve the passage’s rhetorical force: a question, conjecture, hypothetical, accusation, reported opinion, or character’s theory is not automatically an asserted fact/);
+   assert.match(input.messages[0].content,/Keep an author’s account distinct from a narrator, character, reported view/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Raskolnikov has a perfect right to murder because extraordinary people can break the law [S1]. The novel demonstrates that he no longer believes his theory [S2]. His poverty and repentance explain the murder and confession [S3].',
    partChecks:[
@@ -618,9 +617,7 @@ test('repairs literary summaries that blur a character theory with another speak
   })}}]};
   }
   assert.equal(inputs.length,3);
-  assert.match(input.messages[0].content,/attribute that description to the reporting speaker/);
-  assert.match(input.messages[0].content,/preserve that report as a report and cite the reporting passage/);
-  assert.match(input.messages[0].content,/do not present it as the named person’s unqualified position/);
+  assert.match(input.messages[0].content,/reported views, replies, hypotheticals, questions, and editorial notes distinct/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Porfiry first summarizes the theory as giving extraordinary people license to transgress, but Raskolnikov qualifies that account: he claims an inner right to cross certain limits only when doing so is essential to realizing an idea, perhaps one that benefits humanity [S1]. The qualification matters; the passage does not say that extraordinary people must commit crimes or have an unrestricted right to do so.\n\nLater, Porfiry argues that Raskolnikov has stopped believing his theory and predicts that he will confess [S2]. That is Porfiry’s interpretation at this point. The epilogue later reports Raskolnikov’s stated motives as poverty and helplessness, and says he attributed his confession to repentance [S3]. Those motives complicate the extraordinary-person rationale by connecting the crime to personal desperation and remorse.',
    partChecks:[
@@ -807,7 +804,7 @@ test('author comparison repair replaces a secondary report with both authors’ 
     {part:"Shestov's thought",status:'unsupported',evidenceIds:[]}
    ]
   })}}],usage:{neurons:2}};
-  assert.match(input.messages[0].content,/prefer that author’s own submitted work/);
+  assert.match(input.messages[0].content,/When asked for a named author’s own view, prefer that author’s relevant supplied work/);
   assert.match(input.messages[1].content,/Philosophical Fragments — Søren Kierkegaard/);
   assert.match(input.messages[1].content,/Athens and Jerusalem — Lev Shestov, physical PDF page 55/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
@@ -1514,10 +1511,9 @@ test('composition recovers relevant submitted passages after a false-negative ev
   assert.match(input.messages[1].content,/initial evidence-selection pass selected no passages/);
   assert.doesNotMatch(input.messages[1].content,/Coverage: none/);
   assert.doesNotMatch(input.messages[1].content,/Evidence map \(reviewed points\):/);
-  assert.match(input.messages[0].content,/derive one to four concise requested parts/);
-  assert.match(input.messages[0].content,/first evidence reviewer selected no passages/);
-  assert.doesNotMatch(input.messages[0].content,/questionParts checklist/);
-  assert.doesNotMatch(input.messages[0].content,/organize the answer around the evidence map/);
+  assert.match(input.messages[0].content,/The first evidence review selected no passages/);
+  assert.match(input.messages[0].content,/Inspect every excerpt and answer any part it supports/);
+  assert.match(input.messages[0].content,/cite each source-based sentence/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Thucydides identifies the hidden underlying cause as “the growth of the power of Athens” and the alarm this caused in Lacedaemon [S1]. He presents that growth and fear as making war inevitable, distinguishing them from the complaints that appeared closer to the outbreak [S1]. The underlying cause is therefore the continuing shift in power and the fear it generated, rather than one isolated grievance [S1].\n\nThe immediate disputes included Athens’ orders to Potidaea, a Corinthian colony and Athenian tributary, to raze its walls, provide hostages, and dismiss Corinthian magistrates [S2]. Thucydides also notes that Athens ordered Potidaea not to receive the persons sent from Corinth annually to succeed those magistrates [S2]. These were concrete disputes preceding the war; the deeper cause was the growth of Athenian power and the alarm it inspired in Lacedaemon [S1, S2].',
    partChecks:[
@@ -1555,8 +1551,8 @@ test('empty-review recovery handles a plain-text composition without throwing',a
  }};
  const result=await composeVerifiedAnswer(question,[source],ai);
  assert.equal(calls,2);
- assert.match(inputs[1].messages[0].content,/Priority check: answer the actual claim, reason, or function asked about before adding a related motive, consequence, or procedural detail/);
- assert.match(inputs[1].messages[0].content,/With two substantive parts and several relevant passage points, use two connected paragraphs of three to five sentences, normally about 120–180 words total/);
+ assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
+ assert.match(inputs[1].messages[0].content,/Develop the explanation with relevant reasons/);
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.coverage,'none');
  assert.equal(result.reviewStatus,'answer-draft-unverified');
@@ -1740,12 +1736,12 @@ test('empty-review recovery aligns quote-verified evidence with a cited answer',
  }};
  const result=await composeVerifiedAnswer(question,[source],ai);
  assert.equal(call,2);
- assert.match(prompts[1].messages[0].content,/cross-check answer, partChecks, and evidence for consistency/);
- assert.match(prompts[1].messages[0].content,/state the concrete basis of difference on the same requested issue/);
- assert.match(prompts[1].messages[0].content,/direct counterpoint or qualification/);
- assert.match(prompts[1].messages[0].content,/If a verified excerpt directly supports a requested part, do not mark that part unsupported/);
- assert.match(prompts[1].messages[0].content,/Add an exact 12–220 character quote copied from that same excerpt when you can copy it confidently/);
- assert.match(prompts[1].messages[0].content,/A missing or unverified quote does not invalidate an otherwise supported point or citation/);
+ assert.match(prompts[1].messages[0].content,/Cross-check answer and partChecks for consistency/);
+ assert.match(prompts[1].messages[0].content,/Complementary passages may support separate sides/);
+ assert.match(prompts[1].messages[0].content,/Preserve meaningful qualifications/);
+ assert.match(prompts[1].messages[0].content,/Mark a part supported only if the answer explains it with cited evidence/);
+ assert.match(prompts[1].messages[0].content,/add an exact short quote only when it can be copied confidently/);
+ assert.match(prompts[1].messages[0].content,/answer any part it supports/);
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.coverage,'full');
  assert.equal(result.reviewStatus,'claim_support_not_independently_verified');
@@ -1776,7 +1772,7 @@ test('all-books empty-review recovery anchors claims to exact quotes from the ri
   })}}]};
   assert.match(input.messages[1].content,/page 5546/);
   assert.match(input.messages[1].content,/page 5547/);
-  assert.match(input.messages[0].content,/Add an exact 12–220 character quote copied from that same excerpt when you can copy it confidently/);
+  assert.match(input.messages[0].content,/add an exact short quote only when it can be copied confidently/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'The passage identifies love as originating in God and says that God is love; it illustrates this by describing God sending the Son so people might live [S1]. It also defines love through God’s initiative: God loved people and sent the Son for their sins [S1]. The passage then connects that prior love to believers’ obligation to love one another [S2]. It adds that when they do, God abides in them and divine love is perfected in them [S2].',
    partChecks:[
@@ -1875,8 +1871,8 @@ test('empty-review recovery uses the primary parallel-edition passage for a scop
  assert.deepEqual(result.evidenceMap.map(item=>item.id),['S1','S2']);
  assert.deepEqual(result.evidenceMap.map(item=>[item.id,item.quoteVerified]),[['S1',true],['S2',false]]);
  assert.equal('speaker' in result.evidenceMap[1],false);
- assert.match(prompts[1].messages[0].content,/first evidence reviewer selected no passages/);
- assert.match(prompts[1].messages[0].content,/identify an editorial note explicitly/);
+ assert.match(prompts[1].messages[0].content,/first evidence review selected no passages/);
+ assert.match(prompts[1].messages[0].content,/Keep commentary separate from primary text/);
  assert.match(prompts[1].messages[0].content,/evidence array/);
  assert.doesNotMatch(prompts[1].messages[0].content,/questionParts checklist/);
 });
@@ -1984,8 +1980,8 @@ test('v1.13 carries an explicit verse-range scope into review and composition pr
  assert.match(reviewSystem,/explicit textual scope/);
  assert.match(reviewSystem,/a parallel edition of the same work and passage is in scope/);
  assert.match(reviewSystem,/verse range/);
- assert.match(answerSystem,/honor any explicit work, chapter, verse, section, or page range/);
- assert.match(answerSystem,/adjacent chapter/);
+ assert.match(answerSystem,/honor explicit work, chapter, verse, section, or page limits/);
+ assert.match(answerSystem,/requested work or passage scope/);
  assert(prompts[0][1].content.includes(question));
  assert(prompts[1][1].content.includes(question));
 });
@@ -2577,15 +2573,13 @@ test('partial answer preserves a qualifying phrase and gets one conditional corr
      evidence:[{id:'S1',point:'Darwin rejects the idea that struggle and selection only arise after many forms exist.'}]
    })}}]};
    if(calls.length===2){
-    assert.match(input.messages[0].content,/When the evidence map identifies uncertainty or says a cause or contribution cannot be determined, preserve that limit/);
+    assert.match(input.messages[0].content,/Preserve meaningful qualifications, conditions, uncertainty/);
     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      answer:'Darwin says natural selection would occur without any struggle for existence [S1].',
      partChecks:[{part:'explain when struggle and natural selection occur',status:'partial',evidenceIds:['S1']}]
     })}}]};
    }
-   assert.match(input.messages[0].content,/Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”/);
-   assert.match(input.messages[0].content,/When the evidence map identifies uncertainty or says a cause or contribution cannot be determined, preserve that limit/);
-   assert.match(input.messages[0].content,/omitting a qualifier can reverse or overstate the source claim/);
+   assert.match(input.messages[0].content,/Preserve conditions, uncertainty, and requested textual scope/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      answer:'Darwin calls it an error to suppose that struggle and natural selection are absent until many forms have developed [S1]. The excerpt addresses when these processes appear; it does not establish that selection occurs without struggle.',
      partChecks:[{part:'explain when struggle and natural selection occur',status:'partial',evidenceIds:['S1']}]
@@ -2628,7 +2622,7 @@ test('composition checks every question part against all verified excerpts and r
     ]
    })}}],usage:{neurons:3}};
   }
-  assert.match(input.messages[0].content,/coverage check found missing or underexplained/);
+  assert.match(input.messages[0].content,/Repair only the requested parts/);
   assert.match(input.messages[1].content,/page 140/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Natural selection preserves favorable variations rather than creating them [S1]. The struggle for existence is also part of the process: Darwin rejects the assumption that it, and natural selection, begin only after many forms have appeared [S2]. The excerpt supports that connection, though this passage alone does not spell out every consequence of the struggle.',
@@ -2673,7 +2667,7 @@ test('named-author comparison repairs an omitted side from a submitted source an
    ]
   })}}],usage:{neurons:3}};
   if(calls.length===3){
-   assert.match(input.messages[0].content,/prefer that author’s own submitted work/);
+   assert.match(input.messages[0].content,/When asked for a named author’s own view, prefer that author’s relevant supplied work/);
    assert.match(input.messages[1].content,/Beyond reason and knowledge/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
     answer:'Kierkegaard’s passage presents faith as a paradox in which the individual can stand in an absolute relation to God beyond the ethical universal [S2]. Shestov argues that universal necessity and rational knowledge constrain human freedom, and he calls for a struggle to break their power [S1]. Read together, the passages suggest a difference in emphasis: Kierkegaard focuses on the individual’s paradoxical relation to God, while Shestov attacks the rule of necessary truths and stresses freedom beyond reason. This is a comparison of the supplied passages, not a claim that either author directly compared them.',
@@ -2788,7 +2782,7 @@ test('repairs an unsupported part when review evidence was left unmapped',async(
    answer:'The excerpts do not explain how the protagonist’s view is tested later.',
    partChecks:[{part:'How the protagonist’s view is tested later',status:'unsupported',evidenceIds:[]}]
   })}}],usage:{neurons:3}};
-  assert.match(input.messages[0].content,/Use an excerpt if it directly supports the missing part/);
+  assert.match(input.messages[0].content,/use the evidence map to find the central supported point/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'The later exchange puts the protagonist’s position under pressure: Porfiry predicts that Raskolnikov will choose confession and take on suffering [S2]. This presents confession and suffering as consequences he must confront, though the excerpt does not explain the full development of his reasoning.',
    partChecks:[{part:'How the protagonist’s view is tested later',status:'partial',evidenceIds:['S2']}]
@@ -2830,7 +2824,7 @@ test('repairs a missing comparison when each named work has a supported side',as
     {part:'Comparison of the two accounts',status:'unsupported',evidenceIds:[]}
    ]
   })}}],usage:{neurons:3}};
-  assert.match(input.messages[0].content,/synthesize a concise contrast only when separately supported parts establish every requested side/i);
+  assert.match(input.messages[0].content,/Repair only the requested parts/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Aristotle presents political order as aiming at human good and at making citizens good and obedient to laws [S1]. The passage ties political judgment to a shared human end, and it treats citizens’ character and their relation to law as part of that end. The account therefore describes political order through the good it should pursue and the kind of citizen it should form. These points come from Aristotle’s passage, which speaks about political science and civic virtue [S1].\n\nHobbes presents political order through the institution of a common power. That power keeps people in awe and enables them to consent to justice and the laws of nature [S2]. In the excerpt, the role of authority is practical: it secures conditions under which those rules can be observed. Hobbes’s passage thus emphasizes the need for an effective power to sustain order among people [S2].\n\nRead together, the accounts place emphasis on different supports for political order [S1, S2]. Aristotle connects it to human good and the formation of citizens, while Hobbes connects it to a common power that secures justice and obedience [S1, S2]. This comparison is a synthesis of the two supplied passages; neither cited excerpt directly compares Aristotle with Hobbes [S1, S2]. The distinction follows from the separate roles each passage assigns to political order [S1, S2].',
    partChecks:[
@@ -2875,8 +2869,8 @@ test('repairs a requested part when its reviewed evidence is absent from the dra
    {part:'how Raskolnikov justifies the murder',status:'partial',evidenceIds:['S1']},
    {part:'how the novel tests his reasoning',status:'partial',evidenceIds:['S2']}
   ]})}}],usage:{neurons:2}};
-  assert.match(input.messages[0].content,/Revise the answer to address each requested question part/);
-  assert.match(input.messages[0].content,/Put the direct definition, theory, or role first/);
+  assert.match(input.messages[0].content,/Repair only the requested parts/);
+  assert.match(input.messages[0].content,/Put direct definitions, theories, and roles before related motives/);
   assert.match(input.messages[1].content,/how Raskolnikov justifies the murder — partial/);
   assert.match(input.messages[1].content,/Evidence map/);
   assert.match(input.messages[1].content,/Direct mapped points for incomplete parts that are not cited in the current draft/);
@@ -2922,7 +2916,7 @@ test('repairs a partial comparison when supported source positions are only summ
    {part:'the role of common power in Leviathan',status:'supported',evidenceIds:['S2']},
    {part:'how these accounts differ',status:'partial',evidenceIds:['S1','S2']}
   ]})}}],usage:{neurons:2}};
-  assert.match(input.messages[0].content,/For an explicit comparison part, synthesize a concise contrast/);
+  assert.match(input.messages[0].content,/For comparisons, state the contrast only when evidence supports each side/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:synthesis,partChecks:[
    {part:'the aim of political science in the Nicomachean Ethics',status:'supported',evidenceIds:['S1']},
    {part:'the role of common power in Leviathan',status:'supported',evidenceIds:['S2']},
@@ -2957,7 +2951,7 @@ test('recognizes a cited reader synthesis when coverage calls the comparison uns
     {id:'S1',point:'Aristotle connects political science with human good and civic formation.'},
     {id:'S2',point:'Hobbes connects common power with maintaining justice.'}
    ]})}}],usage:{neurons:2}};
-  assert.match(input.messages[0].content,/Mark the comparison supported when both requested sides are explicitly explained/);
+  assert.match(input.messages[0].content,/Complementary passages may support separate sides/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer,partChecks:[
    {part:'Aristotle’s account of political science',status:'supported',evidenceIds:['S1']},
    {part:'Hobbes’s account of common power',status:'supported',evidenceIds:['S2']},
@@ -3033,8 +3027,8 @@ test('repairs prose that denies a comparison while coverage marks it supported',
     {id:'S2',point:'Hobbes connects common power with justice and obedience.'}]
   })}}],usage:{neurons:2}};
   if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:refusal,partChecks:parts})}}],usage:{neurons:2}};
-  assert.match(input.messages[0].content,/Revise the answer to address each requested question part/);
-  assert.match(calls[1].messages[0].content,/state the concrete basis of difference on the same requested issue/);
+  assert.match(input.messages[0].content,/Repair only the requested parts/);
+  assert.match(calls[1].messages[0].content,/Complementary passages may support separate sides/);
   assert.match(input.messages[1].content,/Initial answer and coverage check/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:repaired,partChecks:parts})}}],usage:{neurons:3}};
  }};
@@ -3123,8 +3117,8 @@ test('fragmentary passages cannot be completed or attributed to the catalog auth
  assert.equal(inputs.length,2);
  assert.match(inputs[0].messages[0].content,/Never turn a statement that the text does not discuss a subject/);
  assert.match(inputs[0].messages[0].content,/ellipsis, an unfinished clause/);
- assert.match(inputs[1].messages[0].content,/A book record naming an author does not prove/);
- assert.match(inputs[1].messages[0].content,/Never complete a dangling clause/);
+ assert.match(inputs[1].messages[0].content,/a catalog author is not automatically the speaker/);
+ assert.match(inputs[1].messages[0].content,/do not complete a cut-off sentence/);
  assert.equal(result.coverage,'partial');
  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
 });
@@ -3203,21 +3197,20 @@ test('answer output explicitly discloses an unsupported requested part',async()=
  assert.match(result.answer,/do not fully address: contrast with skill/i);
  assert.equal(result.questionParts[2].status,'unsupported');
  assert.match(calls[1].messages[1].content,/contrast with skill — unsupported/);
- assert.match(calls[1].messages[0].content,/use the questionParts checklist to make sure/);
- assert.match(calls[1].messages[0].content,/every supported part is answered/);
+ assert.match(calls[1].messages[0].content,/Answer each requested part directly/);
+ assert.match(calls[1].messages[0].content,/Answer each requested part directly/);
  assert.match(calls[1].messages[1].content,/contrast with skill — unsupported \[evidence: none\]/);
 });
 test('answer composition explicitly requests plain text instead of Markdown artifacts',async()=>{
  const {readFileSync}=await import('node:fs');
  const source=readFileSync(new URL('./public-gateway.mjs',import.meta.url),'utf8');
- assert.match(source,/Use plain text only: no Markdown, headings, asterisks, or bullet markers/);
- assert.match(source,/For a substantive question with exactly two/);
- assert.match(source,/developed, connected paragraphs, one for each part/);
- assert.match(source,/Aim for 120–180 words overall when the/);
- assert.match(source,/excerpts support that depth/);
- assert.match(source,/Cite every source-based sentence, including reader-level comparisons/);
- assert.match(source,/a comparison sentence must cite the evidence for each work/);
- assert.doesNotMatch(source,/brief bullets/);
+ assert.match(source,/Use plain text without headings or bullets/);
+ assert.match(source,/Answer each requested part directly/);
+ assert.match(source,/Develop the explanation/);
+ assert.match(source,/let answer length follow the evidence/);
+ assert.match(source,/when the excerpts support them/);
+ assert.match(source,/cite each source-based sentence/);
+ assert.match(source,/cite each work/);
 });
 
 
@@ -3257,37 +3250,13 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
  assert.doesNotMatch(calls[1].messages[1].content,/speaker: Kierkegaard/);
- assert.match(calls[0].messages[0].content,/Keep each point atomic: one claim per point/);
- assert.match(calls[0].messages[0].content,/make the evidence map include the definition and the passage’s stated reason, operation, or criterion for each requested distinction/);
- assert.match(calls[0].messages[0].content,/map the source’s general explanation separately from any concrete example/i);
- assert.match(calls[0].messages[0].content,/preserve its specific conditions rather than generalizing from it/i);
- assert.match(calls[0].messages[0].content,/For broad questions asking what a person or work says about a topic/);
- assert.match(calls[0].messages[0].content,/Keyword overlap alone is not evidence/);
- assert.match(calls[0].messages[0].content,/verify that the excerpt describes what it does or the result it produces/);
- assert.match(calls[0].messages[0].content,/Prioritize direct explanation of the concept/);
- assert.match(calls[0].messages[0].content,/remarks that a term needs definition as context/);
- assert.match(calls[0].messages[0].content,/IDs may repeat only when the same passage supports a different point/);
- assert.match(calls[0].messages[0].content,/Treat footnotes, translator or editor notes, and introductions as separate speakers/);
- assert.match(calls[0].messages[0].content,/do not treat a translation note as Kierkegaard’s own distinction/);
- assert.match(calls[0].messages[0].content,/exact quote copied from that same excerpt/);
- assert.match(calls[0].messages[0].content,/record that reply as a separate evidence point/);
- assert.match(calls[1].messages[0].content,/complete verified quote and sentence context together/);
- assert.match(calls[1].messages[0].content,/do not use direct quotations in the answer field/i);
- assert.match(calls[0].messages[0].content,/keep the condition and its consequence together/);
- assert.match(calls[0].messages[0].content,/actual differentiating criterion/);
- assert.match(calls[1].messages[0].content,/never detach a consequence from its “if,” “unless,” “only if,” or equivalent condition/);
- assert.match(calls[1].messages[0].content,/The evidence map is authoritative about this distinction/);
- assert.match(calls[1].messages[0].content,/do not turn a translator’s lexical gloss or capitalization convention into a claim about Kierkegaard’s theory/);
- assert.match(calls[1].messages[0].content,/State the central account once/);
- assert.match(calls[1].messages[0].content,/Do not restate the same claim with expanded synonyms/);
- assert.match(calls[1].messages[0].content,/Omit adjacent topics that do not answer a listed part/);
- assert.match(calls[1].messages[0].content,/Preserve stated relations precisely/);
- assert.match(calls[1].messages[0].content,/Do not combine two reviewed points into a definition/);
- assert.match(calls[1].messages[0].content,/EXCEPTION: when the question explicitly asks for a comparison across separately named works/);
- assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map/);
- assert.match(calls[1].messages[0].content,/a shared topic word is not enough/);
- assert.match(calls[1].messages[0].content,/preserve that report as a report and cite the reporting passage/);
- assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
+ assert.ok(calls[1].messages[0].content.length<3500,'composition guidance should stay compact');
+ assert.match(calls[1].messages[0].content,/Answer each requested part directly/);
+ assert.match(calls[1].messages[0].content,/Attribute claims to the visible speaker/);
+ assert.match(calls[1].messages[0].content,/Preserve meaningful qualifications/);
+ assert.match(calls[1].messages[0].content,/cite each source-based sentence/);
+ assert.match(calls[1].messages[0].content,/Use prior conversation only to resolve references/);
+ assert.match(calls[1].messages[0].content,/Cross-check answer and partChecks/);
 });
 
 test('a final relation audit removes claims that a verified quote does not establish',async()=>{
