@@ -2975,6 +2975,29 @@ function explicitVerseRange(question){
   return `${scope.work} ${scope.startChapter}:${scope.startVerse}-${end}`;
 }
 
+const CANONICAL_BIBLE_BOOKS=new Set((
+  'Genesis|Exodus|Leviticus|Numbers|Deuteronomy|Joshua|Judges|Ruth|'+
+  '1 Samuel|2 Samuel|1 Kings|2 Kings|1 Chronicles|2 Chronicles|Ezra|Nehemiah|Esther|'+
+  'Job|Psalms|Proverbs|Ecclesiastes|Song of Solomon|Isaiah|Jeremiah|Lamentations|Ezekiel|Daniel|'+
+  'Hosea|Joel|Amos|Obadiah|Jonah|Micah|Nahum|Habakkuk|Zephaniah|Haggai|Zechariah|Malachi|'+
+  'Matthew|Mark|Luke|John|Acts|Romans|1 Corinthians|2 Corinthians|Galatians|Ephesians|Philippians|'+
+  'Colossians|1 Thessalonians|2 Thessalonians|1 Timothy|2 Timothy|Titus|Philemon|Hebrews|James|'+
+  '1 Peter|2 Peter|1 John|2 John|3 John|Jude|Revelation'
+).split('|').map(value=>normalizedSourceGroupText(value)));
+
+function isCanonicalBibleBook(value){
+  return CANONICAL_BIBLE_BOOKS.has(normalizedSourceGroupText(value));
+}
+
+function addBibleSearchContext(query){
+  if(/\b(?:bible|scripture|testament)\b/i.test(query))return query;
+  const suffix=' Bible';
+  const raw=String(query||'').trim();
+  const prefix=raw.length+suffix.length<=160?raw:
+    raw.slice(0,160-suffix.length).replace(/\s+\S*$/,'').trim();
+  return `${prefix}${suffix}`;
+}
+
 function retainExplicitVerseRange(query,range){
   if(!range||containsPhrase(query,range))return query;
   const suffix=' '+range;
@@ -3263,6 +3286,9 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
   if(verseRange)
     for(let index=0;index<queries.length;index++)
       queries[index]=retainExplicitVerseRange(queries[index],verseRange);
+  const verseScope=explicitVerseScope(question);
+  if(!bookTitle&&verseScope&&isCanonicalBibleBook(verseScope.work))
+    queries=queries.map(addBibleSearchContext);
   return {queries,usage:{neurons:Math.max(0,Number(response?.usage?.neurons)||0)}};
 }
 async function verifyTurnstile(token,ip,secret,fetcher) {
