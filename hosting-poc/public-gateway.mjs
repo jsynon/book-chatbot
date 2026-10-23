@@ -2147,8 +2147,14 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'supporting sentence. Aim for 180–260 words overall when the evidence '+
         'supports that depth. Keep each source-based claim tied to the evidence IDs '+
         'listed for its question part. Keep broader-context material clearly labeled '+
-        'and do not give it source IDs unless the excerpts support it. Avoid repetition, '+
-        'padding, and adjacent topics. Omit adjacent topics '+
+        'and do not give it source IDs unless the excerpts support it. '+
+        'For a substantive question with exactly two supported parts, use two '+
+        'developed, connected paragraphs, one for each part, normally three to '+
+        'five complete sentences apiece. Aim for 120–180 words overall when the '+
+        'excerpts support that depth. Explain each point and its relevant reason, '+
+        'distinction, qualification, or example. Do not repeat the same summary '+
+        'in both paragraphs or pad beyond what the source supports. Avoid repetition '+
+        'and adjacent topics. Omit adjacent topics '+
         'that do not answer a listed part, such as a separate comparison between '+
         'theoretical wisdom and practical wisdom. Omit unsupported parts as factual '+
         'claims; the system will '+

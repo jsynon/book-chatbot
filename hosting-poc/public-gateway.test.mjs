@@ -379,7 +379,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/When at least three distinct relevant evidence-map points support the answer, develop them in about 120–200 words, even if the question is narrowly framed/);
  assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides of a comparison or causal account/);
  assert.match(inputs[1].messages[0].content,/do not present two passages from one author as two independent perspectives/);
- assert.match(inputs[1].messages[0].content,/Avoid repetition, padding, and adjacent topics/);
+ assert.match(inputs[1].messages[0].content,/Avoid repetition and adjacent topics/);
  assert.match(inputs[1].messages[0].content,/should explain the point, its reason or distinction/);
  assert.match(inputs[1].messages[0].content,/do not force a one-item-per-paragraph outline/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
@@ -2923,6 +2923,10 @@ test('answer composition explicitly requests plain text instead of Markdown arti
  const {readFileSync}=await import('node:fs');
  const source=readFileSync(new URL('./public-gateway.mjs',import.meta.url),'utf8');
  assert.match(source,/Use plain text only: no Markdown, headings, asterisks, or bullet markers/);
+ assert.match(source,/For a substantive question with exactly two/);
+ assert.match(source,/developed, connected paragraphs, one for each part/);
+ assert.match(source,/Aim for 120–180 words overall when the/);
+ assert.match(source,/excerpts support that depth/);
  assert.doesNotMatch(source,/brief bullets/);
 });
 
