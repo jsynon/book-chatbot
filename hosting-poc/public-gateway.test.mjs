@@ -391,7 +391,9 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
  assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides/);
  assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
- assert.equal(inputs[1].max_completion_tokens,1100);
+ assert.match(inputs[1].messages[0].content,/using the passage that most directly answers it/);
+ assert.match(inputs[1].messages[0].content,/do not substitute related background, motives, or consequences/);
+ assert.equal(inputs[1].max_completion_tokens,1600);
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
@@ -2195,7 +2197,7 @@ test('public pilot selects and synthesizes six complementary pages from one book
        ]
      })}}]};
    }
-   assert.equal(input.max_completion_tokens,1100);
+   assert.equal(input.max_completion_tokens,1600);
    const answer=input.messages.at(-1).content;
    for(let i=1;i<=6;i++)assert(answer.includes('[S'+i+']'));
    return {choices:[{finish_reason:'stop',message:{content:
