@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -429,7 +429,9 @@ test('all-books planner assigns a named-work query to each side of a cross-work 
  assert.match(prompt,/including later clauses and the relation being compared/);
  assert.match(prompt,/concrete observable signal, measurement, motion, or named example/);
  assert.match(prompt,/Do not substitute a general statement that models can be compared with observations/);
- assert.match(prompt,/When a question uses an abstract modern label, retain it but also search for the source’s own definitions, criteria, examples, and near-synonyms/);
+ assert.match(prompt,/When a question uses an abstract modern label or asks about social effects/);
+ assert.match(prompt,/search for the source’s concrete mechanisms, definitions, and examples/);
+ assert.match(prompt,/education, law, custom, dependence, exclusion, or institutions/);
  assert.match(result.queries[0],/On the Origin of Species/i);
  assert.match(result.queries[0],/natural selection|favorable variations/i);
  assert.match(result.queries[1],/(?:A )?Brief History of Time/i);
@@ -2891,6 +2893,27 @@ test('a partial comparison with both sides supported uses the existing compariso
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
 
+test('discloses a retrieved comparison source omitted from final citations',()=>{
+ const groups=[
+  {label:'Hume’s Enquiry',bookIds:new Set(['35'])},
+  {label:'Kant’s Critique',bookIds:new Set(['40'])}
+ ];
+ const sources=[
+  {id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume'},
+  {id:'S2',bookId:'40',title:'Critique of Pure Reason — Immanuel Kant'}
+ ];
+ const answer='Kant reports that Hume rejects a priori causal knowledge [S2].';
+ const result=appendUncitedSourceGroupDisclosure(answer,groups,sources);
+ assert.equal(result.missingGroups.length,1);
+ assert.equal(result.missingGroups[0].label,'Hume’s Enquiry');
+ assert.match(result.answer,/No passage from Hume’s Enquiry appears in the answer’s citations/);
+ assert.match(result.answer,/not directly established/);
+ const complete=appendUncitedSourceGroupDisclosure(
+  answer+' Hume’s Enquiry treats causal inference as grounded in experience [S1].',groups,sources);
+ assert.deepEqual(complete.missingGroups,[]);
+ assert.equal(complete.answer,answer+' Hume’s Enquiry treats causal inference as grounded in experience [S1].');
+});
+
 test('a partial cross-work comparison cannot substitute an author attack for the missing position',()=>{
  const sources=[
   {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle'},
@@ -3493,6 +3516,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/cite each source-based sentence/);
  assert.match(calls[1].messages[0].content,/Use prior conversation only to resolve references/);
  assert.match(calls[1].messages[0].content,/Cross-check answer and partChecks/);
+ assert.match(calls[1].messages[0].content,/For a narrative account, explain what happened and how it ended/);
 });
 
 test('a final relation audit removes claims that a verified quote does not establish',async()=>{
