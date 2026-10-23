@@ -2806,6 +2806,90 @@ test('repairs a missing comparison when each named work has a supported side',as
  assert.deepEqual(result.questionParts[2].evidenceIds,['S1','S2']);
 });
 
+test('repairs a requested part when its reviewed evidence is absent from the draft citations',async()=>{
+ const question='In Crime and Punishment, how does Raskolnikov justify the murder, and how does the novel test his reasoning?';
+ const sources=[
+  {id:'S1',bookId:'529',title:'Crime and Punishment — Fyodor Dostoevsky',page:464,
+   preview:'Extraordinary men have a right to commit any crime and to transgress the law in any way, just because they are extraordinary.'},
+  {id:'S2',bookId:'529',title:'Crime and Punishment — Fyodor Dostoevsky',page:941,
+   preview:'The cause was his miserable position, his poverty and helplessness, and his desire to provide for his first steps in life.'}
+ ];
+ const calls=[];
+ const draft='The novel presents Raskolnikov as a troubled young man whose circumstances shape his choices [S2]. The account links his actions to hardship and uncertainty about his future. It also shows that his situation affects how he understands the consequences of what he has done. His reasoning is placed in a wider moral setting through the events that follow.\n\nThe later consequences make his position difficult to sustain [S2]. His conduct and emotional state remain important to how the reader understands the crime. The text presents these details as part of the broader narrative rather than as a simple legal account. Together, they show that his situation and the aftermath matter to the novel’s treatment of the murder.';
+ const repaired='Raskolnikov tries to justify the murder through a theory that “extraordinary” people have a right to transgress ordinary moral and legal limits [S1]. The claim gives exceptional status as the reason such a person may commit a crime. The passage presents this as the theory being discussed, not as a moral rule the novel endorses.\n\nThe novel tests that reasoning against the circumstances and consequences of the crime. A later explanation points to Raskolnikov’s poverty, helplessness, and desire to take his first steps in life as motives [S2]. This challenges the idea that the murder followed simply from a detached theory of exceptional status: the account also connects it with material desperation. The cited passages support that tension, though they do not by themselves settle every motive in the novel.';
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The theory used to justify the murder is not explained.',
+   questionParts:[
+    {part:'how Raskolnikov justifies the murder',status:'partial',evidenceIds:['S1']},
+    {part:'how the novel tests his reasoning',status:'partial',evidenceIds:['S2']}
+   ],evidence:[
+    {id:'S1',point:'The reported theory grants extraordinary people a right to transgress the law.',
+     quote:'Extraordinary men have a right to commit any crime and to transgress the law in any way, just because they are extraordinary.'},
+    {id:'S2',point:'A later account names poverty and helplessness as motives.',
+     quote:'The cause was his miserable position, his poverty and helplessness, and his desire to provide for his first steps in life.'}
+   ]})}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:draft,partChecks:[
+   {part:'how Raskolnikov justifies the murder',status:'partial',evidenceIds:['S1']},
+   {part:'how the novel tests his reasoning',status:'partial',evidenceIds:['S2']}
+  ]})}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/Revise the answer to address each requested question part/);
+  assert.match(input.messages[1].content,/how Raskolnikov justifies the murder — partial/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:repaired,partChecks:[
+   {part:'how Raskolnikov justifies the murder',status:'supported',evidenceIds:['S1']},
+   {part:'how the novel tests his reasoning',status:'supported',evidenceIds:['S2']}
+  ]})}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.match(result.answer,/extraordinary.*right to transgress/i);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+});
+
+test('repairs a partial comparison when supported source positions are only summarized separately',async()=>{
+ const question='How does Aristotle describe the aim of political science in the Nicomachean Ethics, and what role does Hobbes give common power in Leviathan? How do these accounts differ?';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:2,
+   preview:'Political science aims at the highest of all goods achievable by action, generally identified as happiness.'},
+  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes',page:104,
+   preview:'Without a common power to keep them all in awe, people would not reliably observe justice and the laws of nature.'}
+ ];
+ const calls=[];
+ const separate='Aristotle frames political science around the highest good achievable through action, which the passage identifies with happiness [S1]. The passage treats this as the end of political inquiry. Its focus is therefore on the good political activity seeks to achieve.\n\nHobbes describes common power as necessary to keep people in awe so they can observe justice and the laws of nature [S2]. The passage presents authority as a condition for those rules to be followed. Its focus is on what sustains public order among people.';
+ const synthesis='Aristotle frames political science around the highest good achievable through action, which the passage identifies with happiness [S1]. The account describes political inquiry through the human good it seeks to achieve. Its emphasis is on the end that political activity should serve.\n\nHobbes describes common power as necessary to keep people in awe so they can observe justice and the laws of nature [S2]. The passage presents authority as a condition for those rules to be followed. Its emphasis is on what sustains public order among people. As a reader-level comparison, Aristotle emphasizes the good political life should pursue, whereas Hobbes emphasizes the power needed to maintain justice and order [S1, S2]. This contrast synthesizes the separate passages; neither excerpt directly compares the two thinkers.';
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The contrast between the positions is not stated.',
+   questionParts:[
+    {part:'the aim of political science in the Nicomachean Ethics',status:'supported',evidenceIds:['S1']},
+    {part:'the role of common power in Leviathan',status:'supported',evidenceIds:['S2']},
+    {part:'how these accounts differ',status:'partial',evidenceIds:['S1','S2']}
+   ],evidence:[
+    {id:'S1',point:'Aristotle presents political science as aiming at the highest achievable good, identified as happiness.',
+     quote:'Political science aims at the highest of all goods achievable by action, generally identified as happiness.'},
+    {id:'S2',point:'Hobbes presents common power as necessary for justice and natural law to be observed.',
+     quote:'Without a common power to keep them all in awe, people would not reliably observe justice and the laws of nature.'}
+   ]})}}],usage:{neurons:2}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:separate,partChecks:[
+   {part:'the aim of political science in the Nicomachean Ethics',status:'supported',evidenceIds:['S1']},
+   {part:'the role of common power in Leviathan',status:'supported',evidenceIds:['S2']},
+   {part:'how these accounts differ',status:'partial',evidenceIds:['S1','S2']}
+  ]})}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/For an explicit comparison part, synthesize a concise contrast/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:synthesis,partChecks:[
+   {part:'the aim of political science in the Nicomachean Ethics',status:'supported',evidenceIds:['S1']},
+   {part:'the role of common power in Leviathan',status:'supported',evidenceIds:['S2']},
+   {part:'how these accounts differ',status:'supported',evidenceIds:['S1','S2']}
+  ]})}}],usage:{neurons:3}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.match(result.answer,/whereas Hobbes emphasizes the power needed/);
+ assert.equal(result.coverage,'full');
+});
+
 test('recognizes a cited reader synthesis when coverage calls the comparison unsupported',async()=>{
  const question='How does Aristotle describe political science in Nicomachean Ethics, how does Hobbes describe common power in Leviathan, and how do the accounts differ?';
  const sources=[

@@ -1911,6 +1911,18 @@ function hasUncitedRequestedSourceGroup(groups,sources,answer){
     return groupSources.length>0&&!groupSources.some(source=>citedIds.has(source.id));
   });
 }
+function hasCitedCrossWorkSynthesis(answer,groups,sources){
+  if(!Array.isArray(groups)||groups.length<2)return false;
+  const synthesisCue=/\b(?:whereas|while|by contrast|in contrast|unlike|rather than|different from|differs?|the difference is)\b/i;
+  const sentences=String(answer||'').split(/(?<=[.!?])\s+(?=[A-Z“"'])/u);
+  return sentences.some(sentence=>{
+    if(!synthesisCue.test(sentence))return false;
+    const citedIds=new Set([...sentence.matchAll(/\[([^\]]+)\]/g)]
+      .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
+    return groups.every(group=>sources.some(source=>
+      group.bookIds.has(String(source.bookId))&&citedIds.has(source.id)));
+  });
+}
 function answerContradictsSupportedPart(part,answer){
   if(part?.status!=='supported'||!isComparisonQuestionPart(part.part))return false;
   const text=String(answer||'');
@@ -2388,6 +2400,8 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       /\b(?:compare|comparison|contrast|differ|difference|different|versus|vs\.)\b/i.test(question);
     // Recover a named work that was submitted but omitted by evidence selection.
     const missingRequestedSourceGroup=hasUncitedRequestedSourceGroup(sourceGroups,sources,answer);
+    const draftCitationIds=new Set([...String(answer||'').matchAll(/\[([^\]]+)\]/g)]
+      .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
     const needsPartRepair=!emptyReview&&(missingRequestedSourceGroup||finalQuestionParts.some((part,index)=>{
       if(authorEvidenceGap(part,question,sources))return true;
       const hasSupportedEvidenceForEveryGroup=comparisonRequested&&
@@ -2395,8 +2409,17 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
           other.status==='supported'&&(other.evidenceIds||[]).some(id=>sources.some(source=>
             source.id===id&&group.bookIds.has(String(source.bookId))))));
       const isComparisonPart=isComparisonQuestionPart(part.part);
+      const partEvidenceIds=(part.evidenceIds||[]).map(String);
+      const quoteAnchoredPartEvidenceIds=partEvidenceIds.filter(id=>(review.evidenceMap||[])
+        .some(item=>item.id===id&&item.quoteVerified));
+      const answerCitesPartEvidence=quoteAnchoredPartEvidenceIds.some(id=>draftCitationIds.has(id));
+      const comparisonHasSynthesis=hasCitedCrossWorkSynthesis(answer,sourceGroups,sources)||
+        /\b(?:the accounts? differ|these accounts differ|differ in (?:their )?(?:emphasis|focus|approach))\b/i.test(answer);
       return (review.questionParts[index].status==='supported'&&part.status!=='supported')||
         answerContradictsSupportedPart(part,answer)||
+        ((part.status==='supported'||part.status==='partial')&&quoteAnchoredPartEvidenceIds.length>0&&
+          !answerCitesPartEvidence)||
+        (isComparisonPart&&!comparisonHasSynthesis&&hasSupportedEvidenceForEveryGroup)||
         (review.questionParts[index].status==='partial'&&part.status==='unsupported')||
         (review.questionParts[index].status==='partial'&&part.status==='partial'&&
           (part.evidenceIds||[]).some(id=>sourceHasMeaningfulQualifier(
