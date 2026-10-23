@@ -2799,6 +2799,31 @@ test('a partial cross-work comparison cannot substitute an author attack for the
  assert.doesNotMatch(result.answer,/Hobbes rejects this framework/);
 });
 
+test('the comparison guard catches a reader-synthesis contrast stated as a noun',()=>{
+ const sources=[
+  {id:'S2',bookId:'34',title:'An Enquiry Concerning Human Understanding — David Hume'},
+  {id:'S5',bookId:'35',title:'Critique of Pure Reason — Immanuel Kant'}
+ ];
+ const groups=[
+  {label:'Hume',bookIds:new Set(['34'])},
+  {label:'Kant',bookIds:new Set(['35'])}
+ ];
+ const draft='Hume argues that causal power is not discoverable through sensible qualities [S2].\n\n'+
+  'Kant describes reason as seeking unity through general principles [S5].\n\n'+
+  'A reader synthesis of these positions suggests a contrast between Hume’s view of causality as lacking discoverable sensible grounds and Kant’s view of reason as a system seeking unity [S2, S5].\n\n'+
+  'The supplied passages do not establish their difference about causal necessity.';
+ const result=removeUnsupportedCrossWorkComparisonClaims(draft,[
+  {part:'Hume’s view of causal necessity',status:'partial',evidenceIds:['S2']},
+  {part:'Kant’s view of causal necessity',status:'partial',evidenceIds:['S5']},
+  {part:'Difference between Hume and Kant on causal necessity',status:'unsupported',evidenceIds:[]}
+ ],groups,sources);
+ assert.equal(result.removed.length,1);
+ assert.match(result.answer,/Hume argues that causal power/);
+ assert.match(result.answer,/Kant describes reason/);
+ assert.match(result.answer,/do not establish their difference about causal necessity/);
+ assert.doesNotMatch(result.answer,/suggests a contrast between Hume/);
+});
+
 test('a fully supported comparison is not altered by the comparison-claim guard',()=>{
  const sources=[{id:'S1',bookId:'7'},{id:'S2',bookId:'163'}];
  const groups=[{bookIds:new Set(['7'])},{bookIds:new Set(['163'])}];

@@ -1922,7 +1922,7 @@ export function removeUnsupportedCrossWorkComparisonClaims(answer,questionParts,
       // unsupported when one of the requested positions has no direct
       // evidence. In particular, an author's criticism of another thinker
       // must not stand in for the critic's position on the question's topic.
-      const hasComparisonCue=/\b(?:while|whereas|in contrast|by contrast|unlike|compared with|differ(?:s|ed|ent|ence)?|conflict|oppos\w*|reject\w*|disagree\w*)\b/i.test(sentence);
+      const hasComparisonCue=/\b(?:while|whereas|in contrast|by contrast|contrast|unlike|compared with|differ(?:s|ed|ent|ence)?|conflict|oppos\w*|reject\w*|disagree\w*)\b/i.test(sentence);
       if(!hasComparisonCue)return true;
       const citedIds=new Set([...sentence.matchAll(/\[([^\]]+)\]/g)]
         .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
