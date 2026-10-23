@@ -806,14 +806,25 @@ export function sourceExcerpt(text,question,max=1080) {
     sentenceWords[index].filter(word=>termWeights.has(word)));
   const prefixLengths=[0];
   for(const sentence of sentences)prefixLengths.push(prefixLengths.at(-1)+sentence.length);
-  let first=0,last=0,bestScore=-1;
+  let first=0,last=0,bestScore=-1,oversizedIndex=-1,oversizedScore=-1;
   for(let from=0;from<sentences.length;from++){
     const found=new Set(),occurrences=new Map();
     let total=0,relevantSentences=0,contextSentences=0;
     for(let to=from;to<sentences.length;to++){
       const windowLength=prefixLengths[to+1]-prefixLengths[from]+(to-from)+
         (from>0?1:0)+(to<sentences.length-1?1:0);
-      if(windowLength>max)break;
+      if(windowLength>max){
+        // A single highly relevant sentence can exceed the display limit.
+        // Remember it so a short, weakly related sentence cannot win merely
+        // because the relevant sentence was skipped by the window bound.
+        if(to===from){
+          const candidateScore=score(sentences[from]);
+          if(candidateScore>oversizedScore){
+            oversizedIndex=from;oversizedScore=candidateScore;
+          }
+        }
+        break;
+      }
       let relevantHere=false;
       for(const word of sentenceTerms[to]){
         relevantHere=true;
@@ -834,6 +845,9 @@ export function sourceExcerpt(text,question,max=1080) {
       if(current>bestScore){first=from;last=to;bestScore=current;}
     }
   }
+  if(oversizedIndex>=0&&oversizedScore>bestScore){
+    first=oversizedIndex;last=oversizedIndex;
+  }
   // When no query term appears, retain the opening prose window. This is
   // deterministic and avoids anchoring an excerpt on a title or page label.
   if(bestScore<=0){
@@ -845,23 +859,24 @@ export function sourceExcerpt(text,question,max=1080) {
   if(excerpt.length<=max)return excerpt;
   // A single unusually long sentence has no complete-sentence window to select.
   // Keep the excerpt bounded and center it on the strongest keyword window.
+  const selected=sentences.slice(first,last+1).join(' ');
   let bestStart=0,windowScore=-1;
-  for(let i=0;i<content.length;i+=Math.max(1,Math.floor(max/8))) {
-    const current=score(content.slice(i,i+max));
+  for(let i=0;i<selected.length;i+=Math.max(1,Math.floor(max/8))) {
+    const current=score(selected.slice(i,i+max));
     if(current>windowScore){bestStart=i;windowScore=current;}
   }
-  bestStart=Math.min(bestStart,Math.max(0,content.length-max));
+  bestStart=Math.min(bestStart,Math.max(0,selected.length-max));
   if(bestStart>0) {
-    const aligned=content.lastIndexOf(' ',bestStart);
+    const aligned=selected.lastIndexOf(' ',bestStart);
     if(aligned>=0)bestStart=aligned+1;
   }
-  let end=Math.min(content.length,bestStart+max);
-  if(end<content.length) {
-    const aligned=content.lastIndexOf(' ',end);
+  let end=Math.min(selected.length,bestStart+max);
+  if(end<selected.length) {
+    const aligned=selected.lastIndexOf(' ',end);
     if(aligned>bestStart)end=aligned;
   }
-  excerpt=(bestStart>0?'…':'')+content.slice(bestStart,end).trim()+
-    (end<content.length?'…':'');
+  excerpt=(first>0||bestStart>0?'…':'')+selected.slice(bestStart,end).trim()+
+    (end<selected.length||last<sentences.length-1?'…':'');
   return excerpt.length<=max?excerpt:excerpt.slice(0,max-1)+'…';
 }
 function retrievedPassageFallback(question,sources) {
