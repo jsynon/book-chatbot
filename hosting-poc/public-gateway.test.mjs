@@ -614,7 +614,8 @@ test('repairs literary summaries that blur a character theory with another speak
   }
   assert.equal(inputs.length,3);
   assert.match(input.messages[0].content,/attribute that description to the reporting speaker/);
-  assert.match(input.messages[0].content,/do not merge that summary with the other person’s reply or qualification into a stronger, unqualified claim/);
+  assert.match(input.messages[0].content,/preserve that report as a report and cite the reporting passage/);
+  assert.match(input.messages[0].content,/do not present it as the named person’s unqualified position/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Porfiry first summarizes the theory as giving extraordinary people license to transgress, but Raskolnikov qualifies that account: he claims an inner right to cross certain limits only when doing so is essential to realizing an idea, perhaps one that benefits humanity [S1]. The qualification matters; the passage does not say that extraordinary people must commit crimes or have an unrestricted right to do so.\n\nLater, Porfiry argues that Raskolnikov has stopped believing his theory and predicts that he will confess [S2]. That is Porfiry’s interpretation at this point. The epilogue later reports Raskolnikov’s stated motives as poverty and helplessness, and says he attributed his confession to repentance [S3]. Those motives complicate the extraordinary-person rationale by connecting the crime to personal desperation and remorse.',
    partChecks:[
@@ -3039,6 +3040,8 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[0].messages[0].content,/Keep each point atomic: one claim per point/);
  assert.match(calls[0].messages[0].content,/make the evidence map include the definition and the passage’s stated reason, operation, or criterion for each requested distinction/);
  assert.match(calls[0].messages[0].content,/For broad questions asking what a person or work says about a topic/);
+ assert.match(calls[0].messages[0].content,/Keyword overlap alone is not evidence/);
+ assert.match(calls[0].messages[0].content,/verify that the excerpt describes what it does or the result it produces/);
  assert.match(calls[0].messages[0].content,/Prioritize direct explanation of the concept/);
  assert.match(calls[0].messages[0].content,/remarks that a term needs definition as context/);
  assert.match(calls[0].messages[0].content,/IDs may repeat only when the same passage supports a different point/);
@@ -3059,6 +3062,8 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[0].content,/Do not combine two reviewed points into a definition/);
  assert.match(calls[1].messages[0].content,/EXCEPTION: when the question explicitly asks for a comparison across separately named works/);
  assert.match(calls[1].messages[0].content,/For a single-part question, organize the answer around the evidence map/);
+ assert.match(calls[1].messages[0].content,/a shared topic word is not enough/);
+ assert.match(calls[1].messages[0].content,/preserve that report as a report and cite the reporting passage/);
  assert.match(calls[1].messages[0].content,/Avoid a book-by-book/);
 });
 
