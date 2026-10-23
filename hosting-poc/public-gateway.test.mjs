@@ -385,6 +385,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/do not force a one-item-per-paragraph outline/);
  assert.match(inputs[1].messages[0].content,/comparison between theoretical wisdom and practical wisdom/);
  assert.match(inputs[1].messages[0].content,/When distinct selected passages support different points, use up to six/);
+ assert.match(inputs[1].messages[0].content,/Final completeness priority: answer the actual claim, reason, or function asked about before adding a related motive, consequence, or procedural detail/);
  assert.equal(inputs[1].max_completion_tokens,1100);
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
@@ -1513,9 +1514,10 @@ test('empty-review recovery handles a plain-text composition without throwing',a
  const question='According to 1 John 4:7–12, what does “God is love” mean, and how does the passage connect God’s love with loving one another?';
  const source={id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',page:5546,
   preview:'1 JOHN 4 7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God and knows God. 8 He who does not love does not know God, for God is love. 9 In this the love of God was manifested toward us, that God has sent His only begotten Son into the world, that we might live through Him. 10 In this is love, not that we loved God, but that He loved us and sent His Son for our sins. 11 Beloved, if God so loved us, we also ought to love one another. 12 If we love one another, God abides in us, and His love has been perfected in us.'};
- let calls=0;
- const ai={run:async()=>{
+ let calls=0;const inputs=[];
+ const ai={run:async(_model,input)=>{
   calls++;
+  inputs.push(input);
   if(calls===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    coverage:'none',missing:'No requested part was supported.',questionParts:[
     {part:'What does “God is love” mean?',status:'unsupported',evidenceIds:[]},
@@ -1529,6 +1531,8 @@ test('empty-review recovery handles a plain-text composition without throwing',a
  }};
  const result=await composeVerifiedAnswer(question,[source],ai);
  assert.equal(calls,2);
+ assert.match(inputs[1].messages[0].content,/Priority check: answer the actual claim, reason, or function asked about before adding a related motive, consequence, or procedural detail/);
+ assert.match(inputs[1].messages[0].content,/With two substantive parts and several relevant passage points, use two connected paragraphs of three to five sentences, normally about 120–180 words total/);
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.coverage,'none');
  assert.equal(result.reviewStatus,'answer-draft-unverified');
