@@ -2147,8 +2147,14 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'supporting sentence. Aim for 180–260 words overall when the evidence '+
         'supports that depth. Keep each source-based claim tied to the evidence IDs '+
         'listed for its question part. Keep broader-context material clearly labeled '+
-        'and do not give it source IDs unless the excerpts support it. Avoid repetition, '+
-        'padding, and adjacent topics. Omit adjacent topics '+
+        'and do not give it source IDs unless the excerpts support it. '+
+        'For a substantive question with exactly two supported parts, use two '+
+        'developed, connected paragraphs, one for each part, normally three to '+
+        'five complete sentences apiece. Aim for 120–180 words overall when the '+
+        'excerpts support that depth. Explain each point and its relevant reason, '+
+        'distinction, qualification, or example. Do not repeat the same summary '+
+        'in both paragraphs or pad beyond what the source supports. Avoid repetition '+
+        'and adjacent topics. Omit adjacent topics '+
         'that do not answer a listed part, such as a separate comparison between '+
         'theoretical wisdom and practical wisdom. Omit unsupported parts as factual '+
         'claims; the system will '+
@@ -2580,9 +2586,21 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     if(auditedDraft.partChecks.length){
       finalQuestionParts=reconcileQuestionParts(finalQuestionParts,
         auditedDraft.partChecks,answer);
+      // The final claim audit can conservatively mark a reader-level
+      // cross-work comparison partial even when it has already confirmed
+      // each side, the finished answer states the contrast, and both works
+      // are cited. Reapply the same evidence-bound synthesis rule after that
+      // audit so the final status and any coverage notice describe the answer
+      // the reader actually receives.
+      finalQuestionParts=promoteSupportedCrossWorkSynthesis(
+        finalQuestionParts,question,answer,sources);
       finalQuestionParts=enforceAuthorEvidenceByQuestionPart(
         finalQuestionParts,question,sources);
-      if(finalQuestionParts.some(part=>part.status!=='supported')){
+      if(finalQuestionParts.length&&finalQuestionParts.every(part=>part.status==='supported')){
+        answer=removeStaleQuestionPartNotice(answer,finalQuestionParts);
+        finalCoverage='full';
+        finalMissing='';
+      }else{
         finalCoverage='partial';
         finalMissing=questionPartMissingNote(finalQuestionParts)||finalMissing;
       }
