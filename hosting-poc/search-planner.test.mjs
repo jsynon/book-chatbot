@@ -67,6 +67,9 @@ test('process-focused planning requires source-level actions as well as topic la
  assert.match(systemPrompt,/every process-focused query must include at least one concrete action, verb, or causal phrase/i);
  assert.match(systemPrompt,/source-level descriptions of what people or things do over abstract labels alone/i);
  assert.match(systemPrompt,/repeated actions or doing just acts/i);
+ assert.match(systemPrompt,/what role or function a named concept plays/i);
+ assert.match(systemPrompt,/who acts, what the concept does, and what result it produces/i);
+ assert.match(systemPrompt,/Treat source-native wording as a search lead, not as evidence/i);
 });
 test('splits bundled coordinated role queries into separate search facets without another AI call',async()=>{
  const cases=[
