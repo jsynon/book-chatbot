@@ -1698,6 +1698,13 @@ function reconcileQuestionParts(questionParts,partChecks,answer) {
   });
 }
 
+function primaryQuoteAnchoredPartEvidenceId(part,evidenceMap){
+  for(const id of part?.evidenceIds||[]){
+    if((evidenceMap||[]).some(item=>item.id===id&&item.quoteVerified))return id;
+  }
+  return '';
+}
+
 function reconcileEmptyReviewQuestionParts(questionParts,partChecks,answer,evidenceMap) {
   const reconciled=reconcileQuestionParts(questionParts,partChecks,answer);
   const checks=new Map(partChecks.map(item=>[normalizedPartLabel(item.part),item]));
@@ -2336,6 +2343,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     const draftCitationIds=new Set([...String(answer||'').matchAll(/\[([^\]]+)\]/g)]
       .flatMap(match=>match[1].match(/\bS[1-9]\d*\b/g)||[]));
     const needsPartRepair=!emptyReview&&(missingRequestedSourceGroup||finalQuestionParts.some((part,index)=>{
+      const reviewedPart=review.questionParts[index]||part;
       if(authorEvidenceGap(part,question,sources))return true;
       const hasSupportedEvidenceForEveryGroup=comparisonRequested&&
         sourceGroups.every(group=>finalQuestionParts.some(other=>other!==part&&
@@ -2346,10 +2354,14 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
       const quoteAnchoredPartEvidenceIds=partEvidenceIds.filter(id=>(review.evidenceMap||[])
         .some(item=>item.id===id&&item.quoteVerified));
       const answerCitesPartEvidence=quoteAnchoredPartEvidenceIds.some(id=>draftCitationIds.has(id));
+      const primaryEvidenceId=primaryQuoteAnchoredPartEvidenceId(reviewedPart,review.evidenceMap);
+      const answerCitesPrimaryEvidence=!!primaryEvidenceId&&draftCitationIds.has(primaryEvidenceId);
       const comparisonHasSynthesis=hasCitedCrossWorkSynthesis(answer,sourceGroups,sources)||
         /\b(?:the accounts? differ|these accounts differ|differ in (?:their )?(?:emphasis|focus|approach))\b/i.test(answer);
       return (review.questionParts[index].status==='supported'&&part.status!=='supported')||
         answerContradictsSupportedPart(part,answer)||
+        ((part.status==='supported'||part.status==='partial')&&primaryEvidenceId&&
+          !answerCitesPrimaryEvidence)||
         ((part.status==='supported'||part.status==='partial')&&quoteAnchoredPartEvidenceIds.length>0&&
           !answerCitesPartEvidence)||
         (isComparisonPart&&!comparisonHasSynthesis&&hasSupportedEvidenceForEveryGroup)||
@@ -2375,11 +2387,16 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
             (renderEvidenceMap()||'No reviewed evidence points were available.')+
             '\n\nDirect mapped points for incomplete parts that are not cited in the current draft:\n'+
             review.questionParts.map(part=>{
-              if(part.status==='supported')return '';
+              const primaryEvidenceId=primaryQuoteAnchoredPartEvidenceId(part,review.evidenceMap);
+              const primaryEvidenceMissing=primaryEvidenceId&&!draftCitationIds.has(primaryEvidenceId);
+              if(part.status==='supported'&&!primaryEvidenceMissing)return '';
               const omitted=(review.evidenceMap||[]).filter(item=>
                 part.evidenceIds.includes(item.id)&&item.quoteVerified&&
                 !draftCitationIds.has(item.id));
-              return omitted.length?'- '+part.part+': '+omitted.map(item=>
+              const prioritized=primaryEvidenceMissing?
+                omitted.filter(item=>item.id===primaryEvidenceId):omitted;
+              const points=prioritized.length?prioritized:omitted;
+              return points.length?'- '+part.part+': '+points.map(item=>
                 '['+item.id+'] '+item.point+(item.anchorQuote?' — “'+item.anchorQuote+'”':''))
                 .join('; '):'';
             }).filter(Boolean).join('\n')+
