@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -2685,6 +2685,41 @@ test('a partial comparison with both sides supported uses the existing compariso
  assert.equal(result.questionParts[2].status,'supported');
  assert.match(result.answer,/contrast an account framed by its public end with one framed by the power/);
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+});
+
+test('a partial cross-work comparison cannot substitute an author attack for the missing position',()=>{
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle'},
+  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes'}
+ ];
+ const groups=[
+  {label:'Nicomachean Ethics — Aristotle',bookIds:new Set(['7'])},
+  {label:'Leviathan — Thomas Hobbes',bookIds:new Set(['163'])}
+ ];
+ const parts=[
+  {part:'Aristotle’s political aim',status:'supported',evidenceIds:['S1']},
+  {part:'Hobbes’s role for common power',status:'unsupported',evidenceIds:[]},
+  {part:'How the accounts differ',status:'partial',evidenceIds:['S1','S2']}
+ ];
+ const draft='Aristotle presents political science as aiming at happiness [S1].\n\n'+
+  'While Aristotle frames politics through the human good, Hobbes rejects this framework in Leviathan [S1, S2].\n\n'+
+  'The supplied passages do not establish Hobbes’s specific account of common power.';
+ const result=removeUnsupportedCrossWorkComparisonClaims(draft,parts,groups,sources);
+ assert.equal(result.removed.length,1);
+ assert.match(result.answer,/aiming at happiness/);
+ assert.match(result.answer,/do not establish Hobbes’s specific account/);
+ assert.doesNotMatch(result.answer,/Hobbes rejects this framework/);
+});
+
+test('a fully supported comparison is not altered by the comparison-claim guard',()=>{
+ const sources=[{id:'S1',bookId:'7'},{id:'S2',bookId:'163'}];
+ const groups=[{bookIds:new Set(['7'])},{bookIds:new Set(['163'])}];
+ const answer='Aristotle emphasizes the human good, whereas Hobbes emphasizes common power [S1, S2].';
+ const result=removeUnsupportedCrossWorkComparisonClaims(answer,[
+  {part:'How the accounts differ',status:'supported',evidenceIds:['S1','S2']}
+ ],groups,sources);
+ assert.equal(result.answer,answer);
+ assert.deepEqual(result.removed,[]);
 });
 
 test('repairs an unsupported part when review evidence was left unmapped',async()=>{
