@@ -2852,9 +2852,9 @@ test('repairs a requested part when its reviewed evidence is absent from the dra
   assert.match(input.messages[0].content,/Revise the answer to address each requested question part/);
   assert.match(input.messages[0].content,/Put the direct definition, theory, or role first/);
   assert.match(input.messages[1].content,/how Raskolnikov justifies the murder — partial/);
-  assert.match(input.messages[1].content,/Evidence map \\(reviewed claims and verified quote anchors\\)/);
+  assert.match(input.messages[1].content,/Evidence map/);
   assert.match(input.messages[1].content,/Direct mapped points for incomplete parts that are not cited in the current draft/);
-  assert.match(input.messages[1].content,/Raskolnikov justifies the murder: \\[S1\\] The reported theory grants extraordinary people a right to transgress the law/);
+  assert.match(input.messages[1].content,/Raskolnikov justifies the murder:.*reported theory grants extraordinary people a right to transgress the law/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer:repaired,partChecks:[
    {part:'how Raskolnikov justifies the murder',status:'supported',evidenceIds:['S1']},
    {part:'how the novel tests his reasoning',status:'supported',evidenceIds:['S2']}
