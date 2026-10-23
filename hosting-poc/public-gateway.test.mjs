@@ -2539,11 +2539,15 @@ test('partial answer preserves a qualifying phrase and gets one conditional corr
      questionParts:[{part:'explain when struggle and natural selection occur',status:'partial',evidenceIds:['S1']}],
      evidence:[{id:'S1',point:'Darwin rejects the idea that struggle and selection only arise after many forms exist.'}]
    })}}]};
-   if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   if(calls.length===2){
+    assert.match(input.messages[0].content,/When the evidence map identifies uncertainty or says a cause or contribution cannot be determined, preserve that limit/);
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      answer:'Darwin says natural selection would occur without any struggle for existence [S1].',
      partChecks:[{part:'explain when struggle and natural selection occur',status:'partial',evidenceIds:['S1']}]
-   })}}]};
+    })}}]};
+   }
    assert.match(input.messages[0].content,/Preserve logical qualifiers such as “until,” “unless,” “only,” and “except”/);
+   assert.match(input.messages[0].content,/When the evidence map identifies uncertainty or says a cause or contribution cannot be determined, preserve that limit/);
    assert.match(input.messages[0].content,/omitting a qualifier can reverse or overstate the source claim/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      answer:'Darwin calls it an error to suppose that struggle and natural selection are absent until many forms have developed [S1]. The excerpt addresses when these processes appear; it does not establish that selection occurs without struggle.',
