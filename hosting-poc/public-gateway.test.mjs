@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,appendExplicitSourceAttributionNotes,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -542,6 +542,25 @@ test('multi-work full coverage requires selected evidence from every named work 
  const both=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'},{id:'S2',point:'Relevant supported passage point.'}]}),sources,question);
  assert.equal(both.coverage,'full');
  assert.equal(both.missing,'');
+});
+test('comparison part cannot be marked supported when its citation omits one named work',()=>{
+ const question='Compare how Plato’s Republic and Rousseau’s Social Contract justify political authority.';
+ const sources=[
+  {id:'S1',bookId:'74',title:'The Republic — Plato',preview:'Political authority belongs to the philosopher rulers.'},
+  {id:'S2',bookId:'245',title:'The Social Contract — Jean-Jacques Rousseau',preview:'The sovereign is formed by the general will.'}
+ ];
+ const part='Compare how Plato’s Republic and Rousseau’s Social Contract justify political authority';
+ const oneSide=parseReview(JSON.stringify({coverage:'full',missing:'',
+  questionParts:[{part,status:'supported',evidenceIds:['S1']}],
+  evidence:[{id:'S1',point:'Plato assigns political authority to philosopher rulers.'}]
+ }),sources,question);
+ assert.equal(oneSide.questionParts[0].status,'partial');
+ const bothSides=parseReview(JSON.stringify({coverage:'full',missing:'',
+  questionParts:[{part,status:'supported',evidenceIds:['S1','S2']}],
+  evidence:[{id:'S1',point:'Plato assigns political authority to philosopher rulers.'},
+   {id:'S2',point:'Rousseau grounds sovereignty in the general will.'}]
+ }),sources,question);
+ assert.equal(bothSides.questionParts[0].status,'supported');
 });
 test('repairs an omitted but retrieved named-work passage before claiming it has no information',async()=>{
  const question='How does Darwin explain natural selection preserving favorable variations in On the Origin of Species, and how does Hawking use astronomical observations to explain black-hole phenomena in A Brief History of Time?';
@@ -2774,8 +2793,9 @@ test('composition checks every question part against all verified excerpts and r
    evidence:[{id:'S1',point:'Natural selection preserves favorable variations.'}]
   })}}],usage:{neurons:2}};
   if(calls.length===2){
-   assert.match(input.messages[1].content,/all submitted passages, including those not selected/i);
-   assert.match(input.messages[1].content,/struggle for existence, and, consequently, no natural selection/);
+   assert.match(input.messages[1].content,/review-selected passages only/i);
+   assert.match(input.messages[1].content,/Natural selection preserves favorable individual differences/);
+   assert.doesNotMatch(input.messages[1].content,/struggle for existence, and, consequently, no natural selection/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
     answer:'Natural selection preserves favorable variations and does not create them [S1]. The struggle for existence is part of the account: Darwin rejects the idea that it begins only after many forms have appeared, connecting struggle with natural selection [S2].',
     partChecks:[
@@ -3716,4 +3736,23 @@ test('a mapped point with an unverified quote still triggers the existing eviden
  assert.equal(result.coverage,'full');
  assert.equal(result.questionParts[0].status,'supported');
  assert.match(result.answer,/unknown possibility of dreams after death makes him pause/);
+});
+
+test('source attribution names a translated literary work when the cited page says it is a translation',()=>{
+ const answer='The anthology presents Hamlet’s pause as a response to uncertainty about death [S1].';
+ const source={id:'S1',bookId:'552',title:'French and English Philosophers — René Descartes, Jean-Jacques Rousseau, Voltaire, and Thomas Hobbes',page:316,
+  preview:'A translation of part of Hamlet by William Shakespeare, with the passage beginning “To be, or not to be”.'};
+ const result=appendExplicitSourceAttributionNotes(answer,'In Hamlet’s soliloquy, how does uncertainty about death affect his reasoning?',[source]);
+ assert.equal(result.notes.length,1);
+ assert.match(result.answer,/cited page itself identifies this as a translation of part of Hamlet’s text \[S1\]/);
+});
+
+test('source attribution distinguishes a reported thinker from the book containing the report',()=>{
+ const answer='Kant responds to Hume’s conclusion that causal necessity cannot be derived from reason alone [S1].';
+ const source={id:'S1',bookId:'615',title:'A History of Philosophy, Volume V: The British Philosophers — Frederick Copleston',page:182,
+  preview:'According to David Hume’s conclusions in An Enquiry Concerning Human Understanding, causal necessity is not established by reason alone.'};
+ const question='How do Hume’s Enquiry and Kant’s Critique differ about causal necessity?';
+ const result=appendExplicitSourceAttributionNotes(answer,question,[source]);
+ assert.equal(result.notes.length,1);
+ assert.match(result.answer,/reports Hume’s view; it comes from A History of Philosophy, Volume V: The British Philosophers rather than An Enquiry Concerning Human Understanding \[S1\]/);
 });
