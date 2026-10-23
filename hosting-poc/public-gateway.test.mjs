@@ -3214,6 +3214,8 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.doesNotMatch(calls[1].messages[1].content,/speaker: Kierkegaard/);
  assert.match(calls[0].messages[0].content,/Keep each point atomic: one claim per point/);
  assert.match(calls[0].messages[0].content,/make the evidence map include the definition and the passage’s stated reason, operation, or criterion for each requested distinction/);
+ assert.match(calls[0].messages[0].content,/map the source’s general explanation separately from any concrete example/i);
+ assert.match(calls[0].messages[0].content,/preserve its specific conditions rather than generalizing from it/i);
  assert.match(calls[0].messages[0].content,/For broad questions asking what a person or work says about a topic/);
  assert.match(calls[0].messages[0].content,/Keyword overlap alone is not evidence/);
  assert.match(calls[0].messages[0].content,/verify that the excerpt describes what it does or the result it produces/);

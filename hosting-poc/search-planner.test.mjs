@@ -70,6 +70,30 @@ test('process-focused planning requires source-level actions as well as topic la
  assert.match(systemPrompt,/what role or function a named concept plays/i);
  assert.match(systemPrompt,/who acts, what the concept does, and what result it produces/i);
  assert.match(systemPrompt,/Treat source-native wording as a search lead, not as evidence/i);
+ assert.match(systemPrompt,/reserve a query for the source’s general explanation or causal rule/i);
+ assert.match(systemPrompt,/do not spend every query on a memorable or narrow example/i);
+});
+test('theory-and-challenge planning searches the proposition and its textual correction separately',async()=>{
+ let systemPrompt='';
+ let calls=0;
+ const expected=[
+  'Raskolnikov extraordinary man theory right to transgress law',
+  'Raskolnikov correction inner right theory challenge conversation'
+ ];
+ const answer=await planSearchQueries(
+  'How does Raskolnikov justify the murder, and how does the novel test his theory?',
+  'Crime and Punishment — Fyodor Dostoevsky',{
+   run:async(_model,options)=>{
+    calls++;
+    systemPrompt=options.messages[0].content;
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:expected})}}]};
+   }
+  });
+ assert.equal(calls,1);
+ assert.deepEqual(answer.queries,expected);
+ assert.match(systemPrompt,/general rule, principle, or mechanism/i);
+ assert.match(systemPrompt,/use separate queries for the proposition and the reply, counterpoint, or correction/i);
+ assert.match(systemPrompt,/do not substitute motive or aftermath for the correction/i);
 });
 test('splits bundled coordinated role queries into separate search facets without another AI call',async()=>{
  const cases=[
