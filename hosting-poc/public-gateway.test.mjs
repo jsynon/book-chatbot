@@ -2998,9 +2998,6 @@ test('repairs a supported part that cites related evidence but omits its primary
    coverage:'full',missing:'',
    questionParts:[
     {part:'the theory used to justify the murder',status:'supported',evidenceIds:['S1','S2']},
-Warning: truncated output (original token count: 6032)
-Total output lines: 250
-
     {part:'the later motive given',status:'supported',evidenceIds:['S2']}
    ],evidence:[
     {id:'S1',point:'The reported theory gives extraordinary people a right to transgress the law.',
@@ -3126,7 +3123,7 @@ test('final relation audit preserves a cited cross-work synthesis when both side
   {part:'Hobbes’s role for common power',status:'supported',evidenceIds:['S2']},
   {part:'How the accounts differ',status:'partial',evidenceIds:['S1','S2']}
  ];
- const answer='Aristotle frames political inquiry around an end: the highest good achievable through action, which the passage identifies with happiness [S1]. It presents political science by reference to the good its practical activity seeks. The cited passage explains this aim without directly comparing it with Hobbes’s account.\n\nHobbes gives common power a…32 tokens truncated… authority needed to sustain those rules in practice. Without common power, Hobbes says, people would not reliably observe justice or the laws of nature [S2].\n\nRead together, Aristotle emphasizes the end political inquiry should pursue, whereas Hobbes emphasizes the power needed to maintain order [S1, S2]. The contrast is between a purpose that guides political inquiry and an authority that secures public order. This is a reader-level comparison of the supplied passages, not a comparison made by either author [S1, S2]. The distinction follows from the different roles described in the two excerpts. In this synthesis, one passage concerns what political activity should aim at, while the other concerns the condition that makes civic rules effective.';
+ const answer='Aristotle frames political inquiry around an end: the highest good achievable through action, which the passage identifies with happiness [S1]. It presents political science by reference to the good its practical activity seeks. The cited passage explains this aim without directly comparing it with Hobbes’s account.\n\nHobbes gives common power a different role: it keeps people in awe so that justice and the laws of nature can be observed [S2]. His passage emphasizes the authority needed to sustain those rules in practice. Without common power, Hobbes says, people would not reliably observe justice or the laws of nature [S2].\n\nRead together, Aristotle emphasizes the end political inquiry should pursue, whereas Hobbes emphasizes the power needed to maintain order [S1, S2]. The contrast is between a purpose that guides political inquiry and an authority that secures public order. This is a reader-level comparison of the supplied passages, not a comparison made by either author [S1, S2]. The distinction follows from the different roles described in the two excerpts. In this synthesis, one passage concerns what political activity should aim at, while the other concerns the condition that makes civic rules effective.';
  let calls=0;
  const ai={run:async(_model,input)=>{
   calls++;
