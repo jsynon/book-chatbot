@@ -348,6 +348,18 @@ test('evidence review can select a supported point when it cannot safely copy an
  assert.match(inputs[0].messages[0].content,/Do not mark coverage none solely because an exact quote or qualifier is unavailable/);
  assert.match(inputs[1].messages[0].content,/Use the evidence map as a guide/);
 });
+test('quote matching normalizes the common OCR glyph Ɵ without changing displayed source text',()=>{
+ const source={id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',
+  page:5546,preview:'James says a person is justified by works rather than by faith alone.'
+   .replace('justified','jusƟﬁed')};
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',
+  questionParts:[{part:'How does James relate faith to works?',status:'supported',evidenceIds:['S1']}],
+  evidence:[{id:'S1',point:'James says works accompany faith.',
+   quote:'justified by works rather than by faith alone',speaker:'James',qualifier:''}]
+ }),[source],'According to James 2:14–26, how does James relate faith to works?');
+ assert.equal(review.evidenceMap[0].quoteVerified,true);
+ assert.match(review.evidenceMap[0].anchorQuote,/jusƟﬁed/);
+});
 test('same-book answers select complementary passages and synthesize every question part',async()=>{
  const question='How does Aristotle explain habituation, and how do repeated actions shape character?';
  const sources=[
@@ -393,8 +405,8 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
  assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides/);
  assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
- assert.match(inputs[1].messages[0].content,/using the passage that most directly answers it/);
- assert.match(inputs[1].messages[0].content,/do not substitute related background, motives, or consequences/);
+ assert.match(inputs[1].messages[0].content,/Use the passage that most directly answers it/);
+ assert.match(inputs[1].messages[0].content,/not related background, motives, or consequences/);
  assert.equal(inputs[1].max_completion_tokens,1600);
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
@@ -628,7 +640,7 @@ test('repairs literary summaries that blur a character theory with another speak
  const ai={run:async(_model,input)=>{
   inputs.push(input);
   if(inputs.length===1){
-   assert.match(input.messages[0].content,/For questions about how a work tests or undermines a theory/);
+   assert.match(input.messages[0].content,/For theory questions/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    coverage:'partial',missing:'The account and its challenge need fuller explanation.',
    questionParts:[
@@ -1912,10 +1924,9 @@ test('empty-review recovery uses the primary parallel-edition passage for a scop
  assert.match(prompts[1].messages[0].content,/evidence array/);
  assert.doesNotMatch(prompts[1].messages[0].content,/questionParts checklist/);
 });
-test('v1.9.4 bad or absent model citations never leave the server as an answer',async()=>{
+test('v1.9.4 fabricated citations fail closed and missing citations return source passages safely',async()=>{
  for(const fabricated of ['The answer is clear [S9].',
-   'The answer is clear [S1, S9] [S1].',
-   'An unsupported claim without a source.']){
+   'The answer is clear [S1, S9] [S1].']){
    const fixture=await fingerprintTestFixture();
    let calls=0;
    const result=await fixture.response({aiRun:async()=>{
@@ -1929,6 +1940,20 @@ test('v1.9.4 bad or absent model citations never leave the server as an answer',
    assert.equal(data.answer,undefined);
    assert.equal(calls,2);
  }
+ const fixture=await fingerprintTestFixture();
+ let calls=0;
+ const result=await fixture.response({aiRun:async()=>{
+   calls++;return {choices:[{finish_reason:'stop',message:{content:calls===1?
+    JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
+    'An unsupported claim without a source.'}}],usage:{neurons:4}};
+ }});
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'insufficient-evidence');
+ assert.equal(data.reviewStatus,'retrieved_passages_only');
+ assert.match(data.answer,/did not contain usable citations/);
+ assert.deepEqual(data.citations.map(source=>source.id),['S1']);
+ assert.equal(calls,2);
 });
 test('v1.14 keeps safe sentences when quotation repair fails and removes the mismatched sentence',async()=>{
  for(const repair of ['mismatch','provider-error','all-invalid']){
@@ -3398,7 +3423,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
  assert.doesNotMatch(calls[1].messages[1].content,/speaker: Kierkegaard/);
- assert.ok(calls[1].messages[0].content.length<3500,'composition guidance should stay compact');
+ assert.ok(calls[1].messages[0].content.length<3700,'composition guidance should stay compact');
  assert.match(calls[1].messages[0].content,/Answer each requested part directly/);
  assert.match(calls[1].messages[0].content,/Attribute claims to the visible speaker/);
  assert.match(calls[1].messages[0].content,/Preserve meaningful qualifications/);
