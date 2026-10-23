@@ -2580,9 +2580,21 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     if(auditedDraft.partChecks.length){
       finalQuestionParts=reconcileQuestionParts(finalQuestionParts,
         auditedDraft.partChecks,answer);
+      // The final claim audit can conservatively mark a reader-level
+      // cross-work comparison partial even when it has already confirmed
+      // each side, the finished answer states the contrast, and both works
+      // are cited. Reapply the same evidence-bound synthesis rule after that
+      // audit so the final status and any coverage notice describe the answer
+      // the reader actually receives.
+      finalQuestionParts=promoteSupportedCrossWorkSynthesis(
+        finalQuestionParts,question,answer,sources);
       finalQuestionParts=enforceAuthorEvidenceByQuestionPart(
         finalQuestionParts,question,sources);
-      if(finalQuestionParts.some(part=>part.status!=='supported')){
+      if(finalQuestionParts.length&&finalQuestionParts.every(part=>part.status==='supported')){
+        answer=removeStaleQuestionPartNotice(answer,finalQuestionParts);
+        finalCoverage='full';
+        finalMissing='';
+      }else{
         finalCoverage='partial';
         finalMissing=questionPartMissingNote(finalQuestionParts)||finalMissing;
       }

@@ -2685,6 +2685,43 @@ test('recognizes a cited reader synthesis when coverage calls the comparison uns
  assert.doesNotMatch(result.answer,/do not fully address/i);
 });
 
+test('final relation audit preserves a cited cross-work synthesis when both sides are supported',async()=>{
+ const question='Compare the Nicomachean Ethics and Leviathan: what is the relationship between Aristotle’s political aim and Hobbes’s common power, and how do their accounts differ?';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:2,
+   preview:'Political science aims at the highest of all goods achievable by action, which is generally identified as happiness.'},
+  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes',page:104,
+   preview:'Without a common power to keep them all in awe, people would not reliably observe justice and the laws of nature.'}
+ ];
+ const parts=[
+  {part:'Aristotle’s political aim',status:'supported',evidenceIds:['S1']},
+  {part:'Hobbes’s role for common power',status:'supported',evidenceIds:['S2']},
+  {part:'How the accounts differ',status:'partial',evidenceIds:['S1','S2']}
+ ];
+ const answer='Aristotle frames political inquiry around an end: the highest good achievable through action, which the passage identifies with happiness [S1]. It presents political science by reference to the good its practical activity seeks. The cited passage explains this aim without directly comparing it with Hobbes’s account.\n\nHobbes gives common power a different role: it keeps people in awe so that justice and the laws of nature can be observed [S2]. His passage emphasizes the authority needed to sustain those rules in practice. Without common power, Hobbes says, people would not reliably observe justice or the laws of nature [S2].\n\nRead together, Aristotle emphasizes the end political inquiry should pursue, whereas Hobbes emphasizes the power needed to maintain order [S1, S2]. The contrast is between a purpose that guides political inquiry and an authority that secures public order. This is a reader-level comparison of the supplied passages, not a comparison made by either author [S1, S2]. The distinction follows from the different roles described in the two excerpts. In this synthesis, one passage concerns what political activity should aim at, while the other concerns the condition that makes civic rules effective.';
+ let calls=0;
+ const ai={run:async(_model,input)=>{
+  calls++;
+  if(calls===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The excerpts do not directly compare the accounts.',
+   questionParts:parts,
+   evidence:[
+    {id:'S1',point:'Aristotle identifies happiness as the highest good pursued by political science.',quote:'political science aims at and what is the highest of all goods achievable by action',speaker:'Aristotle'},
+    {id:'S2',point:'Hobbes says common power keeps people in awe so justice can be observed.',quote:'without a common power to keep them all in awe',speaker:'Thomas Hobbes'}
+   ]
+  })}}],usage:{neurons:1}};
+  if(calls===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer,partChecks:parts})}}],usage:{neurons:1}};
+  assert.match(input.messages[0].content,/Audit and correct the finished answer against the supplied excerpts/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({answer,partChecks:parts})}}],usage:{neurons:1}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls,3);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[2].status,'supported');
+ assert.deepEqual(result.questionParts[2].evidenceIds,['S1','S2']);
+ assert.doesNotMatch(result.answer,/do not fully address/i);
+});
+
 test('repairs prose that denies a comparison while coverage marks it supported',async()=>{
  const question='How do Aristotle and Hobbes explain political order, and how do their accounts differ?';
  const sources=[
