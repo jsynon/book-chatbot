@@ -1097,6 +1097,19 @@ test('recognizes the Dostoevsky excerpt correction written as “wasn’t quite 
  assert.equal(retained.answer,bounded);
 });
 
+test('preserves a reported dialogue view when the same passage explicitly qualifies it',()=>{
+ const source={id:'S1',bookId:'114',page:465,preview:'But extraordinary men have a right to commit any crime and to transgress the law in any way, just because they are extraordinary. That was your idea, if I am not mistaken? Raskolnikov smiled again. He decided to take up the challenge. “That wasn’t quite my contention,” he began simply and modestly. “Yet I admit that you have stated it almost correctly; perhaps, if you like, perfectly so.” The only difference is that I don’t contend that extraordinary people are always bound to commit breaches of morals. I simply hinted that an extraordinary man has the right—not an official right, but an inner right to decide in his own conscience to overstep certain obstacles.'};
+ const evidence=[{id:'S1',point:'The passage reports Raskolnikov’s theory and records his qualification.',
+  quoteVerified:true,speakerUnverified:true}];
+ const answer='Razumihin’s summary presents Raskolnikov’s theory as allowing extraordinary people to transgress the law; Raskolnikov accepts the account as almost correct, but qualifies it as an inner right of conscience to decide whether to cross certain barriers [S1].';
+ const guarded=removeConflictingSpeakerAttributions(answer,evidence,[source]);
+ assert.equal(guarded.conflicts.length,0);
+ assert.equal(guarded.answer,answer);
+ const corrected=removeUnqualifiedCorrectedClaims(guarded.answer,evidence,[source]);
+ assert.equal(corrected.conflicts.length,0);
+ assert.equal(corrected.answer,answer);
+});
+
 test('removes uncited author-specific claims and preserves cited statements',()=>{
  const sources=[
   {id:'S1',title:'Nicomachean Ethics — Aristotle',preview:'Aristotle connects political inquiry with the human good.'},
@@ -1885,21 +1898,34 @@ test('v1.9.4 bad or absent model citations never leave the server as an answer',
    assert.equal(calls,2);
  }
 });
-test('v1.14 rejects an unsupported quotation after one bounded repair attempt',async()=>{
- const fixture=await fingerprintTestFixture();
- let calls=0;
- const result=await fixture.response({aiRun:async()=>{
-   calls++;
-   const content=calls===1?
-     JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
-     'The passage calls it “the atoning sacrifice because we obey his commandments and do for my sins” [S1].';
-   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
- }});
- assert.equal(result.status,502);
- const data=await result.json();
- assert.equal(data.stage,'ai-answer');
- assert.equal(data.answer,undefined);
- assert.equal(calls,3);
+test('v1.14 keeps safe sentences when quotation repair fails and removes the mismatched sentence',async()=>{
+ for(const repair of ['mismatch','provider-error','all-invalid']){
+  const fixture=await fingerprintTestFixture();
+  let calls=0;
+  const result=await fixture.response({aiRun:async()=>{
+    calls++;
+    if(calls===3&&repair==='provider-error')throw new Error('provider unavailable');
+    const content=calls===1?
+      JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
+      repair==='all-invalid'?
+       'The passage calls this “the atoning sacrifice because we obey his commandments and do for my sins” [S1].':
+       'The passage distinguishes an immediate dispute from fear caused by growing power [S1]. The passage calls this “the atoning sacrifice because we obey his commandments and do for my sins” [S1].';
+    return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:4}};
+  }});
+  assert.equal(result.status,200);
+  const data=await result.json();
+  assert.equal(data.quotationRepairFallback,true);
+  if(repair==='all-invalid'){
+   assert.equal(data.outcome,'insufficient-evidence');
+   assert.equal(data.reviewStatus,'retrieved_passages_only');
+   assert.match(data.notice,/answer draft contained an unverified quotation/);
+  }else{
+   assert.equal(data.outcome,'verified-source-draft');
+   assert.equal(data.answer,'The passage distinguishes an immediate dispute from fear caused by growing power [S1].');
+   assert.match(data.notice,/sentences containing unverified quotations were removed/);
+  }
+  assert.equal(calls,3);
+ }
 });
 test('v1.14 repairs an unsupported quotation with a source-grounded paraphrase',async()=>{
  const fixture=await fingerprintTestFixture();
@@ -3246,6 +3272,7 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[0].messages[0].content,/exact quote copied from that same excerpt/);
  assert.match(calls[0].messages[0].content,/record that reply as a separate evidence point/);
  assert.match(calls[1].messages[0].content,/complete verified quote and sentence context together/);
+ assert.match(calls[1].messages[0].content,/do not use direct quotations in the answer field/i);
  assert.match(calls[0].messages[0].content,/keep the condition and its consequence together/);
  assert.match(calls[0].messages[0].content,/actual differentiating criterion/);
  assert.match(calls[1].messages[0].content,/never detach a consequence from its “if,” “unless,” “only if,” or equivalent condition/);

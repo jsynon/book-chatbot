@@ -1716,7 +1716,17 @@ function reconcileEmptyReviewQuestionParts(questionParts,partChecks,answer,evide
     return evidenceIds.length?{...part,status:'partial',evidenceIds}:part;
   });
 }
-export function removeConflictingSpeakerAttributions(answer,evidenceMap) {
+function hasQualifiedReportedDialogueClaim(sentence,source) {
+  const text=String(sentence||'');
+  const preview=String(source?.preview||'');
+  const reportsView=/\b(?:report(?:s|ed)?|summari[sz](?:es|ed|ing)|paraphras(?:es|ed|ing)|restat(?:es|ed|ing)|account|version)\b/i.test(text);
+  const acknowledges=/\b(?:accepts?|acknowledges?|concedes?|qualif(?:y|ies|ied)|clarif(?:y|ies|ied))\b/i.test(text);
+  const answerQualification=/\b(?:almost|nearly)\s+(?:correct|accurate)|\b(?:qualif(?:y|ies|ied)|clarif(?:y|ies|ied)|inner right|only difference|not quite)\b/i.test(text);
+  const sourceQualification=/\b(?:almost|nearly)\s+(?:correct|accurate)|\b(?:not quite my contention|only difference|inner right|qualif(?:y|ies|ied))\b/i.test(preview);
+  return reportsView&&acknowledges&&answerQualification&&sourceQualification;
+}
+export function removeConflictingSpeakerAttributions(answer,evidenceMap,sources=[]) {
+  const sourceById=new Map((sources||[]).map(source=>[source.id,source]));
   const speakersBySource=new Map();
   const unverifiedDialogueIds=new Set();
   for(const item of evidenceMap||[]){
@@ -1778,7 +1788,8 @@ export function removeConflictingSpeakerAttributions(answer,evidenceMap) {
       if(representedSpeakers.size===0&&namedSpeakers.length===1)representedSpeakers.add(namedSpeakers[0].key);
       if(representedSpeakers.size===0)return true;
       const attributedKey=[...representedSpeakers][0];
-      const unanchoredCitations=citationIds.filter(id=>unverifiedDialogueIds.has(id));
+      const unanchoredCitations=citationIds.filter(id=>unverifiedDialogueIds.has(id)&&
+        !hasQualifiedReportedDialogueClaim(sentence,sourceById.get(id)));
       if(unanchoredCitations.length&&
         ![...(speakersBySource.get(unanchoredCitations[0])||[])].some(value=>
           value.toLocaleLowerCase()===attributedKey)){
@@ -2040,6 +2051,20 @@ function quotedPhrasesMatchSources(answer,sources) {
   });
 }
 
+function removeSentencesWithUnverifiedQuotes(answer,sources) {
+  const removedSourceIds=new Set();
+  const paragraphs=String(answer||'').split(/\n\s*\n/);
+  const kept=paragraphs.map(paragraph=>paragraph
+    .split(/(?<=[.!?])\s+(?=[A-Z“"'“\d])/u)
+    .filter(sentence=>{
+      if(quotedPhrasesMatchSources(sentence,sources))return true;
+      for(const match of sentence.matchAll(/\[([^\]]+)\]/g))
+        for(const id of match[1].match(/\bS[1-9]\d*\b/g)||[])removedSourceIds.add(id);
+      return false;
+    }).join(' ').trim()).filter(Boolean);
+  return {answer:kept.join('\n\n'),removedSourceIds:[...removedSourceIds]};
+}
+
 // v1.9.4 private AI pilot. Only call this with independently SHA-256-verified
 // sources. Two normal inference requests, with one conditional quotation repair.
 // Citations here are source-ID checks, NOT semantic claim-level verification.
@@ -2278,8 +2303,9 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
         'Before writing, inspect EVERY verified excerpt, including any passage the evidence review did not select or marked partial/unsupported. The review checklist can miss a relevant passage. If an excerpt directly addresses a requested part, explain what it establishes and cite it; never say the passages contain no information about that part when they do. '+ 
         'When the question explicitly asks how two accounts differ, state the concrete basis of difference on the same requested issue: explain what each account says and how those claims diverge, citing both sides in that sentence. A label such as “sharp conflict,” or disagreement on an unrelated issue, does not explain the requested difference. When asked how a work tests or undermines a theory, explain the theory and the text’s direct counterpoint or qualification; do not treat a character’s motive or later outcome as a rebuttal unless the excerpts connect them. '+
         'Return one compact JSON object with keys answer and partChecks. partChecks must contain exactly one object for every requested question-part label, copying each label exactly, with status (supported|partial|unsupported) and evidenceIds. If the evidence review supplied no question-part labels because it found no selected evidence, derive one to four concise requested parts from the question and assess each against every verified excerpt. Mark a part supported only when the answer explicitly explains it using the cited excerpt; mark it partial when the excerpt supports only part of the requested explanation; mark unsupported only when no verified excerpt supports it. For a requested comparison across separately named works, each cited excerpt need only establish its own side; when the answer accurately attributes and cites both supported sides, it may synthesize the comparison without claiming either author made it. Mark the comparison supported when both requested sides are explicitly explained. For a distinction directly stated in an excerpt, an accurate paraphrase of that distinction is sufficient; do not mark it partial just because the answer adds no further example. Use only valid source IDs. Check that every supported part is actually explained in the answer before returning. '+ 
-        'Paraphrase by default. Use quotation marks only for an exact phrase copied '+ 
-        'from a verified excerpt; never use them for emphasis or invented wording. '+ 
+        'Paraphrase source material; do not use direct quotations in the answer field. '+
+        'Keep quotation marks only for ordinary titles or terms that are part of the '+
+        'question, never to present source wording as a quotation. '+
         'Put [S1], [S2], etc. immediately after statements supported by those '+ 
         'sources. Cite every source-based sentence, including reader-level comparisons, in that same sentence; for a comparison cite evidence for each work. Omit an uncited source claim rather than presenting it as established. If evidence is partial, explain the supported part and say '+
         'what remains uncertain. Do not invent missing evidence. '+ 
@@ -2615,15 +2641,17 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   // Exact source-page provenance does not make model quotations reliable.
   // If a quote fails exact matching, make one bounded repair attempt. This path
   // is conditional, so normal answers keep the two-request inference budget.
+  let quotationRepairFallback=false;
   if(!quotedPhrasesMatchSources(answer,emptyReview?sources:selected)){
+    const draftBeforeQuotationRepair=answer;
     let repaired;
     try{repaired=await ai.run(MODEL,{
       messages:[
         {role:'system',content:
-          'Correct the draft using ONLY the verified excerpts. The draft contains '+ 
-          'at least one quotation that is not an exact source match. Preserve only '+ 
-          'claims supported by these excerpts, paraphrase them, and use no quotation '+ 
-          'marks anywhere. Keep citations only as [S1], [S2], etc. for the supplied '+ 
+          'Correct the draft using ONLY the verified excerpts. The draft contains '+
+          'at least one quotation that is not an exact source match. Preserve only '+
+          'claims supported by these excerpts, paraphrase them, and use no quotation '+
+          'marks anywhere. Keep citations only as [S1], [S2], etc. for the supplied '+
           'source IDs. Honor the question scope. Return only the corrected answer.'},
         {role:'user',content:
           'Question:\n'+question+'\nCoverage: '+review.coverage+
@@ -2633,18 +2661,28 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
           sources.map(s=>'['+s.id+'] '+s.title+
             ', physical PDF page '+s.page+'\n'+s.preview).join('\n\n')}
       ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:800,
-    });}catch(error){throw answerFailure('answer-quotation-repair-request-failed',{
-      stage:'quotation-repair',...inferenceFailureDiagnostics(error)});}
-    if(['length','max_tokens'].includes(repaired?.choices?.[0]?.finish_reason))
-      throw answerFailure('answer-quotation-repair-truncated');
-    const repairedAnswer=modelText(repaired);
-    if(!repairedAnswer)throw answerFailure('answer-quotation-repair-empty');
-    if(repairedAnswer.length>MAX_ANSWER_CHARACTERS)throw answerFailure('answer-quotation-repair-too-long');
-    if(!quotedPhrasesMatchSources(repairedAnswer,emptyReview?sources:selected))
-      throw answerFailure('answer-quotation-repair-failed');
-    answer=repairedAnswer;
-    second=repaired;
-    answerNeurons+=Math.max(0,Number(repaired?.usage?.neurons)||0);
+    });}catch{quotationRepairFallback=true;}
+    const repairedAnswer=quotationRepairFallback?'':modelText(repaired);
+    if(!quotationRepairFallback&&repairedAnswer&&repairedAnswer.length<=MAX_ANSWER_CHARACTERS&&
+      !['length','max_tokens'].includes(repaired?.choices?.[0]?.finish_reason)&&
+      quotedPhrasesMatchSources(repairedAnswer,emptyReview?sources:selected)){
+      answer=repairedAnswer;second=repaired;
+      answerNeurons+=Math.max(0,Number(repaired?.usage?.neurons)||0);
+    }else{
+      const safeDraft=removeSentencesWithUnverifiedQuotes(
+        draftBeforeQuotationRepair,emptyReview?sources:selected);
+      answer=safeDraft.answer;
+      const removedIds=new Set(safeDraft.removedSourceIds);
+      finalQuestionParts=finalQuestionParts.map(part=>
+        (removedIds.size===0||part.evidenceIds.some(id=>removedIds.has(id)))&&
+          part.status==='supported'?{...part,status:'partial'}:part);
+      if(finalQuestionParts.length){
+        finalCoverage=finalQuestionParts.every(part=>part.status==='supported')?'full':'partial';
+        finalMissing=questionPartMissingNote(finalQuestionParts)||
+          'A sentence containing an unverified quotation was removed.';
+      }
+      quotationRepairFallback=true;
+    }
   }
   if(hasDanglingCitedSentence(answer)){
     const salvaged=removeDanglingCitedSentences(answer);
@@ -2801,7 +2839,7 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   // dialogue excerpts; if an answer attributes a claim to a character but the
   // cited excerpt's speaker cannot be verified, omit that claim and report
   // the affected part as partial. This makes no inference request.
-  const speakerGuard=removeConflictingSpeakerAttributions(answer,review.evidenceMap);
+  const speakerGuard=removeConflictingSpeakerAttributions(answer,review.evidenceMap,sources);
   if(speakerGuard.conflicts.length){
     answer=speakerGuard.answer;
     finalQuestionParts=finalQuestionParts.map(part=>{
@@ -2861,6 +2899,28 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
   const known=new Set(sources.map(s=>s.id));
   // Do not return an apparently sourced answer with fabricated or missing
   // citations. Note that valid IDs alone do NOT validate factual support.
+  if(!cited.length&&quotationRepairFallback){
+    const recoveredPassages=retrievedPassageFallback(question,sources);
+    if(recoveredPassages?.length){
+      const passageCitations=recoveredPassages.map(item=>item.source);
+      const passageText=recoveredPassages.map(item=>'['+item.source.id+'] “'+
+        item.snippet+'”').join('\n\n');
+      return {outcome:'insufficient-evidence',answer:
+        'The answer could not be safely completed after an unverified quotation was removed. These retrieved excerpts may help you check the source:\n\n'+passageText,
+        coverage:'none',missing:'The remaining draft did not contain a cited answer after its unverified quotation was removed.',
+        citations:passageCitations,evidenceMap:[],questionParts:finalQuestionParts,
+        reviewStatus:'retrieved_passages_only',followUpQuestions:[],quotationRepairFallback,
+        usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},model:MODEL,
+        notice:'Source page provenance was verified. The answer draft contained an unverified quotation, so its sentence was removed.'};
+    }
+    return {outcome:'insufficient-evidence',answer:
+      'The answer could not be safely completed because its remaining sentence contained an unverified quotation.',
+      coverage:'none',missing:'The remaining draft did not contain a cited answer after its unverified quotation was removed.',
+      citations:[],evidenceMap:review.evidenceMap,questionParts:finalQuestionParts,
+      reviewStatus:'no_selected_sources',followUpQuestions:[],quotationRepairFallback,
+      usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},model:MODEL,
+      notice:'Book-page provenance was verified; the answer draft contained an unverified quotation.'};
+  }
   if(emptyReview&&composed.structured&&cited.length&&cited.every(id=>known.has(id))&&
     !finalQuestionParts.some(part=>part.status==='supported'||part.status==='partial')){
     const lexicalRecovery=recoverLexicallyCitedDraftEvidence(
@@ -2921,8 +2981,9 @@ export async function composeVerifiedAnswer(question,sources,ai,history=[]) {
     missing:finalMissing,citations,followUpQuestions:review.followUpQuestions,
     evidenceMap:review.evidenceMap,questionParts:finalQuestionParts,reviewStatus:'claim_support_not_independently_verified',
     usage:{neurons:reviewNeurons+answerNeurons,reviewNeurons,answerNeurons},
-    model:MODEL,finishReason:second?.choices?.[0]?.finish_reason||'unknown',
-    notice:'Exact indexed page text verified against owner-published SHA-256. Individual AI claims still require assessment.'};
+    model:MODEL,finishReason:second?.choices?.[0]?.finish_reason||'unknown',quotationRepairFallback,
+    notice:'Exact indexed page text verified against owner-published SHA-256. Individual AI claims still require assessment.'+
+      (quotationRepairFallback?' A quotation check could not be repaired, so sentences containing unverified quotations were removed.':'')};
 }
 
 // Log only non-sensitive rejection reasons. Never log token, site secret,
