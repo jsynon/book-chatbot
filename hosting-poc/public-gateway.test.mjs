@@ -2531,6 +2531,42 @@ test('evidence review retries one invalid structured response with a compact req
  assert.equal(data.usage.neurons,9);
  assert.equal(calls,3);
 });
+test('malformed question-part review falls back to the existing composer with a provisional notice',async()=>{
+ const question='What account do the priests give, and how do they say they learned it?';
+ const sources=[{id:'S1',bookId:'149',title:'The Histories — Herodotus',page:145,
+   preview:'The Egyptian priests related the account, saying that Menelaus had himself informed them.'}];
+ const invalidParts=Array.from({length:5},(_,i)=>({
+   part:'Requested component '+(i+1),status:'supported',evidenceIds:['S1']
+ }));
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+   calls.push(input);
+   if(calls.length<=2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',evidence:[{id:'S1',point:'The priests say Menelaus supplied the account.',
+       quote:'Menelaus had himself informed them.'}],questionParts:invalidParts,
+     followUpQuestions:[]
+   })}}],usage:{neurons:2}};
+   assert.equal(input.max_completion_tokens,1600);
+   assert.match(input.messages[0].content,/Preserve reported-source chains/);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'Herodotus says the Egyptian priests told him that Menelaus had informed them [S1].',
+     partChecks:[
+       {part:'What account do the priests give?',status:'partial',evidenceIds:['S1']},
+       {part:'How do they say they learned it?',status:'supported',evidenceIds:['S1']}
+     ],
+     evidence:[{id:'S1',point:'The priests identify Menelaus as their source for the account.',
+       quote:'Menelaus had himself informed them.',speaker:'the Egyptian priests',
+       qualifier:'they declared that'}]
+   })}}],usage:{neurons:4}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3,'the existing answer-composition call should proceed after review retry failure');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/priests told him that Menelaus had informed them/);
+ assert.equal(result.reviewStatus,'claim_support_not_independently_verified');
+ assert.match(result.notice,/invalid question-part data after retry; treat this synthesis as provisional/);
+ assert.equal(result.citations.length,1);
+});
 test('second invalid evidence-review response reports only its safe failure class',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>({
   choices:[{finish_reason:'stop',message:{content:input.max_completion_tokens===520?
