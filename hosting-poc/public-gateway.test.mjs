@@ -277,7 +277,11 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
   {id:'S6',bookId:'638',title:'The New Oxford Annotated Bible, Fully Revised Fifth Edition — edited by Michael D. Coogan',page:1821,
    preview:'…10 In this is love, not that we loved God, but that he loved us and sent his Son to be the atoning sacrifice for our sins. 11 Beloved, since God loved us, we also ought to love one another.'},
   {id:'S7',bookId:'638',title:'The New Oxford Annotated Bible, Fully Revised Fifth Edition — edited by Michael D. Coogan',page:1821,
-   preview:'1 JOHN 4\n18 Little children, let us love, not in word or speech, but in truth and action.\n 7 Beloved, let us love one another, because love is from God.\n19 And by this we will know that we are from the truth and will reassure our hearts before him.\n 8 Whoever does not love does not know God, for God is love.\n20 Whenever our hearts condemn us; for God is greater than our hearts.'}
+   preview:'1 JOHN 4\n18 Little children, let us love, not in word or speech, but in truth and action.\n 7 Beloved, let us love one another, because love is from God.\n19 And by this we will know that we are from the truth and will reassure our hearts before him.\n 8 Whoever does not love does not know God, for God is love.\n20 Whenever our hearts condemn us; for God is greater than our hearts.'},
+  {id:'S8',bookId:'335',title:'New King James Version Bible — Various authors',page:5542,
+   preview:'1 JOHN 3 9 7 Little children, let no one deceive you. He who does not love his brother is not of God.'},
+  {id:'S9',bookId:'335',title:'New King James Version Bible — Various authors',page:5543,
+   preview:'7 Beloved, let us love one another, for love is of God; and everyone who loves is born of God.'}
  ];
  const inputs=[];let call=0;
  const ai={run:async(_model,input)=>{
@@ -304,7 +308,7 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
  assert.match(inputs[0].messages[1].content,/7 Beloved, let us love one another/);
  assert.match(inputs[0].messages[1].content,/12 No one has seen God/);
  assert.match(inputs[0].messages[1].content,/10 In this is love/);
- assert.match(inputs[0].messages[1].content,/atoning sacrifice for our sins/);
+ assert.match(inputs[0].messages[1].content,/propitiation for our sins/);
  assert.match(inputs[1].messages[0].content,/Answer each requested part directly/);
  assert.match(inputs[1].messages[0].content,/Develop the explanation with relevant reasons/);
  assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
@@ -314,6 +318,8 @@ test('a scoped Bible answer is composed only from the requested verses',async()=
  assert.doesNotMatch(inputs[0].messages[1].content,/13 By this we know/);
  assert.doesNotMatch(inputs[0].messages[1].content,/16 And we have known/);
  assert.doesNotMatch(inputs[0].messages[1].content,/21 And this commandment/);
+ assert.doesNotMatch(inputs[0].messages[1].content,/1 JOHN 3 9 7 Little children/);
+ assert.doesNotMatch(inputs[0].messages[1].content,/\[S9\]/);
  assert.doesNotMatch(inputs[0].messages[1].content,/brotherly love itself/);
  assert.doesNotMatch(result.answer,/brother must love|abides in God/);
  assert.equal(result.answer.split('\n\n').length,2);
