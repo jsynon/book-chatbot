@@ -199,6 +199,7 @@ test('multi-source evidence review calls out each named group in normal and retr
  }
  assert.match(prompts[0],/For each side, the passage must address the exact issue asked about/);
  assert.match(prompts[0],/reports, quotes, or criticizes the other thinker/);
+ assert.match(prompts[0],/when the named primary work and a secondary quotation are both supplied, prefer the primary passage/);
 });
 test('causal comparison can draw on complementary passages from the same work',async()=>{
  const question='According to Thucydides, what were the underlying causes of the Peloponnesian War, and how did they differ from the immediate disputes that preceded it?';
@@ -338,7 +339,7 @@ test('evidence review can select a supported point when it cannot safely copy an
    coverage:'full',missing:'',questionParts:[{part:'explain natural selection',status:'supported',evidenceIds:['S1']}],
    evidence:[{id:'S1',point:'Natural selection preserves favorable variations across generations.',quote:'',speaker:'unknown',qualifier:''}]
   })}}],usage:{neurons:2}};
-  assert.match(input.messages[0].content,/verify each point against the full excerpt/);
+  assert.match(input.messages[0].content,/Check evidence points against the full excerpt/);
   return {choices:[{finish_reason:'stop',message:{content:
    'Darwin describes natural selection as preserving favorable variations across generations [S1].'}}],usage:{neurons:3}};
  }};
@@ -346,7 +347,7 @@ test('evidence review can select a supported point when it cannot safely copy an
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.evidenceMap[0].quoteVerified,false);
  assert.match(inputs[0].messages[0].content,/Do not mark coverage none solely because an exact quote or qualifier is unavailable/);
- assert.match(inputs[1].messages[0].content,/Use the evidence map as a guide/);
+ assert.match(inputs[1].messages[0].content,/Check evidence points against the full excerpt/);
 });
 test('quote matching normalizes the common OCR glyph Ɵ without changing displayed source text',()=>{
  const source={id:'S1',bookId:'335',title:'New King James Version Bible — Various authors',
@@ -399,7 +400,7 @@ test('same-book answers select complementary passages and synthesize every quest
  assert.match(inputs[1].messages[0].content,/cite each source-based sentence/);
  assert.match(inputs[1].messages[0].content,/Develop the explanation with relevant reasons/);
  assert.match(inputs[1].messages[0].content,/Complementary passages may support separate sides of a comparison or causal account/);
- assert.match(inputs[1].messages[0].content,/Do not treat two passages from one author as independent perspectives/);
+ assert.match(inputs[1].messages[0].content,/two passages by one author as independent perspectives/);
  assert.match(inputs[1].messages[0].content,/do not pad or repeat/);
  assert.match(inputs[1].messages[0].content,/relevant reasons, distinctions/);
  assert.match(inputs[1].messages[0].content,/let answer length follow the evidence/);
@@ -427,6 +428,7 @@ test('all-books planner assigns a named-work query to each side of a cross-work 
  assert.match(prompt,/assign one query to each named source group/);
  assert.match(prompt,/concrete observable signal, measurement, motion, or named example/);
  assert.match(prompt,/Do not substitute a general statement that models can be compared with observations/);
+ assert.match(prompt,/When a question uses an abstract modern label, retain it but also search for the source’s own definitions, criteria, examples, and near-synonyms/);
  assert.match(result.queries[0],/On the Origin of Species/i);
  assert.match(result.queries[0],/natural selection|favorable variations/i);
  assert.match(result.queries[1],/A Brief History of Time/i);
@@ -655,7 +657,7 @@ test('repairs literary summaries that blur a character theory with another speak
   })}}]};
   }
   if(inputs.length===2){
-   assert.match(input.messages[0].content,/Keep an author’s account distinct from a narrator, character, reported view/);
+   assert.match(input.messages[0].content,/Distinguish author, narrator, character, report/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Raskolnikov has a perfect right to murder because extraordinary people can break the law [S1]. The novel demonstrates that he no longer believes his theory [S2]. His poverty and repentance explain the murder and confession [S3].',
    partChecks:[
@@ -665,7 +667,7 @@ test('repairs literary summaries that blur a character theory with another speak
   })}}]};
   }
   assert.equal(inputs.length,3);
-  assert.match(input.messages[0].content,/reported views, replies, hypotheticals, questions, and editorial notes distinct/);
+  assert.match(input.messages[0].content,/keep reported views, replies, hypotheticals, questions, and editorial notes distinct from an author’s own assertion/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Porfiry first summarizes the theory as giving extraordinary people license to transgress, but Raskolnikov qualifies that account: he claims an inner right to cross certain limits only when doing so is essential to realizing an idea, perhaps one that benefits humanity [S1]. The qualification matters; the passage does not say that extraordinary people must commit crimes or have an unrestricted right to do so.\n\nLater, Porfiry argues that Raskolnikov has stopped believing his theory and predicts that he will confess [S2]. That is Porfiry’s interpretation at this point. The epilogue later reports Raskolnikov’s stated motives as poverty and helplessness, and says he attributed his confession to repentance [S3]. Those motives complicate the extraordinary-person rationale by connecting the crime to personal desperation and remorse.',
    partChecks:[
@@ -1790,6 +1792,10 @@ test('empty-review recovery aligns quote-verified evidence with a cited answer',
  assert.match(prompts[1].messages[0].content,/Mark a part supported only if the answer explains it with cited evidence/);
  assert.match(prompts[1].messages[0].content,/add an exact short quote only when it can be copied confidently/);
  assert.match(prompts[1].messages[0].content,/answer any part it supports/);
+ assert.match(prompts[1].messages[0].content,/cite each source-based sentence inline \[S1\]/);
+ assert.match(prompts[1].messages[0].content,/partChecks\/evidence IDs are not citations/);
+ assert.match(prompts[1].messages[0].content,/synthesize them in direct prose instead of returning only excerpts/);
+ assert.match(prompts[1].messages[0].content,/Prefer a relevant direct passage from the named primary work over a secondary quotation/);
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.coverage,'full');
  assert.equal(result.reviewStatus,'claim_support_not_independently_verified');
@@ -2600,7 +2606,7 @@ test('malformed question-part review falls back to the existing composer with a 
      followUpQuestions:[]
    })}}],usage:{neurons:2}};
    assert.equal(input.max_completion_tokens,1600);
-   assert.match(input.messages[0].content,/Preserve reported-source chains/);
+   assert.match(input.messages[0].content,/reported-source intermediaries/);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      answer:'Herodotus says the Egyptian priests told him that Menelaus had informed them [S1].',
      partChecks:[
@@ -3287,7 +3293,7 @@ test('fragmentary passages cannot be completed or attributed to the catalog auth
  assert.match(inputs[0].messages[0].content,/Never turn a statement that the text does not discuss a subject/);
  assert.match(inputs[0].messages[0].content,/ellipsis, an unfinished clause/);
  assert.match(inputs[1].messages[0].content,/a catalog author is not automatically the speaker/);
- assert.match(inputs[1].messages[0].content,/do not complete a cut-off sentence/);
+ assert.match(inputs[1].messages[0].content,/do not complete cut-off text/);
  assert.equal(result.coverage,'partial');
  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
 });
@@ -3382,7 +3388,7 @@ test('answer composition explicitly requests plain text instead of Markdown arti
  assert.match(source,/cite each work/);
  assert.match(source,/including an opening summary/);
  assert.match(source,/state its central answer first/);
- assert.match(source,/reports another thinker’s view supports only the reported view/);
+ assert.match(source,/A report of another thinker’s view supports only the reported view/);
  assert.match(source,/the passage must address the exact issue asked about/);
 });
 
@@ -3607,7 +3613,7 @@ test('a mapped point with an unverified quote still triggers the existing eviden
   })}}]};
   assert.match(input.messages[0].content,/Repair only the requested parts/);
   assert.match(input.messages[1].content,/proposed quote not verified; recheck the point against the full excerpt/);
-  assert.match(calls[1].messages[0].content,/quote-unverified means only that its proposed quotation could not be matched exactly/);
+  assert.match(calls[1].messages[0].content,/A quote-unverified point may still be supported/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Hamlet weighs ending suffering through death against enduring life, but the unknown possibility of dreams after death makes him pause [S1]. The passage presents that uncertainty as a reason he hesitates before choosing death.',
    partChecks:[{part:'effect of uncertainty about death',status:'supported',evidenceIds:['S1']}]
