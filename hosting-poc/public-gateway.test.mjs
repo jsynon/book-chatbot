@@ -197,6 +197,8 @@ test('multi-source evidence review calls out each named group in normal and retr
    assert(prompt.includes('A Brief History of Time [S2]'));
    assert.match(prompt,/synthesize their difference while attributing each claim to its source/);
  }
+ assert.match(prompts[0],/For each side, the passage must address the exact issue asked about/);
+ assert.match(prompts[0],/reports, quotes, or criticizes the other thinker/);
 });
 test('causal comparison can draw on complementary passages from the same work',async()=>{
  const question='According to Thucydides, what were the underlying causes of the Peloponnesian War, and how did they differ from the immediate disputes that preceded it?';
@@ -3353,6 +3355,10 @@ test('answer composition explicitly requests plain text instead of Markdown arti
  assert.match(source,/when the excerpts support them/);
  assert.match(source,/cite each source-based sentence/);
  assert.match(source,/cite each work/);
+ assert.match(source,/including an opening summary/);
+ assert.match(source,/state its central answer first/);
+ assert.match(source,/reports another thinker’s view supports only the reported view/);
+ assert.match(source,/the passage must address the exact issue asked about/);
 });
 
 

@@ -151,6 +151,45 @@ test('cause-versus-trigger planning seeks concrete incidents instead of abstract
  assert.match(systemPrompt,/do not rely only on abstract labels/i);
  assert.match(systemPrompt,/search query as retrieval leads, never as evidence/i);
 });
+test('comparative planning keeps each source on the exact disputed concept',async()=>{
+ let systemPrompt='';
+ const queries=[
+  'Hume Enquiry causal necessity custom habit repeated experience',
+  'Kant Critique causal necessity a priori category cause effect'
+ ];
+ const result=await planSearchQueries(
+  'How do Hume’s Enquiry and Kant’s Critique of Pure Reason differ over how we can know causal necessity?',
+  'Critique of Pure Reason — Immanuel Kant', {
+   run:async(_model,options)=>{
+    systemPrompt=options.messages[0].content;
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries})}}]};
+   }
+  }
+ );
+ assert.deepEqual(result.queries,queries);
+ assert.match(systemPrompt,/specific disputed concept/i);
+ assert.match(systemPrompt,/that source’s own definition, criterion, or explanation/i);
+ assert.match(systemPrompt,/merely reports the other thinker’s position/i);
+});
+test('literary passage planning prefers the canonical primary work',async()=>{
+ let systemPrompt='';
+ const queries=[
+  'Shakespeare Hamlet To be or not to be alternatives fortune death',
+  'Shakespeare Hamlet perchance to dream must give us pause uncertainty'
+ ];
+ const result=await planSearchQueries(
+  'In Hamlet’s “To be, or not to be” soliloquy, what alternatives does he weigh, and how does uncertainty about what follows death affect his reasoning?', '', {
+   run:async(_model,options)=>{
+    systemPrompt=options.messages[0].content;
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries})}}]};
+   }
+  }
+ );
+ assert.deepEqual(result.queries,queries);
+ assert.match(systemPrompt,/For a literary scene or quoted line/i);
+ assert.match(systemPrompt,/canonical work or author/i);
+ assert.match(systemPrompt,/primary text over commentary or anthologies/i);
+});
 test('definition questions preserve the exact phrase instead of broad planner paraphrases',async()=>{
  let systemPrompt='';
  const answer=await planSearchQueries('What does “God is love” mean?','',{
