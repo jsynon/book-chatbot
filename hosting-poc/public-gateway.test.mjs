@@ -330,6 +330,7 @@ test('evidence review can select a supported point when it cannot safely copy an
    coverage:'full',missing:'',questionParts:[{part:'explain natural selection',status:'supported',evidenceIds:['S1']}],
    evidence:[{id:'S1',point:'Natural selection preserves favorable variations across generations.',quote:'',speaker:'unknown',qualifier:''}]
   })}}],usage:{neurons:2}};
+  assert.match(input.messages[0].content,/general explanation from a special-case example/);
   return {choices:[{finish_reason:'stop',message:{content:
    'Darwin describes natural selection as preserving favorable variations across generations [S1].'}}],usage:{neurons:3}};
  }};
@@ -2643,6 +2644,46 @@ test('named-author comparison repairs an omitted side from a submitted source an
  assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
  assert.equal(result.answer.split(/\n\s*\n/).length,2);
  assert.match(result.answer,/Shestov attacks the authority/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+});
+
+test('a partial comparison with both sides supported uses the existing comparison expansion',async()=>{
+ const question='How does Aristotle describe political science, how does Hobbes describe common power, and how do their accounts differ?';
+ const sources=[
+  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:2,
+   preview:'Political science aims at the highest of all goods achievable by action, which is generally identified as happiness.'},
+  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes',page:106,
+   preview:'The sovereign acts on behalf of the subjects in matters concerning common peace and safety.'}
+ ];
+ const parts=[
+  {part:'Aristotle’s account of political science',status:'supported',evidenceIds:['S1']},
+  {part:'Hobbes’s account of common power',status:'supported',evidenceIds:['S2']},
+  {part:'How their accounts differ',status:'partial',evidenceIds:['S1','S2']}
+ ];
+ const calls=[];
+ const draft='Aristotle describes political science as pursuing the highest good achievable by action, generally understood as happiness [S1]. This gives political inquiry a stated end.\n\nHobbes describes the sovereign as acting for common peace and safety [S2]. This identifies what public power is to secure.\n\nThe accounts differ in emphasis.';
+ const expanded='Aristotle describes political science as aiming at the highest good achievable by action, generally understood as happiness [S1]. The passage presents political inquiry through the end it should serve. That purpose gives the account its central criterion for judging civic institutions and action. It grounds the account in a purpose rather than in a specific enforcement mechanism.\n\nHobbes describes the sovereign as acting for common peace and safety [S2]. His passage focuses on the authority responsible for securing those conditions. Read together, the excerpts contrast an account framed by its public end with one framed by the power that maintains peace and safety [S1, S2]. This is a reader-level comparison of the supplied passages, whose claims remain distinct and are not presented as a direct exchange between the authors.';
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'partial',missing:'The comparison is only partly explained.',questionParts:parts,
+   evidence:[
+    {id:'S1',point:'Aristotle identifies happiness as the highest good pursued by political science.',quote:'the highest of all goods achievable by action',speaker:'Aristotle'},
+    {id:'S2',point:'Hobbes assigns the sovereign responsibility for common peace and safety.',quote:'common peace and safety',speaker:'Thomas Hobbes'}
+   ]
+  })}}],usage:{neurons:1}};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:draft,partChecks:parts
+  })}}],usage:{neurons:1}};
+  assert.match(input.messages[0].content,/partial but both source-specific positions are supported/);
+  assert.match(input.messages[0].content,/concrete reader-level contrast/);
+  return {choices:[{finish_reason:'stop',message:{content:expanded}}],usage:{neurons:1}};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[2].status,'supported');
+ assert.match(result.answer,/contrast an account framed by its public end with one framed by the power/);
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
 });
 
