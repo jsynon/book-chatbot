@@ -1707,6 +1707,8 @@ test('empty-review recovery aligns quote-verified evidence with a cited answer',
  const result=await composeVerifiedAnswer(question,[source],ai);
  assert.equal(call,2);
  assert.match(prompts[1].messages[0].content,/cross-check answer, partChecks, and evidence for consistency/);
+ assert.match(prompts[1].messages[0].content,/state the concrete basis of difference on the same requested issue/);
+ assert.match(prompts[1].messages[0].content,/direct counterpoint or qualification/);
  assert.match(prompts[1].messages[0].content,/If a verified excerpt directly supports a requested part, do not mark that part unsupported/);
  assert.match(prompts[1].messages[0].content,/Add an exact 12–220 character quote copied from that same excerpt when you can copy it confidently/);
  assert.match(prompts[1].messages[0].content,/A missing or unverified quote does not invalidate an otherwise supported point or citation/);
