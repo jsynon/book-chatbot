@@ -2992,25 +2992,36 @@ function applyExplicitBibleVerseScope(question,sources){
   const asksForInterpretiveSources=/\b(commentar(?:y|ies|ian|ians)|church fathers?|homil(?:y|ies)|sermon|Augustine)\b/i.test(question);
   const bookNeedle=(scope.work.normalize('NFKC').toLocaleLowerCase()
     .match(/[\p{L}\p{N}]+/gu)||[]).join(' ');
+  const hasRequestedChapterHeading=source=>{
+    const normalized=(String(source.preview||'').normalize('NFKC').toLocaleLowerCase()
+      .match(/[\p{L}\p{N}]+/gu)||[]).join(' ');
+    return normalized.includes(`${bookNeedle} ${scope.startChapter}`);
+  };
+  const pagesFollowingScopedHeading=new Set(sources.filter(source=>
+    /\b(?:bible|scripture|testament)\b/i.test(source.title||'')&&
+    hasRequestedChapterHeading(source)).map(source=>
+      `${source.bookId}:${Number(source.page)+1}`));
   const verseMarker=/(?:^|[^\p{L}\p{N}])(\d{1,3})[ \t]+(?=[A-Z“"'‘])/gu;
   const filtered=[];
   for(const source of sources){
     const isScripture=/\b(?:bible|scripture|testament)\b/i.test(source.title||'');
     if(!isScripture){if(asksForInterpretiveSources)filtered.push(source);continue;}
     const text=String(source.preview||'');
-    const normalized=(text.normalize('NFKC').toLocaleLowerCase()
-      .match(/[\p{L}\p{N}]+/gu)||[]).join(' ');
-    const hasPassageHeading=normalized.includes(`${bookNeedle} ${scope.startChapter}`);
-    if(!hasPassageHeading&&asksForInterpretiveSources){
-      filtered.push(source);
+    const hasPassageHeading=hasRequestedChapterHeading(source);
+    const hasAdjacentChapterContext=pagesFollowingScopedHeading.has(
+      `${source.bookId}:${Number(source.page)}`);
+    if(!hasPassageHeading&&!hasAdjacentChapterContext){
+      // Verse numbers repeat across chapters. Without a heading here or on the
+      // directly preceding page, another chapter's verse 7 could be mistaken
+      // for the requested chapter's verse 7 and leak out-of-scope claims.
+      if(asksForInterpretiveSources)filtered.push(source);
       continue;
     }
     const escapedWork=scope.work.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
     const header=new RegExp('^\\s*'+escapedWork+
       '\\s+'+scope.startChapter+'(?:\\s*[-–—]\\s*\\d+)?\\s+\\d+\\s*$','i');
-    const lines=hasPassageHeading?
-      text.split(/\r?\n/).filter(line=>!header.test(line)):
-      text.split(/\r?\n/);
+    const lines=text.split(/\r?\n/).filter(line=>
+      !hasPassageHeading||!header.test(line));
     const content=lines.join('\n');
     const markers=[...content.matchAll(verseMarker)];
     if(!markers.length){
