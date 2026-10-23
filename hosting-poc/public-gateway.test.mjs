@@ -425,13 +425,14 @@ test('all-books planner assigns a named-work query to each side of a cross-work 
    })}}]};
  }};
  const result=await planSearchQueries(question,'',ai);
- assert.match(prompt,/assign one query to each named source group/);
+ assert.match(prompt,/use one query per source and retain all requested facets that apply to it/);
+ assert.match(prompt,/including later clauses and the relation being compared/);
  assert.match(prompt,/concrete observable signal, measurement, motion, or named example/);
  assert.match(prompt,/Do not substitute a general statement that models can be compared with observations/);
  assert.match(prompt,/When a question uses an abstract modern label, retain it but also search for the source’s own definitions, criteria, examples, and near-synonyms/);
  assert.match(result.queries[0],/On the Origin of Species/i);
  assert.match(result.queries[0],/natural selection|favorable variations/i);
- assert.match(result.queries[1],/A Brief History of Time/i);
+ assert.match(result.queries[1],/(?:A )?Brief History of Time/i);
  assert.doesNotMatch(result.queries[1],/On the Origin of Species/i);
  assert.match(result.queries[1],/astronomical observations|black-hole phenomena/i);
 });
@@ -916,6 +917,62 @@ test('single named work keeps existing evidence-review coverage behavior',()=>{
    'How does Aristotle explain becoming virtuous through repeated actions?');
  assert.equal(result.coverage,'full');
  assert.equal(result.missing,'');
+});
+
+test('a specifically named work excludes the same author’s other books from answer citations',async()=>{
+ const question='According to Aristotle’s De Anima, how is the soul related to a living body?';
+ const sources=[
+  {id:'S1',bookId:'4',title:'On the Soul (De Anima) — Aristotle',page:15,
+   preview:'The body is matter and the soul is the form of a natural body having life potentially.'},
+  {id:'S2',bookId:'9',title:'Metaphysics — Aristotle',page:92,
+   preview:'Sensible substance is matter, form, or the composite of both.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[{part:'how the soul is related to a living body',status:'supported',evidenceIds:['S1']}],
+   evidence:[{id:'S1',point:'The soul is the form and actuality of a natural living body.'}]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Aristotle describes the soul as the form and actuality of a natural body with life potentially [S1].',
+   partChecks:[{part:'how the soul is related to a living body',status:'supported',evidenceIds:['S1']}]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,2);
+ assert.match(calls[0].messages[1].content,/On the Soul \(De Anima\)/);
+ assert.doesNotMatch(calls[0].messages[1].content,/Metaphysics/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1']);
+});
+
+test('an author mentioned as the subject of a view is not treated as a second source',async()=>{
+ const question='What did Nietzsche think about Plato?';
+ const sources=[
+  {id:'S1',bookId:'54',title:'Thus Spake Zarathustra — Friedrich Nietzsche',page:31,
+   preview:'Nietzsche’s thinking about Plato is critical of the philosopher’s ideal world.'},
+  {id:'S2',bookId:'74',title:'The Republic — Plato',page:110,
+   preview:'Plato describes justice as an order among the parts of the soul.'}
+ ];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[{part:'Nietzsche’s view of Plato',status:'supported',evidenceIds:['S1']}],
+   evidence:[{id:'S1',point:'Nietzsche criticizes Plato’s ideal world.'}]
+  })}}]};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Nietzsche criticizes Plato’s ideal world [S1].',
+   partChecks:[{part:'Nietzsche’s view of Plato',status:'supported',evidenceIds:['S1']}]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,2);
+ assert.match(calls[0].messages[1].content,/Nietzsche/);
+ assert.doesNotMatch(calls[0].messages[1].content,/Plato describes justice/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1']);
 });
 test('evidence review follow-ups are short, specific, and grounded in selected passages',()=>{
  const question='How does Darwin explain variation?';
