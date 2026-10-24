@@ -409,6 +409,25 @@ test('one evidence retry can correct an inexact composer quotation within the ca
  assert.equal(result.trace.rejected.length,0);
 });
 
+test('an evidence retry preserves earlier claims that already passed validation',async()=>{
+ const valid=modelAnswer().claims[0];
+ const invalid={...valid,id:'C2',text:'An unsupported second claim.',
+  evidence:[{sourceId:'S1',quote:'This exact wording is absent from the verified page.'}]};
+ let calls=0;
+ const ai={run:async()=>{
+  calls++;
+  return calls===1?response({claims:[valid,invalid],parts:[{partId:'P1',status:'answered',gap:''}]}):
+   response({claims:[],parts:[{partId:'P1',status:'unanswered',gap:'The retry could not verify another claim.'}]});
+ }};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
+ assert.equal(calls,2);
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.match(result.answer,/repeated just action forms a just character/);
+ assert.deepEqual(result.citations.map(item=>item.id),['S1']);
+ assert.equal(result.trace.rejected.length,0);
+});
+
 test('fingerprint verification retains original complete text and digest separately from UI preview',async()=>{
  const text='A complete source page begins here. '+quote+'. The rest of the argument continues beyond the compact preview. '+('Additional context extends this physical page. '.repeat(40));
  const bytes=new TextEncoder().encode(text);
