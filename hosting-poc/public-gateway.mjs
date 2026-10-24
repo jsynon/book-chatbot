@@ -3333,6 +3333,12 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'a passage that merely reports the other thinker’s position, or a '+
         'general discussion of the topic for the named source’s answer to the '+
         'question. '+
+        'When the reader asks how a claim, principle, or necessity can be known, '+
+        'justified, or established, preserve that epistemic relation and the '+
+        'exact phenomenon in the source query. Seek the source’s argument, '+
+        'grounds, or conditions of validity, not only the doctrine’s category '+
+        'name. Add source-native wording without replacing the terms the reader '+
+        'used, especially terms such as necessity, experience, rule, or validity. '+
       'For a literary scene or quoted line, keep the character or exact '+
       'phrase in the query and add the canonical work or author when clear, '+
       'so retrieval favors the primary text over commentary or anthologies. '+

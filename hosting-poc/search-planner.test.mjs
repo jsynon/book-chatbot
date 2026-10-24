@@ -68,6 +68,23 @@ test('search planner retains explicitly named authors and works for source scopi
  assert.match(systemPrompt,/retain the relevant name in its corresponding query/i);
  assert.match(systemPrompt,/Do not invent authors or works/i);
 });
+test('epistemic comparison planning searches for the argument behind a principle',async()=>{
+ let systemPrompt='';
+ await planSearchQueries(
+  'How do Hume and Kant differ over how we can know causal necessity?', '', {
+   run:async(_model,options)=>{
+    systemPrompt=options.messages[0].content;
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     queries:['Hume causal necessity experience custom habit',
+      'Kant causal necessity argument grounds experience rule']
+    })}}]};
+   }
+  });
+ assert.match(systemPrompt,/how a claim, principle, or necessity can be known/i);
+ assert.match(systemPrompt,/preserve that epistemic relation and the exact phenomenon/i);
+ assert.match(systemPrompt,/argument, grounds, or conditions of validity/i);
+ assert.match(systemPrompt,/without replacing the terms the reader used/i);
+});
 test('process-focused planning requires source-level actions as well as topic labels',async()=>{
  let systemPrompt='';
  const plan={queries:[

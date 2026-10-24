@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {auditFinalAnswer,normalizePlan} from './reader-contract.mjs';
-import {composeEvidenceAnswer,validateClaims} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,validateClaims,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
 import {handleRequest,verifiedFingerprintSources} from './public-gateway.mjs';
 
 const quote='By doing just acts we become just';
@@ -19,6 +19,13 @@ function modelAnswer(claimOverrides={}){
 }
 function response(value){return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(value)}}],
   usage:{neurons:7,prompt_tokens:120,completion_tokens:60}};}
+
+test('epistemic answers require grounds beyond naming a category',()=>{
+ assert.match(COMPOSER_PROMPT,/When asked how a claim or principle can be known, justified, or necessary/i);
+ assert.match(COMPOSER_PROMPT,/grounds, argument, or conditions of validity/i);
+ assert.match(REVIEW_PROMPT,/a category name alone is not a complete explanation/i);
+ assert.match(REVIEW_PROMPT,/Mark the part partial when those are absent/i);
+});
 
 test('grouped citations reject unknown source IDs and bind quotations to their cited source',()=>{
  const sources=[{id:'S1',text:'The first source says something entirely different.'},
