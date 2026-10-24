@@ -3611,7 +3611,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     }
     let output;
     try{
-      if(env.READER_PIPELINE==='evidence-v2'){
+      // Keep the evidence pipeline opt-in for public visitors, while making
+      // the authenticated holdout workflow exercise it without changing the
+      // deployment-wide public answer mode.
+      if(env.READER_PIPELINE==='evidence-v2'||authorizedPilotEvaluation(request,env)){
         const selectedBookId=String(data.bookId||'');
         const plan=normalizePlan(data.plan,data.question,PILOT_BOOKS,selectedBookId);
         const scopeSources=applyExplicitBibleVerseScope(data.question,
