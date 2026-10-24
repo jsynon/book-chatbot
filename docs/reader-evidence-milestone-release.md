@@ -194,3 +194,29 @@ The next validation is a single live Hume/Kant with-review run after both candid
 | Public production deployment | Not performed; this branch is not live until reviewed, merged, and deployed |
 
 The first live acceptance check should confirm that a valid draft is returned without composer regeneration, the Kant part explains the argument for causal necessity rather than only naming the category, and the comparison cites both works. The live “transcendental idealism” question must also be rerun after deployment. If the cited pages still do not support its definition and appearance/thing-in-itself distinction, that is a retrieval/evidence-quality failure to diagnose from the authenticated trace, not a reason to add another composition retry.
+
+## Follow-up fixes from the seven-question all-books holdout (October 24)
+
+The latest uploaded run used `all-books` scope and `with-review` mode. It completed seven cases with one retrieval failure and no human rubric scores. None of the seven met the structural gate. Among the six cases that reached composition, the answer/review data recorded four supported parts, three partial parts, and six unsupported parts; the Plato/Rousseau case stopped before answer-stage part data was available. This run is diagnostic and does not measure acceptance quality.
+
+The failures identify four concrete seams in the current pipeline:
+
+- Herodotus had one page that contained both the Egyptian priests' account and Herodotus's reason for preferring it, but retrieval linked the page only to the first part. The Worker then correctly rejected using it for the second part.
+- Aristotle and James had relevant verified pages, but the candidate-to-part links and exact-quote rules prevented their prose from surviving. In Aristotle's case the composer used a short quoted term as ordinary terminology; James's planned part had no candidate source links.
+- The Hume/Kant review returned exact passages longer than the old 220-character limit, and a Du Bois review quote used an ellipsis that was not an exact contiguous passage. A topical quote also received too much weight in the Kant completeness decision.
+- One malformed optional planner facet made the entire Plato/Rousseau retrieval request fail with `Part-specific retrieval queries are invalid.` The report did not expose enough facet-level detail to diagnose the bad item after the fact.
+
+The follow-up candidate keeps the existing paragraph composer and two-call reviewed path. Website retrieval now tolerates malformed optional part facets, falls back to the valid part question where possible, bounds facet work to 12 links and six unique queries, and records warnings in progress events and case reports. After a page is loaded, its own text may link it to an additional question part only when it overlaps at least two distinctive terms from that part's query. This is an eligibility signal, not proof of support; the Worker still enforces source identity, part scope, citations, and review.
+
+The Worker now treats short one-word quoted terms as terminology rather than exact-quotation claims, while keeping multiword quotes bound to cited source text. Review evidence may be up to 320 characters, must be exact contiguous text, and an `answered` part must provide a validated quote from every source ID cited for that part. This keeps the evidence map consistent with the answer citations and avoids rejecting long but valid review excerpts. It does not make semantic review infallible: a real quote can still be only topically related, so the model rationale and human source check remain necessary.
+
+| Verification | Result |
+|---|---|
+| Website full Node suite: `node --test reading-companion/*.test.mjs` | 154 passed, 0 failed after the final adjustment |
+| Worker full Node suite: `node --test hosting-poc/*.test.mjs` | 213 passed, 0 failed |
+| Malformed optional part facets | Regression confirms invalid hints are dropped/fallback is used within bounded facet budgets instead of aborting base retrieval |
+| Shared page across question parts | Regression confirms a page found through one facet can be linked to another part when its full text contains that part's distinctive terms |
+| Review quote contract | Regression confirms exact 260-character review quotes are accepted and an answer citing two pages is downgraded unless both pages have exact review evidence |
+| Live model answer quality, OCR fidelity, and published-site behavior | Not yet validated on this candidate |
+
+The next validation is to open the two candidate PRs, merge and deploy them, then rerun the same seven-question holdout as a diagnostic comparison. Inspect the planner part facets and selected-page links for the formerly failing Plato/Rousseau, Herodotus, Aristotle, and James cases. Confirm that Hume/Kant uses a directly relevant Kant passage and that every supported answer part has a source-level quote and rationale. Because this holdout has now guided code changes, do not call it acceptance evidence; freeze the candidate and run the separate unseen seven-question acceptance set in All Books with review enabled, then score all five human rubric dimensions. Keep the workflow's real-time progress output enabled; the user confirmed it was visible in the latest run.
