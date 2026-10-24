@@ -39,10 +39,21 @@ test('plan normalization bounds and canonicalizes requested parts and book scope
  const plan=normalizePlan(rawPlan,'fallback question',catalog);
  assert.equal(plan.version,'reader-evidence-v2');
  assert.equal(plan.intent,'explain');
- assert.deepEqual(plan.parts,[{id:'P1',question:'How does practice form virtue?'}]);
+ assert.deepEqual(plan.parts,[{id:'P1',question:'How does practice form virtue?',sourceBookIds:['4']}]);
  assert.deepEqual(plan.sources[0].bookIds,['4']);
  const scoped=normalizePlan(rawPlan,'question',catalog,'4');
  assert.deepEqual(scoped.sources,[{label:catalog['4'],role:'primary',bookIds:['4']}]);
+});
+
+test('plan binds each named comparison part to the matching source books',()=>{
+ const catalog={'74':'The Republic — Plato','245':'The Social Contract — Jean-Jacques Rousseau'};
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'Republic',role:'primary',bookIds:['74']},
+  {label:'Social Contract',role:'subject',bookIds:['245']}],parts:[
+   {question:'How does Plato’s Republic explain political legitimacy?'},
+   {question:'How does Rousseau’s Social Contract connect it to the common good?'}]},
+  'Compare Plato and Rousseau.',catalog);
+ assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[['74'],['245']]);
 });
 
 test('claim validation rejects a quote taken from a different source than its citation',()=>{
@@ -51,6 +62,24 @@ test('claim validation rejects a quote taken from a different source than its ci
  const result=validateClaims(modelAnswer({evidence:[{sourceId:'S2',quote}]}),[source,second],plan);
  assert.equal(result.claims.length,0);
  assert.equal(result.rejected[0].reason,'evidence-not-found');
+});
+
+test('claim validation rejects evidence assigned to the wrong named-work part',()=>{
+ const catalog={'74':'The Republic — Plato','245':'The Social Contract — Jean-Jacques Rousseau'};
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'Republic',role:'primary',bookIds:['74']},
+  {label:'Social Contract',role:'subject',bookIds:['245']}],parts:[
+   {question:'How does Plato’s Republic explain political legitimacy?'},
+   {question:'How does Rousseau’s Social Contract explain political legitimacy?'}]},
+  'Compare Plato and Rousseau.',catalog);
+ const rousseau={...source,id:'S2',bookId:'245',title:catalog['245'],
+  text:'An act is legitimate because it is based on the social contract, and useful because it serves the general good.'};
+ const draft={claims:[{id:'C1',partIds:['P1'],kind:'direct',
+  text:'Rousseau grounds legitimate order in the social contract.',
+  evidence:[{sourceId:'S2',quote:'legitimate because it is based on the social contract'}]}]};
+ const result=validateClaims(draft,[source,rousseau],plan);
+ assert.equal(result.claims.length,0);
+ assert.equal(result.rejected[0].reason,'evidence-source-does-not-match-question-part');
 });
 
 test('explicit section scope limits support while preserving the complete page as context',()=>{
@@ -98,6 +127,48 @@ test('claim pipeline makes two bounded calls, preserves full pages, and validate
  assert.equal(result.citations.length,1);
  assert.equal(result.trace.evidence[0].text,source.text);
  assert.equal(result.trace.final.answer,result.answer);
+});
+
+test('one malformed composer response gets one bounded regeneration before final review',async()=>{
+ const stages=[];let calls=0;
+ const ai={run:async(_model,input)=>{
+  calls++;
+  const system=input.messages[0].content;
+  if(system.includes('Assess each claim')){
+   stages.push('review');
+   return response({decisions:[{claimId:'C1',verdict:'supported',reason:'Supported.'}],
+    parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Answered.'}]});
+  }
+  if(system.includes('Your previous response was not valid JSON')){
+   stages.push('compose-format-retry');return response(modelAnswer());
+  }
+  stages.push('compose');
+  return {choices:[{finish_reason:'stop',message:{content:'```json\n{"claims":[{"text":"a malformed response"}]\n```'}}]};
+ }};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,trace:true});
+ assert.equal(calls,3);
+ assert.deepEqual(stages,['compose','compose-format-retry','review']);
+ assert.equal(result.usage.calls,3);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.trace.stages[0].stage,'compose');
+ assert.equal(result.trace.stages[1].stage,'compose-format-retry');
+});
+
+test('a second malformed composer response is a format failure, not an evidence gap',async()=>{
+ let calls=0;
+ const ai={run:async()=>{calls++;return {choices:[{finish_reason:'stop',message:{content:'not json'}}]};}};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,trace:true});
+ assert.equal(calls,2);
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.reviewStatus,'generation-format-failed');
+ assert.equal(result.failureCode,'model-output-invalid-json');
+ assert.equal(result.failureStage,'compose-format-retry');
+ assert.match(result.answer,/properly formatted, verified answer/);
+ assert.doesNotMatch(result.answer,/retrieved passages did not support/);
+ assert.equal(result.trace.final.failure.stage,'compose-format-retry');
 });
 
 test('rejected claim cannot reappear through a later rewrite or citation repair',async()=>{
@@ -151,11 +222,12 @@ test('public experimental route returns audited claim output only when server fl
  const req=new Request('https://worker.example/api/pilot-answer',{method:'POST',
   headers:{Origin:'https://jsynon.github.io','CF-Connecting-IP':'198.51.100.30','Content-Type':'application/json'},
   body:JSON.stringify({question:'How does practice form virtue?',bookId:'4',turnstileToken:'valid-test-token',
-   plan:rawPlan,sources:[{bookId:'4',page:17,text}]})});
+   answerVariant:'compose-only',plan:rawPlan,sources:[{bookId:'4',page:17,text}]})});
  const httpResponse=await handleRequest(req,env,fetcher);
  const body=await httpResponse.json();
  assert.equal(httpResponse.status,200);
  assert.equal(body.pipeline,'reader-evidence-v2');
+ assert.equal(body.answerVariant,'with-review','public callers cannot disable the final review');
  assert.equal(body.usage.calls,2,JSON.stringify(body));
  assert.equal(aiCalls,2);
  assert.match(body.answer,/\[S1\]/);
@@ -169,11 +241,13 @@ test('public experimental route returns audited claim output only when server fl
   headers:{Origin:'https://jsynon.github.io','CF-Connecting-IP':'198.51.100.30',
    'Content-Type':'application/json',Authorization:'Bearer '+env.PILOT_EVALUATION_TOKEN},
   body:JSON.stringify({question:'How does practice form virtue?',bookId:'4',turnstileToken:'evaluation-token',
-   plan:rawPlan,sources:[{bookId:'4',page:17,text}]})});
+   answerVariant:'compose-only',plan:rawPlan,sources:[{bookId:'4',page:17,text}]})});
  const evalResponse=await handleRequest(evalReq,env,fetcher);
  const evalBody=await evalResponse.json();
  assert.equal(evalResponse.status,200);
  assert.equal(evalBody.pipeline,'reader-evidence-v2');
+ assert.equal(evalBody.answerVariant,'compose-only');
+ assert.equal(evalBody.usage.calls,1);
  assert.equal(evalBody.trace.evidence[0].text,text);
- assert.equal(evalBody.trace.stages.length,2);
+ assert.equal(evalBody.trace.stages.length,1);
 });

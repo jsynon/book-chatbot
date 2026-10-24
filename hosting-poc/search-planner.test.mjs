@@ -48,8 +48,8 @@ test('planner returns a bounded structured plan with canonical source IDs and qu
    usage:{neurons:5}})});
  assert.equal(result.plan.intent,'compare');
  assert.deepEqual(result.plan.parts,[
-  {id:'P1',question:'How does Hume explain causal necessity?'},
-  {id:'P2',question:'How does Kant explain causal necessity?'}]);
+  {id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['34','35','268','276','555']},
+  {id:'P2',question:'How does Kant explain causal necessity?',sourceBookIds:['40']}]);
  assert.ok(result.plan.sources[0].bookIds.includes('35'));
  assert.ok(result.plan.sources[1].bookIds.includes('40'));
  assert.deepEqual(result.plan.sources.map(source=>source.role),['primary','primary']);
