@@ -184,6 +184,37 @@ test('claim validation rejects evidence assigned to the wrong named-work part',(
  assert.equal(result.rejected[0].reason,'evidence-not-linked-to-question-part');
 });
 
+test('comparison claims must be marked as synthesis and cite every named source group',()=>{
+ const catalog={'35':'An Enquiry Concerning Human Understanding — David Hume',
+  '40':'Critique of Pure Reason — Immanuel Kant'};
+ const plan={intent:'compare',sources:[
+  {label:'Hume',role:'primary',bookIds:['35']},{label:'Kant',role:'primary',bookIds:['40']}],parts:[
+  {id:'P1',question:'Hume’s account',sourceBookIds:['35']},
+  {id:'P2',question:'Kant’s account',sourceBookIds:['40']},
+  {id:'P3',question:'How do the accounts differ?',sourceBookIds:['35','40']}]};
+ const hume={...source,id:'S1',bookId:'35',title:catalog['35'],candidatePartIds:['P1'],
+  text:'Hume explains necessity through repeated conjunction and habit.'};
+ const kant={...source,id:'S2',bookId:'40',title:catalog['40'],candidatePartIds:['P2'],
+  text:'Kant treats causality as a rule within possible experience.'};
+ const linked=linkEvidenceToParts(plan,[hume,kant]);
+ const draft=(kind,items)=>({claims:[{id:'C1',partIds:['P3'],kind,
+  text:'The authors ground causal necessity differently.',evidence:items}],
+  parts:[{partId:'P1',status:'unanswered',gap:'No claim.'},
+   {partId:'P2',status:'unanswered',gap:'No claim.'},
+   {partId:'P3',status:'answered',gap:''}]});
+ const direct=validateClaims(draft('direct',[
+  {sourceId:'S1',quote:'repeated conjunction and habit'},
+  {sourceId:'S2',quote:'a rule within possible experience'}]),[hume,kant],linked);
+ assert.equal(direct.rejected[0].reason,'comparison-claim-not-marked-synthesis');
+ const oneSided=validateClaims(draft('synthesis',[
+  {sourceId:'S1',quote:'repeated conjunction and habit'}]),[hume,kant],linked);
+ assert.equal(oneSided.rejected[0].reason,'comparison-claim-missing-source-group');
+ const supported=validateClaims(draft('synthesis',[
+  {sourceId:'S1',quote:'repeated conjunction and habit'},
+  {sourceId:'S2',quote:'a rule within possible experience'}]),[hume,kant],linked);
+ assert.equal(supported.claims.length,1);
+});
+
 test('explicit section scope limits support while preserving the complete page as context',()=>{
  const full={...source,text:'Outside the requested range, Aristotle discusses pleasure at length. '+quote+'.'};
  const scoped={...full,scopeText:'By doing just acts we become just.'};
@@ -353,6 +384,24 @@ test('composer recovers annotated evidence markers and a missing separator witho
  assert.equal(result.usage.calls,1);
 });
 
+test('composer recovers a missing claim terminator at the next exact claim marker',async()=>{
+ const secondQuote='by doing temperate acts we become temperate';
+ const raw=`PART P1 answered\nCLAIM C1 | P1 | direct\nPractice forms a just character.\n`+
+  `EVIDENCE S1\n${quote}\nEND EVIDENCE\n`+
+  `CLAIM C2 | P1 | direct\nPractice also forms temperance.\n`+
+  `EVIDENCE S1\n${secondQuote}\nEND EVIDENCE\nEND CLAIM\nEND PART`;
+ const ai={run:async()=>response(raw)};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.trace.final.failure,null);
+ assert.equal(result.trace.rejected.length,0);
+ assert.match(result.answer,/Practice forms a just character/);
+ assert.match(result.answer,/Practice also forms temperance/);
+ assert.doesNotMatch(result.answer,/CLAIM C2|END CLAIM/);
+ assert.deepEqual(result.evidenceMap.map(item=>item.quote),[quote,secondQuote]);
+});
+
 test('evidence marker annotations must agree with the enclosing claim and part',async()=>{
  const wrong=`PART P1 answered\nCLAIM C1 | P1 | direct\nA supported claim.\n`+
   `EVIDENCE S1 | P2 | direct\n${quote}\nEND EVIDENCE\nEND CLAIM\nEND PART`;
@@ -426,6 +475,30 @@ test('an evidence retry preserves earlier claims that already passed validation'
  assert.match(result.answer,/repeated just action forms a just character/);
  assert.deepEqual(result.citations.map(item=>item.id),['S1']);
  assert.equal(result.trace.rejected.length,0);
+});
+
+test('a malformed evidence retry cannot erase claims that already passed validation',async()=>{
+ const valid=modelAnswer().claims[0];
+ const invalid={...valid,id:'C2',text:'An unsupported second claim.',
+  evidence:[{sourceId:'S1',quote:'This exact wording is absent from the verified page.'}]};
+ let calls=0;
+ const malformed='PART P1 answered\nCLAIM C1 | P1 | direct\nA replacement claim.\n'+
+  `EVIDENCE S1\n${quote}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
+  'PART P1 unanswered\nGAP\nThe retry repeated a part.\nEND GAP\nEND PART';
+ const ai={run:async()=>{
+  calls++;
+  return calls===1?response({claims:[valid,invalid],parts:[{partId:'P1',status:'answered',gap:''}]}):
+   response(malformed);
+ }};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
+ assert.equal(calls,2);
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.match(result.answer,/repeated just action forms a just character/);
+ assert.equal(result.trace.recovery.stage,'compose-evidence-retry');
+ assert.equal(result.trace.recovery.code,'model-output-invalid-format');
+ assert.equal(result.trace.final.failure,null);
+ assert.deepEqual(result.trace.rejected,[{claimId:'C2',reason:'evidence-not-found'}]);
 });
 
 test('fingerprint verification retains original complete text and digest separately from UI preview',async()=>{
