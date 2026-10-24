@@ -6,7 +6,7 @@ Historical implementation branches: `codex/live-eval-progress-and-part-evidence-
 
 ## Goal
 
-Move the Reading Companion toward thoughtful, accurate answers grounded in passages readers can reopen. This milestone changes the information path and answer contract so question interpretation, retrieval, evidence review, and citations remain connected. It keeps the existing corpus, fingerprint validation, source reader, UI, and Gemma deployment. After the Worker PR is deployed, the existing public pilot route uses this answer path by default. Setting `READER_PIPELINE=legacy` is an explicit rollback; the pilot's existing Turnstile, rate-limit, source-verification, and public-enable gates remain in force.
+Move the Reading Companion toward thoughtful, accurate answers grounded in passages readers can reopen. This milestone changes the information path and answer contract so question interpretation, retrieval, evidence review, and citations remain connected. It keeps the existing corpus, fingerprint validation, source reader, UI, and Gemma deployment. In the merged Worker, ordinary public pilot traffic uses this path only when `READER_PIPELINE=evidence-v2`; otherwise it stays on the legacy answer path. Authenticated evaluation requests select the evidence path independently of that setting. The repository does not reveal the current Cloudflare environment value, so public-site activation is not verified here. The pilot's existing Turnstile, rate-limit, source-verification, and public-enable gates remain in force.
 
 ## Project record since the full audit
 
@@ -25,6 +25,8 @@ The work since that baseline followed this sequence:
 The current live pipeline keeps source identity and scope checks strict. Retrieval part tags are eligibility links, not semantic proof. The Worker still decides whether each answer paragraph's citations are known, in scope, and linked to that part. With review enabled, an `answered` status additionally requires an exact contiguous quote from every cited source ID plus a substantive rationale; a valid but unsupported review is downgraded. A one-word term in quotation marks is treated as terminology, while multiword quotations remain source-checked. None of these checks alone proves entailment, accuracy, or completeness.
 
 Current model-call budget for seven all-books cases is 21 calls for with-review (one planner plus two answer calls per case), 14 for compose-only (one planner plus one compose call per case), and 28 for paired review ablation (one planner plus three answer calls per case). Part-facet recovery adds local corpus searches, not AI calls. The latest run recorded 14 answer-stage calls; planner usage is not included in the Worker usage field.
+
+Deployment routing is verified from `hosting-poc/public-gateway.mjs`: public visitors need `READER_PIPELINE=evidence-v2` to use the new answer path, while authenticated workflow requests use it regardless of that variable. The user's Worker deployment and the authenticated workflow run are confirmed; the live Cloudflare value and therefore the answer path used by ordinary website visitors remain unverified from repository evidence.
 
 ## What changed
 
