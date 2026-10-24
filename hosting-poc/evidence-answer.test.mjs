@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
+import {auditFinalAnswer} from './reader-contract.mjs';
 
 const catalog={35:'An Enquiry Concerning Human Understanding — David Hume',40:'Critique of Pure Reason — Immanuel Kant'};
 const hume={id:'S1',bookId:'35',title:catalog[35],page:42,url:'https://example.test/hume#page=42',
@@ -40,6 +41,14 @@ test('the composer uses a short per-part answer contract without claim IDs or qu
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
  assert.doesNotMatch(REVIEW_PROMPT,/claimIds|verdict/);
+ assert.match(REVIEW_PROMPT,/12–320 character/);
+ assert.match(REVIEW_PROMPT,/exact supporting quote from every cited source ID/);
+});
+
+test('a quoted technical term is not mistaken for a source quotation, while multiword quotes stay exact',()=>{
+ assert.equal(auditFinalAnswer('The account turns on “whatness.” [S1]',[hume]).ok,true);
+ assert.equal(auditFinalAnswer('The source says “custom and habit.” [S1]',[hume]).ok,false);
+ assert.equal(auditFinalAnswer('The source says “mind is determined by custom.” [S1]',[hume]).ok,true);
 });
 
 test('part linking preserves evidence discovered by each side for a synthesis part',()=>{
@@ -147,6 +156,34 @@ test('a reviewer cannot mark an answer supported without an exact quote from a c
   {partId:'P1',reason:'no-cited-exact-support-quote'},
   {partId:'P1',reason:'missing-support-rationale'}]);
  assert.equal(result.evidenceMap.length,0);
+});
+
+test('the reviewer accepts an exact supporting quote longer than the old 220-character cap',async()=>{
+ const longText='A verified passage explains the form and matter relation in detail: '+
+  'the soul is the first actuality of a natural body that has life potentially, and this relation is clarified by the comparison between the shape of wax and the wax itself. '.repeat(2);
+ const source={...hume,text:longText,preview:longText};
+ const exactQuote=longText.slice(0,260);
+ const ai=makeAI([answer('PART P1\nAristotle treats soul as the actuality of a living body. [S1]'),
+  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',quote:exactQuote}]}})]);
+ const result=await composeEvidenceAnswer('How does Aristotle relate soul and body?',[source],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.coverage,'full');
+ assert.equal(result.evidenceMap[0].quote.length,260);
+});
+
+test('an answered review must quote every source cited by that part',async()=>{
+ const ai=makeAI([answer('PART P1\nHume and Kant give different accounts of causal necessity. [S1, S2]'),
+  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',quote:hume.text}]}})]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],
+  {plan:{...onePartPlan,intent:'compare',sources:[
+   {label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+   parts:[{id:'P1',question:'How do Hume and Kant differ over causal necessity?',
+    sourceBookIds:['35','40'],searchQueries:['Hume and Kant causal necessity'],candidateSourceIds:['S1','S2']}]},catalog,trace:true});
+ assert.equal(result.coverage,'partial');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='missing-cited-source-support-quote'));
 });
 
 test('reviewer contract errors preserve citation-checked text as an explicitly unverified partial draft',async()=>{

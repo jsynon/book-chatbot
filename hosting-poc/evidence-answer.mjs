@@ -11,7 +11,7 @@ PART P2
 The two accounts differ in the role they assign to experience. [S1, S2]`;
 
 export const REVIEW_PROMPT=`Review each answer part against only the verified pages cited in that part. Check attribution, qualifications, negation, and whether the answer explains the requested reasoning. A category name alone is incomplete when the question asks how something is justified or known; require the source's grounds, argument, or conditions of validity. For comparisons, require directly relevant support from each named source. A citation's presence or topical overlap alone does not establish support.
-Return JSON only: {"parts":[{"partId":"P1","status":"answered|partial|unanswered","reason":"briefly explain what the cited passage establishes and what remains missing","evidence":[{"sourceId":"S1","quote":"an exact 12–220 character passage copied from that cited page"}]}]}. Include every supplied part exactly once. For answered, give at least one exact quote that directly supports the answer; for a comparison, give a supporting quote from each named source. For partial, quote any part that is supported and state what is still missing. For unanswered, use an empty evidence array. Never invent or paraphrase a quote. Do not rewrite the answer or add claims.`;
+Return JSON only: {"parts":[{"partId":"P1","status":"answered|partial|unanswered","reason":"briefly explain what the cited passage establishes and what remains missing","evidence":[{"sourceId":"S1","quote":"an exact 12–320 character passage copied from that cited page"}]}]}. Include every supplied part exactly once. For answered, give an exact supporting quote from every cited source ID and make sure the quotes support the answer's main claims; for a comparison, give a directly relevant quote from each named source. For partial, quote any part that is supported and state what is still missing. For unanswered, use an empty evidence array. Quotes must be exact, contiguous text copied without ellipses. Never invent or paraphrase a quote. Do not rewrite the answer or add claims.`;
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -190,7 +190,7 @@ function normalizeReview(review,plan,answerParts,sources){
       const quote=typeof item?.quote==='string'?item.quote.trim():'';
       const sourceText=source?.scopeText||source?.text||source?.preview||'';
       const normalizedQuote=normalizeQuote(quote);
-      if(source&&allowedIds.has(source.id)&&quote.length>=12&&quote.length<=220&&
+      if(source&&allowedIds.has(source.id)&&quote.length>=12&&quote.length<=320&&
          normalizeQuote(sourceText).includes(normalizedQuote))
         evidence.push({sourceId:source.id,quote});
     }
@@ -200,6 +200,8 @@ function normalizeReview(review,plan,answerParts,sources){
     if(!hasAnswer)status='unanswered';
     else if(status==='answered'&&!evidence.length){
       status='partial';supportIssues.push({partId:part.id,reason:'no-cited-exact-support-quote'});
+    }else if(status==='answered'&&[...allowedIds].some(id=>!evidence.some(item=>item.sourceId===id))){
+      status='partial';supportIssues.push({partId:part.id,reason:'missing-cited-source-support-quote'});
     }
     if(reviewerClaimedAnswered&&reason.length<24){
       status='partial';supportIssues.push({partId:part.id,reason:'missing-support-rationale'});

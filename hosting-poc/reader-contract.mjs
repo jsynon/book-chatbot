@@ -29,13 +29,19 @@ export function auditFinalAnswer(answer,sources){
   const ids=citationIds(answer),unknownIds=ids.filter(id=>!byId.has(id));
   const quoteFailures=[];
   for(const quote of quotations(answer)){
+    const quoteText=quote.text.replace(/[.,!?;:]+$/u,'');
+    // Short, single-token quotation marks usually mark a term of art rather
+    // than claim to reproduce a source sentence (for example, Aristotle's
+    // "whatness"). The cited source and all multiword quoted text remain
+    // subject to exact substring validation.
+    if(!/\s/u.test(quoteText)&&quoteText.length<=24)continue;
     // Bind to the first following citation group in this sentence/paragraph.
     // Do not allow an unrelated quote anywhere in the packet to validate it.
     const tail=answer.slice(quote.end);
     const next=tail.match(/^[^\n.!?]*(?:[.!?]\s*)?(\[\s*S\d+(?:\s*,\s*S\d+)*\s*\])/);
     const ownIds=next?citationIds(next[1]):[];
     if(!ownIds.length||!ownIds.some(id=>normalizeQuote(byId.get(id)?.text??byId.get(id)?.preview)
-      .includes(normalizeQuote(quote.text))))quoteFailures.push({...quote,sourceIds:ownIds});
+      .includes(normalizeQuote(quoteText))))quoteFailures.push({...quote,sourceIds:ownIds});
   }
   return {ok:!unknownIds.length&&!quoteFailures.length,ids,unknownIds,quoteFailures};
 }
