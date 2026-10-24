@@ -59,7 +59,8 @@ test('plan normalization bounds and canonicalizes requested parts and book scope
  const plan=normalizePlan(rawPlan,'fallback question',catalog);
  assert.equal(plan.version,'reader-evidence-v2');
  assert.equal(plan.intent,'explain');
- assert.deepEqual(plan.parts,[{id:'P1',question:'How does practice form virtue?',sourceBookIds:['4']}]);
+ assert.deepEqual(plan.parts,[{id:'P1',question:'How does practice form virtue?',sourceBookIds:['4'],
+  searchQueries:['habituation moral virtue','How does practice form virtue?']}]);
  assert.deepEqual(plan.sources[0].bookIds,['4']);
  const scoped=normalizePlan(rawPlan,'question',catalog,'4');
  assert.deepEqual(scoped.sources,[{label:catalog['4'],role:'primary',bookIds:['4']}]);
@@ -73,7 +74,31 @@ test('plan binds each named comparison part to the matching source books',()=>{
    {question:'How does Plato’s Republic explain political legitimacy?'},
    {question:'How does Rousseau’s Social Contract connect it to the common good?'}]},
   'Compare Plato and Rousseau.',catalog);
- assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[['74'],['245']]);
+ assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[['74'],['245'],['74','245']]);
+});
+
+test('explicit comparisons gain a required synthesis part and keep source queries linked to their parts',()=>{
+ const catalog={'35':'An Enquiry Concerning Human Understanding — David Hume',
+  '40':'Critique of Pure Reason — Immanuel Kant'};
+ const question='How do Hume’s Enquiry and Kant’s Critique of Pure Reason differ over how we can know causal necessity?';
+ const plan=normalizePlan({intent:'compare',resolvedQuestion:question,sources:[
+  {label:'David Hume',role:'primary',bookIds:['35']},
+  {label:'Critique of Pure Reason',role:'primary',bookIds:['40']}],parts:[
+   'How does Hume explain the origin and justification of causal necessity?',
+   'How does Kant explain the origin and justification of causal necessity?'],
+  queries:['Hume Enquiry causal necessity custom habit association of ideas',
+   'Kant Critique of Pure Reason causality categories a priori synthetic']},question,catalog);
+ assert.equal(plan.parts.length,3);
+ assert.match(plan.parts[2].question,/compare in response to this question/i);
+ assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[['35'],['40'],['35','40']]);
+ assert.deepEqual(plan.parts[0].searchQueries,[
+  'Hume Enquiry causal necessity custom habit association of ideas',
+  'How does Hume explain the origin and justification of causal necessity?']);
+ assert.deepEqual(plan.parts[1].searchQueries,[
+  'Kant Critique of Pure Reason causality categories a priori synthetic',
+  'How does Kant explain the origin and justification of causal necessity?']);
+ assert.ok(plan.parts[2].searchQueries.includes(plan.queries[0]));
+ assert.ok(plan.parts[2].searchQueries.includes(plan.queries[1]));
 });
 
 test('each planned part receives page IDs from its own named source before composition',()=>{
@@ -86,7 +111,18 @@ test('each planned part receives page IDs from its own named source before compo
   'Compare Plato and Rousseau.',catalog);
  const linked=linkEvidenceToParts(plan,[
   {...source,id:'S1',bookId:'74'},{...source,id:'S2',bookId:'245'}]);
- assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2']]);
+ assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2'],['S1','S2']]);
+});
+
+test('already-planned comparison part is not duplicated',()=>{
+ const catalog={'74':'The Republic — Plato','245':'The Social Contract — Jean-Jacques Rousseau'};
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'Plato',role:'primary',bookIds:['74']},{label:'Rousseau',role:'primary',bookIds:['245']}],parts:[
+   'How does Plato describe justice?', 'How does Rousseau describe the common good?',
+   'How do Plato and Rousseau differ on political legitimacy?']},
+  'How do Plato and Rousseau differ on political legitimacy?',catalog);
+ assert.equal(plan.parts.length,3);
+ assert.deepEqual(plan.parts[2].sourceBookIds,['74','245']);
 });
 
 test('part evidence mapping narrows two subquestions within the same book',()=>{
@@ -122,7 +158,8 @@ test('claim validation rejects evidence assigned to the wrong named-work part',(
  const draft={claims:[{id:'C1',partIds:['P1'],kind:'direct',
   text:'Rousseau grounds legitimate order in the social contract.',
   evidence:[{sourceId:'S2',quote:'legitimate because it is based on the social contract'}]}],
-  parts:[{partId:'P1',status:'answered',gap:''},{partId:'P2',status:'unanswered',gap:'No cited evidence.'}]};
+  parts:[{partId:'P1',status:'answered',gap:''},{partId:'P2',status:'unanswered',gap:'No cited evidence.'},
+   {partId:'P3',status:'unanswered',gap:'No cited comparison evidence.'}]};
  const linked=linkEvidenceToParts(plan,[source,rousseau]);
  const result=validateClaims(draft,[source,rousseau],linked);
  assert.equal(result.claims.length,0);
@@ -251,6 +288,30 @@ test('a second malformed composer response is a format failure, not an evidence 
  assert.match(result.answer,/properly formatted, verified answer/);
  assert.doesNotMatch(result.answer,/retrieved passages did not support/);
  assert.equal(result.trace.final.failure.stage,'compose-format-retry');
+});
+
+test('composer accepts omitted TEXT markers and empty duplicate headers while requiring every planned comparison part',async()=>{
+ const question='How do Hume and Kant differ over causal necessity?';
+ const comparePlan={intent:'compare',resolvedQuestion:question,sources:[
+  {label:'Hume',role:'primary',bookIds:['35']},{label:'Kant',role:'primary',bookIds:['40']}],
+  parts:['How does Hume explain causal necessity?','How does Kant explain causal necessity?'],
+  queries:['Hume causal necessity custom habit','Kant causality category a priori']};
+ const hume={id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume',page:41,
+  candidatePartIds:['P1','P3'],text:'Hume explains causal necessity through repeated experience and the mind’s resulting habit.'};
+ const kant={id:'S2',bookId:'40',title:'Critique of Pure Reason — Immanuel Kant',page:54,
+  candidatePartIds:['P2','P3'],text:'Kant treats causality as a category of the understanding that structures experience.'};
+ const raw=`PART P1 answered\nCLAIM C1 | P1 | direct\nTEXT\nHume connects causal necessity with repeated experience.\nEVIDENCE S1\n${hume.text}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
+  `PART P2 answered\nCLAIM C1 | P2 | direct\nCLAIM C2 | P2 | direct\nKant treats causality as a condition for experience.\nEVIDENCE S2\n${kant.text}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
+  'PART P3 unanswered\nGAP\nThe passages do not establish the comparison between the accounts.\nEND GAP\nEND PART';
+ const ai={run:async()=>response(raw)};
+ const result=await composeEvidenceAnswer(question,[hume,kant],ai,[],{
+  plan:comparePlan,catalog:{'35':hume.title,'40':kant.title},review:false,trace:true});
+ assert.equal(result.usage.calls,1);
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['partial','partial','unsupported']);
+ assert.deepEqual(result.questionParts.map(part=>part.evidenceIds),[['S1'],['S2'],[]]);
+ assert.equal(result.trace.final.failure,null);
+ assert.deepEqual(result.trace.final.draftParts.map(part=>part.partId),['P1','P2','P3']);
 });
 
 test('composition fails closed when a requested part is omitted from the record',async()=>{

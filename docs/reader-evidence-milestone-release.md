@@ -1,10 +1,10 @@
 # Reading Companion evidence milestone: release report
 
 Date: October 24, 2026  
-Status: recovery candidate implemented and offline suites pass; live human-scored acceptance remains open
-Backend branch: `codex/reader-evidence-recovery`
+Status: live trace reproduced format and per-part retrieval failures; focused corrective candidate implemented and offline suites pass; live quality acceptance remains open
+Backend branch: `codex/compare-evidence-reliability`
 
-Website branch: `codex/reader-evidence-recovery`
+Website branch: `codex/compare-evidence-reliability`
 
 ## Goal
 
@@ -80,14 +80,25 @@ The composer now returns a bounded line-record format with one ordered block per
 
 | Check | Result |
 |---|---|
-| Backend Worker Node suites: `node --test hosting-poc/*.test.mjs` | 209 passed, 0 failed |
-| Website companion Node suites: `node --test reading-companion/*.test.mjs` | 145 passed, 0 failed |
-| Git whitespace checks | Passed on both recovery branches |
+| Backend Worker Node suites: `node --test hosting-poc/*.test.mjs` | 212 passed, 0 failed |
+| Website companion Node suites: `node --test reading-companion/*.test.mjs` | 147 passed, 0 failed |
+| Git whitespace checks | Passed on both corrective branches |
 | Per-part retrieval facets, page-to-part tags, and selector reservation | Covered by offline retrieval and selector tests |
 | Per-part composer format, completeness, exact evidence, and source-to-part binding | Covered by offline Worker tests |
 | Planner, page packet, and answer-call count | No additional AI call; search adds local corpus queries |
+| Trace-shaped comparison plan, query-to-part linkage, and malformed record recovery | Covered by focused Worker and website regressions |
 
-These tests show that the format and linkage contracts work on controlled fixtures. They do not demonstrate that the deployed Gemma model reliably emits the format, that search returns semantically sufficient pages, or that the final prose is accurate. The paired run remains evidence of a failure mode, not evidence that this patch has fixed live answer quality.
+These tests show that the format and linkage contracts work on controlled fixtures. They do not demonstrate that the deployed Gemma model reliably emits the format, that search returns semantically sufficient pages, or that the final prose is accurate.
+
+## Authenticated trace diagnosis and corrective candidate
+
+The one-case all-books compose-only run for “How do Hume’s *Enquiry* and Kant’s *Critique of Pure Reason* differ over how we can know causal necessity?” used Worker version `e071ea59-a87a-4475-8593-a05454c90936`. It made two answer calls and used 161.3 neurons. Both composer responses ended normally (`finish_reason: stop`); neither was truncated. The first response and its format retry both failed the parser, so review did not run and the public result was the generation-failed fallback.
+
+The trace identifies three independent issues. First, the composer omitted the `TEXT` marker, emitted an empty duplicate claim header, and added a third `PART` even though the plan contained only two. Second, the plan represented Hume and Kant separately but did not make the requested comparison its own coverage part; the model's extra third block acknowledged that gap. Third, source-specific planner queries were not used as per-part retrieval facets. Kant page 54 appeared in the six-page packet and discusses the category of causality, but had no part link; Hume page 41 was linked to the Hume part but its selected passage framed a commonly accepted doctrine rather than establishing Hume's account through custom or habit.
+
+The corrective candidate now adds a bounded comparison part when an explicit multi-source comparison plan omits it. It associates planner queries with matching source parts, passes those focused queries to both browser and evaluator retrieval, and links pages found through those facets to their parts. The composer no longer requires the redundant `TEXT` marker; it can discard an empty duplicate claim header and assigns internal claim IDs deterministically. It still requires the exact planned part sequence, validates evidence against linked pages, and fails closed on missing parts or unsupported citations. This adds no model call.
+
+This fixes the reproduced contract and query-linking failures in deterministic tests; it does not establish that the live model will make a sound Hume/Kant comparison. The used holdout case remains diagnostic, not acceptance evidence.
 
 ## Acceptance status
 
@@ -100,15 +111,15 @@ These tests show that the format and linkage contracts work on controlled fixtur
 | Browser and evaluator share retrieval assembly | Implemented; unit-tested through the shared module |
 | Evaluation records exact model context and code/data identities | Implemented for authenticated v2 runs; unit- and route-tested |
 | Declared model-call budget | Three answer calls maximum, plus one planner call in all-books evaluation |
-| Per-part response structure and pre-composition evidence links | Implemented and covered by offline tests; live behavior remains unverified |
-| Public pilot defaults to the per-part evidence pipeline | Implemented in the Worker PR; takes effect after merge and deployment; `READER_PIPELINE=legacy` rolls back |
+| Per-part response structure and pre-composition evidence links | Original live trace exposed a failure; focused correction is covered offline; new live validation pending |
+| Public pilot defaults to the per-part evidence pipeline | Active after Worker PR #203 deployment; `READER_PIPELINE=legacy` remains the rollback |
 | Human-scored quality improves on development and unseen questions | Not yet measured |
 
 ## Remaining validation before enabling or describing this as a quality release
 
-1. Merge and deploy both recovery branches, then use a development run to check that the live composer follows the per-part record contract, that each part receives its own linked candidate pages, and that persistent format failures are reported distinctly. Keep the call budget at two normal answer calls and three maximum after a format retry.
-2. Score new reviewed and compose-only drafts independently with the five-dimension human rubric. Include correct-evidence and context-preservation comparisons to distinguish composition failures from retrieval misses and loss caused by short excerpts. Cover follow-ups, multi-work comparisons, absent evidence, reported speakers, and a manually checked verse-range case.
-3. Treat the already-used paired holdout as diagnostic only. For a fresh holdout, confirm that a Kant candidate includes a passage from the *Second Analogy* and that the response explains how Kant grounds causal necessity rather than only naming causality as a category. Have a human reviewer score prose and citations; automated `passed` is not quality acceptance.
+1. Merge and deploy this corrective candidate. Then run the single Hume/Kant compose-only case to confirm the comparison part is explicit, source-specific planner results receive part links, and malformed but recoverable records pass while missing parts still fail closed. Keep the answer call budget at two normal calls and three maximum after a format retry.
+2. After the compose-only case produces a structurally valid draft, run its reviewed variant and score the draft with the five-dimension human rubric. The trace shows that format recovery alone cannot establish answer quality; verify Hume attribution and Kant's argument against the actual pages.
+3. Treat both the paired holdout and this Hume/Kant single-case run as diagnostic only. For a fresh holdout, confirm that a Kant candidate includes a passage from the *Second Analogy* and that the response explains how Kant grounds causal necessity rather than only naming causality as a category. Have a human reviewer score prose and citations; automated `passed` is not quality acceptance.
 4. Measure Cloudflare CPU, body size, inference availability, and latency using real pages near the current byte limit. The new path retains current request and page limits; no production capacity claim has been tested.
 5. Verify retrieval quality and OCR semantics across the published corpus. Fingerprints establish byte identity with the published text, not OCR correctness, speaker identity, or semantic support. The 642-book fingerprint coverage and the audited seven-book local subset do not substitute for this check.
 6. Once the candidate is frozen, run the seven-question acceptance suite with **All Books** and paired mode, then enter human scores in the artifact. Do not tune against these questions; if the candidate fails, retain the report as a measurement and choose a new unseen set for the next candidate.

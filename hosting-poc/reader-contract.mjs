@@ -47,6 +47,7 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     bookIds:[...new Set((Array.isArray(s.bookIds)?s.bookIds:[]).map(String).filter(id=>Object.hasOwn(catalog,id)))]}));
   if(selectedBookId)sources.splice(0,sources.length,{label:catalog[selectedBookId],role:'primary',bookIds:[selectedBookId]});
   const intent=['explain','compare','interpret','locate'].includes(raw?.intent)?raw.intent:'explain';
+  const queries=Array.isArray(raw?.queries)?raw.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[];
   const parts=(Array.isArray(raw?.parts)?raw.parts:[]).slice(0,6).map((p,i)=>({id:'P'+(i+1),question:bounded(typeof p==='string'?p:p?.question,240)})).filter(p=>p.question);
   const normalizedParts=parts.length?parts:[{id:'P1',question}];
   const identityText=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
@@ -94,10 +95,30 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     });
     return narrowed.length?[...new Set(narrowed)]:null;
   });
-  const partsWithSources=normalizedParts.map((part,index)=>({...part,sourceBookIds:partSourceGroups[index]}));
+  const comparisonPattern=/\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|versus|vs\.?|similar(?:ity)?|alike)\b/i;
+  const comparisonSources=sources.filter(source=>['primary','subject'].includes(source.role)&&source.bookIds.length);
+  const hasPlannedComparison=normalizedParts.some((part,index)=>comparisonPattern.test(part.question)&&
+    comparisonSources.filter(source=>source.bookIds.some(id=>(partSourceGroups[index]||[]).includes(id))).length>=2);
+  const comparisonBookIds=[...new Set(comparisonSources.flatMap(source=>source.bookIds))];
+  if(intent==='compare'&&comparisonPattern.test(resolvedQuestion)&&comparisonSources.length>=2&&
+    comparisonBookIds.length>=2&&!hasPlannedComparison){
+    normalizedParts.push({id:'P'+(normalizedParts.length+1),
+      question:bounded('How do the named sources compare in response to this question: '+resolvedQuestion,240)});
+    partSourceGroups.push(comparisonBookIds);
+  }
+  const partsWithSources=normalizedParts.map((part,index)=>{
+    const allowedIds=partSourceGroups[index]||[];
+    const allowedSourceIndexes=sources.map((source,sourceIndex)=>source.bookIds.some(id=>allowedIds.includes(id))?sourceIndex:-1)
+      .filter(sourceIndex=>sourceIndex>=0);
+    const matchingQueries=queries.filter(query=>sources.some((source,sourceIndex)=>
+      allowedSourceIndexes.includes(sourceIndex)&&sourcePhrases(source).some(phrase=>containsPhrase(query,phrase))));
+    if(!matchingQueries.length&&sources.length===1)matchingQueries.push(...queries);
+    return {...part,sourceBookIds:partSourceGroups[index],
+      searchQueries:[...new Set([...matchingQueries,part.question])].slice(0,5)};
+  });
   return {version:CONTRACT_VERSION,resolvedQuestion,intent,
     sources,parts:partsWithSources,scope:bounded(raw?.scope,200),
-    clarification:bounded(raw?.clarification,240),queries:Array.isArray(raw?.queries)?raw.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[]};
+    clarification:bounded(raw?.clarification,240),queries};
 }
 export async function fetchWithDeadline(fetcher,url,options={},timeoutMs=30000){
   const controller=new AbortController();
