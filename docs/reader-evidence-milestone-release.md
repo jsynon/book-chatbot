@@ -18,6 +18,7 @@ Move the Reading Companion toward thoughtful, accurate answers grounded in passa
 - Added an opt-in `reader-evidence-v2` answer path: one structured claim composition, deterministic exact-span/citation checks, and one final claim review. It has no free-form rewrite after review. Rejected or unsupported claims cannot re-enter through repair. The answer service is capped at two calls, plus the existing planner call (three total per normal question).
 - Each accepted claim has exact source page quotes and offsets. Quotes must occur on the cited page; when a verse restriction applies, they must also occur inside the requested verse range. Only claims the final reviewer marks supported are rendered. Citation IDs and quotation links are checked again after deterministic rendering.
 - Added an authenticated evaluation-only trace containing the exact stage prompts, source pages, model responses, timing, rejection reasons, model identity, and usage counters. The public response never includes this trace. User-facing diagnostics expose only bounded plans, citations, exact validated claim anchors, and usage totals, not complete source pages.
+- Live evaluation reports now identify the evaluator source commit and hash the published coverage manifest, corpus manifest, and each exact corpus/index file read during the run. Worker build IDs, model context, prompt text, and inference counters remain attached to each case.
 - Fixed grouped citation auditing so `[S1, S99]` cannot hide an unknown source ID. Follow-up history is cleared on book-scope changes and only successful verified drafts enter history.
 
 ## Verification
@@ -31,6 +32,7 @@ Move the Reading Companion toward thoughtful, accurate answers grounded in passa
 | Full-page input, exact source binding, verse-scope boundary, final deterministic rendering | Covered by offline tests |
 | Public trace protection and authenticated evaluation trace | Covered by route test |
 | Edited-author collection discovery and grouped citation regression | Covered by website tests |
+| Exact downloaded corpus-file digest capture | Covered by website test |
 
 The tests use controlled model responses and synthetic request fixtures. They verify contracts and failure boundaries; they do not establish answer quality from a live model.
 
@@ -43,7 +45,7 @@ The tests use controlled model responses and synthetic request fixtures. They ve
 | A quote cannot be validated against an uncited source | Implemented and tested |
 | Portable Nietzsche remains discoverable under Nietzsche scope | Implemented and tested |
 | Browser and evaluator share retrieval assembly | Implemented; unit-tested through the shared module |
-| Evaluation records the exact model context | Implemented for authenticated v2 runs; route-tested |
+| Evaluation records exact model context and code/data identities | Implemented for authenticated v2 runs; unit- and route-tested |
 | Declared model-call budget | Three calls total including planning; answer path hard-limits two |
 | Human-scored quality improves on development and unseen questions | Not yet measured |
 
@@ -51,7 +53,7 @@ The tests use controlled model responses and synthetic request fixtures. They ve
 
 1. Run a live, paired legacy-versus-v2 evaluation on a frozen development set and a separately held-out set. Keep question, model, settings, retrieval pages, and scoring rubric fixed where each comparison requires them. Use independent human ratings for factual correctness, requested-part coverage, explanation quality, citation support, and citation completeness. Record failures and abstentions instead of tuning on the holdout.
 2. Include correct-evidence and context-preservation comparisons. These distinguish model composition problems from retrieval misses and from loss caused by short excerpts. Include follow-ups, multi-work comparisons, absent evidence, reported speakers, and a manually checked verse-range case.
-3. On an authorized evaluation run, save the exact front-end revision, Worker version/source build, corpus/index/fingerprint digests, prompt/model settings, selected evidence packet, stage outputs, actual calls/tokens/neurons, and latency. The trace implementation exists; no live run has been captured for this milestone.
+3. Capture an authorized evaluation run and verify the report contains its front-end revision, Worker version/source build, corpus/index/fingerprint digests, prompt/model settings, selected evidence packet, stage outputs, actual calls/tokens/neurons, and latency. The instrumentation is implemented; no live run has been captured for this milestone.
 4. Measure Cloudflare CPU, body size, inference availability, and latency using real pages near the current byte limit. The new path retains current request and page limits; no production capacity claim has been tested.
 5. Verify retrieval quality and OCR semantics across the published corpus. Fingerprints establish byte identity with the published text, not OCR correctness, speaker identity, or semantic support. The 642-book fingerprint coverage and the audited seven-book local subset do not substitute for this check.
 6. Run the paired workflow against the actual website and Worker revisions after the branches are integrated and deployed for evaluation. The workspace's website checkout had no Git remote configured, so its changes were published through the connected GitHub workflow. Draft review PRs are open for the backend (#199) and website (#172); neither is merged or deployed.
