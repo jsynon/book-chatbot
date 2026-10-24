@@ -246,11 +246,16 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       failure={stage:'compose-validation',code:'answer-citation-validation-failed',
         message:'The draft did not contain a verifiable citation for any answer part.'};
     if(options.review!==false&&checked.parts.some(part=>part.answers.length)){
-      const reviewPayload={question,parts:checked.parts.map(part=>({partId:part.partId,
-        question:part.question,answers:part.answers})),evidence:[...pageById.values()].map(page=>{
-          const source=sources.find(item=>item.id===page.id);
-          return source?.scopeText?{...page,text:source.scopeText,contextText:page.text}:page;
-        })};
+      const reviewPayload={question,parts:checked.parts.map(part=>{
+        const planned=plan.parts.find(item=>item.id===part.partId);
+        const citedIds=new Set(part.answers.flatMap(answer=>answer.sourceIds));
+        return {partId:part.partId,question:part.question,
+          candidateSourceIds:planned?.candidateSourceIds||[],answers:part.answers,
+          evidence:[...pageById.values()].filter(page=>citedIds.has(page.id)).map(page=>{
+            const source=sources.find(item=>item.id===page.id);
+            return source?.scopeText?{...page,text:source.scopeText,contextText:page.text}:page;
+          })};
+      })};
       try{
         const rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseJson);
         review=normalizeReview(rawReview,plan,checked.parts);

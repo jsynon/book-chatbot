@@ -67,6 +67,11 @@ test('validates cited sources against each part and preserves a complete cited a
  assert.deepEqual(result.citations.map(source=>source.id),['S1']);
  assert.equal(result.evidenceMap[0].quoteVerified,false);
  assert.equal(result.trace.stages.length,2);
+ const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
+ const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
+ assert.deepEqual(composePayload.parts[0].candidateSourceIds,['S1']);
+ assert.deepEqual(reviewPayload.parts[0].candidateSourceIds,['S1']);
+ assert.deepEqual(reviewPayload.parts[0].evidence.map(source=>source.id),['S1']);
 });
 
 test('per-part citation checking rejects unknown, malformed, and cross-linked IDs without losing other parts',async()=>{
@@ -218,5 +223,5 @@ test('verse-restricted answers expose the requested verses as evidence and retai
  const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
  assert.equal(composePayload.evidence[0].text,source.scopeText);
  assert.equal(composePayload.evidence[0].contextText,source.text);
- assert.equal(reviewPayload.evidence[0].text,source.scopeText);
+ assert.equal(reviewPayload.parts[0].evidence[0].text,source.scopeText);
 });
