@@ -114,6 +114,24 @@ test('each planned part receives page IDs from its own named source before compo
  assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2'],['S1','S2']]);
 });
 
+test('a comparison part inherits only evidence already linked to its source-side parts',()=>{
+ const plan={intent:'compare',sources:[
+  {label:'Hume',role:'primary',bookIds:['35']},
+  {label:'Kant',role:'primary',bookIds:['40']}],parts:[
+  {id:'P1',question:'Hume’s account',sourceBookIds:['35']},
+  {id:'P2',question:'Kant’s account',sourceBookIds:['40']},
+  {id:'P3',question:'How do the accounts differ?',sourceBookIds:['35','40']}]};
+ const linked=linkEvidenceToParts(plan,[
+  {...source,id:'S1',bookId:'35',candidatePartIds:['P1']},
+  {...source,id:'S2',bookId:'40',candidatePartIds:['P2']},
+  {...source,id:'S3',bookId:'40',candidatePartIds:['P3']},
+  {...source,id:'S4',bookId:'40',candidatePartIds:[]}
+ ]);
+ assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[
+  ['S1'],['S2'],['S1','S2','S3']
+ ]);
+});
+
 test('already-planned comparison part is not duplicated',()=>{
  const catalog={'74':'The Republic — Plato','245':'The Social Contract — Jean-Jacques Rousseau'};
  const plan=normalizePlan({intent:'compare',sources:[
@@ -314,6 +332,38 @@ test('composer accepts omitted TEXT markers and empty duplicate headers while re
  assert.deepEqual(result.trace.final.draftParts.map(part=>part.partId),['P1','P2','P3']);
 });
 
+test('composer recovers annotated evidence markers and a missing separator without accepting inexact spans',async()=>{
+ const text='The mind observes repeated events. An omitted middle sentence is not quoted. A second exact sentence completes the source evidence.';
+ const first='The mind observes repeated events.';
+ const second='A second exact sentence completes the source evidence.';
+ const one='The mind observes repeated events. An omitted middle sentence is not quoted. A second exact sentence completes the source evidence.';
+ const plan={intent:'explain',sources:[{label:'Hume',role:'primary',bookIds:['35']}],parts:[
+  {question:'How does Hume explain the idea?',sourceBookIds:['35']} ]};
+ const hume={id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume',page:38,
+  candidatePartIds:['P1'],text};
+ const raw=`PART P1 answered\nCLAIM C8 | P1 | direct\nHabit links repeated events in expectation.\n`+
+  `EVIDENCE S1 | P1 | direct\n${first} [...] ${second}\n`+
+  `EVIDENCE S1 | P1 | direct\n${one}\nEND EVIDENCE\nEND CLAIM\nEND PART`;
+ const ai={run:async()=>response(raw)};
+ const result=await composeEvidenceAnswer('How does Hume explain the idea?',
+  [hume],ai,[],{plan,catalog:{'35':hume.title},review:false,trace:true});
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.trace.rejected.length,0);
+ assert.deepEqual(result.evidenceMap.map(item=>item.quote),[first,second,one]);
+ assert.equal(result.usage.calls,1);
+});
+
+test('evidence marker annotations must agree with the enclosing claim and part',async()=>{
+ const wrong=`PART P1 answered\nCLAIM C1 | P1 | direct\nA supported claim.\n`+
+  `EVIDENCE S1 | P2 | direct\n${quote}\nEND EVIDENCE\nEND CLAIM\nEND PART`;
+ const ai={run:async()=>response(wrong)};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureStage,'compose-format-retry');
+ assert.equal(result.usage.calls,2);
+});
+
 test('composition fails closed when a requested part is omitted from the record',async()=>{
  let calls=0;
  const ai={run:async()=>{calls++;return response('PART P1 answered\nEND PART');}};
@@ -326,16 +376,56 @@ test('composition fails closed when a requested part is omitted from the record'
  assert.equal(result.questionParts[0].status,'unsupported');
 });
 
-test('rejected claim cannot reappear through a later rewrite or citation repair',async()=>{
+test('invalid evidence gets one bounded regeneration and remains rejected if it fails again',async()=>{
  let calls=0;
  const ai={run:async()=>{calls++;return response(modelAnswer({evidence:[{sourceId:'S1',quote:'This exact wording is absent from the verified page.'}]}));}};
  const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog});
- assert.equal(calls,1);
+  [source],ai,[],{plan:rawPlan,catalog,trace:true});
+ assert.equal(calls,2,'one citation repair is allowed, without an unbounded loop');
  assert.equal(result.outcome,'insufficient-evidence');
  assert.equal(result.answer,'The retrieved passages did not support a reliable answer to this question. Try a more specific passage or work.');
  assert.deepEqual(result.citations,[]);
- assert.equal(result.trace,undefined);
+ assert.equal(result.usage.calls,2);
+ assert.equal(result.trace.stages[1].stage,'compose-evidence-retry');
+ assert.equal(result.trace.rejected[0].reason,'evidence-not-found');
+});
+
+test('one evidence retry can correct an inexact composer quotation within the call budget',async()=>{
+ let calls=0;
+ const ai={run:async(_model,input)=>{
+  calls++;
+  if(calls===1)return response(modelAnswer({evidence:[{sourceId:'S1',quote:'This exact wording is absent from the verified page.'}]}));
+  assert.match(input.messages[0].content,/failed evidence validation/);
+  const payload=JSON.parse(input.messages[1].content);
+  assert.deepEqual(payload.validationFeedback,[{claimId:'C1',reason:'evidence-not-found'}]);
+  return response(modelAnswer());
+ }};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
+ assert.equal(calls,2);
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.trace.final.failure,null);
+ assert.equal(result.trace.rejected.length,0);
+});
+
+test('an evidence retry preserves earlier claims that already passed validation',async()=>{
+ const valid=modelAnswer().claims[0];
+ const invalid={...valid,id:'C2',text:'An unsupported second claim.',
+  evidence:[{sourceId:'S1',quote:'This exact wording is absent from the verified page.'}]};
+ let calls=0;
+ const ai={run:async()=>{
+  calls++;
+  return calls===1?response({claims:[valid,invalid],parts:[{partId:'P1',status:'answered',gap:''}]}):
+   response({claims:[],parts:[{partId:'P1',status:'unanswered',gap:'The retry could not verify another claim.'}]});
+ }};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
+ assert.equal(calls,2);
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.match(result.answer,/repeated just action forms a just character/);
+ assert.deepEqual(result.citations.map(item=>item.id),['S1']);
+ assert.equal(result.trace.rejected.length,0);
 });
 
 test('fingerprint verification retains original complete text and digest separately from UI preview',async()=>{

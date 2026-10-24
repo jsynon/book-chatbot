@@ -113,8 +113,13 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     const matchingQueries=queries.filter(query=>sources.some((source,sourceIndex)=>
       allowedSourceIndexes.includes(sourceIndex)&&sourcePhrases(source).some(phrase=>containsPhrase(query,phrase))));
     if(!matchingQueries.length&&sources.length===1)matchingQueries.push(...queries);
+    // The synthetic comparison part is a coverage check over the already
+    // planned source-side searches. Searching its generic wording spends a
+    // scarce page slot on a broad, often weak hit; source-side passages can
+    // support the synthesis once the Worker links them to this part.
+    const syntheticComparison=/^How do the named sources compare in response to this question:/i.test(part.question);
     return {...part,sourceBookIds:partSourceGroups[index],
-      searchQueries:[...new Set([...matchingQueries,part.question])].slice(0,5)};
+      searchQueries:[...new Set([...matchingQueries,...(syntheticComparison?[]:[part.question])])].slice(0,5)};
   });
   return {version:CONTRACT_VERSION,resolvedQuestion,intent,
     sources,parts:partsWithSources,scope:bounded(raw?.scope,200),
