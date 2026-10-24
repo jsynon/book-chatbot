@@ -140,7 +140,7 @@ This fixes the reproduced contract and query-linking failures in deterministic t
 | Evaluation records exact model context and code/data identities | Implemented for authenticated v2 runs; unit- and route-tested |
 | Declared model-call budget | Revised candidate: two answer calls maximum (composition + review), plus one planner call in all-books evaluation |
 | Per-part response structure and pre-composition evidence links | Revised paragraph contract and citation-to-part checks pass offline; new live validation pending |
-| Public pilot answer pipeline | Deployed v2 currently uses the record composer; revised paragraph contract is branch-only until merged and deployed |
+| Public pilot answer pipeline | Simplified paragraph composer from PR #208 is merged and deployed; this milestone is a follow-up candidate until its PRs are merged and deployed |
 | Human-scored quality improves on development and unseen questions | Not yet measured |
 
 ## Remaining validation before enabling or describing this as a quality release
@@ -163,6 +163,25 @@ The current corrective branch replaces that composer format with one labeled ans
 The normal reviewed path now uses one composition call and one part-completeness review call. Compose-only uses one call. The Worker no longer spends an additional inference call regenerating malformed composer records or exact evidence spans. The final citation audit still rejects unknown IDs and binds any quotation to a cited page; the composer is instructed to paraphrase and cite the page rather than manufacture quote anchors. Citation IDs establish source location, while semantic support and answer accuracy remain questions for human scoring.
 
 The holdout runner already emitted per-stage progress once corpus loading finished. It now reports initialization immediately and prints a 15-second heartbeat while fingerprint coverage and the corpus manifest load, closing the previously silent startup interval. Evaluation metadata now describes the revised call budget and per-part citation checks.
+
+## Evidence selection and auditable semantic review milestone (October 24)
+
+The latest reviewed Hume/Kant result confirms that the simplified paragraph answer path can produce a useful response, but the answer still omitted Hume's custom/habit explanation and Kant's argument for causal necessity. The review marked the parts fully answered without exposing an exact passage or explaining why it supported the answer. This is evidence-selection and review-calibration work; it does not justify returning to the earlier claim-ID and quote-extraction composer.
+
+The current candidate makes two changes within the existing pipeline. First, final answer-packet selection compares each part-linked candidate's passage text against that part's actual question, so a directly relevant ground/argument passage can beat a higher-ranked topical page. The public UI and live evaluator pass the same planned part questions to the selector. Second, the existing review call must return a concise rationale and exact quote from each source it judges as support. The Worker verifies each quote against the exact cited page text (or verse-scoped support text) and checks that comparison evidence covers the named source groups. A full review without that evidence is downgraded to partial and recorded as a support issue; it does not trigger a retry or extra model call. The diagnostic `evidenceMap` and highlights now contain those validated review quotes.
+
+This makes a positive review auditable and prevents status-only review output from promoting an answer to full coverage. It is not a semantic entailment proof: a model can still select a real but weakly related quote or give a mistaken rationale. Human inspection of the answer and page remains necessary. The change adds no AI calls: compose-only remains one answer call, and with-review remains composition plus review.
+
+| Verification | Result |
+|---|---|
+| Backend Worker full suite: `node --test` | 211 passed, 0 failed |
+| Website companion full suite: `node --test` | 151 passed, 0 failed |
+| Git whitespace and JavaScript syntax checks | Passed in both repositories |
+| Reviewer claims full support without exact quote or rationale | Regression downgrades to partial, records both support issues, and emits no verified evidence map entry |
+| Part-specific selection prefers the causal-necessity argument passage over a higher-ranked category passage | Regression passed |
+| Live model quality and published-site behavior | Pending; offline fixtures do not measure model judgment or corpus retrieval quality |
+
+The next validation is a single live Hume/Kant with-review run after both candidate PRs are merged and deployed. Inspect the submitted page packet and per-part links, verify each answer claim against its cited book page, and confirm that the review's quote and rationale match the actual support. Then rerun the compose-only variant if you need a direct comparison. Treat the result as diagnostic; retain the seven-question unseen acceptance set for a frozen candidate and have a human score all five rubric dimensions before calling answer quality accepted. The new progress logging is already included in the merged website code; this candidate does not change its log behavior.
 
 ### Validation status
 

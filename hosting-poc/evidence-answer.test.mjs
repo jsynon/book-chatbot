@@ -10,7 +10,13 @@ const kant={id:'S2',bookId:'40',title:catalog[40],page:53,url:'https://example.t
  text:'Causality is one of the categories of relation. The categories are pure conceptions of the understanding and are a priori.',
  preview:'Causality is one of the categories of relation.'};
 function answer(text){return {response:text,usage:{neurons:8,prompt_tokens:100,completion_tokens:60}};}
-function review(statuses){return {response:JSON.stringify({parts:statuses.map(([partId,status])=>({partId,status}))})};}
+function review(statuses,{evidenceByPart={},includeEvidence=true}={}){
+ return {response:JSON.stringify({parts:statuses.map(([partId,status])=>({partId,status,
+  reason:includeEvidence?'The cited passage directly supports this part.':'',
+  evidence:!includeEvidence||status==='unanswered'?[]:evidenceByPart[partId]||
+   (partId==='P3'?[{sourceId:'S1',quote:hume.text},{sourceId:'S2',quote:kant.text}]:
+    [{sourceId:partId==='P2'?'S2':'S1',quote:partId==='P2'?kant.text:hume.text}])}))})};
+}
 function makeAI(responses){
  const calls=[];
  return {calls,run:async(model,request)=>{calls.push({model,request});const next=responses.shift();
@@ -65,7 +71,8 @@ test('validates cited sources against each part and preserves a complete cited a
  assert.equal(result.questionParts[0].status,'supported');
  assert.match(result.answer,/habitual inference\. \[S1\]/);
  assert.deepEqual(result.citations.map(source=>source.id),['S1']);
- assert.equal(result.evidenceMap[0].quoteVerified,false);
+ assert.equal(result.evidenceMap[0].quoteVerified,true);
+ assert.equal(result.evidenceMap[0].quote,hume.text);
  assert.equal(result.trace.stages.length,2);
  const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
  const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
@@ -124,6 +131,22 @@ test('a reviewer partial decision is a valid result, not a contract failure',asy
  assert.equal(result.reviewStatus,'claim-review');
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.questionParts[0].status,'partial');
+});
+
+test('a reviewer cannot mark an answer supported without an exact quote from a cited page',async()=>{
+ const ai=makeAI([answer('PART P1\nKant lists causality among the categories of relation. [S2]'),
+  review([['P1','answered']],{includeEvidence:false})]);
+ const result=await composeEvidenceAnswer('How does Kant justify causal necessity?',
+  [kant],ai,[],{plan:{...onePartPlan,intent:'explain',
+   sources:[{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+   parts:[{id:'P1',question:'How does Kant justify causal necessity?',sourceBookIds:['40'],
+    searchQueries:['Kant causality'],candidateSourceIds:['S2']}]},catalog,trace:true});
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.deepEqual(result.trace.reviewContract.supportIssues,[
+  {partId:'P1',reason:'no-cited-exact-support-quote'},
+  {partId:'P1',reason:'missing-support-rationale'}]);
+ assert.equal(result.evidenceMap.length,0);
 });
 
 test('reviewer contract errors preserve citation-checked text as an explicitly unverified partial draft',async()=>{
@@ -216,7 +239,8 @@ test('verse-restricted answers expose the requested verses as evidence and retai
  const source={...hume,scopeText:'Within the requested range, love is from God and believers should love one another.'};
  const plan={...onePartPlan,scope:'1 John 4:7-12'};
  const ai=makeAI([answer('PART P1\nThe passage grounds mutual love in love from God. [S1]'),
-  review([['P1','answered']])]);
+  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',
+   quote:'Within the requested range, love is from God and believers should love one another.'}]}})]);
  await composeEvidenceAnswer('According to 1 John 4:7-12, what does love mean?',[source],ai,[],
   {plan,catalog,trace:true});
  const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
