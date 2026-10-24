@@ -37,6 +37,26 @@ test('bounded search planner produces distinct, well-formed corpus search querie
  assert.deepEqual(answer.queries,good.queries);
  assert.equal(answer.usage.neurons,3);
 });
+test('planner returns a bounded structured plan with canonical source IDs and question parts',async()=>{
+ const question='How do Hume’s Enquiry and Kant’s Critique of Pure Reason differ over causal necessity?';
+ const planned={resolvedQuestion:question,intent:'compare',
+  sources:[{label:'Hume',role:'primary'},{label:'Kant',role:'primary'}],
+  parts:['How does Hume explain causal necessity?','How does Kant explain causal necessity?'],
+  scope:'Both named works',queries:['Hume Enquiry necessary connection habit','Kant Critique causality a priori category']};
+ const result=await planSearchQueries(question,'',{
+  run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}],
+   usage:{neurons:5}})});
+ assert.equal(result.plan.intent,'compare');
+ assert.deepEqual(result.plan.parts,[
+  {id:'P1',question:'How does Hume explain causal necessity?'},
+  {id:'P2',question:'How does Kant explain causal necessity?'}]);
+ assert.ok(result.plan.sources[0].bookIds.includes('35'));
+ assert.ok(result.plan.sources[1].bookIds.includes('40'));
+ assert.deepEqual(result.plan.sources.map(source=>source.role),['primary','primary']);
+ assert.equal(result.plan.queries.length,2);
+ assert.match(result.queries[0],/causal necessity|necessary connection/i);
+ assert.match(result.queries[1],/causal necessity|causality/i);
+});
 test('search planner retains explicitly named authors and works for source scoping',async()=>{
  let systemPrompt='';
  await planSearchQueries('How do Aristotle and Darwin explain change?', '', {
@@ -228,7 +248,7 @@ test('valid Turnstile and rate-limits gate AI query planning',async()=>{
  assert.equal(response.status,200);
  const data=await response.json();
  assert.deepEqual(data.queries,good.queries);
- assert.equal(data.guidance,'Search terms only; citations must pass SHA-256 verification');
+ assert.equal(data.guidance,'Structured search plan; source pages and citations are independently verified');
  assert.equal(inferenceCalls,1);
  assert.equal(verifyCalls,1);
  assert.equal(limits,2);
