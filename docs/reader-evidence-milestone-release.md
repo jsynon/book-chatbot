@@ -1,10 +1,10 @@
 # Reading Companion evidence milestone: release report
 
 Date: October 24, 2026  
-Status: live trace reproduced format and per-part retrieval failures; focused corrective candidate implemented and offline suites pass; live quality acceptance remains open
-Backend branch: `codex/compare-evidence-reliability`
+Status: review-contract and evidence-packet recovery implemented; offline suites pass; live quality acceptance remains open
+Backend branch: `codex/review-contract-salvage-20261024`
 
-Website branch: `codex/compare-evidence-reliability`
+Website branch: `codex/live-eval-progress-and-part-evidence-20261024`
 
 ## Goal
 
@@ -68,6 +68,34 @@ The follow-up implementation now addresses this pattern in three shared rules: p
 
 The tests use controlled model responses and synthetic request fixtures. They verify contracts and failure boundaries; they do not establish answer quality from a live model.
 
+## Latest with-review trace and recovery milestone
+
+The October 24 all-books Hume/Kant with-review trace completed without HTTP failures but returned the generic failure answer. The worker made three answer-pipeline calls: an initial composition, one format recovery, and review. The first composition used malformed evidence headers; the recovery produced a draft, but the reviewer assigned claims across the wrong question parts. The Worker treated the review-contract problem as a total pipeline failure and discarded source-validated claims. This is a separate failure from the earlier malformed composer responses: the composer had recovered, but the review response contract then erased the usable draft.
+
+The submitted six-page packet also omitted Kant *Critique of Pure Reason*, page 23, even though exact-question retrieval found it. Page 23 directly discusses Kant's response to Hume's causal principle and the a priori status of causal knowledge. Page 24 was selected instead, alongside a general category table. This is a retrieval-to-selection handoff miss: the evidence existed in the direct-question results but did not reach the composer. The automated review's positive claim verdicts do not establish answer quality; its part mapping was invalid, and `manualReview.status` remained `not-reviewed`.
+
+The corrective candidate changes the failure behavior at both boundaries:
+
+- Review decisions are normalized against exact eligible claim IDs and planned parts. A bad part map downgrades only the affected coverage instead of throwing away all valid source-checked claims. If the review response is malformed or unavailable, qualifying exact-evidence claims can remain visible as an explicitly unreviewed, partial draft. The result retains a failure code, so structural evaluation still marks it as a miss.
+- Synthetic comparison coverage links the exact reader question to the synthesis part without adding another search. Retrieval reserves the strongest two results from each part-linked facet before filling the shared candidate pool, preserving second-ranked direct-question pages. The selector then carries a representative page for every part and uses the existing six-page source budget.
+- The evaluator now prints case, planner, retrieval, and answer request stages as they happen; it periodically prints a 15-second heartbeat while a Worker request is pending, and still prints each case's structural pass/miss when it completes. The current Worker API returns only after its compose/review pipeline finishes, so these logs cannot expose individual inner Worker steps during that request. The exact authenticated Worker trace remains the source for compose/recovery/review substeps.
+
+The changes do not increase the Worker inference-call budget or add a semantic judge. Recovery is designed to preserve a useful, honestly labeled partial answer when one exists, while keeping review/part-map failures visible to evaluation.
+
+## Verification after latest trace
+
+| Check | Result |
+|---|---|
+| Worker Node suite: `node --test` | 223 passed, 0 failed |
+| Website/evaluation Node suite: `node --test reading-companion/*.test.mjs` | 150 passed, 0 failed |
+| Git whitespace checks | Passed on both candidate branches |
+| Reviewer assigns claims to wrong parts | Regression verifies correctly mapped parts remain supported, the invalid part becomes partial, and the answer remains a structural miss |
+| Reviewer response malformed | Regression verifies exact-evidence claims survive only as an explicitly unreviewed partial draft |
+| Second-ranked directly relevant Kant page | Regression verifies it survives candidate capping and reaches the selected answer packet |
+| Workflow progress events | Regression covers planner/retrieval/answer start and completion; live output also emits periodic wait heartbeats |
+
+These offline results validate the control-flow contracts. They do not prove live Gemma output quality or establish that a partial answer is semantically sufficient. A new authenticated live run is required after both PRs are merged and the Worker is deployed; the website workflow should then show staged progress and retain its per-case pass/miss output.
+
 ## Paired all-books review ablation and per-part evidence milestone
 
 The later seven-question paired run is the first direct diagnostic of the revised answer path. It held the planner output and retrieved page packet fixed between the reviewed and compose-only variants, then ran an independent composition for each variant. The reviewed variant reported two structurally full answers, two partial answers, and three malformed composer outputs. Across both variants, six of 14 composer outputs failed the expected format, so the reviewer never ran for those cases. The run therefore shows a real format reliability failure and does not establish that review improves answer quality. Its automated coverage labels are not substitutes for human ratings, and the five-dimension draft scores discussed during review were not saved as an independent human-scored artifact.
@@ -117,8 +145,8 @@ This fixes the reproduced contract and query-linking failures in deterministic t
 
 ## Remaining validation before enabling or describing this as a quality release
 
-1. Merge and deploy this corrective candidate. Then run the single Hume/Kant compose-only case to confirm the comparison part is explicit, source-specific planner results receive part links, and malformed but recoverable records pass while missing parts still fail closed. Keep the answer call budget at two normal calls and three maximum after a format retry.
-2. After the compose-only case produces a structurally valid draft, run its reviewed variant and score the draft with the five-dimension human rubric. The trace shows that format recovery alone cannot establish answer quality; verify Hume attribution and Kant's argument against the actual pages.
+1. Merge and deploy both candidate PRs, then rerun the Hume/Kant case in compose-only mode. Confirm Kant page 23 (or a semantically stronger primary passage) reaches the submitted packet, every requested part has its own linked evidence, and the partial draft remains usable if review is unavailable. Confirm the workflow log shows planner, retrieval, answer wait heartbeat, and final structural result.
+2. Run the same case with review enabled and inspect the authenticated trace. Confirm the reviewer maps only eligible claims to their exact parts, and that an invalid review mapping yields a visible structural miss without erasing other valid part claims. Score the resulting draft with the five-dimension human rubric; verify Hume attribution and Kant's argument against the actual pages.
 3. Treat both the paired holdout and this Hume/Kant single-case run as diagnostic only. For a fresh holdout, confirm that a Kant candidate includes a passage from the *Second Analogy* and that the response explains how Kant grounds causal necessity rather than only naming causality as a category. Have a human reviewer score prose and citations; automated `passed` is not quality acceptance.
 4. Measure Cloudflare CPU, body size, inference availability, and latency using real pages near the current byte limit. The new path retains current request and page limits; no production capacity claim has been tested.
 5. Verify retrieval quality and OCR semantics across the published corpus. Fingerprints establish byte identity with the published text, not OCR correctness, speaker identity, or semantic support. The 642-book fingerprint coverage and the audited seven-book local subset do not substitute for this check.
