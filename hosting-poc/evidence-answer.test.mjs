@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {auditFinalAnswer,normalizePlan} from './reader-contract.mjs';
-import {composeEvidenceAnswer,validateClaims,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,validateClaims,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
 import {handleRequest,verifiedFingerprintSources} from './public-gateway.mjs';
 
 const quote='By doing just acts we become just';
@@ -15,9 +15,29 @@ const catalog={'4':'Nicomachean Ethics — Aristotle'};
 function modelAnswer(claimOverrides={}){
  return {claims:[{id:'C1',partIds:['P1'],kind:'direct',
    text:'Aristotle says repeated just action forms a just character.',
-   evidence:[{sourceId:'S1',quote}],...claimOverrides}],gaps:[]};
+   evidence:[{sourceId:'S1',quote}],...claimOverrides}],
+  parts:[{partId:'P1',status:'answered',gap:''}]};
 }
-function response(value){return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(value)}}],
+function composerRecords(draft){
+ const emitted=new Set(),lines=[];
+ for(const part of draft.parts){
+  lines.push(`PART ${part.partId} ${part.status}`);
+  for(const claim of draft.claims.filter(value=>value.partIds.includes(part.partId)&&!emitted.has(value.id))){
+   emitted.add(claim.id);
+   lines.push(`CLAIM ${claim.id} | ${claim.partIds.join(',')} | ${claim.kind}`,'TEXT',claim.text);
+   for(const evidence of claim.evidence){
+    lines.push(`EVIDENCE ${evidence.sourceId}`,evidence.quote,'END EVIDENCE');
+   }
+   lines.push('END CLAIM');
+  }
+  if(part.gap)lines.push('GAP',part.gap,'END GAP');
+  lines.push('END PART');
+ }
+ return lines.join('\n');
+}
+function response(value){return {choices:[{finish_reason:'stop',message:{content:
+  value&&Array.isArray(value.claims)&&Array.isArray(value.parts)?composerRecords(value):
+   typeof value==='string'?value:JSON.stringify(value)}}],
   usage:{neurons:7,prompt_tokens:120,completion_tokens:60}};}
 
 test('epistemic answers require grounds beyond naming a category',()=>{
@@ -56,9 +76,34 @@ test('plan binds each named comparison part to the matching source books',()=>{
  assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[['74'],['245']]);
 });
 
+test('each planned part receives page IDs from its own named source before composition',()=>{
+ const catalog={'74':'The Republic — Plato','245':'The Social Contract — Jean-Jacques Rousseau'};
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'Republic',role:'primary',bookIds:['74']},
+  {label:'Social Contract',role:'subject',bookIds:['245']}],parts:[
+   {question:'How does Plato’s Republic explain political legitimacy?'},
+   {question:'How does Rousseau’s Social Contract explain political legitimacy?'}]},
+  'Compare Plato and Rousseau.',catalog);
+ const linked=linkEvidenceToParts(plan,[
+  {...source,id:'S1',bookId:'74'},{...source,id:'S2',bookId:'245'}]);
+ assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2']]);
+});
+
+test('part evidence mapping narrows two subquestions within the same book',()=>{
+ const plan=normalizePlan({intent:'explain',sources:[
+  {label:'The Republic',role:'primary',bookIds:['74']}],parts:[
+   {question:'How does Plato explain political legitimacy?'},
+   {question:'How does Plato connect political legitimacy to the common good?'}]},
+  'How does Plato explain political order?',{'74':'The Republic — Plato'});
+ const linked=linkEvidenceToParts(plan,[
+  {...source,id:'S1',bookId:'74',candidatePartIds:['P1']},
+  {...source,id:'S2',bookId:'74',candidatePartIds:['P2']}]);
+ assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2']]);
+});
+
 test('claim validation rejects a quote taken from a different source than its citation',()=>{
  const second={...source,id:'S2',text:'A different passage about another subject entirely.'};
- const plan=normalizePlan(rawPlan,'question',catalog);
+ const plan=linkEvidenceToParts(normalizePlan(rawPlan,'question',catalog),[source,second]);
  const result=validateClaims(modelAnswer({evidence:[{sourceId:'S2',quote}]}),[source,second],plan);
  assert.equal(result.claims.length,0);
  assert.equal(result.rejected[0].reason,'evidence-not-found');
@@ -76,16 +121,18 @@ test('claim validation rejects evidence assigned to the wrong named-work part',(
   text:'An act is legitimate because it is based on the social contract, and useful because it serves the general good.'};
  const draft={claims:[{id:'C1',partIds:['P1'],kind:'direct',
   text:'Rousseau grounds legitimate order in the social contract.',
-  evidence:[{sourceId:'S2',quote:'legitimate because it is based on the social contract'}]}]};
- const result=validateClaims(draft,[source,rousseau],plan);
+  evidence:[{sourceId:'S2',quote:'legitimate because it is based on the social contract'}]}],
+  parts:[{partId:'P1',status:'answered',gap:''},{partId:'P2',status:'unanswered',gap:'No cited evidence.'}]};
+ const linked=linkEvidenceToParts(plan,[source,rousseau]);
+ const result=validateClaims(draft,[source,rousseau],linked);
  assert.equal(result.claims.length,0);
- assert.equal(result.rejected[0].reason,'evidence-source-does-not-match-question-part');
+ assert.equal(result.rejected[0].reason,'evidence-not-linked-to-question-part');
 });
 
 test('explicit section scope limits support while preserving the complete page as context',()=>{
  const full={...source,text:'Outside the requested range, Aristotle discusses pleasure at length. '+quote+'.'};
  const scoped={...full,scopeText:'By doing just acts we become just.'};
- const plan=normalizePlan(rawPlan,'question',catalog);
+ const plan=linkEvidenceToParts(normalizePlan(rawPlan,'question',catalog),[scoped]);
  const outside=validateClaims(modelAnswer({evidence:[{sourceId:'S1',quote:'Outside the requested range, Aristotle discusses pleasure at length.'}]}),[scoped],plan);
  assert.equal(outside.claims.length,0);
  assert.equal(outside.rejected[0].reason,'evidence-outside-requested-scope');
@@ -111,10 +158,13 @@ test('claim pipeline makes two bounded calls, preserves full pages, and validate
   const body=JSON.parse(input.messages[1].content);
   if(input.messages[0].content.includes('Assess each claim')){
    assert.equal(body.claims.length,1);
+   assert.deepEqual(body.draftParts,[{partId:'P1',status:'answered',gap:''}],
+    'review sees the composer status and any stated gap for every question part');
    return response({decisions:[{claimId:'C1',verdict:'supported',reason:'Directly stated.'}],
     parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Explained.'}]});
   }
   assert.equal(body.evidence[0].text,source.text);
+  assert.deepEqual(body.partEvidence,[{partId:'P1',question:'How does practice form virtue?',candidateSourceIds:['S1']}]);
   return response(modelAnswer());
  }};
  const result=await composeEvidenceAnswer('How does practice form virtue?',
@@ -129,6 +179,38 @@ test('claim pipeline makes two bounded calls, preserves full pages, and validate
  assert.equal(result.trace.final.answer,result.answer);
 });
 
+test('the composer receives page IDs attached to each question part before it drafts claims',async()=>{
+ const catalog={'74':'The Republic — Plato'};
+ const plan={intent:'explain',sources:[{label:'The Republic',role:'primary',bookIds:['74']}],parts:[
+  {question:'How does Plato explain political legitimacy?'},
+  {question:'How does Plato connect political legitimacy to the common good?'}]};
+ const first={...source,id:'S1',bookId:'74',title:catalog['74'],candidatePartIds:['P1'],
+  text:'The first passage directly explains political legitimacy through justice.'};
+ const second={...source,id:'S2',bookId:'74',title:catalog['74'],candidatePartIds:['P2'],
+  text:'The second passage directly connects the city to the common good.'};
+ const draft={claims:[
+  {id:'C1',partIds:['P1'],kind:'direct',text:'Plato grounds political legitimacy in justice.',
+   evidence:[{sourceId:'S1',quote:'directly explains political legitimacy through justice'}]},
+  {id:'C2',partIds:['P2'],kind:'direct',text:'Plato connects political order to the common good.',
+   evidence:[{sourceId:'S2',quote:'directly connects the city to the common good'}]}],
+  parts:[{partId:'P1',status:'answered',gap:''},{partId:'P2',status:'answered',gap:''}]};
+ const ai={run:async(_model,input)=>{
+  const body=JSON.parse(input.messages[1].content);
+  if(input.messages[0].content.includes('Assess each claim'))
+   return response({decisions:[{claimId:'C1',verdict:'supported',reason:'Matches.'},
+      {claimId:'C2',verdict:'supported',reason:'Matches.'}],
+    parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Covered.'},
+      {partId:'P2',status:'answered',claimIds:['C2'],reason:'Covered.'}]});
+  assert.deepEqual(body.partEvidence.map(part=>[part.partId,part.candidateSourceIds]),[
+   ['P1',['S1']],['P2',['S2']]]);
+  return response(draft);
+ }};
+ const result=await composeEvidenceAnswer('How does Plato explain political order?',
+  [first,second],ai,[],{plan,catalog});
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.questionParts.map(part=>part.evidenceIds),[['S1'],['S2']]);
+});
+
 test('one malformed composer response gets one bounded regeneration before final review',async()=>{
  const stages=[];let calls=0;
  const ai={run:async(_model,input)=>{
@@ -139,7 +221,7 @@ test('one malformed composer response gets one bounded regeneration before final
    return response({decisions:[{claimId:'C1',verdict:'supported',reason:'Supported.'}],
     parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Answered.'}]});
   }
-  if(system.includes('Your previous response was not valid JSON')){
+  if(system.includes('Your previous response did not follow the required record format')){
    stages.push('compose-format-retry');return response(modelAnswer());
   }
   stages.push('compose');
@@ -164,11 +246,23 @@ test('a second malformed composer response is a format failure, not an evidence 
  assert.equal(calls,2);
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.reviewStatus,'generation-format-failed');
- assert.equal(result.failureCode,'model-output-invalid-json');
+ assert.equal(result.failureCode,'model-output-invalid-format');
  assert.equal(result.failureStage,'compose-format-retry');
  assert.match(result.answer,/properly formatted, verified answer/);
  assert.doesNotMatch(result.answer,/retrieved passages did not support/);
  assert.equal(result.trace.final.failure.stage,'compose-format-retry');
+});
+
+test('composition fails closed when a requested part is omitted from the record',async()=>{
+ let calls=0;
+ const ai={run:async()=>{calls++;return response('PART P1 answered\nEND PART');}};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,trace:true});
+ assert.equal(calls,2,'one bounded format regeneration is allowed');
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureCode,'model-output-invalid-format');
+ assert.equal(result.failureStage,'compose-format-retry');
+ assert.equal(result.questionParts[0].status,'unsupported');
 });
 
 test('rejected claim cannot reappear through a later rewrite or citation repair',async()=>{
@@ -192,13 +286,14 @@ test('fingerprint verification retains original complete text and digest separat
   pdfDriveId:'LegitimatePdfIdentifier0123456789',
   pages:[{page:17,globalPageId:16,utf8Bytes:bytes.byteLength,sha256}]};
  const verified=await verifiedFingerprintSources('How does practice form virtue?',
-  [{bookId:'4',page:17,text}],async()=>Response.json(metadata));
+  [{bookId:'4',page:17,text,candidatePartIds:['P1']}],async()=>Response.json(metadata));
  assert.equal(verified[0].text,text);
  assert.equal(verified[0].sha256,sha256);
+ assert.deepEqual(verified[0].candidatePartIds,['P1']);
  assert.ok(verified[0].preview.length<text.length);
 });
 
-test('public experimental route returns audited claim output only when server flag enables it',async()=>{
+test('public pilot defaults to audited claim output while evaluation remains explicitly authorized',async()=>{
  const text='A complete source page begins here. '+quote+'. The rest of the argument continues.';
  const bytes=new TextEncoder().encode(text);
  const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
@@ -209,7 +304,6 @@ test('public experimental route returns audited claim output only when server fl
  let aiCalls=0;
  const env={PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
   TURNSTILE_SITE_KEY:'0x4AAAAAAABC1234567890',TURNSTILE_SECRET:'not-a-real-secret-123456789',
-  READER_PIPELINE:'evidence-v2',
   AI_RATE_LIMITER:{limit:async()=>({success:true})},GLOBAL_RATE_LIMITER:{limit:async()=>({success:true})},
   AI:{run:async(_model,input)=>{
    aiCalls++;

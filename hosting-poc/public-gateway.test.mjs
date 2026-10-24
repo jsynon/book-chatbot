@@ -2123,6 +2123,9 @@ test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
 
 const pilotBaseEnv={
  PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
+ // Keep legacy-route regression fixtures explicit; v2-by-default behavior is
+ // exercised in evidence-answer.test.mjs without this setting.
+ READER_PIPELINE:'legacy',
  TURNSTILE_SITE_KEY:'0x4AAAAAA-test-public-pilot',
  TURNSTILE_SECRET:'a-long-private-turnstile-test-secret',
  AI_RATE_LIMITER:{limit:async()=>({success:true})},

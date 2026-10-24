@@ -1010,6 +1010,10 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
        !/^[1-9]\d{0,3}$/.test(String(item.bookId))||
        !Number.isSafeInteger(item.page)||item.page<1||item.page>10000||
        typeof item.text!=='string')throw new Error('Invalid source claim');
+    if(item.candidatePartIds!==undefined&&(!Array.isArray(item.candidatePartIds)||
+       item.candidatePartIds.length>6||item.candidatePartIds.some(value=>
+         typeof value!=='string'||!/^P[1-9]\d*$/.test(value))))
+      throw new Error('Invalid source part mapping');
     const bookId=String(item.bookId),page=item.page;
     const id=bookId+':'+page;
     if(seen.has(id))throw new Error('Duplicate source claim');
@@ -1055,6 +1059,7 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
       // Keep the original hashed page available to the evidence pipeline.
       // `preview` remains the compact browser-facing snippet.
       text:item.text,sha256:actual,preview:sourceExcerpt(item.text,question),
+      ...(Array.isArray(item.candidatePartIds)?{candidatePartIds:[...new Set(item.candidatePartIds)]}:{}),
       fingerprintBytes:packetBytes});
   }
   return sources;
@@ -3619,10 +3624,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     const evaluationAuthorized=authorizedPilotEvaluation(request,env);
     const answerVariant=evaluationAuthorized&&data.answerVariant==='compose-only'?'compose-only':'with-review';
     try{
-      // Keep the evidence pipeline opt-in for public visitors, while making
-      // the authenticated holdout workflow exercise it without changing the
-      // deployment-wide public answer mode.
-      if(env.READER_PIPELINE==='evidence-v2'||evaluationAuthorized){
+      // The public pilot uses the evidence pipeline by default. An explicit
+      // legacy setting is a rollback switch; authenticated evaluations always
+      // exercise v2 regardless of the public setting.
+      if(env.READER_PIPELINE!=='legacy'||evaluationAuthorized){
         const selectedBookId=String(data.bookId||'');
         const plan=normalizePlan(data.plan,data.question,PILOT_BOOKS,selectedBookId);
         const scopeSources=applyExplicitBibleVerseScope(data.question,

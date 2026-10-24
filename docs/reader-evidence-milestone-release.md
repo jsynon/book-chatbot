@@ -8,7 +8,7 @@ Website branch: `codex/reader-evidence-recovery`
 
 ## Goal
 
-Move the Reading Companion toward thoughtful, accurate answers grounded in passages readers can reopen. This milestone changes the information path and answer contract so question interpretation, retrieval, evidence review, and citations remain connected. It keeps the existing corpus, fingerprint validation, source reader, UI, and Gemma deployment. The candidate answer path is opt-in and does not change production until deliberately configured and deployed.
+Move the Reading Companion toward thoughtful, accurate answers grounded in passages readers can reopen. This milestone changes the information path and answer contract so question interpretation, retrieval, evidence review, and citations remain connected. It keeps the existing corpus, fingerprint validation, source reader, UI, and Gemma deployment. After the Worker PR is deployed, the existing public pilot route uses this answer path by default. Setting `READER_PIPELINE=legacy` is an explicit rollback; the pilot's existing Turnstile, rate-limit, source-verification, and public-enable gates remain in force.
 
 ## What changed
 
@@ -16,7 +16,7 @@ Move the Reading Companion toward thoughtful, accurate answers grounded in passa
 - Centralized catalog identity parsing for titles, authors, and editors. Edited collections such as *The Portable Nietzsche* stay eligible for Nietzsche author searches without treating Walter Kaufmann as the author.
 - Moved browser and evaluation retrieval into the same `retrieveEvidence` implementation. Given identical planner output, allowlists, book scope, and corpus, both now use the same facet search, candidate ordering, page hydration limits, and final six-page selector. The browser cache and evaluator shard reader are only page-loader differences.
 - Kept full fingerprint-verified page text and its hash separate from the short UI preview. The candidate answer composer receives complete pages within existing request/page bounds. Explicit Bible verse ranges carry a separate quote-eligible scope while surrounding verified text remains context only.
-- Added an opt-in `reader-evidence-v2` answer path: one structured claim composition, deterministic exact-span/citation checks, and one final claim review. It has no free-form rewrite after review. Rejected or unsupported claims cannot re-enter through repair. The recovery branch allows two calls normally, with one extra composition call only after malformed composer JSON; maximum three answer calls plus the planner.
+- Added a `reader-evidence-v2` answer path: one structured claim composition, deterministic exact-span/citation checks, and one final claim review. It has no free-form rewrite after review. Rejected or unsupported claims cannot re-enter through repair. The recovery branch allows two calls normally, with one extra composition call only after malformed composer output; maximum three answer calls plus the planner. This milestone makes v2 the public pilot default after deployment, with `READER_PIPELINE=legacy` as a rollback switch.
 - Each accepted claim has exact source page quotes and offsets. Quotes must occur on the cited page; when a verse restriction applies, they must also occur inside the requested verse range. Only claims the final reviewer marks supported are rendered. Citation IDs and quotation links are checked again after deterministic rendering.
 - Added an authenticated evaluation-only trace containing the exact stage prompts, source pages, model responses, timing, rejection reasons, model identity, and usage counters. The public response never includes this trace. User-facing diagnostics expose only bounded plans, citations, exact validated claim anchors, and usage totals, not complete source pages.
 - Live evaluation reports now identify the evaluator source commit and hash the published coverage manifest, corpus manifest, and each exact corpus/index file read during the run. Worker build IDs, model context, prompt text, and inference counters remain attached to each case.
@@ -68,6 +68,27 @@ The follow-up implementation now addresses this pattern in three shared rules: p
 
 The tests use controlled model responses and synthetic request fixtures. They verify contracts and failure boundaries; they do not establish answer quality from a live model.
 
+## Paired all-books review ablation and per-part evidence milestone
+
+The later seven-question paired run is the first direct diagnostic of the revised answer path. It held the planner output and retrieved page packet fixed between the reviewed and compose-only variants, then ran an independent composition for each variant. The reviewed variant reported two structurally full answers, two partial answers, and three malformed composer outputs. Across both variants, six of 14 composer outputs failed the expected format, so the reviewer never ran for those cases. The run therefore shows a real format reliability failure and does not establish that review improves answer quality. Its automated coverage labels are not substitutes for human ratings, and the five-dimension draft scores discussed during review were not saved as an independent human-scored artifact.
+
+The source packets also exposed a question-part linkage failure: a useful Du Bois page was present but was not associated with the Wollstonecraft/Du Bois part it could answer, while the Plato common-good and Kant causal-necessity parts lacked matching pages in their submitted packets. The implementation now carries the planner's individual question parts into retrieval as separate search facets, tags each hydrated page with the parts whose facets found it, and reserves a selected page for each represented part within the existing page budget. The Worker builds an explicit source-ID list for each part before calling the composer. It rejects a claim unless its exact evidence span comes from a page linked to every part the claim covers.
+
+The composer now returns a bounded line-record format with one ordered block per planned question part, explicit answered/partial/unanswered status, and claims or a gap for every part. Claims include exact evidence spans and source IDs. Parsing checks that every part appears once, statuses agree with claim/gap presence, claims use planned part IDs, and evidence is linked to those parts. The reviewer receives each draft part status and gap alongside the evidence-linked claims, then judges support and completeness. A malformed composition gets the existing single format retry; persistent malformed output fails closed. This replaces the nested JSON composition format while leaving JSON for the review response. It does not add an AI call: the answer path still uses two calls normally and at most three after a format retry.
+
+## Verification after the paired-run diagnosis
+
+| Check | Result |
+|---|---|
+| Backend Worker Node suites: `node --test hosting-poc/*.test.mjs` | 209 passed, 0 failed |
+| Website companion Node suites: `node --test reading-companion/*.test.mjs` | 145 passed, 0 failed |
+| Git whitespace checks | Passed on both recovery branches |
+| Per-part retrieval facets, page-to-part tags, and selector reservation | Covered by offline retrieval and selector tests |
+| Per-part composer format, completeness, exact evidence, and source-to-part binding | Covered by offline Worker tests |
+| Planner, page packet, and answer-call count | No additional AI call; search adds local corpus queries |
+
+These tests show that the format and linkage contracts work on controlled fixtures. They do not demonstrate that the deployed Gemma model reliably emits the format, that search returns semantically sufficient pages, or that the final prose is accurate. The paired run remains evidence of a failure mode, not evidence that this patch has fixed live answer quality.
+
 ## Acceptance status
 
 | Audit criterion | Status |
@@ -79,15 +100,17 @@ The tests use controlled model responses and synthetic request fixtures. They ve
 | Browser and evaluator share retrieval assembly | Implemented; unit-tested through the shared module |
 | Evaluation records exact model context and code/data identities | Implemented for authenticated v2 runs; unit- and route-tested |
 | Declared model-call budget | Three answer calls maximum, plus one planner call in all-books evaluation |
+| Per-part response structure and pre-composition evidence links | Implemented and covered by offline tests; live behavior remains unverified |
+| Public pilot defaults to the per-part evidence pipeline | Implemented in the Worker PR; takes effect after merge and deployment; `READER_PIPELINE=legacy` rolls back |
 | Human-scored quality improves on development and unseen questions | Not yet measured |
 
 ## Remaining validation before enabling or describing this as a quality release
 
-1. After merging and deploying these recovery branches, run the paired review ablation on the seven development cases with **All Books** scope. It estimates 28 Worker model calls before format retries; compare structural outputs per variant and score both answers with the blank human rubric. This isolates the contribution of final review while holding pages and planner output fixed.
-2. Include correct-evidence and context-preservation comparisons. These distinguish model composition problems from retrieval misses and from loss caused by short excerpts. Include follow-ups, multi-work comparisons, absent evidence, reported speakers, and a manually checked verse-range case.
-3. Rerun the Hume/Kant holdout after the latest planner, selector, and completeness-guidance changes are merged and deployed. Confirm the candidates include a Kant passage from the *Second Analogy* and that the answer distinguishes naming causality as a category from explaining how Kant argues for its necessity in experience. Have a human reviewer score the prose and citations; do not treat automated `passed` as quality acceptance.
+1. Merge and deploy both recovery branches, then use a development run to check that the live composer follows the per-part record contract, that each part receives its own linked candidate pages, and that persistent format failures are reported distinctly. Keep the call budget at two normal answer calls and three maximum after a format retry.
+2. Score new reviewed and compose-only drafts independently with the five-dimension human rubric. Include correct-evidence and context-preservation comparisons to distinguish composition failures from retrieval misses and loss caused by short excerpts. Cover follow-ups, multi-work comparisons, absent evidence, reported speakers, and a manually checked verse-range case.
+3. Treat the already-used paired holdout as diagnostic only. For a fresh holdout, confirm that a Kant candidate includes a passage from the *Second Analogy* and that the response explains how Kant grounds causal necessity rather than only naming causality as a category. Have a human reviewer score prose and citations; automated `passed` is not quality acceptance.
 4. Measure Cloudflare CPU, body size, inference availability, and latency using real pages near the current byte limit. The new path retains current request and page limits; no production capacity claim has been tested.
 5. Verify retrieval quality and OCR semantics across the published corpus. Fingerprints establish byte identity with the published text, not OCR correctness, speaker identity, or semantic support. The 642-book fingerprint coverage and the audited seven-book local subset do not substitute for this check.
 6. Once the candidate is frozen, run the seven-question acceptance suite with **All Books** and paired mode, then enter human scores in the artifact. Do not tune against these questions; if the candidate fails, retain the report as a measurement and choose a new unseen set for the next candidate.
 
-Until these checks pass, keep public `READER_PIPELINE` unset or different from `evidence-v2`. The authenticated evaluation route has now been confirmed to use v2 independently of that public setting. Do not interpret green unit tests, full citations, model self-review, or structural coverage labels as proof that an answer is correct. A citation proves where text came from; human review must still decide whether it supports the claim.
+The user has chosen to make the candidate the public pilot default after merge and Worker deployment. This is a live quality experiment, not a claim that answer quality has passed acceptance. If the live format or answer quality regresses, set `READER_PIPELINE=legacy` to return to the earlier composer while investigating. The authenticated evaluation route continues to use v2 regardless of that public rollback setting. Do not interpret green unit tests, full citations, model self-review, or structural coverage labels as proof that an answer is correct. A citation proves where text came from; human review must still decide whether it supports the claim.
