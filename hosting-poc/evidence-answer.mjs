@@ -266,10 +266,21 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     // failure as well as malformed formatting. Keep room for the reviewer so
     // the normal successful path still stays within the three-call ceiling.
     if(validated.rejected.length&&usage.calls===1){
-      draft=await run('compose-evidence-retry',COMPOSER_EVIDENCE_RETRY_PROMPT,
+      const repairedDraft=await run('compose-evidence-retry',COMPOSER_EVIDENCE_RETRY_PROMPT,
         {...payload,validationFeedback:validated.rejected.map(item=>({claimId:item.claimId,reason:item.reason}))},
         response=>parseComposer(response,plan,'compose-evidence-retry'));
-      validated=validateClaims(draft,sources,plan);
+      const repaired=validateClaims(repairedDraft,sources,plan);
+      const signature=claim=>JSON.stringify([claim.partIds,claim.kind,claim.text,
+        claim.evidence.map(item=>[item.sourceId,item.start,item.end])]);
+      const claims=[...validated.claims],signatures=new Set(claims.map(signature));
+      for(const claim of repaired.claims){
+        const key=signature(claim);
+        if(!signatures.has(key)&&claims.length<12){claims.push(claim);signatures.add(key);}
+      }
+      // Keep claims that already passed exact validation if the regeneration
+      // drops or worsens them; only validated claims from either attempt survive.
+      draft={...repairedDraft,claims};
+      validated={claims,rejected:repaired.rejected};
     }
     trace.rejected=validated.rejected;
     claims=validated.claims;draftParts=draft.parts;
