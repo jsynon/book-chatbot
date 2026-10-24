@@ -244,8 +244,9 @@ test('claim pipeline makes two bounded calls, preserves full pages, and validate
   const body=JSON.parse(input.messages[1].content);
   if(input.messages[0].content.includes('Assess each claim')){
    assert.equal(body.claims.length,1);
-   assert.deepEqual(body.draftParts,[{partId:'P1',status:'answered',gap:''}],
-    'review sees the composer status and any stated gap for every question part');
+   assert.deepEqual(body.parts,[{partId:'P1',question:'How does practice form virtue?',
+    draftStatus:'answered',candidateSourceIds:['S1'],claimIds:['C1']}],
+    'review sees the status and exact eligible claim IDs for every question part');
    return response({decisions:[{claimId:'C1',verdict:'supported',reason:'Directly stated.'}],
     parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Explained.'}]});
   }
@@ -322,6 +323,64 @@ test('one malformed composer response gets one bounded regeneration before final
  assert.equal(result.coverage,'full');
  assert.equal(result.trace.stages[0].stage,'compose');
  assert.equal(result.trace.stages[1].stage,'compose-format-retry');
+});
+
+test('a bad reviewer part map preserves reviewed claims from correctly mapped parts',async()=>{
+ const question='How do Hume and Kant differ over causal necessity?';
+ const comparePlan={intent:'compare',resolvedQuestion:question,sources:[
+  {label:'Hume',role:'primary',bookIds:['35']},{label:'Kant',role:'primary',bookIds:['40']}],parts:[
+   {question:'How does Hume explain causal necessity?',sourceBookIds:['35'],candidateSourceIds:['S1']},
+   {question:'How does Kant explain causal necessity?',sourceBookIds:['40'],candidateSourceIds:['S2']},
+   {question:'How do Hume and Kant differ over causal necessity?',sourceBookIds:['35','40'],candidateSourceIds:['S1','S2']}],
+  queries:['Hume causal necessity custom habit','Kant causal necessity a priori']};
+ const hume={id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume',page:48,
+  candidatePartIds:['P1','P3'],text:'Hume says necessity consists in constant conjunction and inference of the understanding.'};
+ const kant={id:'S2',bookId:'40',title:'Critique of Pure Reason — Immanuel Kant',page:23,
+  candidatePartIds:['P2','P3'],text:'Kant says Hume stopped at the causal principle and treated it as borrowed from experience and habit.'};
+ const draft=`PART P1 answered\nCLAIM C1 | P1 | direct\nHume grounds causal necessity in experienced regular conjunction and the mind's inference.\n`+
+  `EVIDENCE S1\n${hume.text}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
+  `PART P2 answered\nCLAIM C2 | P2 | direct\nKant treats the causal principle as a priori rather than borrowed from repeated experience.\n`+
+  `EVIDENCE S2\n${kant.text}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
+  `PART P3 answered\nCLAIM C3 | P3 | synthesis\nHume explains necessity through observed conjunction and inference, while Kant argues that the causal principle must be grounded a priori.\n`+
+  `EVIDENCE S1\n${hume.text}\nEND EVIDENCE\nEVIDENCE S2\n${kant.text}\nEND EVIDENCE\nEND CLAIM\nEND PART`;
+ const review={decisions:[1,2,3].map(n=>({claimId:'C'+n,verdict:'supported',reason:'Supported by the attached passage.'})),
+  parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Covered.'},
+   {partId:'P2',status:'answered',claimIds:['C2'],reason:'Covered.'},
+   // Reproduces the model putting every claim under the comparison part.
+   {partId:'P3',status:'answered',claimIds:['C1','C2','C3'],reason:'Compared the accounts.'}]};
+ let reviewPayload;
+ const ai={run:async(_model,input)=>{
+  if(input.messages[0].content.includes('Assess each claim')){
+   reviewPayload=JSON.parse(input.messages[1].content);return response(review);
+  }
+  return response(draft);
+ }};
+ const result=await composeEvidenceAnswer(question,[hume,kant],ai,[],{
+  plan:comparePlan,catalog:{'35':hume.title,'40':kant.title},trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.failureCode,'review-contract-incomplete');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported','partial']);
+ assert.match(result.answer,/Hume grounds causal necessity/);
+ assert.match(result.answer,/Kant treats the causal principle/);
+ assert.match(result.answer,/Hume explains necessity/);
+ assert.deepEqual(reviewPayload.parts.map(part=>part.claimIds),[['C1'],['C2'],['C3']]);
+ assert.deepEqual(result.trace.reviewContract.issues,['part-claim-mapping-incomplete']);
+});
+
+test('a malformed reviewer returns exact-evidence claims as an explicitly unreviewed partial draft',async()=>{
+ const ai={run:async(_model,input)=>input.messages[0].content.includes('Assess each claim')?
+  {choices:[{finish_reason:'stop',message:{content:'not valid review JSON'}}]}:response(modelAnswer())};
+ const result=await composeEvidenceAnswer('How does practice form virtue?',
+  [source],ai,[],{plan:rawPlan,catalog,trace:true});
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.reviewStatus,'review-format-failed');
+ assert.equal(result.failureCode,'model-output-invalid-format');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['partial']);
+ assert.match(result.answer,/Aristotle says repeated just action/);
+ assert.match(result.answer,/\[S1\]/);
+ assert.equal(result.trace.stages.at(-1).stage,'review');
 });
 
 test('a second malformed composer response is a format failure, not an evidence gap',async()=>{

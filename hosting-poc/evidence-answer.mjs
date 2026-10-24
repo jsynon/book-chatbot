@@ -18,7 +18,7 @@ END PART
 Use one PART block for every supplied question part, exactly once and in the supplied order. Never add an unplanned part. Status must be answered, partial, or unanswered. An answered part has at least one claim and no gap; a partial part has at least one claim and a gap; an unanswered part has a gap and no claim. Give every claim a unique ID and one or more planned part IDs. Include evidence from the candidate source IDs listed for each part; for a claim spanning multiple parts, include evidence linked to every part. Include one or more exact evidence spans for every claim. Quotes in prose must occur in that claim's evidence. For synthesis include evidence for each premise. Do not invent page numbers, evidence, or facts. Do not repeat unsupported facts in gaps. The TEXT line is optional; claim text may follow immediately after the claim header.`;
 export const COMPOSER_FORMAT_RETRY_PROMPT=COMPOSER_PROMPT+`\nYour previous response did not follow the required record format. Regenerate from the supplied question, per-part candidate source IDs, and verified pages. Use every PART block exactly once. Keep the marker lines exact. Do not output JSON, Markdown fences, or any text outside the records.`;
 export const COMPOSER_EVIDENCE_RETRY_PROMPT=COMPOSER_PROMPT+`\nYour previous draft failed evidence validation. Regenerate every planned part from the supplied verified pages. Use only the listed candidate source IDs for each part. Keep claim prose paraphrased without quotation marks; copy exact contiguous source wording only into evidence blocks, with no ellipses. Ensure each evidence block exactly matches its cited page and supports the nearby claim. Do not preserve unsupported claims merely to keep the prior draft.`;
-export const REVIEW_PROMPT=`Assess each claim against its attached exact evidence and the full surrounding pages. Review the draft's status and gap for every question part. Do not rewrite or add prose. Check factual support, attribution, negation, corrections, conditions and the scope requested. A synthesis may reasonably compare supported premises but must not assert unsupported history or causation. When a part asks how a claim or principle can be known, justified, or necessary, a category name alone is not a complete explanation; require the source's grounds, argument, or conditions of validity. Mark the part partial when those are absent from the claims or evidence, even if the named doctrine itself is accurate. Quotation occurrence alone does not prove support. Return JSON: {"decisions":[{"claimId":"C1","verdict":"supported|unsupported|uncertain","reason":"brief explanation"}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","claimIds":["C1"],"reason":"brief explanation"}]}. Include each supplied claim and question part exactly once. Judge completeness against the question, not the draft's confidence. Never promote a claim merely because it has a citation.`;
+export const REVIEW_PROMPT=`Assess each claim against its attached exact evidence and the full surrounding pages. Review the draft's status and gap for every question part. Do not rewrite or add prose. Check factual support, attribution, negation, corrections, conditions and the scope requested. A synthesis may reasonably compare supported premises but must not assert unsupported history or causation. When a part asks how a claim or principle can be known, justified, or necessary, a category name alone is not a complete explanation; require the source's grounds, argument, or conditions of validity. Mark the part partial when those are absent from the claims or evidence, even if the named doctrine itself is accurate. Quotation occurrence alone does not prove support. For each part, use only the exact eligible claim IDs listed for that part. Do not list a claim under another part unless its supplied partIds include that part. If the mapped claims do not support a complete answer, mark the part partial or unanswered. Return JSON: {"decisions":[{"claimId":"C1","verdict":"supported|unsupported|uncertain","reason":"brief explanation"}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","claimIds":["C1"],"reason":"brief explanation"}]}. Include each supplied claim and question part exactly once. Judge completeness against the question, not the draft's confidence. Never promote a claim merely because it has a citation.`;
 class ModelFormatError extends Error{
   constructor(stage,message){super(message);this.name='ModelFormatError';this.stage=stage;this.code='model-output-invalid-format';}
 }
@@ -240,6 +240,49 @@ export function linkEvidenceToParts(plan,sources){
     })
     .map(source=>source.id)}))};
 }
+function normalizeReview(review,claims,plan){
+  const issues=[],expectedClaims=new Set(claims.map(claim=>claim.id));
+  const decisions=new Map();
+  if(!Array.isArray(review?.decisions))issues.push('missing-decisions');
+  else for(const decision of review.decisions){
+    if(!expectedClaims.has(decision?.claimId)||
+      !['supported','unsupported','uncertain'].includes(decision?.verdict)||
+      decisions.has(decision.claimId)){
+      issues.push('invalid-or-duplicate-decision');continue;
+    }
+    decisions.set(decision.claimId,decision);
+  }
+  for(const id of expectedClaims)if(!decisions.has(id))issues.push('missing-claim-decision');
+
+  const suppliedParts=new Map();
+  if(!Array.isArray(review?.parts))issues.push('missing-parts');
+  else for(const part of review.parts){
+    if(!plan.parts.some(expected=>expected.id===part?.partId)||suppliedParts.has(part?.partId)){
+      issues.push('invalid-or-duplicate-part');continue;
+    }
+    suppliedParts.set(part.partId,part);
+  }
+  const parts=plan.parts.map(part=>{
+    const eligible=claims.filter(claim=>claim.partIds.includes(part.id)).map(claim=>claim.id);
+    const supplied=suppliedParts.get(part.id);
+    const listed=Array.isArray(supplied?.claimIds)?supplied.claimIds:[];
+    const validStatus=['answered','partial','unanswered'].includes(supplied?.status);
+    const sameClaims=listed.length===eligible.length&&new Set(listed).size===listed.length&&
+      eligible.every(id=>listed.includes(id))&&listed.every(id=>eligible.includes(id));
+    const statusConsistent=validStatus&&
+      (supplied.status==='answered'?eligible.length>0:
+       supplied.status==='unanswered'?eligible.length===0:true);
+    const valid=Boolean(supplied&&sameClaims&&statusConsistent);
+    if(!valid)issues.push('part-claim-mapping-incomplete');
+    return {partId:part.id,status:valid?supplied.status:(eligible.length?'partial':'unanswered'),
+      claimIds:eligible,contractValid:valid,
+      reason:valid?String(supplied.reason||'').slice(0,240):'Review part mapping was incomplete.'};
+  });
+  const decisionsComplete=decisions.size===expectedClaims.size&&
+    [...expectedClaims].every(id=>decisions.has(id));
+  return {review:{decisions:[...decisions.values()],parts},decisionsComplete,
+    issues:[...new Set(issues)]};
+}
 export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
   const normalizedPlan=normalizePlan(options.plan,question,options.catalog||{},options.selectedBookId||'');
   const plan=linkEvidenceToParts(normalizedPlan,sources);
@@ -266,7 +309,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     ...(Array.isArray(s.candidatePartIds)?{candidatePartIds:s.candidatePartIds}:{}),
     ...(typeof s.scopeText==='string'?{scopeText:s.scopeText}: {})}));
   trace.evidence=pages;
-  let claims=[],draftParts=[],review=null,failure=null;
+  let claims=[],draftParts=[],review=null,failure=null,reviewFailure=null,reviewDecisionsComplete=false;
   try{
     let draft;
     const payload={question,plan,history,
@@ -311,27 +354,43 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     trace.rejected=validated.rejected;
     claims=validated.claims;draftParts=draft.parts;
     if(claims.length&&options.review!==false){
-      review=await run('review',REVIEW_PROMPT,{question,plan,draftParts,
-        partEvidence:plan.parts.map(({id,question,candidateSourceIds})=>({
-          partId:id,question,candidateSourceIds})),claims,evidence:pages});
-      const expected=new Set(claims.map(c=>c.id)),partIds=new Set(plan.parts.map(p=>p.id));
-      if(!Array.isArray(review.decisions)||review.decisions.length!==expected.size||
-        new Set(review.decisions.map(d=>d.claimId)).size!==expected.size||
-        review.decisions.some(d=>!expected.has(d.claimId)||!['supported','unsupported','uncertain'].includes(d.verdict))||
-        !Array.isArray(review.parts)||review.parts.length!==partIds.size||
-        new Set(review.parts.map(p=>p.partId)).size!==partIds.size||
-        review.parts.some(p=>!partIds.has(p.partId)||!['answered','partial','unanswered'].includes(p.status)||
-          !Array.isArray(p.claimIds)||p.claimIds.some(id=>!expected.has(id)||
-            !claims.find(claim=>claim.id===id)?.partIds.includes(p.partId))))throw Error('Incomplete review contract');
+      const reviewParts=plan.parts.map(part=>({partId:part.id,question:part.question,
+        draftStatus:draftParts.find(value=>value.partId===part.id)?.status||'unanswered',
+        candidateSourceIds:part.candidateSourceIds||[],
+        claimIds:claims.filter(claim=>claim.partIds.includes(part.id)).map(claim=>claim.id)}));
+      try{
+        const rawReview=await run('review',REVIEW_PROMPT,{question,plan,parts:reviewParts,
+          claims,evidence:pages});
+        const normalized=normalizeReview(rawReview,claims,plan);
+        review=normalized.review;
+        reviewDecisionsComplete=normalized.decisionsComplete;
+        if(normalized.issues.length){
+          reviewFailure={stage:'review',code:'review-contract-incomplete',
+            message:'Review output did not preserve the validated claim-to-part mapping.'};
+          trace.reviewContract={valid:false,issues:normalized.issues};
+        }else trace.reviewContract={valid:true,issues:[]};
+      }catch(error){
+        // Exact evidence and source links have already been validated. If the
+        // reviewer is malformed or unavailable, keep those claims as an
+        // explicitly unreviewed draft instead of replacing the whole answer
+        // with a generic failure. Structural evaluation still fails closed.
+        reviewFailure={stage:error.stage||'review',code:error.code||'review-request-failed',
+          message:String(error.message||error).slice(0,240)};
+        review=null;
+        reviewDecisionsComplete=false;
+        trace.reviewContract={valid:false,issues:[reviewFailure.code]};
+      }
     }
   }catch(error){failure={stage:error.stage||'pipeline',code:error.code||'answer-pipeline-failed',message:String(error.message||error)};review=null;claims=[];}
-  const accepted=options.review===false?claims:claims.filter(c=>review?.decisions.some(d=>d.claimId===c.id&&d.verdict==='supported'));
+  const unreviewed=options.review===false||Boolean(reviewFailure&&!reviewDecisionsComplete);
+  const accepted=unreviewed?claims:claims.filter(c=>review?.decisions.some(d=>d.claimId===c.id&&d.verdict==='supported'));
   const acceptedIds=new Set(accepted.map(c=>c.id));
   const questionParts=plan.parts.map(p=>{
     const check=review?.parts.find(v=>v.partId===p.id);
     const related=accepted.filter(c=>c.partIds.includes(p.id));
     const draftPart=draftParts.find(part=>part.partId===p.id);
-    const fully=draftPart?.status==='answered'&&check?.status==='answered'&&check.claimIds.length>0&&
+    const fully=!unreviewed&&draftPart?.status==='answered'&&check?.contractValid&&
+      check?.status==='answered'&&check.claimIds.length>0&&
       check.claimIds.every(id=>acceptedIds.has(id)&&related.some(c=>c.id===id));
     return {part:p.question,status:fully?'supported':related.length?'partial':'unsupported',
       ...(draftPart?{draftStatus:draftPart.status}:{}),
@@ -347,19 +406,21 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const coverage=questionParts.every(p=>p.status==='supported')?'full':accepted.length?'partial':'none';
   const missing=questionParts.filter(p=>p.status!=='supported').map(p=>p.part).join('; ');
   const used=new Set(citationIds(answer));
-  trace.final={answer,questionParts,draftParts,coverage,failure,
+  trace.final={answer,questionParts,draftParts,coverage,failure,reviewFailure,
     acceptedClaimIds:[...acceptedIds],elapsedMs:Date.now()-started};
-  return {outcome:accepted.length?(options.review===false?'unverified-source-draft':'verified-source-draft'):
+  return {outcome:accepted.length?(unreviewed?'unverified-source-draft':'verified-source-draft'):
       failure?'generation-failed':'insufficient-evidence',
     answer,coverage,missing:missing?'Not fully established by the retrieved evidence: '+missing:'',questionParts,
     citations:sources.filter(s=>used.has(s.id)).map(({text,scopeText,...s})=>s),
     evidenceMap:accepted.flatMap(c=>c.evidence.map(e=>({id:e.sourceId,quote:e.quote,claimId:c.id,start:e.start,end:e.end}))),
     evidenceHighlights:accepted.flatMap(c=>c.evidence.map(e=>({source_id:e.sourceId,page:sources.find(s=>s.id===e.sourceId).page,quote:e.quote}))),
-    reviewStatus:options.review===false?'answer-draft-unverified':failure?
+    reviewStatus:options.review===false?'answer-draft-unverified':reviewFailure?
+      (reviewFailure.code==='model-output-invalid-format'?'review-format-failed':'review-contract-incomplete'):failure?
       (failure.code==='model-output-invalid-format'?
         (failure.stage==='review'?'review-format-failed':'generation-format-failed'):
         'pipeline-failed'):'claim-review',
     ...(failure?{failureCode:failure.code,failureStage:failure.stage}:{}),
+    ...(reviewFailure?{failureCode:reviewFailure.code,failureStage:reviewFailure.stage}:{}),
     followUpQuestions:[],usage,model:READER_MODEL,pipeline:CONTRACT_VERSION,
     notice:'Source provenance and exact evidence spans were checked. AI claim review can still be mistaken.',
     ...(options.trace?{trace}:{})};
