@@ -169,7 +169,7 @@ The holdout runner already emitted per-stage progress once corpus loading finish
 | Check | Result |
 |---|---|
 | Worker answer-flow regression suite | Passed on the corrective branch; covers citation-to-part binding, comparison source groups, missing parts, valid partial reviews, legacy-format recovery, compose-only budget, and verse scope |
-| Full Worker Node test suite | 208 passed after the final answer-format, legacy-recovery, and verse-scope regressions |
+| Full Worker Node test suite | 209 passed after the final answer-format, legacy-recovery, source-group, and verse-scope regressions |
 | Website companion suite | 150 passed after the startup progress and evaluation-metadata change |
 | Live model evaluation | Pending; run the one-case Hume/Kant compose-only variant, then reviewed mode, and score accuracy, question coverage, explanation quality, citation support, and citation completeness independently |
 | Public production deployment | Not performed; this branch is not live until reviewed, merged, and deployed |

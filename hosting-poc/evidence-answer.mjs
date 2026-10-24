@@ -40,7 +40,6 @@ function linkEvidenceToParts(plan,sources){
     Array.isArray(source.bookIds)&&source.bookIds.length).map((source,index)=>({index,
       bookIds:new Set(source.bookIds.map(String))}));
   const comparisonParts=(plan.parts||[]).filter(part=>plan.intent==='compare'&&
-    /\b(?:compare|contrast|differ|difference|versus|vs\.?|similar)\b/i.test(part.question||'')&&
     groups.filter(group=>(part.sourceBookIds||[]).map(String).some(id=>group.bookIds.has(id))).length>=2);
   const sidePartsByGroup=new Map(groups.map(group=>[group.index,(plan.parts||[]).filter(part=>
     !comparisonParts.some(comparison=>comparison.id===part.id)&&
@@ -189,8 +188,6 @@ function normalizeReview(review,plan,answerParts){
 
 function comparisonEvidenceComplete(part,plan,sources,answers){
   if(plan.intent!=='compare'||!Array.isArray(part.sourceBookIds))return true;
-  const pattern=/\b(?:compare|contrast|differ|difference|versus|vs\.?|similar)\b/i;
-  if(!pattern.test(part.question||''))return true;
   const groups=(plan.sources||[]).filter(source=>['primary','subject'].includes(source.role)&&
     Array.isArray(source.bookIds)&&source.bookIds.some(id=>part.sourceBookIds.map(String).includes(String(id))));
   if(groups.length<2)return true;

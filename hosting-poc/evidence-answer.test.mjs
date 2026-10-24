@@ -42,6 +42,16 @@ test('part linking preserves evidence discovered by each side for a synthesis pa
  assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2'],['S1','S2']]);
 });
 
+test('comparison evidence linking follows the planned source groups even when the part avoids comparison keywords',()=>{
+ const plan={...twoSidePlan,parts:[
+  {...twoSidePlan.parts[0],candidateSourceIds:[]},
+  {...twoSidePlan.parts[1],candidateSourceIds:[]},
+  {id:'P3',question:'What relationship do their accounts bear to one another?',sourceBookIds:['35','40']}
+ ]};
+ const linked=linkEvidenceToParts(plan,[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}]);
+ assert.deepEqual(linked.parts[2].candidateSourceIds,['S1','S2']);
+});
+
 test('validates cited sources against each part and preserves a complete cited answer in two calls',async()=>{
  const ai=makeAI([
   answer('PART P1\nHume says necessity arises from regular conjunction and the mind’s habitual inference. [S1]'),
