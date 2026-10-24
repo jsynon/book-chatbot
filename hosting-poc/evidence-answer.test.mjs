@@ -154,6 +154,9 @@ test('public experimental route returns audited claim output only when server fl
  assert.match(body.answer,/\[S1\]/);
  assert.equal(body.citations[0].title,catalog['4']);
  assert.equal(body.trace,undefined,'ordinary visitors must not receive model prompts or full evidence');
+ // The holdout runner must exercise the evidence pipeline even when the
+ // public deployment-wide feature flag is unset.
+ delete env.READER_PIPELINE;
  env.PILOT_EVALUATION_ENABLED='true';env.PILOT_EVALUATION_TOKEN='evaluation-token-'.padEnd(40,'x');
  const evalReq=new Request('https://worker.example/api/pilot-answer',{method:'POST',
   headers:{Origin:'https://jsynon.github.io','CF-Connecting-IP':'198.51.100.30',
@@ -163,6 +166,7 @@ test('public experimental route returns audited claim output only when server fl
  const evalResponse=await handleRequest(evalReq,env,fetcher);
  const evalBody=await evalResponse.json();
  assert.equal(evalResponse.status,200);
+ assert.equal(evalBody.pipeline,'reader-evidence-v2');
  assert.equal(evalBody.trace.evidence[0].text,text);
  assert.equal(evalBody.trace.stages.length,2);
 });

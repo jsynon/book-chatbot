@@ -2408,8 +2408,9 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
  assert.equal(planned.status,200);
  const answered=await pilot.post({headers});
  assert.equal(answered.status,200);
+ assert.equal((await answered.clone().json()).pipeline,'reader-evidence-v2');
  assert.equal(pilot.stats().verifyCalls,0);
- assert(pilot.stats().calls>=3);
+ assert(pilot.stats().calls>=2);
 
  const blocked=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
    PILOT_EVALUATION_TOKEN:token},turnstileValid:false});

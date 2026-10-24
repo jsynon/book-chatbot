@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Date: October 24, 2026  
-Status: implementation complete for offline review; live quality acceptance remains open  
+Status: implementation complete for offline review; first live holdout is diagnostic only; live quality acceptance remains open
 Backend branch: `codex/reader-evidence-milestone`  
 Website branch: `codex/reader-evidence-milestone`
 
@@ -34,6 +34,14 @@ Move the Reading Companion toward thoughtful, accurate answers grounded in passa
 | Edited-author collection discovery and grouped citation regression | Covered by website tests |
 | Exact downloaded corpus-file digest capture | Covered by website test |
 
+## First live holdout result
+
+The first all-books Hume/Kant holdout run completed without request failures and used the intended six-page evidence budget. The planner resolved the two named works and separated the question into Hume, Kant, and comparison parts. The answer correctly described Hume's account but only identified Kant's category of causality; it did not explain how Kant grounds causal necessity, so the run correctly failed with partial coverage.
+
+This run does not test `reader-evidence-v2`: its `pipeline` field is null, even though the planner plan reports `reader-evidence-v2` as its contract version. The Worker was still using the legacy answer composer. The retrieved Kant results included page 86, which discusses the conditional a priori necessity of dynamical principles, but that page was absent from the six submitted pages. This points to evidence-packet selection as a second issue to investigate after the evaluation is confirmed to exercise the intended answer pipeline. The run's structural citation checks passed, but those checks do not establish semantic support.
+
+To make the existing authenticated holdout workflow exercise v2 without changing public answers, the Worker now routes requests authenticated with `PILOT_EVALUATION_TOKEN` through the evidence pipeline even when `READER_PIPELINE` is unset. The route test verifies the returned `pipeline` marker. This code change has passed the focused backend suites locally; it must be merged and deployed before the next live run can validate the fix.
+
 The tests use controlled model responses and synthetic request fixtures. They verify contracts and failure boundaries; they do not establish answer quality from a live model.
 
 ## Acceptance status
@@ -53,9 +61,9 @@ The tests use controlled model responses and synthetic request fixtures. They ve
 
 1. Run a live, paired legacy-versus-v2 evaluation on a frozen development set and a separately held-out set. Keep question, model, settings, retrieval pages, and scoring rubric fixed where each comparison requires them. Use independent human ratings for factual correctness, requested-part coverage, explanation quality, citation support, and citation completeness. Record failures and abstentions instead of tuning on the holdout.
 2. Include correct-evidence and context-preservation comparisons. These distinguish model composition problems from retrieval misses and from loss caused by short excerpts. Include follow-ups, multi-work comparisons, absent evidence, reported speakers, and a manually checked verse-range case.
-3. Capture an authorized evaluation run and verify the report contains its front-end revision, Worker version/source build, corpus/index/fingerprint digests, prompt/model settings, selected evidence packet, stage outputs, actual calls/tokens/neurons, and latency. The instrumentation is implemented; no live run has been captured for this milestone.
+3. After deploying the evaluation-only pipeline gate, rerun the same holdout case and confirm `pipeline` is `reader-evidence-v2`, with the authenticated trace showing the actual review and composition stages. Compare the six submitted passages against the retrieved candidate set, especially whether the Kant passage on page 86 reaches the answer context. The first run captured useful metadata but was legacy and cannot validate the new answer path.
 4. Measure Cloudflare CPU, body size, inference availability, and latency using real pages near the current byte limit. The new path retains current request and page limits; no production capacity claim has been tested.
 5. Verify retrieval quality and OCR semantics across the published corpus. Fingerprints establish byte identity with the published text, not OCR correctness, speaker identity, or semantic support. The 642-book fingerprint coverage and the audited seven-book local subset do not substitute for this check.
-6. Run the paired workflow against the actual website and Worker revisions after the branches are integrated and deployed for evaluation. The workspace's website checkout had no Git remote configured, so its changes were published through the connected GitHub workflow. Draft review PRs are open for the backend (#199) and website (#172); neither is merged or deployed.
+6. Run the existing holdout workflow against the merged website and deployed Worker revisions. The user reports that the changes have been merged and the Worker deployed; the current holdout is a first live diagnostic, not an acceptance run, because its `pipeline` field is null.
 
-Until these checks pass, keep `READER_PIPELINE` unset or different from `evidence-v2`. Do not interpret green unit tests, full citations, model self-review, or structural coverage labels as proof that an answer is correct. A citation proves where text came from; human review must still decide whether it supports the claim.
+Until these checks pass, keep public `READER_PIPELINE` unset or different from `evidence-v2`. The authenticated evaluation route exercises v2 independently of that public setting after the follow-up Worker change is deployed. Do not interpret green unit tests, full citations, model self-review, or structural coverage labels as proof that an answer is correct. A citation proves where text came from; human review must still decide whether it supports the claim.
