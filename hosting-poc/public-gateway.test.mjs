@@ -2398,7 +2398,7 @@ test('v1.9.5 blocks requests before model when pilot rate limiter rejects',async
 test('opt-in evaluation bearer reaches real pilot endpoints without bypassing rate limits',async()=>{
  const token='evaluation-only-secret-'.repeat(3);
  const model=async(_model,input)=>({choices:[{finish_reason:'stop',message:{content:
-   input.max_completion_tokens===320?' {"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}':
+   input.max_completion_tokens===720?' {"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}':
    input.max_completion_tokens===520?JSON.stringify({coverage:'partial',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
    'The passage identifies the deeper cause as fear of growing power [S1].'}}],usage:{neurons:1}});
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
@@ -2427,7 +2427,7 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
 });
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
-   if(input.max_completion_tokens===320)return {choices:[{finish_reason:'stop',message:{content:
+   if(input.max_completion_tokens===720)return {choices:[{finish_reason:'stop',message:{content:
      '{"queries":["specific original event causes","political motives and context"]}'}}]};
    if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:
      '{"coverage":"full","missing":"","evidence":[{"id":"S1","point":"Relevant supported passage point."}]}'}}]};

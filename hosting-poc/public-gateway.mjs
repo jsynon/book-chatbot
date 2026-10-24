@@ -13,6 +13,8 @@
  * This gateway does not provide claim-level entailment verification.
  * The Free Workers CPU limit (10ms) requires real deployment measurement.
  */
+import {composeEvidenceAnswer} from './evidence-answer.mjs';
+import {normalizePlan} from './reader-contract.mjs';
 export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v47/';
 // Keep a generous character ceiling that fits the bounded model output while
 // allowing detailed, evidence-supported answers without turning them into 502s.
@@ -1050,7 +1052,10 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
       page,globalPageId:match.globalPageId,
       url:'https://drive.google.com/file/d/'+p.pdfDriveId+
         '/view?usp=sharing#page='+page,
-      preview:sourceExcerpt(item.text,question),fingerprintBytes:packetBytes});
+      // Keep the original hashed page available to the evidence pipeline.
+      // `preview` remains the compact browser-facing snippet.
+      text:item.text,sha256:actual,preview:sourceExcerpt(item.text,question),
+      fingerprintBytes:packetBytes});
   }
   return sources;
 }
@@ -1093,7 +1098,8 @@ function followUpIsGrounded(question,followUp,selected){
 }
 function normalizedSourceGroupText(value){
   return String(value||'').normalize('NFKC').toLocaleLowerCase()
-    .replace(/[’']/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+    .replace(/['’]s\b/giu,'').replace(/[’']/g,"'")
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 }
 function containsSourceGroupPhrase(haystack,phrase){
   const text=' '+normalizedSourceGroupText(haystack)+' ';
@@ -3241,7 +3247,7 @@ function namedGroupQueryTargets(question,bookTitle){
           !identityWords.has(term.toLocaleLowerCase())&&term.length>2);
     }
     const phrase=item.title?.phrase||item.mention.phrase;
-    return {phrase,facetTerms:terms.slice(0,5),
+    return {group:item.group,phrase,facetTerms:terms.slice(0,5),
       query:[phrase,...terms.slice(0,7)].join(' ').trim()};
   });
 }
@@ -3251,9 +3257,12 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
     messages:[
       {role:'system',content:
         'You are a scholarly digital librarian, not an answering assistant. '+
-        'Return EXACTLY one JSON object {"queries":["...","..."]}, with '+
-        'two to four different, concise search phrases (4-13 words apiece) '+
-        'that locate original passages addressing distinct requested parts '+
+        'Return EXACTLY one JSON object {"resolvedQuestion":"...","intent":"explain|compare|interpret|locate","sources":[{"label":"...","role":"primary|subject|commentary"}],"parts":["..."],"scope":"...","queries":["...","..."]}. '+
+        'intent must be explain, compare, interpret, or locate. resolvedQuestion must replace follow-up references only when recent history makes the referent clear; otherwise repeat the current question. '+
+        'sources is an array of up to four objects with a short label and role primary, subject, or commentary; identify only sources explicitly requested by the reader. '+
+        'parts is an array of one to six short questions that preserve every distinct requested component. scope is an explicit work, chapter, verse, section, or page restriction, or an empty string. '+
+        'Return two to four different, concise search phrases (4-13 words apiece) in queries. '+
+        'They must locate original passages addressing distinct requested parts '+
         'of the question. Use one query per distinct component when there '+
         'are three or four; do not collapse several components into only '+
         'two broad searches. '+
@@ -3351,7 +3360,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         '\nCurrent follow-up question: '+question}
     ],
     chat_template_kwargs:{enable_thinking:false},
-    max_completion_tokens:320,
+    max_completion_tokens:720,
   });
   if(['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
     throw new Error('Search plan truncated');
@@ -3374,7 +3383,14 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
     // "thought" or "difference" throws those useful queries away and reduces
     // both queries to fragments copied from the question. Here, enforce source
     // ownership mechanically and let the librarian's semantic terms stand.
-    const matches=(query,target)=>containsSourceGroupPhrase(query,target.phrase);
+    const matches=(query,target)=>{
+      const queryWords=new Set(normalizedSourceGroupText(query).split(' ').filter(Boolean));
+      const identityWords=[target.phrase,target.title?.phrase,target.mention?.phrase,
+        target.group?.label,target.group?.key].filter(Boolean)
+        .flatMap(value=>normalizedSourceGroupText(value).split(' '))
+        .filter(word=>word.length>=4&&!STOP.has(word));
+      return identityWords.some(word=>queryWords.has(word));
+    };
     if(matches(queries[0],namedTargets[1])&&matches(queries[1],namedTargets[0]))queries.reverse();
     if(!matches(queries[0],namedTargets[0])||!matches(queries[1],namedTargets[1])||
       namedTargets.some((target,index)=>containsSourceGroupPhrase(queries[index],namedTargets[1-index].phrase))){
@@ -3394,7 +3410,19 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
   const verseScope=explicitVerseScope(question);
   if(!bookTitle&&verseScope&&isCanonicalBibleBook(verseScope.work))
     queries=queries.map(addBibleSearchContext);
-  return {queries,usage:{neurons:Math.max(0,Number(response?.usage?.neurons)||0)}};
+  const orderedTargets=namedGroupQueryTargets(question,bookTitle);
+  const requested=(orderedTargets.length===2?
+    orderedTargets.map(target=>target.group):requestedSourceGroups(question,bookTitle)).slice(0,4);
+  const selectedBookId=Object.keys(PILOT_BOOKS).find(id=>PILOT_BOOKS[id]===bookTitle)||'';
+  const comparisonIntent=/\b(?:compare|contrast|differ|difference|different|versus|vs\.)\b/i.test(question);
+  const rawPlan={...result,queries,sources:requested.map((group,index)=>({
+    label:group.label||group.key,
+    role:comparisonIntent?'primary':index===0?'primary':'subject',
+    bookIds:[...group.bookIds],
+  }))};
+  if(selectedBookId)rawPlan.sources=[{label:bookTitle,role:'primary',bookIds:[selectedBookId]}];
+  const plan=normalizePlan(rawPlan,question,PILOT_BOOKS,selectedBookId);
+  return {queries,plan,usage:{neurons:Math.max(0,Number(response?.usage?.neurons)||0)}};
 }
 async function verifyTurnstile(token,ip,secret,fetcher) {
   const form=new URLSearchParams({secret,response:token,remoteip:ip});
@@ -3524,8 +3552,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     const title=PILOT_BOOKS[String(data.bookId)]||'';
     try{
       const result=await planSearchQueries(data.question,title,env.AI,data.history||[]);
-      return reply({queries:result.queries,usage:result.usage,
-        guidance:'Search terms only; citations must pass SHA-256 verification'},200,origin);
+      return reply({queries:result.queries,plan:result.plan,usage:result.usage,
+        guidance:'Structured search plan; source pages and citations are independently verified'},200,origin);
     }catch(error){
       // Record only sanitized provider status/category/code; never log raw
       // model output, error text, question, token, passage content, or IP.
@@ -3567,6 +3595,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       typeof data.question!=='string'||data.question.trim().length<5||
       data.question.length>400||!validConversationHistory(data.history)||typeof data.turnstileToken!=='string'||
       data.turnstileToken.length<5||data.turnstileToken.length>2048||
+      !(data.bookId===undefined||data.bookId===''||PILOT_BOOK_SET.has(String(data.bookId)))||
       !Array.isArray(data.sources)||data.sources.length<1||
       data.sources.length>6||
       !data.sources.every(s=>s && PILOT_BOOK_SET.has(String(s.bookId)) &&
@@ -3581,7 +3610,26 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       return reply({error:'The selected passages could not be verified'},422,origin);
     }
     let output;
-    try{output=await composeVerifiedAnswer(data.question,sourcePages,env.AI,data.history||[]);}
+    try{
+      if(env.READER_PIPELINE==='evidence-v2'){
+        const selectedBookId=String(data.bookId||'');
+        const plan=normalizePlan(data.plan,data.question,PILOT_BOOKS,selectedBookId);
+        const scopeSources=applyExplicitBibleVerseScope(data.question,
+          sourcePages.map(source=>({...source,preview:source.text})));
+        const scopedById=new Map(scopeSources.map(source=>[source.id,source.preview]));
+        const answerSources=sourcePages.filter(source=>scopedById.has(source.id)).map(source=>({
+          ...source,...(scopedById.get(source.id)!==source.text?
+            {scopeText:scopedById.get(source.id)}:{})}));
+        output=await composeEvidenceAnswer(data.question,answerSources,env.AI,data.history||[],{
+          plan,catalog:PILOT_BOOKS,selectedBookId,
+          // Full prompts and source text are returned only to the dedicated
+          // authenticated evaluation workflow, never to ordinary visitors.
+          trace:authorizedPilotEvaluation(request,env),
+        });
+      }else{
+        output=await composeVerifiedAnswer(data.question,sourcePages,env.AI,data.history||[]);
+      }
+    }
     catch(error){
       const known=new Set(['evidence-review-request-failed','evidence-review-truncated',
         'evidence-review-invalid-response','answer-composition-request-failed',
