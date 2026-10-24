@@ -138,18 +138,40 @@ This fixes the reproduced contract and query-linking failures in deterministic t
 | Portable Nietzsche remains discoverable under Nietzsche scope | Implemented and tested |
 | Browser and evaluator share retrieval assembly | Implemented; unit-tested through the shared module |
 | Evaluation records exact model context and code/data identities | Implemented for authenticated v2 runs; unit- and route-tested |
-| Declared model-call budget | Three answer calls maximum, plus one planner call in all-books evaluation |
-| Per-part response structure and pre-composition evidence links | Original live trace exposed a failure; focused correction is covered offline; new live validation pending |
-| Public pilot defaults to the per-part evidence pipeline | Active after Worker PR #203 deployment; `READER_PIPELINE=legacy` remains the rollback |
+| Declared model-call budget | Revised candidate: two answer calls maximum (composition + review), plus one planner call in all-books evaluation |
+| Per-part response structure and pre-composition evidence links | Revised paragraph contract and citation-to-part checks pass offline; new live validation pending |
+| Public pilot answer pipeline | Deployed v2 currently uses the record composer; revised paragraph contract is branch-only until merged and deployed |
 | Human-scored quality improves on development and unseen questions | Not yet measured |
 
 ## Remaining validation before enabling or describing this as a quality release
 
-1. Merge and deploy both candidate PRs, then rerun the Hume/Kant case in compose-only mode. Confirm Kant page 23 (or a semantically stronger primary passage) reaches the submitted packet, every requested part has its own linked evidence, and the partial draft remains usable if review is unavailable. Confirm the workflow log shows planner, retrieval, answer wait heartbeat, and final structural result.
-2. Run the same case with review enabled and inspect the authenticated trace. Confirm the reviewer maps only eligible claims to their exact parts, and that an invalid review mapping yields a visible structural miss without erasing other valid part claims. Score the resulting draft with the five-dimension human rubric; verify Hume attribution and Kant's argument against the actual pages.
+1. After review, merge and deploy both candidate PRs, then rerun the Hume/Kant case in compose-only mode. Confirm the answer no longer fails on record formatting, each paragraph cites a page linked to its question part, and the report shows one answer call. Confirm the workflow logs initialization, retrieval, answer waiting, and the per-case result.
+2. Run the same case with review enabled and inspect the authenticated trace. Confirm it uses two answer calls, accepts `partial` as a valid part status, preserves a useful partial answer, and does not mark the Kant argument complete from a category name alone. Score the draft with the five-dimension human rubric and verify the citations against the actual pages.
 3. Treat both the paired holdout and this Hume/Kant single-case run as diagnostic only. For a fresh holdout, confirm that a Kant candidate includes a passage from the *Second Analogy* and that the response explains how Kant grounds causal necessity rather than only naming causality as a category. Have a human reviewer score prose and citations; automated `passed` is not quality acceptance.
 4. Measure Cloudflare CPU, body size, inference availability, and latency using real pages near the current byte limit. The new path retains current request and page limits; no production capacity claim has been tested.
 5. Verify retrieval quality and OCR semantics across the published corpus. Fingerprints establish byte identity with the published text, not OCR correctness, speaker identity, or semantic support. The 642-book fingerprint coverage and the audited seven-book local subset do not substitute for this check.
 6. Once the candidate is frozen, run the seven-question acceptance suite with **All Books** and paired mode, then enter human scores in the artifact. Do not tune against these questions; if the candidate fails, retain the report as a measurement and choose a new unseen set for the next candidate.
 
 The user has chosen to make the candidate the public pilot default after merge and Worker deployment. This is a live quality experiment, not a claim that answer quality has passed acceptance. If the live format or answer quality regresses, set `READER_PIPELINE=legacy` to return to the earlier composer while investigating. The authenticated evaluation route continues to use v2 regardless of that public rollback setting. Do not interpret green unit tests, full citations, model self-review, or structural coverage labels as proof that an answer is correct. A citation proves where text came from; human review must still decide whether it supports the claim.
+
+## Revised answer-flow fix after the October 24 live traces
+
+The October 24 compose-only and reviewed traces show that the record-based composer contract is still too demanding for Gemma: it has to emit per-part status markers, claim IDs and kinds, exact copied spans, and nested end markers. The traces produced useful Hume and Kant passages but failed on duplicate part records, rejected comparison claims, and a reviewer `partial` claim verdict that was outside the old claim-verdict enum. Those are answer-contract failures; they do not demonstrate that retrieval or corpus provenance failed.
+
+The current corrective branch replaces that composer format with one labeled answer block per planned question part. Each answer paragraph ends with page-source IDs. The Worker checks that IDs exist, are allowed for that part, and match its named-work scope. Comparisons cannot receive full coverage unless citations include every named primary source group. The reviewer now returns one completeness status per planned part and sees only the pages cited for that part; `partial` is a valid answer, and a missing or malformed review preserves the citation-checked text as an explicitly unverified partial draft. Authenticated verse questions send the requested verse text as the support text and keep the remaining page in a separate context field.
+
+The normal reviewed path now uses one composition call and one part-completeness review call. Compose-only uses one call. The Worker no longer spends an additional inference call regenerating malformed composer records or exact evidence spans. The final citation audit still rejects unknown IDs and binds any quotation to a cited page; the composer is instructed to paraphrase and cite the page rather than manufacture quote anchors. Citation IDs establish source location, while semantic support and answer accuracy remain questions for human scoring.
+
+The holdout runner already emitted per-stage progress once corpus loading finished. It now reports initialization immediately and prints a 15-second heartbeat while fingerprint coverage and the corpus manifest load, closing the previously silent startup interval. Evaluation metadata now describes the revised call budget and per-part citation checks.
+
+### Validation status
+
+| Check | Result |
+|---|---|
+| Worker answer-flow regression suite | Passed on the corrective branch; covers citation-to-part binding, comparison source groups, missing parts, valid partial reviews, legacy-format recovery, compose-only budget, and verse scope |
+| Full Worker Node test suite | 209 passed after the final answer-format, legacy-recovery, source-group, and verse-scope regressions |
+| Website companion suite | 150 passed after the startup progress and evaluation-metadata change |
+| Live model evaluation | Pending; run the one-case Hume/Kant compose-only variant, then reviewed mode, and score accuracy, question coverage, explanation quality, citation support, and citation completeness independently |
+| Public production deployment | Not performed; this branch is not live until reviewed, merged, and deployed |
+
+The first live acceptance check should confirm that a valid draft is returned without composer regeneration, the Kant part explains the argument for causal necessity rather than only naming the category, and the comparison cites both works. The live “transcendental idealism” question must also be rerun after deployment. If the cited pages still do not support its definition and appearance/thing-in-itself distinction, that is a retrieval/evidence-quality failure to diagnose from the authenticated trace, not a reason to add another composition retry.

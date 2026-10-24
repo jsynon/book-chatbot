@@ -1,630 +1,227 @@
-import {test} from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import {auditFinalAnswer,normalizePlan} from './reader-contract.mjs';
-import {composeEvidenceAnswer,validateClaims,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
-import {handleRequest,verifiedFingerprintSources} from './public-gateway.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
 
-const quote='By doing just acts we become just';
-const source={id:'S1',bookId:'4',title:'Nicomachean Ethics — Aristotle',page:17,
-  text:'Moral virtue comes about as a result of habit. By doing just acts we become just, and by doing temperate acts we become temperate.',
-  sha256:'a'.repeat(64),preview:'A short UI preview.'};
-const rawPlan={resolvedQuestion:'How does practice form virtue?',intent:'explain',
-  sources:[{label:'Nicomachean Ethics',role:'primary',bookIds:['4']}],
-  parts:['How does practice form virtue?'],scope:'',queries:['habituation moral virtue']};
-const catalog={'4':'Nicomachean Ethics — Aristotle'};
-function modelAnswer(claimOverrides={}){
- return {claims:[{id:'C1',partIds:['P1'],kind:'direct',
-   text:'Aristotle says repeated just action forms a just character.',
-   evidence:[{sourceId:'S1',quote}],...claimOverrides}],
-  parts:[{partId:'P1',status:'answered',gap:''}]};
+const catalog={35:'An Enquiry Concerning Human Understanding — David Hume',40:'Critique of Pure Reason — Immanuel Kant'};
+const hume={id:'S1',bookId:'35',title:catalog[35],page:42,url:'https://example.test/hume#page=42',
+ text:'Our idea of necessity and causation arises from the uniformity observable in nature, where similar objects are constantly conjoined, and the mind is determined by custom to infer one from the other.',
+ preview:'Our idea of necessity and causation arises from uniformity and custom.'};
+const kant={id:'S2',bookId:'40',title:catalog[40],page:53,url:'https://example.test/kant#page=53',
+ text:'Causality is one of the categories of relation. The categories are pure conceptions of the understanding and are a priori.',
+ preview:'Causality is one of the categories of relation.'};
+function answer(text){return {response:text,usage:{neurons:8,prompt_tokens:100,completion_tokens:60}};}
+function review(statuses){return {response:JSON.stringify({parts:statuses.map(([partId,status])=>({partId,status}))})};}
+function makeAI(responses){
+ const calls=[];
+ return {calls,run:async(model,request)=>{calls.push({model,request});const next=responses.shift();
+   if(next instanceof Error)throw next;return typeof next==='function'?next(model,request):next;}};
 }
-function composerRecords(draft){
- const emitted=new Set(),lines=[];
- for(const part of draft.parts){
-  lines.push(`PART ${part.partId} ${part.status}`);
-  for(const claim of draft.claims.filter(value=>value.partIds.includes(part.partId)&&!emitted.has(value.id))){
-   emitted.add(claim.id);
-   lines.push(`CLAIM ${claim.id} | ${claim.partIds.join(',')} | ${claim.kind}`,'TEXT',claim.text);
-   for(const evidence of claim.evidence){
-    lines.push(`EVIDENCE ${evidence.sourceId}`,evidence.quote,'END EVIDENCE');
-   }
-   lines.push('END CLAIM');
-  }
-  if(part.gap)lines.push('GAP',part.gap,'END GAP');
-  lines.push('END PART');
- }
- return lines.join('\n');
-}
-function response(value){return {choices:[{finish_reason:'stop',message:{content:
-  value&&Array.isArray(value.claims)&&Array.isArray(value.parts)?composerRecords(value):
-   typeof value==='string'?value:JSON.stringify(value)}}],
-  usage:{neurons:7,prompt_tokens:120,completion_tokens:60}};}
+const onePartPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
+ parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
+   searchQueries:['Hume necessity custom'],candidateSourceIds:['S1']}],queries:['Hume necessity custom']};
+const twoSidePlan={version:'reader-evidence-v2',resolvedQuestion:'How do Hume and Kant differ about causal necessity?',intent:'compare',
+ sources:[{label:'David Hume',role:'primary',bookIds:['35']},{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+ parts:[
+  {id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],searchQueries:['Hume necessity custom']},
+  {id:'P2',question:'How does Kant explain causal necessity?',sourceBookIds:['40'],searchQueries:['Kant causality a priori']},
+  {id:'P3',question:'How do Hume and Kant differ?',sourceBookIds:['35','40'],searchQueries:['Hume custom','Kant a priori']}
+ ],queries:['Hume custom','Kant a priori']};
 
-test('epistemic answers require grounds beyond naming a category',()=>{
- assert.match(COMPOSER_PROMPT,/When asked how a claim or principle can be known, justified, or necessary/i);
- assert.match(COMPOSER_PROMPT,/grounds, argument, or conditions of validity/i);
- assert.match(REVIEW_PROMPT,/a category name alone is not a complete explanation/i);
- assert.match(REVIEW_PROMPT,/Mark the part partial when those are absent/i);
+test('the composer uses a short per-part answer contract without claim IDs or quote extraction',()=>{
+ assert.match(COMPOSER_PROMPT,/one heading and one short answer paragraph for each supplied part/);
+ assert.match(COMPOSER_PROMPT,/Cite every answer paragraph/);
+ assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
+ assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
+ assert.doesNotMatch(REVIEW_PROMPT,/claimIds|verdict/);
 });
 
-test('grouped citations reject unknown source IDs and bind quotations to their cited source',()=>{
- const sources=[{id:'S1',text:'The first source says something entirely different.'},
-  {id:'S2',text:'The second source says “precise quoted wording appears here”.'}];
- assert.equal(auditFinalAnswer('A claim [S1, S99].',sources).ok,false);
- assert.equal(auditFinalAnswer('The source says “precise quoted wording appears here” [S1].',sources).ok,false);
- assert.equal(auditFinalAnswer('The source says “precise quoted wording appears here” [S2].',sources).ok,true);
-});
-
-test('plan normalization bounds and canonicalizes requested parts and book scope',()=>{
- const plan=normalizePlan(rawPlan,'fallback question',catalog);
- assert.equal(plan.version,'reader-evidence-v2');
- assert.equal(plan.intent,'explain');
- assert.deepEqual(plan.parts,[{id:'P1',question:'How does practice form virtue?',sourceBookIds:['4'],
-  searchQueries:['habituation moral virtue','How does practice form virtue?']}]);
- assert.deepEqual(plan.sources[0].bookIds,['4']);
- const scoped=normalizePlan(rawPlan,'question',catalog,'4');
- assert.deepEqual(scoped.sources,[{label:catalog['4'],role:'primary',bookIds:['4']}]);
-});
-
-test('plan binds each named comparison part to the matching source books',()=>{
- const catalog={'74':'The Republic — Plato','245':'The Social Contract — Jean-Jacques Rousseau'};
- const plan=normalizePlan({intent:'compare',sources:[
-  {label:'Republic',role:'primary',bookIds:['74']},
-  {label:'Social Contract',role:'subject',bookIds:['245']}],parts:[
-   {question:'How does Plato’s Republic explain political legitimacy?'},
-   {question:'How does Rousseau’s Social Contract connect it to the common good?'}]},
-  'Compare Plato and Rousseau.',catalog);
- assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[['74'],['245'],['74','245']]);
-});
-
-test('explicit comparisons gain a required synthesis part and keep source queries linked to their parts',()=>{
- const catalog={'35':'An Enquiry Concerning Human Understanding — David Hume',
-  '40':'Critique of Pure Reason — Immanuel Kant'};
- const question='How do Hume’s Enquiry and Kant’s Critique of Pure Reason differ over how we can know causal necessity?';
- const plan=normalizePlan({intent:'compare',resolvedQuestion:question,sources:[
-  {label:'David Hume',role:'primary',bookIds:['35']},
-  {label:'Critique of Pure Reason',role:'primary',bookIds:['40']}],parts:[
-   'How does Hume explain the origin and justification of causal necessity?',
-   'How does Kant explain the origin and justification of causal necessity?'],
-  queries:['Hume Enquiry causal necessity custom habit association of ideas',
-   'Kant Critique of Pure Reason causality categories a priori synthetic']},question,catalog);
- assert.equal(plan.parts.length,3);
- assert.match(plan.parts[2].question,/compare in response to this question/i);
- assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[['35'],['40'],['35','40']]);
- assert.deepEqual(plan.parts[0].searchQueries,[
-  'Hume Enquiry causal necessity custom habit association of ideas',
-  'How does Hume explain the origin and justification of causal necessity?']);
- assert.deepEqual(plan.parts[1].searchQueries,[
-  'Kant Critique of Pure Reason causality categories a priori synthetic',
-  'How does Kant explain the origin and justification of causal necessity?']);
- assert.ok(plan.parts[2].searchQueries.includes(plan.queries[0]));
- assert.ok(plan.parts[2].searchQueries.includes(plan.queries[1]));
-});
-
-test('each planned part receives page IDs from its own named source before composition',()=>{
- const catalog={'74':'The Republic — Plato','245':'The Social Contract — Jean-Jacques Rousseau'};
- const plan=normalizePlan({intent:'compare',sources:[
-  {label:'Republic',role:'primary',bookIds:['74']},
-  {label:'Social Contract',role:'subject',bookIds:['245']}],parts:[
-   {question:'How does Plato’s Republic explain political legitimacy?'},
-   {question:'How does Rousseau’s Social Contract explain political legitimacy?'}]},
-  'Compare Plato and Rousseau.',catalog);
- const linked=linkEvidenceToParts(plan,[
-  {...source,id:'S1',bookId:'74'},{...source,id:'S2',bookId:'245'}]);
+test('part linking preserves evidence discovered by each side for a synthesis part',()=>{
+ const plan={...twoSidePlan,parts:twoSidePlan.parts.map(part=>({...part,candidateSourceIds:[]}))};
+ const linked=linkEvidenceToParts(plan,[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}]);
  assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2'],['S1','S2']]);
 });
 
-test('a comparison part inherits only evidence already linked to its source-side parts',()=>{
- const plan={intent:'compare',sources:[
-  {label:'Hume',role:'primary',bookIds:['35']},
-  {label:'Kant',role:'primary',bookIds:['40']}],parts:[
-  {id:'P1',question:'Hume’s account',sourceBookIds:['35']},
-  {id:'P2',question:'Kant’s account',sourceBookIds:['40']},
-  {id:'P3',question:'How do the accounts differ?',sourceBookIds:['35','40']}]};
- const linked=linkEvidenceToParts(plan,[
-  {...source,id:'S1',bookId:'35',candidatePartIds:['P1']},
-  {...source,id:'S2',bookId:'40',candidatePartIds:['P2']},
-  {...source,id:'S3',bookId:'40',candidatePartIds:['P3']},
-  {...source,id:'S4',bookId:'40',candidatePartIds:[]}
+test('comparison evidence linking follows the planned source groups even when the part avoids comparison keywords',()=>{
+ const plan={...twoSidePlan,parts:[
+  {...twoSidePlan.parts[0],candidateSourceIds:[]},
+  {...twoSidePlan.parts[1],candidateSourceIds:[]},
+  {id:'P3',question:'What relationship do their accounts bear to one another?',sourceBookIds:['35','40']}
+ ]};
+ const linked=linkEvidenceToParts(plan,[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}]);
+ assert.deepEqual(linked.parts[2].candidateSourceIds,['S1','S2']);
+});
+
+test('validates cited sources against each part and preserves a complete cited answer in two calls',async()=>{
+ const ai=makeAI([
+  answer('PART P1\nHume says necessity arises from regular conjunction and the mind’s habitual inference. [S1]'),
+  review([['P1','answered']])
  ]);
- assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[
-  ['S1'],['S2'],['S1','S2','S3']
- ]);
-});
-
-test('already-planned comparison part is not duplicated',()=>{
- const catalog={'74':'The Republic — Plato','245':'The Social Contract — Jean-Jacques Rousseau'};
- const plan=normalizePlan({intent:'compare',sources:[
-  {label:'Plato',role:'primary',bookIds:['74']},{label:'Rousseau',role:'primary',bookIds:['245']}],parts:[
-   'How does Plato describe justice?', 'How does Rousseau describe the common good?',
-   'How do Plato and Rousseau differ on political legitimacy?']},
-  'How do Plato and Rousseau differ on political legitimacy?',catalog);
- assert.equal(plan.parts.length,3);
- assert.deepEqual(plan.parts[2].sourceBookIds,['74','245']);
-});
-
-test('part evidence mapping narrows two subquestions within the same book',()=>{
- const plan=normalizePlan({intent:'explain',sources:[
-  {label:'The Republic',role:'primary',bookIds:['74']}],parts:[
-   {question:'How does Plato explain political legitimacy?'},
-   {question:'How does Plato connect political legitimacy to the common good?'}]},
-  'How does Plato explain political order?',{'74':'The Republic — Plato'});
- const linked=linkEvidenceToParts(plan,[
-  {...source,id:'S1',bookId:'74',candidatePartIds:['P1']},
-  {...source,id:'S2',bookId:'74',candidatePartIds:['P2']}]);
- assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2']]);
-});
-
-test('claim validation rejects a quote taken from a different source than its citation',()=>{
- const second={...source,id:'S2',text:'A different passage about another subject entirely.'};
- const plan=linkEvidenceToParts(normalizePlan(rawPlan,'question',catalog),[source,second]);
- const result=validateClaims(modelAnswer({evidence:[{sourceId:'S2',quote}]}),[source,second],plan);
- assert.equal(result.claims.length,0);
- assert.equal(result.rejected[0].reason,'evidence-not-found');
-});
-
-test('claim validation rejects evidence assigned to the wrong named-work part',()=>{
- const catalog={'74':'The Republic — Plato','245':'The Social Contract — Jean-Jacques Rousseau'};
- const plan=normalizePlan({intent:'compare',sources:[
-  {label:'Republic',role:'primary',bookIds:['74']},
-  {label:'Social Contract',role:'subject',bookIds:['245']}],parts:[
-   {question:'How does Plato’s Republic explain political legitimacy?'},
-   {question:'How does Rousseau’s Social Contract explain political legitimacy?'}]},
-  'Compare Plato and Rousseau.',catalog);
- const rousseau={...source,id:'S2',bookId:'245',title:catalog['245'],
-  text:'An act is legitimate because it is based on the social contract, and useful because it serves the general good.'};
- const draft={claims:[{id:'C1',partIds:['P1'],kind:'direct',
-  text:'Rousseau grounds legitimate order in the social contract.',
-  evidence:[{sourceId:'S2',quote:'legitimate because it is based on the social contract'}]}],
-  parts:[{partId:'P1',status:'answered',gap:''},{partId:'P2',status:'unanswered',gap:'No cited evidence.'},
-   {partId:'P3',status:'unanswered',gap:'No cited comparison evidence.'}]};
- const linked=linkEvidenceToParts(plan,[source,rousseau]);
- const result=validateClaims(draft,[source,rousseau],linked);
- assert.equal(result.claims.length,0);
- assert.equal(result.rejected[0].reason,'evidence-not-linked-to-question-part');
-});
-
-test('comparison claims must be marked as synthesis and cite every named source group',()=>{
- const catalog={'35':'An Enquiry Concerning Human Understanding — David Hume',
-  '40':'Critique of Pure Reason — Immanuel Kant'};
- const plan={intent:'compare',sources:[
-  {label:'Hume',role:'primary',bookIds:['35']},{label:'Kant',role:'primary',bookIds:['40']}],parts:[
-  {id:'P1',question:'Hume’s account',sourceBookIds:['35']},
-  {id:'P2',question:'Kant’s account',sourceBookIds:['40']},
-  {id:'P3',question:'How do the accounts differ?',sourceBookIds:['35','40']}]};
- const hume={...source,id:'S1',bookId:'35',title:catalog['35'],candidatePartIds:['P1'],
-  text:'Hume explains necessity through repeated conjunction and habit.'};
- const kant={...source,id:'S2',bookId:'40',title:catalog['40'],candidatePartIds:['P2'],
-  text:'Kant treats causality as a rule within possible experience.'};
- const linked=linkEvidenceToParts(plan,[hume,kant]);
- const draft=(kind,items)=>({claims:[{id:'C1',partIds:['P3'],kind,
-  text:'The authors ground causal necessity differently.',evidence:items}],
-  parts:[{partId:'P1',status:'unanswered',gap:'No claim.'},
-   {partId:'P2',status:'unanswered',gap:'No claim.'},
-   {partId:'P3',status:'answered',gap:''}]});
- const direct=validateClaims(draft('direct',[
-  {sourceId:'S1',quote:'repeated conjunction and habit'},
-  {sourceId:'S2',quote:'a rule within possible experience'}]),[hume,kant],linked);
- assert.equal(direct.rejected[0].reason,'comparison-claim-not-marked-synthesis');
- const oneSided=validateClaims(draft('synthesis',[
-  {sourceId:'S1',quote:'repeated conjunction and habit'}]),[hume,kant],linked);
- assert.equal(oneSided.rejected[0].reason,'comparison-claim-missing-source-group');
- const supported=validateClaims(draft('synthesis',[
-  {sourceId:'S1',quote:'repeated conjunction and habit'},
-  {sourceId:'S2',quote:'a rule within possible experience'}]),[hume,kant],linked);
- assert.equal(supported.claims.length,1);
-});
-
-test('explicit section scope limits support while preserving the complete page as context',()=>{
- const full={...source,text:'Outside the requested range, Aristotle discusses pleasure at length. '+quote+'.'};
- const scoped={...full,scopeText:'By doing just acts we become just.'};
- const plan=linkEvidenceToParts(normalizePlan(rawPlan,'question',catalog),[scoped]);
- const outside=validateClaims(modelAnswer({evidence:[{sourceId:'S1',quote:'Outside the requested range, Aristotle discusses pleasure at length.'}]}),[scoped],plan);
- assert.equal(outside.claims.length,0);
- assert.equal(outside.rejected[0].reason,'evidence-outside-requested-scope');
- let composedPages;
- const ai={run:async(_model,input)=>{
-  composedPages=JSON.parse(input.messages[1].content).evidence;
-  return response(modelAnswer({evidence:[{sourceId:'S1',quote:'By doing just acts we become just.'}]}));
- }};
- return composeEvidenceAnswer('How does practice form virtue?', [scoped], ai, [], {plan:rawPlan,catalog,review:false,trace:true})
-  .then(result=>{
-   assert.equal(composedPages[0].text,full.text);
-   assert.equal(composedPages[0].scopeText,scoped.scopeText);
-   assert.equal(result.outcome,'unverified-source-draft');
-   assert.equal(result.citations[0].scopeText,undefined);
-  });
-});
-
-test('claim pipeline makes two bounded calls, preserves full pages, and validates the final rendering',async()=>{
- const observed=[];
- let calls=0;
- const ai={run:async(_model,input)=>{
-  calls++;observed.push(input);
-  const body=JSON.parse(input.messages[1].content);
-  if(input.messages[0].content.includes('Assess each claim')){
-   assert.equal(body.claims.length,1);
-   assert.deepEqual(body.parts,[{partId:'P1',question:'How does practice form virtue?',
-    draftStatus:'answered',candidateSourceIds:['S1'],claimIds:['C1']}],
-    'review sees the status and exact eligible claim IDs for every question part');
-   return response({decisions:[{claimId:'C1',verdict:'supported',reason:'Directly stated.'}],
-    parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Explained.'}]});
-  }
-  assert.equal(body.evidence[0].text,source.text);
-  assert.deepEqual(body.partEvidence,[{partId:'P1',question:'How does practice form virtue?',candidateSourceIds:['S1']}]);
-  return response(modelAnswer());
- }};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [{...source,text:source.text}],ai,[],{plan:rawPlan,catalog,trace:true});
- assert.equal(calls,2);
- assert.equal(result.usage.calls,2);
- assert.equal(result.usage.neurons,14);
- assert.equal(result.coverage,'full');
- assert.match(result.answer, /\[S1\]/);
- assert.equal(result.citations.length,1);
- assert.equal(result.trace.evidence[0].text,source.text);
- assert.equal(result.trace.final.answer,result.answer);
-});
-
-test('the composer receives page IDs attached to each question part before it drafts claims',async()=>{
- const catalog={'74':'The Republic — Plato'};
- const plan={intent:'explain',sources:[{label:'The Republic',role:'primary',bookIds:['74']}],parts:[
-  {question:'How does Plato explain political legitimacy?'},
-  {question:'How does Plato connect political legitimacy to the common good?'}]};
- const first={...source,id:'S1',bookId:'74',title:catalog['74'],candidatePartIds:['P1'],
-  text:'The first passage directly explains political legitimacy through justice.'};
- const second={...source,id:'S2',bookId:'74',title:catalog['74'],candidatePartIds:['P2'],
-  text:'The second passage directly connects the city to the common good.'};
- const draft={claims:[
-  {id:'C1',partIds:['P1'],kind:'direct',text:'Plato grounds political legitimacy in justice.',
-   evidence:[{sourceId:'S1',quote:'directly explains political legitimacy through justice'}]},
-  {id:'C2',partIds:['P2'],kind:'direct',text:'Plato connects political order to the common good.',
-   evidence:[{sourceId:'S2',quote:'directly connects the city to the common good'}]}],
-  parts:[{partId:'P1',status:'answered',gap:''},{partId:'P2',status:'answered',gap:''}]};
- const ai={run:async(_model,input)=>{
-  const body=JSON.parse(input.messages[1].content);
-  if(input.messages[0].content.includes('Assess each claim'))
-   return response({decisions:[{claimId:'C1',verdict:'supported',reason:'Matches.'},
-      {claimId:'C2',verdict:'supported',reason:'Matches.'}],
-    parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Covered.'},
-      {partId:'P2',status:'answered',claimIds:['C2'],reason:'Covered.'}]});
-  assert.deepEqual(body.partEvidence.map(part=>[part.partId,part.candidateSourceIds]),[
-   ['P1',['S1']],['P2',['S2']]]);
-  return response(draft);
- }};
- const result=await composeEvidenceAnswer('How does Plato explain political order?',
-  [first,second],ai,[],{plan,catalog});
- assert.equal(result.coverage,'full');
- assert.deepEqual(result.questionParts.map(part=>part.evidenceIds),[['S1'],['S2']]);
-});
-
-test('one malformed composer response gets one bounded regeneration before final review',async()=>{
- const stages=[];let calls=0;
- const ai={run:async(_model,input)=>{
-  calls++;
-  const system=input.messages[0].content;
-  if(system.includes('Assess each claim')){
-   stages.push('review');
-   return response({decisions:[{claimId:'C1',verdict:'supported',reason:'Supported.'}],
-    parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Answered.'}]});
-  }
-  if(system.includes('Your previous response did not follow the required record format')){
-   stages.push('compose-format-retry');return response(modelAnswer());
-  }
-  stages.push('compose');
-  return {choices:[{finish_reason:'stop',message:{content:'```json\n{"claims":[{"text":"a malformed response"}]\n```'}}]};
- }};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,trace:true});
- assert.equal(calls,3);
- assert.deepEqual(stages,['compose','compose-format-retry','review']);
- assert.equal(result.usage.calls,3);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,2);
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.coverage,'full');
- assert.equal(result.trace.stages[0].stage,'compose');
- assert.equal(result.trace.stages[1].stage,'compose-format-retry');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.match(result.answer,/habitual inference\. \[S1\]/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1']);
+ assert.equal(result.evidenceMap[0].quoteVerified,false);
+ assert.equal(result.trace.stages.length,2);
+ const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
+ const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
+ assert.deepEqual(composePayload.parts[0].candidateSourceIds,['S1']);
+ assert.deepEqual(reviewPayload.parts[0].candidateSourceIds,['S1']);
+ assert.deepEqual(reviewPayload.parts[0].evidence.map(source=>source.id),['S1']);
 });
 
-test('a bad reviewer part map preserves reviewed claims from correctly mapped parts',async()=>{
- const question='How do Hume and Kant differ over causal necessity?';
- const comparePlan={intent:'compare',resolvedQuestion:question,sources:[
-  {label:'Hume',role:'primary',bookIds:['35']},{label:'Kant',role:'primary',bookIds:['40']}],parts:[
-   {question:'How does Hume explain causal necessity?',sourceBookIds:['35'],candidateSourceIds:['S1']},
-   {question:'How does Kant explain causal necessity?',sourceBookIds:['40'],candidateSourceIds:['S2']},
-   {question:'How do Hume and Kant differ over causal necessity?',sourceBookIds:['35','40'],candidateSourceIds:['S1','S2']}],
-  queries:['Hume causal necessity custom habit','Kant causal necessity a priori']};
- const hume={id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume',page:48,
-  candidatePartIds:['P1','P3'],text:'Hume says necessity consists in constant conjunction and inference of the understanding.'};
- const kant={id:'S2',bookId:'40',title:'Critique of Pure Reason — Immanuel Kant',page:23,
-  candidatePartIds:['P2','P3'],text:'Kant says Hume stopped at the causal principle and treated it as borrowed from experience and habit.'};
- const draft=`PART P1 answered\nCLAIM C1 | P1 | direct\nHume grounds causal necessity in experienced regular conjunction and the mind's inference.\n`+
-  `EVIDENCE S1\n${hume.text}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
-  `PART P2 answered\nCLAIM C2 | P2 | direct\nKant treats the causal principle as a priori rather than borrowed from repeated experience.\n`+
-  `EVIDENCE S2\n${kant.text}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
-  `PART P3 answered\nCLAIM C3 | P3 | synthesis\nHume explains necessity through observed conjunction and inference, while Kant argues that the causal principle must be grounded a priori.\n`+
-  `EVIDENCE S1\n${hume.text}\nEND EVIDENCE\nEVIDENCE S2\n${kant.text}\nEND EVIDENCE\nEND CLAIM\nEND PART`;
- const review={decisions:[1,2,3].map(n=>({claimId:'C'+n,verdict:'supported',reason:'Supported by the attached passage.'})),
-  parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Covered.'},
-   {partId:'P2',status:'answered',claimIds:['C2'],reason:'Covered.'},
-   // Reproduces the model putting every claim under the comparison part.
-   {partId:'P3',status:'answered',claimIds:['C1','C2','C3'],reason:'Compared the accounts.'}]};
- let reviewPayload;
- const ai={run:async(_model,input)=>{
-  if(input.messages[0].content.includes('Assess each claim')){
-   reviewPayload=JSON.parse(input.messages[1].content);return response(review);
-  }
-  return response(draft);
- }};
- const result=await composeEvidenceAnswer(question,[hume,kant],ai,[],{
-  plan:comparePlan,catalog:{'35':hume.title,'40':kant.title},trace:true});
- assert.equal(result.outcome,'verified-source-draft');
- assert.equal(result.coverage,'partial');
- assert.equal(result.failureCode,'review-contract-incomplete');
- assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported','partial']);
- assert.match(result.answer,/Hume grounds causal necessity/);
- assert.match(result.answer,/Kant treats the causal principle/);
- assert.match(result.answer,/Hume explains necessity/);
- assert.deepEqual(reviewPayload.parts.map(part=>part.claimIds),[['C1'],['C2'],['C3']]);
- assert.deepEqual(result.trace.reviewContract.issues,['part-claim-mapping-incomplete']);
-});
-
-test('a malformed reviewer returns exact-evidence claims as an explicitly unreviewed partial draft',async()=>{
- const ai={run:async(_model,input)=>input.messages[0].content.includes('Assess each claim')?
-  {choices:[{finish_reason:'stop',message:{content:'not valid review JSON'}}]}:response(modelAnswer())};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,trace:true});
- assert.equal(result.outcome,'unverified-source-draft');
- assert.equal(result.coverage,'partial');
- assert.equal(result.reviewStatus,'review-format-failed');
- assert.equal(result.failureCode,'model-output-invalid-format');
- assert.deepEqual(result.questionParts.map(part=>part.status),['partial']);
- assert.match(result.answer,/Aristotle says repeated just action/);
- assert.match(result.answer,/\[S1\]/);
- assert.equal(result.trace.stages.at(-1).stage,'review');
-});
-
-test('a second malformed composer response is a format failure, not an evidence gap',async()=>{
- let calls=0;
- const ai={run:async()=>{calls++;return {choices:[{finish_reason:'stop',message:{content:'not json'}}]};}};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,trace:true});
- assert.equal(calls,2);
+test('per-part citation checking rejects unknown, malformed, and cross-linked IDs without losing other parts',async()=>{
+ const ai=makeAI([
+  answer('PART P1\nHume links necessity to custom. [S1, S99]\n\nPART P2\nKant describes causality as a priori. [S1]'),
+  review([['P1','answered'],['P2','answered']])
+ ]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant explain necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],
+  {plan:{...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)},catalog,trace:true});
  assert.equal(result.outcome,'generation-failed');
- assert.equal(result.reviewStatus,'generation-format-failed');
- assert.equal(result.failureCode,'model-output-invalid-format');
- assert.equal(result.failureStage,'compose-format-retry');
- assert.match(result.answer,/properly formatted, verified answer/);
- assert.doesNotMatch(result.answer,/retrieved passages did not support/);
- assert.equal(result.trace.final.failure.stage,'compose-format-retry');
+ assert.equal(result.coverage,'none');
+ assert.equal(result.failureCode,'answer-citation-validation-failed');
+ assert.match(result.trace.rejected.map(item=>item.reason).join(' '),/unknown|citation/);
 });
 
-test('composer accepts omitted TEXT markers and empty duplicate headers while requiring every planned comparison part',async()=>{
- const question='How do Hume and Kant differ over causal necessity?';
- const comparePlan={intent:'compare',resolvedQuestion:question,sources:[
-  {label:'Hume',role:'primary',bookIds:['35']},{label:'Kant',role:'primary',bookIds:['40']}],
-  parts:['How does Hume explain causal necessity?','How does Kant explain causal necessity?'],
-  queries:['Hume causal necessity custom habit','Kant causality category a priori']};
- const hume={id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume',page:41,
-  candidatePartIds:['P1','P3'],text:'Hume explains causal necessity through repeated experience and the mind’s resulting habit.'};
- const kant={id:'S2',bookId:'40',title:'Critique of Pure Reason — Immanuel Kant',page:54,
-  candidatePartIds:['P2','P3'],text:'Kant treats causality as a category of the understanding that structures experience.'};
- const raw=`PART P1 answered\nCLAIM C1 | P1 | direct\nTEXT\nHume connects causal necessity with repeated experience.\nEVIDENCE S1\n${hume.text}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
-  `PART P2 answered\nCLAIM C1 | P2 | direct\nCLAIM C2 | P2 | direct\nKant treats causality as a condition for experience.\nEVIDENCE S2\n${kant.text}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
-  'PART P3 unanswered\nGAP\nThe passages do not establish the comparison between the accounts.\nEND GAP\nEND PART';
- const ai={run:async()=>response(raw)};
- const result=await composeEvidenceAnswer(question,[hume,kant],ai,[],{
-  plan:comparePlan,catalog:{'35':hume.title,'40':kant.title},review:false,trace:true});
- assert.equal(result.usage.calls,1);
- assert.equal(result.outcome,'unverified-source-draft');
- assert.deepEqual(result.questionParts.map(part=>part.status),['partial','partial','unsupported']);
- assert.deepEqual(result.questionParts.map(part=>part.evidenceIds),[['S1'],['S2'],[]]);
- assert.equal(result.trace.final.failure,null);
- assert.deepEqual(result.trace.final.draftParts.map(part=>part.partId),['P1','P2','P3']);
-});
-
-test('composer recovers annotated evidence markers and a missing separator without accepting inexact spans',async()=>{
- const text='The mind observes repeated events. An omitted middle sentence is not quoted. A second exact sentence completes the source evidence.';
- const first='The mind observes repeated events.';
- const second='A second exact sentence completes the source evidence.';
- const one='The mind observes repeated events. An omitted middle sentence is not quoted. A second exact sentence completes the source evidence.';
- const plan={intent:'explain',sources:[{label:'Hume',role:'primary',bookIds:['35']}],parts:[
-  {question:'How does Hume explain the idea?',sourceBookIds:['35']} ]};
- const hume={id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume',page:38,
-  candidatePartIds:['P1'],text};
- const raw=`PART P1 answered\nCLAIM C8 | P1 | direct\nHabit links repeated events in expectation.\n`+
-  `EVIDENCE S1 | P1 | direct\n${first} [...] ${second}\n`+
-  `EVIDENCE S1 | P1 | direct\n${one}\nEND EVIDENCE\nEND CLAIM\nEND PART`;
- const ai={run:async()=>response(raw)};
- const result=await composeEvidenceAnswer('How does Hume explain the idea?',
-  [hume],ai,[],{plan,catalog:{'35':hume.title},review:false,trace:true});
- assert.equal(result.outcome,'unverified-source-draft');
- assert.equal(result.trace.rejected.length,0);
- assert.deepEqual(result.evidenceMap.map(item=>item.quote),[first,second,one]);
- assert.equal(result.usage.calls,1);
-});
-
-test('composer recovers a missing claim terminator at the next exact claim marker',async()=>{
- const secondQuote='by doing temperate acts we become temperate';
- const raw=`PART P1 answered\nCLAIM C1 | P1 | direct\nPractice forms a just character.\n`+
-  `EVIDENCE S1\n${quote}\nEND EVIDENCE\n`+
-  `CLAIM C2 | P1 | direct\nPractice also forms temperance.\n`+
-  `EVIDENCE S1\n${secondQuote}\nEND EVIDENCE\nEND CLAIM\nEND PART`;
- const ai={run:async()=>response(raw)};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
- assert.equal(result.outcome,'unverified-source-draft');
- assert.equal(result.trace.final.failure,null);
- assert.equal(result.trace.rejected.length,0);
- assert.match(result.answer,/Practice forms a just character/);
- assert.match(result.answer,/Practice also forms temperance/);
- assert.doesNotMatch(result.answer,/CLAIM C2|END CLAIM/);
- assert.deepEqual(result.evidenceMap.map(item=>item.quote),[quote,secondQuote]);
-});
-
-test('evidence marker annotations must agree with the enclosing claim and part',async()=>{
- const wrong=`PART P1 answered\nCLAIM C1 | P1 | direct\nA supported claim.\n`+
-  `EVIDENCE S1 | P2 | direct\n${quote}\nEND EVIDENCE\nEND CLAIM\nEND PART`;
- const ai={run:async()=>response(wrong)};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
- assert.equal(result.outcome,'generation-failed');
- assert.equal(result.failureStage,'compose-format-retry');
- assert.equal(result.usage.calls,2);
-});
-
-test('composition fails closed when a requested part is omitted from the record',async()=>{
- let calls=0;
- const ai={run:async()=>{calls++;return response('PART P1 answered\nEND PART');}};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,trace:true});
- assert.equal(calls,2,'one bounded format regeneration is allowed');
- assert.equal(result.outcome,'generation-failed');
- assert.equal(result.failureCode,'model-output-invalid-format');
- assert.equal(result.failureStage,'compose-format-retry');
+test('a citation linked to another question part is rejected even when its source ID exists',async()=>{
+ const plan={...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)};
+ const ai=makeAI([answer('PART P1\nKant says causality is a category. [S2]\nPART P2\nKant says causality is a category. [S2]'),
+  review([['P1','answered'],['P2','answered']])]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant explain necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],{plan,catalog});
  assert.equal(result.questionParts[0].status,'unsupported');
+ assert.equal(result.questionParts[1].status,'supported');
+ assert.deepEqual(result.citations.map(source=>source.id),['S2']);
 });
 
-test('invalid evidence gets one bounded regeneration and remains rejected if it fails again',async()=>{
- let calls=0;
- const ai={run:async()=>{calls++;return response(modelAnswer({evidence:[{sourceId:'S1',quote:'This exact wording is absent from the verified page.'}]}));}};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,trace:true});
- assert.equal(calls,2,'one citation repair is allowed, without an unbounded loop');
- assert.equal(result.outcome,'insufficient-evidence');
- assert.equal(result.answer,'The retrieved passages did not support a reliable answer to this question. Try a more specific passage or work.');
- assert.deepEqual(result.citations,[]);
- assert.equal(result.usage.calls,2);
- assert.equal(result.trace.stages[1].stage,'compose-evidence-retry');
- assert.equal(result.trace.rejected[0].reason,'evidence-not-found');
+test('missing question parts remain visible as partial coverage instead of invalidating the answer',async()=>{
+ const ai=makeAI([
+  answer('PART P1\nHume says causal necessity arises from custom and regular conjunction. [S1]'),
+  review([['P1','answered'],['P2','answered'],['P3','partial']])
+ ]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:twoSidePlan,catalog});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','unsupported','unsupported']);
+ assert.equal(ai.calls.length,2);
+ assert.match(result.missing,/Kant|differ/i);
 });
 
-test('one evidence retry can correct an inexact composer quotation within the call budget',async()=>{
- let calls=0;
- const ai={run:async(_model,input)=>{
-  calls++;
-  if(calls===1)return response(modelAnswer({evidence:[{sourceId:'S1',quote:'This exact wording is absent from the verified page.'}]}));
-  assert.match(input.messages[0].content,/failed evidence validation/);
-  const payload=JSON.parse(input.messages[1].content);
-  assert.deepEqual(payload.validationFeedback,[{claimId:'C1',reason:'evidence-not-found'}]);
-  return response(modelAnswer());
- }};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
- assert.equal(calls,2);
+test('a reviewer partial decision is a valid result, not a contract failure',async()=>{
+ const ai=makeAI([answer('PART P1\nKant lists causality among the categories of relation. [S2]'),
+  review([['P1','partial']])]);
+ const result=await composeEvidenceAnswer('How does Kant justify causal necessity?',
+  [kant],ai,[],{plan:{...onePartPlan,intent:'explain',sources:[{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+   parts:[{id:'P1',question:'How does Kant justify causal necessity?',sourceBookIds:['40'],searchQueries:['Kant causality'],candidateSourceIds:['S2']}]},catalog});
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.reviewStatus,'claim-review');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.questionParts[0].status,'partial');
+});
+
+test('reviewer contract errors preserve citation-checked text as an explicitly unverified partial draft',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  {response:JSON.stringify({parts:[]})}]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog});
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.coverage,'partial');
- assert.equal(result.trace.final.failure,null);
- assert.equal(result.trace.rejected.length,0);
+ assert.equal(result.reviewStatus,'review-contract-incomplete');
+ assert.match(result.answer,/custom and regular conjunction/);
+ assert.equal(ai.calls.length,2);
 });
 
-test('an evidence retry preserves earlier claims that already passed validation',async()=>{
- const valid=modelAnswer().claims[0];
- const invalid={...valid,id:'C2',text:'An unsupported second claim.',
-  evidence:[{sourceId:'S1',quote:'This exact wording is absent from the verified page.'}]};
- let calls=0;
- const ai={run:async()=>{
-  calls++;
-  return calls===1?response({claims:[valid,invalid],parts:[{partId:'P1',status:'answered',gap:''}]}):
-   response({claims:[],parts:[{partId:'P1',status:'unanswered',gap:'The retry could not verify another claim.'}]});
- }};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
- assert.equal(calls,2);
+test('compose-only uses one call and never labels the unreviewed answer as fully verified',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]')]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,review:false});
+ assert.equal(ai.calls.length,1);
  assert.equal(result.outcome,'unverified-source-draft');
- assert.match(result.answer,/repeated just action forms a just character/);
- assert.deepEqual(result.citations.map(item=>item.id),['S1']);
- assert.equal(result.trace.rejected.length,0);
+ assert.equal(result.reviewStatus,'answer-draft-unverified');
+ assert.equal(result.coverage,'partial');
 });
 
-test('a malformed evidence retry cannot erase claims that already passed validation',async()=>{
- const valid=modelAnswer().claims[0];
- const invalid={...valid,id:'C2',text:'An unsupported second claim.',
-  evidence:[{sourceId:'S1',quote:'This exact wording is absent from the verified page.'}]};
- let calls=0;
- const malformed='PART P1 answered\nCLAIM C1 | P1 | direct\nA replacement claim.\n'+
-  `EVIDENCE S1\n${quote}\nEND EVIDENCE\nEND CLAIM\nEND PART\n`+
-  'PART P1 unanswered\nGAP\nThe retry repeated a part.\nEND GAP\nEND PART';
- const ai={run:async()=>{
-  calls++;
-  return calls===1?response({claims:[valid,invalid],parts:[{partId:'P1',status:'answered',gap:''}]}):
-   response(malformed);
- }};
- const result=await composeEvidenceAnswer('How does practice form virtue?',
-  [source],ai,[],{plan:rawPlan,catalog,review:false,trace:true});
- assert.equal(calls,2);
- assert.equal(result.outcome,'unverified-source-draft');
- assert.match(result.answer,/repeated just action forms a just character/);
- assert.equal(result.trace.recovery.stage,'compose-evidence-retry');
- assert.equal(result.trace.recovery.code,'model-output-invalid-format');
- assert.equal(result.trace.final.failure,null);
- assert.deepEqual(result.trace.rejected,[{claimId:'C2',reason:'evidence-not-found'}]);
+test('comparison cannot receive full coverage unless both named source groups are cited',async()=>{
+ const linkedSources=[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}];
+ const ai=makeAI([answer('PART P1\nHume grounds necessity in custom after repeated conjunction. [S1]\n'+
+  'PART P2\nKant treats causal order as a priori. [S2]\n'+
+  'PART P3\nHume grounds necessity in custom after repeated conjunction, whereas Kant treats causal order as a priori. [S1]'),
+  review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ?',linkedSources,ai,[],{plan:twoSidePlan,catalog});
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[2].status,'partial');
 });
 
-test('fingerprint verification retains original complete text and digest separately from UI preview',async()=>{
- const text='A complete source page begins here. '+quote+'. The rest of the argument continues beyond the compact preview. '+('Additional context extends this physical page. '.repeat(40));
- const bytes=new TextEncoder().encode(text);
- const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
- const metadata={schema:'antilogicalism-reader-fingerprints-v1',hashAlgorithm:'SHA-256-utf8-exact',
-  libraryVersion:47,bookId:'4',chunk:0,firstPage:1,lastPage:32,title:catalog['4'],
-  pdfDriveId:'LegitimatePdfIdentifier0123456789',
-  pages:[{page:17,globalPageId:16,utf8Bytes:bytes.byteLength,sha256}]};
- const verified=await verifiedFingerprintSources('How does practice form virtue?',
-  [{bookId:'4',page:17,text,candidatePartIds:['P1']}],async()=>Response.json(metadata));
- assert.equal(verified[0].text,text);
- assert.equal(verified[0].sha256,sha256);
- assert.deepEqual(verified[0].candidatePartIds,['P1']);
- assert.ok(verified[0].preview.length<text.length);
+test('a comparison with cited evidence from both named source groups may be reviewed as complete',async()=>{
+ const linkedSources=[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}];
+ const ai=makeAI([answer('PART P1\nHume grounds necessity in custom after repeated conjunction. [S1]\n'+
+  'PART P2\nKant treats causal order as a priori. [S2]\n'+
+  'PART P3\nHume grounds necessity in custom after repeated conjunction, whereas Kant treats causal order as a priori. [S1, S2]'),
+  review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ?',linkedSources,ai,[],{plan:twoSidePlan,catalog});
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'supported');
 });
 
-test('public pilot defaults to audited claim output while evaluation remains explicitly authorized',async()=>{
- const text='A complete source page begins here. '+quote+'. The rest of the argument continues.';
- const bytes=new TextEncoder().encode(text);
- const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
- const metadata={schema:'antilogicalism-reader-fingerprints-v1',hashAlgorithm:'SHA-256-utf8-exact',
-  libraryVersion:47,bookId:'4',chunk:0,firstPage:1,lastPage:32,title:catalog['4'],
-  pdfDriveId:'LegitimatePdfIdentifier0123456789',
-  pages:[{page:17,globalPageId:16,utf8Bytes:bytes.byteLength,sha256}]};
- let aiCalls=0;
- const env={PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
-  TURNSTILE_SITE_KEY:'0x4AAAAAAABC1234567890',TURNSTILE_SECRET:'not-a-real-secret-123456789',
-  AI_RATE_LIMITER:{limit:async()=>({success:true})},GLOBAL_RATE_LIMITER:{limit:async()=>({success:true})},
-  AI:{run:async(_model,input)=>{
-   aiCalls++;
-   return input.messages[0].content.includes('Assess each claim')?
-    response({decisions:[{claimId:'C1',verdict:'supported',reason:'Supported.'}],
-      parts:[{partId:'P1',status:'answered',claimIds:['C1'],reason:'Answered.'}]}):response(modelAnswer());
-  }}};
- const fetcher=async(url)=>String(url).includes('siteverify')?
-  Response.json({success:true,hostname:'jsynon.github.io',action:'companion_ask'}):Response.json(metadata);
- const req=new Request('https://worker.example/api/pilot-answer',{method:'POST',
-  headers:{Origin:'https://jsynon.github.io','CF-Connecting-IP':'198.51.100.30','Content-Type':'application/json'},
-  body:JSON.stringify({question:'How does practice form virtue?',bookId:'4',turnstileToken:'valid-test-token',
-   answerVariant:'compose-only',plan:rawPlan,sources:[{bookId:'4',page:17,text}]})});
- const httpResponse=await handleRequest(req,env,fetcher);
- const body=await httpResponse.json();
- assert.equal(httpResponse.status,200);
- assert.equal(body.pipeline,'reader-evidence-v2');
- assert.equal(body.answerVariant,'with-review','public callers cannot disable the final review');
- assert.equal(body.usage.calls,2,JSON.stringify(body));
- assert.equal(aiCalls,2);
- assert.match(body.answer,/\[S1\]/);
- assert.equal(body.citations[0].title,catalog['4']);
- assert.equal(body.trace,undefined,'ordinary visitors must not receive model prompts or full evidence');
- // The holdout runner must exercise the evidence pipeline even when the
- // public deployment-wide feature flag is unset.
- delete env.READER_PIPELINE;
- env.PILOT_EVALUATION_ENABLED='true';env.PILOT_EVALUATION_TOKEN='evaluation-token-'.padEnd(40,'x');
- const evalReq=new Request('https://worker.example/api/pilot-answer',{method:'POST',
-  headers:{Origin:'https://jsynon.github.io','CF-Connecting-IP':'198.51.100.30',
-   'Content-Type':'application/json',Authorization:'Bearer '+env.PILOT_EVALUATION_TOKEN},
-  body:JSON.stringify({question:'How does practice form virtue?',bookId:'4',turnstileToken:'evaluation-token',
-   answerVariant:'compose-only',plan:rawPlan,sources:[{bookId:'4',page:17,text}]})});
- const evalResponse=await handleRequest(evalReq,env,fetcher);
- const evalBody=await evalResponse.json();
- assert.equal(evalResponse.status,200);
- assert.equal(evalBody.pipeline,'reader-evidence-v2');
- assert.equal(evalBody.answerVariant,'compose-only');
- assert.equal(evalBody.usage.calls,1);
- assert.equal(evalBody.trace.evidence[0].text,text);
- assert.equal(evalBody.trace.stages.length,1);
+test('malformed composition is reported as generation failure without retrying or calling review',async()=>{
+ const ai=makeAI([answer('The answer omitted all planned part headings and citations.')]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog});
+ assert.equal(ai.calls.length,1);
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.coverage,'none');
+ assert.equal(result.citations.length,0);
+ assert.equal(result.failureCode,'model-output-invalid-format');
+});
+
+test('an explicitly empty planned answer is reported as insufficient evidence, not a format failure',async()=>{
+ const ai=makeAI([answer('PART P1')]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[],ai,[],
+  {plan:onePartPlan,catalog});
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.coverage,'none');
+ assert.equal(result.failureCode,undefined);
+});
+
+test('legacy claim and evidence markers can be reduced to a cited per-part answer without regeneration',async()=>{
+ const ai=makeAI([answer('PART P1 answered\nCLAIM C1 | P1 | direct\n'+
+  'Hume says necessity arises from regular conjunction and the mind’s habitual inference.\n'+
+  'EVIDENCE S1 | P1 | direct\nA verified source span that is not included in the answer text.\n'+
+  'END EVIDENCE\nEND CLAIM\nEND PART'),review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/habitual inference\. \[S1\]/);
+ assert.equal(result.trace.recovery.code,'legacy-record-format');
+});
+
+test('comparison answers preserve citations in canonical form and remove model citation placement noise',async()=>{
+ const ai=makeAI([answer('PART P1\nHume grounds necessity in habit [S1] after repeated conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal((result.answer.match(/\[S1\]/g)||[]).length,1);
+ assert.equal(result.trace.stages[0].stage,'compose');
+});
+
+test('verse-restricted answers expose the requested verses as evidence and retain the rest only as context',async()=>{
+ const source={...hume,scopeText:'Within the requested range, love is from God and believers should love one another.'};
+ const plan={...onePartPlan,scope:'1 John 4:7-12'};
+ const ai=makeAI([answer('PART P1\nThe passage grounds mutual love in love from God. [S1]'),
+  review([['P1','answered']])]);
+ await composeEvidenceAnswer('According to 1 John 4:7-12, what does love mean?',[source],ai,[],
+  {plan,catalog,trace:true});
+ const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
+ const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
+ assert.equal(composePayload.evidence[0].text,source.scopeText);
+ assert.equal(composePayload.evidence[0].contextText,source.text);
+ assert.equal(reviewPayload.parts[0].evidence[0].text,source.scopeText);
 });
