@@ -46,9 +46,57 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   const sources=entities.map(s=>({label:bounded(s.label,120),role:['primary','subject','commentary'].includes(s.role)?s.role:'primary',
     bookIds:[...new Set((Array.isArray(s.bookIds)?s.bookIds:[]).map(String).filter(id=>Object.hasOwn(catalog,id)))]}));
   if(selectedBookId)sources.splice(0,sources.length,{label:catalog[selectedBookId],role:'primary',bookIds:[selectedBookId]});
+  const intent=['explain','compare','interpret','locate'].includes(raw?.intent)?raw.intent:'explain';
   const parts=(Array.isArray(raw?.parts)?raw.parts:[]).slice(0,6).map((p,i)=>({id:'P'+(i+1),question:bounded(typeof p==='string'?p:p?.question,240)})).filter(p=>p.question);
-  return {version:CONTRACT_VERSION,resolvedQuestion,intent:['explain','compare','interpret','locate'].includes(raw?.intent)?raw.intent:'explain',
-    sources,parts:parts.length?parts:[{id:'P1',question}],scope:bounded(raw?.scope,200),
+  const normalizedParts=parts.length?parts:[{id:'P1',question}];
+  const identityText=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .replace(/[’‘]/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
+  const containsPhrase=(haystack,phrase)=>{
+    const normalized=identityText(phrase);
+    return normalized.length>=4&&(' '+identityText(haystack)+' ').includes(' '+normalized+' ');
+  };
+  const sourcePhrases=source=>{
+    const phrases=[source.label];
+    for(const token of String(source.label||'').split(/[^\p{L}\p{N}]+/u))
+      if(token.length>=4)phrases.push(token);
+    for(const id of source.bookIds){
+      const title=catalog[id];if(!title)continue;
+      const identity=catalogIdentity(title);
+      phrases.push(identity.work,...identity.authors,...identity.authors.map(author=>String(author).split(/\s+/u).at(-1)),...identity.aliases);
+    }
+    return [...new Set(phrases.map(identityText).filter(value=>value.length>=4))];
+  };
+  const partSourceGroups=normalizedParts.map(part=>{
+    let matches=sources.map((source,index)=>({source,index,phrases:sourcePhrases(source)}))
+      .filter(group=>group.phrases.some(phrase=>containsPhrase(part.question,phrase)));
+    // For an author asking about another thinker, the answer belongs to the
+    // named primary author unless the plan explicitly makes this a comparison.
+    if(intent!=='compare'&&matches.length>1){
+      const primary=matches.filter(group=>group.source.role==='primary');
+      if(primary.length)matches=primary;
+    }
+    if(!matches.length&&sources.length===1)matches=sources.map((source,index)=>({source,index}));
+    if(!matches.length&&intent==='compare'&&sources.length>1)
+      matches=sources.map((source,index)=>({source,index}));
+    const narrowed=matches.flatMap(group=>{
+      const bookIds=group.source.bookIds;
+      // A part may name only its author while the original question names a
+      // particular work. Honor that explicit title hint when it uniquely
+      // identifies one of the author's books in the catalog.
+      const titleMatches=bookIds.filter(id=>{
+        const title=catalog[id];if(!title)return false;
+        const work=catalogIdentity(title).work;
+        const titleTokens=work.match(/[\p{Lu}][\p{L}\p{N}]*/gu)||[];
+        return titleTokens.some(token=>token.length>=5&&new RegExp('(?:^|[^\\p{L}\\p{N}])'+
+          token.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?=$|[^\\p{L}\\p{N}])','u').test(resolvedQuestion));
+      });
+      return titleMatches.length===1?titleMatches:bookIds;
+    });
+    return narrowed.length?[...new Set(narrowed)]:null;
+  });
+  const partsWithSources=normalizedParts.map((part,index)=>({...part,sourceBookIds:partSourceGroups[index]}));
+  return {version:CONTRACT_VERSION,resolvedQuestion,intent,
+    sources,parts:partsWithSources,scope:bounded(raw?.scope,200),
     clarification:bounded(raw?.clarification,240),queries:Array.isArray(raw?.queries)?raw.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[]};
 }
 export async function fetchWithDeadline(fetcher,url,options={},timeoutMs=30000){

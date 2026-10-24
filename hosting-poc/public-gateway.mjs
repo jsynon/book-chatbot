@@ -3616,11 +3616,13 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       return reply({error:'The selected passages could not be verified'},422,origin);
     }
     let output;
+    const evaluationAuthorized=authorizedPilotEvaluation(request,env);
+    const answerVariant=evaluationAuthorized&&data.answerVariant==='compose-only'?'compose-only':'with-review';
     try{
       // Keep the evidence pipeline opt-in for public visitors, while making
       // the authenticated holdout workflow exercise it without changing the
       // deployment-wide public answer mode.
-      if(env.READER_PIPELINE==='evidence-v2'||authorizedPilotEvaluation(request,env)){
+      if(env.READER_PIPELINE==='evidence-v2'||evaluationAuthorized){
         const selectedBookId=String(data.bookId||'');
         const plan=normalizePlan(data.plan,data.question,PILOT_BOOKS,selectedBookId);
         const scopeSources=applyExplicitBibleVerseScope(data.question,
@@ -3631,6 +3633,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             {scopeText:scopedById.get(source.id)}:{})}));
         output=await composeEvidenceAnswer(data.question,answerSources,env.AI,data.history||[],{
           plan,catalog:PILOT_BOOKS,selectedBookId,
+          review:answerVariant!=='compose-only',
           // Full prompts and source text are returned only to the dedicated
           // authenticated evaluation workflow, never to ordinary visitors.
           trace:authorizedPilotEvaluation(request,env),
@@ -3638,6 +3641,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       }else{
         output=await composeVerifiedAnswer(data.question,sourcePages,env.AI,data.history||[]);
       }
+      if(output.pipeline==='reader-evidence-v2')output.answerVariant=answerVariant;
     }
     catch(error){
       const known=new Set(['evidence-review-request-failed','evidence-review-truncated',
