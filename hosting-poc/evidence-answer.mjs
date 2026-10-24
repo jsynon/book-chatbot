@@ -4,7 +4,6 @@ export const COMPOSER_PROMPT=`Answer a reader's question intelligently using onl
 Return plain text in this exact record format. Do not use JSON, Markdown fences, or prose outside the records:
 PART P1 answered
 CLAIM C1 | P1 | direct
-TEXT
 One coherent claim or short explanatory paragraph, without citation tokens.
 EVIDENCE S1
 An exact contiguous span copied from that page, 15–1600 characters.
@@ -16,7 +15,7 @@ GAP
 What the supplied candidate passages do not establish.
 END GAP
 END PART
-Use one PART block for every supplied question part, exactly once and in the supplied order. Status must be answered, partial, or unanswered. An answered part has at least one claim and no gap; a partial part has at least one claim and a gap; an unanswered part has a gap and no claim. Give every claim a unique ID and one or more planned part IDs. Include evidence from the candidate source IDs listed for each part; for a claim spanning multiple parts, include evidence linked to every part. Include one or more exact evidence spans for every claim. Quotes in prose must occur in that claim's evidence. For synthesis include evidence for each premise. Do not invent page numbers, evidence, or facts. Do not repeat unsupported facts in gaps.`;
+Use one PART block for every supplied question part, exactly once and in the supplied order. Never add an unplanned part. Status must be answered, partial, or unanswered. An answered part has at least one claim and no gap; a partial part has at least one claim and a gap; an unanswered part has a gap and no claim. Give every claim a unique ID and one or more planned part IDs. Include evidence from the candidate source IDs listed for each part; for a claim spanning multiple parts, include evidence linked to every part. Include one or more exact evidence spans for every claim. Quotes in prose must occur in that claim's evidence. For synthesis include evidence for each premise. Do not invent page numbers, evidence, or facts. Do not repeat unsupported facts in gaps. The TEXT line is optional; claim text may follow immediately after the claim header.`;
 export const COMPOSER_FORMAT_RETRY_PROMPT=COMPOSER_PROMPT+`\nYour previous response did not follow the required record format. Regenerate from the supplied question, per-part candidate source IDs, and verified pages. Use every PART block exactly once. Keep the marker lines exact. Do not output JSON, Markdown fences, or any text outside the records.`;
 export const REVIEW_PROMPT=`Assess each claim against its attached exact evidence and the full surrounding pages. Review the draft's status and gap for every question part. Do not rewrite or add prose. Check factual support, attribution, negation, corrections, conditions and the scope requested. A synthesis may reasonably compare supported premises but must not assert unsupported history or causation. When a part asks how a claim or principle can be known, justified, or necessary, a category name alone is not a complete explanation; require the source's grounds, argument, or conditions of validity. Mark the part partial when those are absent from the claims or evidence, even if the named doctrine itself is accurate. Quotation occurrence alone does not prove support. Return JSON: {"decisions":[{"claimId":"C1","verdict":"supported|unsupported|uncertain","reason":"brief explanation"}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","claimIds":["C1"],"reason":"brief explanation"}]}. Include each supplied claim and question part exactly once. Judge completeness against the question, not the draft's confidence. Never promote a claim merely because it has a citation.`;
 class ModelFormatError extends Error{
@@ -63,8 +62,10 @@ function parseComposer(raw,plan,stage='compose'){
       const claimHeader=current.match(/^CLAIM\s+(C[1-9]\d*)\s*\|\s*((?:P[1-9]\d*)(?:\s*,\s*P[1-9]\d*)*)\s*\|\s*(direct|synthesis)$/i);
       if(claimHeader){
         i++;
-        if(lines[i]?.trim()!=='TEXT')fail();
-        i++;
+        if(lines[i]?.trim()==='TEXT')i++;
+        // Gemma sometimes emits an empty claim header before the real claim.
+        // Ignore that zero-content record, but keep validating every real claim.
+        if(/^CLAIM\s+C[1-9]\d*\s*\|/.test(lines[i]?.trim()||''))continue;
         const textLines=[],evidence=[];
         while(i<lines.length&&lines[i].trim()!=='END CLAIM'){
           const evidenceHeader=lines[i].trim().match(/^EVIDENCE\s+(S[1-9]\d*)$/i);
@@ -81,7 +82,7 @@ function parseComposer(raw,plan,stage='compose'){
         i++;
         const partIds=claimHeader[2].split(',').map(id=>id.trim());
         if(!partIds.includes(partId))fail();
-        claims.push({id:claimHeader[1],partIds,
+        claims.push({id:'C'+(claims.length+1),partIds,
           kind:claimHeader[3].toLowerCase(),text:textLines.join('\n').trim(),evidence});
         continue;
       }
