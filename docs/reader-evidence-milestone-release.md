@@ -26,7 +26,7 @@ Move the Reading Companion toward thoughtful, accurate answers grounded in passa
 | Check | Result |
 |---|---|
 | Backend Worker Node suites: `node --test hosting-poc/*.test.mjs` | 199 passed, 0 failed |
-| Website companion Node suites: `node --test reading-companion/*.test.mjs` | 135 passed, 0 failed |
+| Website companion Node suites: `node --test reading-companion/*.test.mjs` | 136 passed, 0 failed |
 | Git whitespace checks | Passed on both branches before final report commit |
 | Shared browser/Worker contract copies | Byte-identical at implementation review |
 | Full-page input, exact source binding, verse-scope boundary, final deterministic rendering | Covered by offline tests |
