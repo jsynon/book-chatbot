@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: Worker PRs #217, #220, and #221 and website PRs #186 and #187 are merged. Reviewed all-books run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) completed all seven cases with zero request failures or planner fallbacks; six of seven met the structural gate, with 15/18 supported parts and three unsupported. Hume/Kant and Wollstonecraft/Du Bois were complete. The remaining James 2:14–26 miss was traced to a retrieval handoff: the full-question search found the NKJV page, but part rewrites omitted the verse range and treated “James” as William James, while the relevant Bible page did not survive candidate selection. Website PR [#188](https://github.com/jsynon/antilogicalism/pull/188) now carries a single explicit scripture reference into unscoped part searches and reserves relevant pages from the direct-question facet; all 161 website tests pass locally. A fresh deployed reviewed run is still needed to establish live behavior.
+Status: Worker PRs #217, #220, and #221 and website PRs #186 and #187 are merged. Reviewed all-books run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) completed all seven cases with zero request failures or planner fallbacks; six of seven met the structural gate, with 15/18 supported parts and three unsupported. Hume/Kant and Wollstonecraft/Du Bois were complete. The remaining James 2:14–26 miss was traced to a retrieval handoff: the full-question search found the NKJV page, but part rewrites omitted the verse range and treated “James” as William James, while the relevant Bible page did not survive candidate selection. Website PR [#188](https://github.com/jsynon/antilogicalism/pull/188) now carries a single explicit scripture reference into unscoped part searches and reserves relevant pages from the direct-question facet; all 161 website tests pass locally, and its [website smoke](https://github.com/jsynon/antilogicalism/actions/runs/40158758745) and [production retrieval evaluation](https://github.com/jsynon/antilogicalism/actions/runs/40158758766) workflows passed. A fresh deployed reviewed run is still needed to establish live answer behavior.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -579,6 +579,7 @@ The regression reproduces the artifact's ranking and routing pattern: the NKJV p
 | Website suite: `node --test reading-companion/*.test.mjs` | 161 passed, 0 failed |
 | Changed module syntax checks and `git diff --check` | Passed |
 | Saved-trace-shaped retrieval replay | NKJV page retained and linked to the matching parts; no William James link |
+| GitHub PR #188 checks | Website smoke [40158758745](https://github.com/jsynon/antilogicalism/actions/runs/40158758745) and production retrieval evaluation [40158758766](https://github.com/jsynon/antilogicalism/actions/runs/40158758766) passed |
 | Added AI calls or answer-source budget | None |
 | Live deployed answer quality | Pending merge/deploy and a fresh reviewed holdout |
 
