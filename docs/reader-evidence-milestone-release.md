@@ -429,3 +429,29 @@ The Worker candidate in this PR addresses that specific gap without changing ret
 - Regression tests cover a qualified two-source inference, a one-sided citation, an unqualified hypothetical claim, and the existing answer/citation behaviors. No additional AI call is introduced.
 
 This is a bounded attempt to fix the exact transition shown by run #47, not evidence that the answer is now reliable. Local validation passed: 46 focused `evidence-answer` tests and all 246 Worker tests, with no failures. `git diff --check` is clean. After merge and Worker deployment, first repeat the standalone Nietzsche/Kierkegaard focused all-books with-review case. Inspect the final inference sentence, its two author-source citations, and the selected exact spans; confirm structural completion and no fabricated historical attribution. If it passes, rerun the established five-question focused suite once to check for collateral effects, especially pseudonymous voice attribution. Do not call the milestone complete from offline tests or this one-case regression; keep live semantic verification and the frozen acceptance suite pending until the deployed results support that conclusion.
+
+## October 25, 2026: run #48 reviewer format and citation-binding failures
+
+The focused all-books with-review workflow [#48](https://github.com/jsynon/antilogicalism/actions/runs/40214265811) tested one Nietzsche/Kierkegaard case with `reader-evidence-v2`. The artifact records Worker version `4a1d8a43-b273-43dd-ab0c-677409e9ed27`. The request and planner completed without fallback; composition and review used the expected two Worker answer calls (three calls total including planning). The structural result was 0/1. The reviewer stopped normally, rather than reaching its output limit, but returned malformed JSON at `"spansBySource:{}`. The Worker failed closed: it accepted no review map or highlights and kept all three parts partial. This isolates a format-contract failure in the reviewer handoff.
+
+The trace also exposed two independent sentence-to-evidence defects in the composed hypothetical conclusion. The conclusion combined a Nietzsche-based inference and a Kierkegaard contrast in one sentence with separate citation groups (`[S4]` and `[S2,S3]`). The deterministic guard pooled citations across the sentence, so it treated the inference as two-sided even though its own group cited only Nietzsche. Then the quotation audit's greedy search attached “fictitious morality” to the later `[S2,S3]` group instead of the first `[S4]` group, which contains the quoted words. The audit therefore removed the inference sentence. These are code-boundary failures; the relevant Nietzsche and Kierkegaard pages were present. The revised composer prompt from PR #236 was active, and its direction alone did not prevent either defect. Pseudonymous voice naming improved in the draft, but the failed review prevented an accepted answer. No artifact rubric scores were supplied.
+
+## October 25, 2026: run #48 handoff repair candidate
+
+The current Worker candidate addresses the two deterministic linkage failures and makes the review response smaller and less nested:
+
+- A hypothetical conclusion must be a standalone sentence. Its one citation group must contain source IDs from every planned author group. Separate citation groups elsewhere in the same sentence can no longer satisfy that gate.
+- The exact-quote audit binds a quoted phrase to the first following citation group in its sentence, including a citation placed after sentence-ending punctuation. It cannot borrow a later comparison citation. Regression coverage reproduces the run #48 order (`[S4]`, then `[S2,S3]`) and checks quotes followed by additional sentence text.
+- Reviewer output now has separate root-level `parts` and `claims` arrays. Each claim returns source-encoded span IDs such as `S1-Q2`; the Worker derives the source ID and checks the selected ID against that claim's cited pages and its exact server-held span map. Part coverage stays explicit. Missing, duplicate, unknown, or malformed decisions remain fail-closed; invalid extra span IDs cannot enter the evidence map.
+- The evaluator and integration-test fixtures use the same compact response contract, so the Worker-level path and public pilot test exercise the actual schema together.
+
+The change stays inside the Worker answer path. It does not alter retrieval, corpus/fingerprint verification, the public response fields, site integration, model choice, or the two-call compose/review budget. No new repair call or JSON-mode dependency is introduced. Repository tests establish contract and evidence-map behavior; they cannot establish that a deployed model will always return valid JSON or that a semantic inference is sound.
+
+| Candidate validation | Result |
+|---|---|
+| Focused evidence-answer tests | 49 passed, 0 failed |
+| Full Worker tests: `node --test hosting-poc/*.test.mjs` | 249 passed, 0 failed |
+| `git diff --check` | Passed |
+| Live workflow / semantic review | Pending merge and Worker deployment |
+
+After this candidate is merged and deployed, rerun the standalone Nietzsche/Kierkegaard focused all-books with-review case first. Confirm that the reviewer returns the flat shape and valid span IDs, the final inference is a standalone sentence with both author groups in one citation group, and the exact selected spans support each premise. Then rerun the established five-case focused set once for collateral effects. Structural completion is necessary but not sufficient; manually inspect the answer's authorship and source passages. Keep the broader unseen acceptance set frozen until those checks pass.
