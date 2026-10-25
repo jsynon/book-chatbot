@@ -2222,13 +2222,16 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
  assert.equal(JSON.stringify(details).includes(pilotBaseEnv.TURNSTILE_SECRET),false);
 });
 test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
- const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
+ const revision='abcdef0123456789abcdef0123456789abcdef01';
+ const metadata={id:'version-0123456789abcdef',tag:revision,timestamp:'2026-10-21T00:00:00.000Z'};
  assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
   workerSourceBuild:'public-gateway-evidence-selection-v3',
   workerVersionId:metadata.id,workerVersionTag:metadata.tag,
+  workerSourceRevision:revision,
   workerVersionTimestamp:metadata.timestamp
  });
  assert.equal(workerVersionDiagnostics({}).workerVersionId,null);
+ assert.equal(workerVersionDiagnostics({CF_VERSION_METADATA:{tag:'quality-pilot'}}).workerSourceRevision,null);
  const plannerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata},
   model:async()=>({choices:[{finish_reason:'stop',message:{content:
    '{"queries":["specific first event cause","distinct second event cause"]}'}}]})});
@@ -2237,6 +2240,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(planned.status,200);
  assert.equal(planData.workerVersionId,metadata.id);
  assert.equal(planData.workerVersionTag,metadata.tag);
+ assert.equal(planData.workerSourceRevision,revision);
  assert.equal(planData.workerSourceBuild,'public-gateway-evidence-selection-v3');
  const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
  const answered=await answerPilot.post();
@@ -2244,6 +2248,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(answered.status,200);
  assert.equal(answerData.workerVersionId,metadata.id);
  assert.equal(answerData.workerVersionTimestamp,metadata.timestamp);
+ assert.equal(answerData.workerSourceRevision,revision);
 });
 test('public highlights follow inline citation order and include only verified source spans',()=>{
  const citations=['S1','S2','S3','S4','S5','S6'].map(id=>({id,title:id,page:Number(id.slice(1)),url:'https://example.test/'+id}));
