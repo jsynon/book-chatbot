@@ -764,10 +764,12 @@ function json(body,status=200,origin='') {
 export function workerVersionDiagnostics(env={}) {
   const metadata=env?.CF_VERSION_METADATA;
   const safe=(value,limit=128)=>typeof value==='string'&&value.length>0&&value.length<=limit?value:null;
+  const tag=safe(metadata?.tag);
   return {
     workerSourceBuild:'public-gateway-evidence-selection-v3',
     workerVersionId:safe(metadata?.id),
-    workerVersionTag:safe(metadata?.tag),
+    workerVersionTag:tag,
+    workerSourceRevision:tag&&/^[a-f0-9]{40}$/i.test(tag)?tag.toLowerCase():null,
     workerVersionTimestamp:safe(metadata?.timestamp,64),
   };
 }

@@ -94,8 +94,8 @@ test('a pronoun-led claim preserves editorial mediation from the named-author an
    text:'Nietzsche criticized the moral ideals of Christianity.',
    preview:'Nietzsche criticized the moral ideals of Christianity.'},
   {...hume,id:'S2',bookId:'239',title:portableTitle,page:578,
-   text:'Kaufmann discusses Nietzsche’s view of the New Testament in this editorial passage.',
-   preview:'Kaufmann discusses Nietzsche’s view of the New Testament in this editorial passage.'}
+   text:'Kaufmann discusses Nietzsche’s view of the New Testament. In The Antichrist itself, Nietzsche cites Luke 6:23, and Kaufmann comments on what that citation represents.',
+   preview:'Kaufmann discusses Nietzsche’s view of the New Testament. In The Antichrist itself, Nietzsche cites Luke 6:23, and Kaufmann comments on what that citation represents.'}
  ];
  const plan={...onePartPlan,
   sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['54','239']}],
@@ -114,12 +114,12 @@ test('a pronoun-led claim preserves editorial mediation from the named-author an
    plan,catalog:{...catalog,54:directTitle,239:portableTitle},trace:true
   });
  };
- const unmediated=await run('He characterized the New Testament as representing outcasts and sinners. [S2]');
+ const unmediated=await run('He characterized the New Testament as representing the outcasts and sinners of Judaism rather than progress over the Old Testament. [S2]');
  assert.equal(unmediated.coverage,'partial');
  assert.ok(unmediated.trace.reviewContract.supportIssues.some(issue=>
   issue.reason==='editorial-source-attribution-unqualified'&&issue.sourceId==='S2'));
  assert.doesNotMatch(unmediated.answer,/He characterized/);
- const mediated=await run('According to Kaufmann’s commentary, he characterized the New Testament as representing outcasts and sinners. [S2]');
+ const mediated=await run('According to Kaufmann’s commentary, he characterized the New Testament as representing the outcasts and sinners of Judaism rather than progress over the Old Testament. [S2]');
  assert.equal(mediated.coverage,'full');
  assert.match(mediated.answer,/According to Kaufmann’s commentary/);
 });
@@ -175,15 +175,17 @@ test('compact review decisions validate exact spans without rationale text or re
   if(messages[0].content.startsWith('Answer the reader'))return answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]');
   reviewPayload=JSON.parse(messages[1].content);
   const claim=reviewPayload.claims[0],span=reviewPayload.parts[0].evidence[0].spans[0];
-  assert.equal(max_completion_tokens,1200);
+  assert.equal(max_completion_tokens,1800);
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
-   claims:[{claimId:claim.claimId,status:'answered',spanIds:[span.spanId]}]})};
+   claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+    spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}]}]})};
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.coverage,'full');
+ assert.equal(result.evidenceMap.length,1,'the Worker keeps at most one exact span per cited page');
  assert.equal(result.failureCode,undefined);
  assert.deepEqual(result.evidenceMap.map(item=>item.quote),[reviewPayload.parts[0].evidence[0].spans[0].text]);
  assert.deepEqual(Object.keys(reviewPayload.claims[0]).sort(),['claimId','partId','sourceEvidence','sourceIds','text']);
@@ -233,7 +235,7 @@ test('compact review cannot verify a sentence unless every cited source has a se
 test('review truncation remains fail-closed and exposes a stage-specific reason without another call',async()=>{
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
   {choices:[{finish_reason:'length',message:{content:'{"parts":[{"partId":"P1"'}}],
-   usage:{neurons:3,prompt_tokens:500,completion_tokens:1200}}]);
+   usage:{neurons:3,prompt_tokens:500,completion_tokens:1800}}]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
@@ -274,7 +276,7 @@ test('claim-level review removes a sentence when its cited quote supports only a
  assert.equal(result.evidenceMap[0].quote,text);
 });
 
-test('a single-author sentence can drop an explicitly unsupported extra citation',async()=>{
+test('an answered part can retain a supported single-author claim after an explicit extra citation is rejected',async()=>{
  const unrelated={...hume,id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:17,
   text:'The knight of faith lives an ordinary life after making the movement of infinity.',
   preview:'The knight of faith lives an ordinary life after making the movement of infinity.'};
@@ -286,7 +288,7 @@ test('a single-author sentence can drop an explicitly unsupported extra citation
   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
   const spanFor=sourceId=>claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
-   claimId:claim.claimId,status:'answered',sources:[
+   claimId:claim.claimId,status:'partial',sources:[
     {sourceId:'S2',status:'answered',spanIds:[spanFor('S2')]},
     {sourceId:'S1',status:'unanswered',spanIds:[]}
    ]}]})};
@@ -377,8 +379,9 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/one flat top-level claims array/);
  assert.match(REVIEW_PROMPT,/There must be only one claims property/);
  assert.match(REVIEW_PROMPT,/one source decision for every source ID/);
- assert.match(REVIEW_PROMPT,/Return no more than 6 span IDs total per claim/);
- assert.match(REVIEW_PROMPT,/before selecting a second span from any source/);
+ assert.match(REVIEW_PROMPT,/exactly one best matching span ID for each answered cited source/);
+ assert.match(REVIEW_PROMPT,/Do not select multiple spans from one source/);
+ assert.match(COMPOSER_PROMPT,/attribute claims about that page to the commentator or the commentary/);
  assert.match(COMPOSER_PROMPT,/Cite every factual sentence/);
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
@@ -992,7 +995,7 @@ test('the reviewer receives an explicit source checklist and missing synthesis e
  assert.equal(ai.calls.length,2);
 });
 
-test('reviewer spans are source-balanced within the six-span per-claim budget',async()=>{
+test('reviewer uses one exact span per cited source',async()=>{
  const passage='Wollstonecraft explains how education and social position shape judgment and character. '.repeat(12);
  const sources=['S1','S4','S6'].map((id,index)=>({id,bookId:'87',title:'A Vindication of the Rights of Woman — Mary Wollstonecraft',
   page:48+index,url:`https://example.test/wollstonecraft#page=${48+index}`,text:passage,preview:passage}));
@@ -1012,10 +1015,10 @@ test('reviewer spans are source-balanced within the six-span per-claim budget',a
  const mappedSourceIds=new Set(result.evidenceMap.filter(item=>item.partId==='P1').map(item=>item.id));
  const mappedSpans=result.evidenceMap.filter(item=>item.partId==='P1');
  assert.deepEqual([...mappedSourceIds].sort(),['S1','S4','S6']);
- assert.equal(mappedSpans.length,6);
+ assert.equal(mappedSpans.length,3);
  assert.deepEqual(Object.fromEntries([...mappedSourceIds].sort().map(sourceId=>[
   sourceId,mappedSpans.filter(item=>item.id===sourceId).length
- ])),{S1:2,S4:2,S6:2},'nine returned spans must preserve both map slots for all three cited sources');
+ ])),{S1:1,S4:1,S6:1},'each of the three cited sources contributes exactly one reviewed span');
  assert.ok(mappedSpans.every(item=>sources.find(source=>source.id===item.id).text.includes(item.quote)));
  assert.deepEqual(new Set(result.evidenceHighlights.map(item=>item.source_id)),mappedSourceIds);
  assert.equal(result.coverage,'full');

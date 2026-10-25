@@ -7,7 +7,7 @@ Total output lines: 705
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: The latest deployed five-question, all-books with-review workflow is run #56, [40232733825](https://github.com/jsynon/antilogicalism/actions/runs/40232733825). It completed all requests without planner or service failures but passed 3/5 structural cases and 5/7 question parts. The two partial answers expose distinct remaining problems: an unsupported extra citation on a supported Kierkegaard sentence, and a hypothetical Nietzsche/Kierkegaard conclusion the reviewer judged too broad despite accepting the cited premise spans. The artifact has 0/5 human rubric scores. Run #56 is recorded at the end of this report; earlier 5/5 structural runs remain historical results, not the current release status. The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
+Status: The latest deployed five-question, all-books with-review workflow is run #57, [40235089177](https://github.com/jsynon/antilogicalism/actions/runs/40235089177). It completed all five requests with no planner or service failures, but passed 2/5 structural cases and supported 2/7 question parts; the artifact has 0/5 human rubric scores. The run showed a successful full answer for Kierkegaard on faith and Sunyata, while Kant remained partial after an explicitly unsupported extra citation, Nietzsche-on-Christianity misattributed an editor's commentary, and the Nietzsche/Kierkegaard review output was cut off at 1,200 tokens. Run #57 and the next bounded candidate are recorded at the end of this report; prior 5/5 structural runs remain historical results, not the current release status. The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -454,3 +454,30 @@ The hypothetical composer and reviewer instructions now require the inference to
 | Seven-question unseen acceptance run | Keep frozen until the live evidence and answer wording are satisfactory; human scoring remains necessary |
 
 The candidate has offline structural validation only. It does not establish that Gemma will produce the narrower inference or that the five answer drafts are semantically reliable. The acceptance set remains reserved, and no other retrieval, corpus, model, UI, or pipeline-stage changes are included.
+
+
+## October 25, 2026: deployed run #57 and bounded reviewer handoff candidate
+
+The focused all-books with-review workflow [#57](https://github.com/jsynon/antilogicalism/actions/runs/40235089177) used corpus v48 and completed all five requests without planner fallbacks, skips, or request failures. It estimated the existing 15 AI calls. The structural result fell from run #56's 3/5 cases and 5/7 parts to 2/5 and 2/7. This is a meaningful regression signal, but one stochastic run cannot isolate whether the source change caused it. The artifact contained no human rubric scores.
+
+The per-case traces identify separate behavior to address:
+
+| Case | Result | Finding |
+|---|---|---|
+| Transcendental idealism | Partial | One answer claim was reviewed as partial because it cited a supporting page and an explicitly unsupported extra page. The current cleanup only runs when the reviewer marks the claim itself answered, so this supported single-author claim was dropped despite an answered part and a usable exact span. |
+| Kierkegaard on faith | Full | The answer passed with four cited source pages. This is a positive control from the same run, not a quality score. |
+| Nietzsche on Christianity | Partial | The claim about the New Testament was stated as Nietzsche's own position but came from Walter Kaufmann's editorial commentary in *The Portable Nietzsche*, p. 578. Trace diagnostics flagged the attribution; the final answer still included the unqualified wording. |
+| Sunyata | Full | The answer passed with four cited pages, but its narrow Zen framing does not establish a general Buddhist definition. Keep this semantic limitation visible when reviewing the actual pages. |
+| Nietzsche on Kierkegaard | Unverified draft | The review response hit `finish_reason=length` at exactly the 1,200-token output cap on a roughly 14.5k-token prompt containing 12 claims. No evidence map was accepted. The Worker correctly failed closed rather than returning the draft as verified. |
+
+The artifact also does not establish exact Worker source identity. Its Cloudflare version ID changed from #56, but the source build remained the generic `public-gateway-evidence-selection-v3`, and no Git revision was attached. PR #246 had merged shortly before the run and its post-merge contract check passed; the run nevertheless cannot prove which source commit the deployed version contained. The site revision stayed at `52a39d3a18a19800eeb9fc4b21a5bc211ae51a00`.
+
+The bounded candidate changes three connected handoffs without increasing the call count, changing retrieval, or altering the public answer schema:
+
+- The reviewer now requests one strongest exact span for each answered cited page rather than multiple spans from a page. The Worker enforces that cap, reducing output size and preventing redundant evidence-map entries. The per-claim ceiling remains six, with all cited sources still requiring their own decisions and spans.
+- For ordinary single-source-group facts only, citation cleanup can retain a claim marked partial if the whole part is explicitly answered, every cited page has an explicit decision, at least one page is answered with an exact valid span, and each removed page is explicitly partial or unanswered. It cannot repair a missing decision or span, and it remains disabled for comparisons and hypothetical inference. The resulting inline citation, citation list, and evidence map are rebuilt from the retained page IDs.
+- The composer gets a direct instruction to attribute editorial-page claims to the named commentator or commentary, never to the credited author as direct speech. Existing deterministic page-voice checks remain in place; the instruction does not infer speaker identity from catalog metadata alone.
+- Worker response diagnostics carry `workerSourceRevision` only when Cloudflare version metadata includes a 40-character Git SHA tag. The website evaluator records this field per planner/answer result and collects the distinct revisions in the saved artifact's `workerSourceRevisions` list. Deployments must tag the version with the source SHA for this field to identify the exact code revision.
+- Review completion capacity rises from 1,200 to 1,800 tokens while composition stays at 1,800. Truncation still fails closed without a retry, and normal reviewed execution remains one planner plus two answer-stage calls per case.
+
+The source/citation contract, one-span-per-source normalization, editorial prompt instruction, Worker revision metadata, and evaluator propagation are covered by offline regressions. This candidate is not a live quality result. After merging and deploying both repositories with the Worker tagged by its Git SHA, rerun the focused five cases and inspect the exact citations, page voice, accepted quote-to-claim map, and review finish reason. Keep the unseen acceptance set frozen until those traces are clean and the answer wording is judged against the cited pages. The two full answers in #57 should also receive source-level reading; structural passes do not certify their definitions.
