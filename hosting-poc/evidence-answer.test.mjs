@@ -251,6 +251,9 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/a missing premise, one-sided citation, or conclusion stronger than the premises is partial or unanswered/);
  assert.match(COMPOSER_PROMPT,/If provenance names a pseudonymous work voice, identify that voice/);
  assert.match(REVIEW_PROMPT,/When provenance identifies a pseudonymous work voice/);
+ assert.match(REVIEW_PROMPT,/a first-person narrator's inability or personal experience does not establish a general psychological effect or definition/);
+ assert.match(REVIEW_PROMPT,/do not treat them as the credited author's doctrine or as a tradition-wide definition/);
+ assert.match(REVIEW_PROMPT,/A broad criticism of Christianity does not by itself establish how an author would judge a specific thinker or doctrine/);
 });
 
 const hypotheticalQuestion='What would Nietzsche think about the thought of Kierkegaard?';

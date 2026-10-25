@@ -28,10 +28,37 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
   const byId=new Map(citations.map(source=>[String(source?.id||''),source]));
   const citationOrder=[...new Set([...citationIds(answer),...citations.map(source=>String(source?.id||''))])]
     .filter(id=>byId.has(id));
-  const anchors=new Map(citationOrder.map(id=>[id,[...new Set(evidenceMap
-    .filter(item=>item?.id===id&&item.quoteVerified===true&&
+  const stopWords=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
+  const terms=value=>new Set((String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>term.replace(/(?:ing|ed|es|s)$/u,'')).filter(term=>
+      term.length>=3&&!stopWords.has(term)));
+  const readableQuote=value=>{
+    const quote=String(value||'');
+    if(!quote)return 0;
+    const letters=[...quote].filter(char=>/[\p{L}\p{N}]/u.test(char)).length;
+    const suspicious=[...quote].filter(char=>/[�¤ᤄ]/u.test(char)).length;
+    return letters/quote.length-suspicious/quote.length;
+  };
+  const anchors=new Map(citationOrder.map(id=>{
+    const candidates=evidenceMap.filter(item=>item?.id===id&&item.quoteVerified===true&&
       typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
-    .map(item=>(item.anchorQuote||item.quote).trim()))]]));
+      .map((item,index)=>({quote:(item.anchorQuote||item.quote).trim(),point:item.point||'',index}))
+      .filter((item,index,all)=>all.findIndex(other=>other.quote===item.quote)===index);
+    // Reviewer-approved spans are already exact and source-verified. When a
+    // page has several, prefer the span whose vocabulary best matches its
+    // linked claim; stable input order breaks ties and remains the fallback
+    // when the claim has no useful lexical overlap.
+    candidates.sort((left,right)=>{
+      const score=item=>{
+        const pointTerms=terms(item.point),quoteTerms=terms(item.quote);
+        if(!pointTerms.size||!quoteTerms.size)return 0;
+        let overlap=0;for(const term of pointTerms)if(quoteTerms.has(term))overlap++;
+        return overlap/Math.sqrt(pointTerms.size*quoteTerms.size);
+      };
+      return score(right)-score(left)||readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
+    });
+    return [id,candidates.map(item=>item.quote)];
+  }));
   const highlights=[],used=new Map();
   const add=(id,quote)=>{
     const source=byId.get(id);
@@ -3763,7 +3790,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     // from fingerprint-verified source pages. Missing anchors stay missing;
     // a catalog preview is not evidence for a claim.
     const evidenceHighlights=selectPublicEvidenceHighlights(output.answer,
-      output.citations||[],output.evidenceMap||[],3);
+      output.citations||[],output.evidenceMap||[]);
     // Suggestions only populate the next question; they are not model claims
     // or an implicit extra billable AI call. Fresh retrieval occurs each turn.
     const followUpQuestions=output.outcome==='verified-source-draft'?

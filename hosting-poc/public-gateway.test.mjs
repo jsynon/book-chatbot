@@ -2260,6 +2260,24 @@ test('public highlights follow inline citation order and include only verified s
  assert.deepEqual(selectPublicEvidenceHighlights('Claim [S1].',citations,[]),[],
   'a missing reviewed anchor does not fall back to a generic preview');
 });
+test('public highlights prefer the reviewed span most relevant to its linked claim',()=>{
+ const citations=[
+  {id:'S3',title:'On the Genealogy of Morals — Friedrich Nietzsche',page:10,url:'https://example.test/nietzsche#page=10'},
+  {id:'S2',title:'Last Writings — Kitarō Nishida',page:18,url:'https://example.test/nishida#page=18'}
+ ];
+ const resentment='The slave revolt in morality begins when resentment itself becomes creative and gives birth to values.';
+ const irrelevant='Does the church today still have necessary work to do, or could we dispense with it?';
+ const sokuHi='Soku hi exhibits the dynamic tension of affirmation and negation without synthesis.';
+ const editorial='Introduction: sunyata is correlated with dependent co-arising in Nagarjuna.';
+ const evidenceMap=[
+  {id:'S3',point:'Christianity is a destructive, life-hostile principle that emerged from resentment.',quote:irrelevant,quoteVerified:true},
+  {id:'S3',point:'Christianity is a destructive, life-hostile principle that emerged from resentment.',quote:resentment,quoteVerified:true},
+  {id:'S2',point:'Sunyata is expressed through the paradoxical logic soku hi, sustaining a dynamic tension of affirmation and negation.',quote:editorial,quoteVerified:true},
+  {id:'S2',point:'Sunyata is expressed through the paradoxical logic soku hi, sustaining a dynamic tension of affirmation and negation.',quote:sokuHi,quoteVerified:true}
+ ];
+ const result=selectPublicEvidenceHighlights('Nietzsche on Christianity [S3]. Sunyata [S2].',citations,evidenceMap,2);
+ assert.deepEqual(result.map(item=>item.quote),[resentment,sokuHi]);
+});
 
 test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounded AI',async()=>{
  const pilot=await pilotScenario();
@@ -2321,7 +2339,8 @@ test('public highlights show multiple distinct verified passages from one cited 
  const data=await response.json();
  assert.equal(data.citations.length,1);
  assert.equal(data.evidenceMap.filter(item=>item.quoteVerified).length,2);
- assert.deepEqual(data.evidenceHighlights.map(item=>item.quote),[first,second]);
+ assert.deepEqual(data.evidenceHighlights.map(item=>item.quote),[second,first],
+  'the most claim-relevant reviewed passage leads the source card');
  assert.equal(data.evidenceHighlights.every(item=>item.source_id==='S1'&&item.page===38),true);
  assert.equal(pilot.stats().calls,2);
 });
@@ -2488,6 +2507,41 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
  pilot.environment.AI_RATE_LIMITER={limit:async()=>({success:false})};
  assert.equal((await pilot.post({headers})).status,429);
  assert.equal(pilot.stats().verifyCalls,0);
+});
+test('evidence-v2 public route returns six reviewed highlights for six cited pages',async()=>{
+ const token='six-reviewed-highlight-test-token';
+ const model=async(_model,input)=>{
+  const system=input.messages?.[0]?.content||'';
+  const payload=JSON.parse(input.messages[1].content);
+  if(system.startsWith('Review every answer sentence separately')){
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     spanIds:claim.sourceIds.map(sourceId=>payload.parts.find(part=>part.partId===claim.partId)
+      .evidence.find(item=>item.id===sourceId).spans[0].spanId)}))
+   })}}]};
+  }
+  const sourceIds=payload.evidence.map(source=>source.id);
+  return {choices:[{finish_reason:'stop',message:{content:
+   'PART P1\nThe verified pages support this explanation across all six cited passages ['+sourceIds.join(', ')+'].'
+  }}]};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const page38=pilot.fixture.body.sources[0];
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What do these passages establish?',answerVariant:'with-review',
+  sources:[38,39,40,41,42,43].map(page=>({...page38,page})),
+  plan:{intent:'explain',sources:[],parts:[{question:'What do these passages establish?'}]}
+ }});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(result.citations.length,6);
+ assert.equal(result.evidenceHighlights.length,6);
+ assert.deepEqual(result.evidenceHighlights.map(item=>item.source_id),
+  ['S1','S2','S3','S4','S5','S6']);
+ assert.ok(result.evidenceHighlights.every(item=>item.quoteLocated===undefined));
+ assert.equal(pilot.stats().calls,2,'the public highlight fix adds no AI request');
 });
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
