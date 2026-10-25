@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 26049)
-Total output lines: 540
-
 Warning: truncated output (original token count: 20063)
 Total output lines: 424
 
@@ -225,7 +222,138 @@ The job log also confirms that stage progress is visible during execution: it em
 | Kant: transcendental idealism | Pass; one requested part, full coverage | Five cited sentences link to a single page of the *Prolegomena*. The selected spans directly cover representation, space/time and appearances, Kant's use of “transcendental,” and the limits of experience. The direct-definition normalization now matches the reader's one-part question. |
 | Kierkegaard: faith | Pass; one requested part, full coverage | The earlier unsupported inwardness sentence is now linked to its own matching claim evidence, rather than borrowing the movement-of-infinity quote. The answer is very long for this broad question and expands into multiple examples and conditions; structural validity does not show that this level of detail is helpful. |
 | Nietzsche on Christianity | Pass; one requested part, full coverage | Most claim spans match the associated statement. The final sentence bundles several claims: selected evidence supports the church's description as an obstruction to the spread of the “poison,” but the claim that Nietzsche called the church “gross and vulgar” is not present in the mapped spans. This is a residual sentence-level support gap despite the structural pass. |
-| Sunyata | Pass; one request…6049 tokens truncated…not need a code change: the prior website PR already renders up to six Worker highlights and avoids promoting generic page previews into reviewed excerpts. Because the selector now changes ordering only among exact reviewed spans, it needs no website contract or provenance-copy update. The release gate remains the same: merge and deploy this Worker candidate, run one focused all-books with-review five-question suite, inspect both live excerpts and answer claims, and then use the unseen seven-question acceptance workflow only if the semantic review is satisfactory. Structural tests alone do not establish an answer-quality pass.
+| Sunyata | Pass; one request…63 tokens truncated…is is partial; one-sided inference remains incomplete |
+| AI calls in regressions | 2 (composition and review), unchanged |
+| `git diff --check` | Passed |
+| Worker PR | [#239](https://github.com/jsynon/book-chatbot/pull/239) merged at 18:12 UTC before run #51 |
+| Deployment / follow-up run | Worker version in run #51 confirms the flat reviewer and hypothetical-inference changes were active; see run #51 below |
+
+The run #51 follow-up is recorded below. Its results confirmed that the two run #50 issues were addressed, while revealing a separate span-budget failure in multi-source reviewer evidence.
+
+## October 25, 2026: run #51 and source-balanced reviewer evidence
+
+After Worker PR #239 merged at 18:12 UTC, the focused five-question all-books with-review workflow [40220208494](https://github.com/jsynon/antilogicalism/actions/runs/40220208494) ran at 18:13 UTC on the same website revision as run #50. It used Worker version `214f4d99-86e4-42c5-bbf8-0fde162dded5` and source build `public-gateway-evidence-selection-v3`. The trace contains the new comparison-alone instruction and shows the reviewer request with one root `claims` array, 12 claims, explicit `partId` values, and no nested claim arrays. The workflow completed all five cases, with 0 request failures, 0 planner fallbacks, and 0 skipped cases. It estimated 15 AI calls. All 15/15 highlights were located in source text, which confirms quote location but does not establish semantic support. The automated result was 2/5 structural cases and 4/7 supported parts; 3 parts were partial and none unsupported. All five human-review rubrics remained blank, so no human semantic scores are recorded.
+
+| Case | Result | Trace finding |
+|---|---|---|
+| Kant: transcendental idealism | Partial | The reviewer marked one claim partial even though its selected span on *Critique of Pure Reason*, p. 199 directly states that extended bodies or series of changes have no self-subsistent existence apart from human thought. The review contract itself was valid. This looks like a reviewer false negative or an overly broad paraphrase, not missing retrieval. |
+| Kierkegaard on faith | Pass | Full structural coverage; citations map to five selected passages. |
+| Nietzsche on Christianity | Pass | Full structural coverage; the claim-specific handoff fix from PR #238 remains effective. |
+| Sunyata | Partial | The reviewer correctly downgraded a claim that conflated two relations: the page describes Zen as practically belonging to the Madhyamika school and separately says Zen's ultimate significance upholds the Sunyata system. That does not establish the answer's phrasing that Madhyamika is the practical application of Sunyata. The unsupported extra claim was removed, leaving the requested definition and other supported points. |
+| Nietzsche on Kierkegaard | Partial | The answer now includes the requested cautious, standalone inference, and reviewer output contains spans from Nietzsche and both cited Kierkegaard pages. However, `normalizeReview` considers only `decision.spanIds.slice(0,6)`. The reviewer returned three ranked spans for each of the claim's three cited source IDs (nine total); the first six covered the first two sources, so the third source was discarded before validation. `reviewContract.issues` remained empty, but support issue `missing-claim-source-span` kept the inference partial. |
+
+This run demonstrates that PR #239 fixed the duplicate-key input-shape failure and elicited the missing synthesis sentence. It did not reach the milestone because the next boundary still lost valid cited-source evidence during normalization. The follow-up candidate and its validation are recorded immediately below.
+
+### Run #51 follow-up candidate: source-balanced reviewer spans
+
+The Worker now groups reviewer span IDs by the cited, fingerprint-verified source, removes duplicate IDs, and round-robins selection by rank under the existing six-span-per-claim limit. A claim with three cited pages and nine returned spans retains two spans per page; if there are more than six cited pages, the existing missing-source gate keeps the claim incomplete. The reviewer prompt requests one relevant span from every cited source before a second from any source. Claim-to-source exact text resolution, the strict gate, public response contract, page packet, and compose-plus-review call budget are unchanged.
+
+| Candidate validation | Result |
+|---|---|
+| Focused evidence-answer tests | 53 passed, 0 failed |
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 253 passed, 0 failed |
+| Three-source regression | Nine ranked spans become six mapped spans, two per source; all three cited sources remain represented and the answer stays supported |
+| Over-budget regression | A claim citing seven sources remains incomplete with no evidence map; no source is silently accepted as fully covered |
+| Model-call budget | Two answer-stage calls (composition and review), unchanged |
+| `git diff --check` | Passed |
+| PR / CI / deployment | Worker PR #240 merged; the deployed run #52 below confirms all three sources survive normalization. Semantic inspection remains required. |
+
+This fixes the normalization loss demonstrated by run #51, not every quality issue in that run. It does not claim that all retained spans semantically support a claim; the reviewer decision and exact-span gate remain fallible, so the next live artifact still needs passage-level inspection. Keep the unseen acceptance suite frozen until the deployed five-case run and semantic review are complete.
+
+For the next quality run, the target remains 5/5 structural cases and 7/7 supported parts, but the first validation should confirm that all citations on a multi-source claim survive the six-span selection limit. Separately inspect the Kant reviewer downgrade and the sunyata relation error; the latter is a composition scope/precision issue, not evidence that the reviewer contract failed. Do not treat quote-location counts or a structurally passing case as semantic accuracy scores.
+
+## October 25, 2026: deployed run #52 and source-balanced span result
+
+Worker PR #240 merged at 18:33 UTC. The user then ran the focused five-question, all-books, with-review workflow [40221892508](https://github.com/jsynon/antilogicalism/actions/runs/40221892508), which completed at 18:39 UTC on corpus v48 and site revision `cce7533bcba0988c301452d9f999233f8586e053`. The Worker version was `d491394b-42e7-4023-9ee6-067b8ae9c8a9`, source build `public-gateway-evidence-selection-v3`. The job log records planner, retrieval, and answer progress for every case, including an `ANSWER WAITING` heartbeat on sunyata. All five requests completed with no request failures, planner fallbacks, skips, or unscored cases. The run used the expected 15 total estimated AI calls (one planner and two answer-stage calls per case); the artifact records 10 answer-stage calls and 680.14 neurons. Each answer cited at least two sources, and the 15/15 displayed evidence highlights were located in source text. Quote location and structural consistency do not establish claim entailment.
+
+The aggregate structural result improved from run #51's 2/5 cases and 4/7 supported parts to 5/5 cases and 7/7 parts. The artifact's own human rubric remains **0/5 reviewed**; there is no official semantic score. The source-balanced fix is confirmed active by the trace for the Nietzsche/Kierkegaard synthesis: P3-C4 returned nine span IDs, three each from S1, S2, and S6; normalization preserved six exact spans, two per source. The final inference therefore no longer loses a cited source at the six-span boundary. That does not show that every retained span supports every clause.
+
+| Case | Structural result | Evidence-based finding |
+|---|---|---|
+| Kant: transcendental idealism | Pass; 1/1 part | Strongest answer in the set. It defines appearances as representations, preserves their empirical reality, distinguishes things-in-themselves, and explains Kant's use of “transcendental.” *Critique of Pure Reason*, p. 199 and *Prolegomena*, p. 22 directly support the main claims. |
+| Kierkegaard on faith | Pass; 1/1 part | The six claims have exact spans, but the answer combines material from *Fear and Trembling* and *The Sickness Unto Death* as if it were one undifferentiated Kierkegaard position. The cited works use pseudonymous voices (Johannes de Silentio and Anti-Climacus); the answer does not preserve that distinction. It also reads as a list of doctrines more than a connected explanation. |
+| Nietzsche on Christianity | Pass; 1/1 part | The two-sentence answer is concise and its broad account of Christianity, weakness, resentment, and the will to power is consistent with the cited pages. The second sentence adds that the will-to-power prescription combats depression among the weak. The original *Genealogy of Morals*, p. 74 discusses the emotional stimulant that can overcome depression and the love-of-neighbor prescription, but the selected review spans include the will-to-power and herd/weakness passages—not the depression passage. The source page is available, but that material clause was not linked in the evidence map. This is a claim-to-span selection gap hidden by the structural pass. |
+| Sunyata | Pass; 1/1 part | The answer identifies emptiness and cites Suzuki's Zen discussion and Huston Smith's comparative *Forgotten Truth*, p. 66. It still does not explain the central philosophical sense of emptiness; it mainly supplies associations, a cross-religious comparison, and a Zen qualification. Smith's p. 66 places sunyata alongside nirvana under a discussion of “the Infinite,” which should remain clearly marked as that author's comparative framing, not a universal Buddhist equivalence. Suzuki's p. 53 says the foothold of Sunyata must be left behind in Zen; “so profound” is an interpretive gloss rather than the page's stated reason. |
+| Nietzsche on Kierkegaard | Pass; 3/3 parts | Both author-side positions and a standalone cautious inference are present. The targeted inference now retains spans from all cited source IDs: Nietzsche pages 594 and 547 (S1/S6), and Kierkegaard's *Philosophical Fragments*, p. 56 (S2). However, the selected S2 spans discuss second nature and the historical event, not the “absurd”; the directly relevant “by virtue of the absurd” passage appears in the cited answer's *Fear and Trembling* source S4 but is not cited by the final inference. The contrast is plausible but its final evidence handoff remains incomplete for that clause. |
+
+The Drive PDFs were checked for the passages above. The *Philosophical Fragments* citation URL resolves to the Drive file; an initial metadata lookup used a mistyped file ID and was corrected by searching the exact title. This was not a broken citation in the artifact.
+
+As a separate provisional review of the artifact—not a score entered in the workflow's human rubric—the answers score as follows on the project's 0–2 dimensions:
+
+| Case | Accuracy | Question coverage | Explanation quality | Citation support | Citation completeness |
+|---|---:|---:|---:|---:|---:|
+| Kant: transcendental idealism | 2 | 2 | 2 | 2 | 2 |
+| Kierkegaard on faith | 1 | 2 | 1 | 2 | 2 |
+| Nietzsche on Christianity | 2 | 1 | 1 | 1 | 1 |
+| Sunyata | 1 | 1 | 1 | 1 | 2 |
+| Nietzsche on Kierkegaard | 1 | 2 | 1 | 1 | 1 |
+| **Mean** | **1.4** | **1.6** | **1.2** | **1.4** | **1.6** |
+
+The result demonstrates progress in deterministic evidence retention and question-part coverage, not general semantic reliability. The run also exposes two recurring review weaknesses: the answer can bundle a subclaim whose precise span was not selected (Nietzsche on Christianity), and a multi-source inference can pass while one premise's selected spans only loosely support its wording (Nietzsche on Kierkegaard). The sunyata case remains more about source choice and conceptual depth than reviewer formatting. The broad faith answer still needs speaker-aware treatment of pseudonymous works. All five answers have only three visible highlights even when they cite five or six pages; in the Nietzsche/Kierkegaard answer, those previews show S1, S6, and S5, so the inference's S2 evidence is not among the highlighted excerpts. All inline citation IDs do resolve, but preview highlights do not cover every claim/source.
+
+The next development step should use these exact run #52 traces as a claim-to-evidence audit set: evaluate whether ranked reviewer candidates expose the spans for every material clause, require claim wording and citations to remain aligned, and ensure the inference's Kierkegaard premise has a selected passage for the “absurd.” Separately, improve sunyata retrieval toward sources that explain the underlying philosophical concept, and preserve pseudonymous voice distinctions in broad Kierkegaard summaries. Use a focused offline regression of the observed spans before spending another five-case live run; keep the unseen acceptance set frozen until a deployed candidate is reviewed semantically. Do not infer a quality pass from the 5/5 structural result.
+
+## October 25, 2026: highlight coverage and source-reader handoff candidate
+
+Run #52 also showed a presentation defect: the public Worker returned at most three exact reviewer-approved excerpts even when an answer cited six pages. In the deployed site baseline, other source cards showed a no-highlight message but still used a generic “Read passage” button. The update made the panel label its contents as citations and verified passages, clarified that no reviewer-approved excerpt is available when that applies, and distinguishes “Read highlighted passage” from “Read source.”
+
+The bounded candidate fixes that handoff across the Worker and website:
+
+- The Worker can return up to six reviewed highlights, matching the existing six-page answer packet. It keeps inline citation order, requires `quoteVerified`, and uses the reviewer-resolved exact anchor; it does not generate or infer highlight text.
+- The website shows the exact verified excerpt when available; otherwise it says no reviewed excerpt is available and opens the page without a quote highlight.
+- Diagnostic reports retain up to six highlight records so the artifact can show what the interface received. No model calls, answer composition, review decisions, retrieval behavior, corpus contract, or page limit change.
+
+Candidate regressions cover six-source public selection, citation-order behavior, rejection of unverified excerpts, source-reader button labels, and six-highlight diagnostic retention. The Worker suite passes 253/253 tests and the full website suite passes 180/180. The initial website run exposed an obsolete assertion expecting the old generic “Read passage” label; the test was updated to reflect distinct “Read highlighted passage” / “Read source” labels. At PR opening, the changes had not been merged or deployed and no live AI workflow had been run. Worker PR #241 and website PR #205 were subsequently merged; the post-merge live validation and the remaining caller bug are recorded in run #53 below.
+
+The planned post-merge validation was run #53, recorded below. It showed that the selector's new default was overridden at its public call site and that quote relevance still needs a claim-level check. Do not run the untouched acceptance set yet; first correct both issues offline, then repeat a focused live case and manually inspect the source reader. The workflow's All Books acceptance baseline is about 21 calls for seven cases, plus bounded recovery. The broader answer-quality milestone remains separate: use the run #52/#53 gap set (speaker attribution, clause-to-span fit, cross-author inference support, and sunyata's definition depth) instead of broad prompt edits.
+
+## October 25, 2026: focused run #53 after highlight PRs
+
+After Worker PR #241 and website PR #205 merged, focused all-books with-review run [#53](https://github.com/jsynon/antilogicalism/actions/runs/40224196752) ran all five focused questions on corpus v48. The site revision was `0c3171deda81649e793c0724c9dbac35584bbad0`; the artifact identifies Worker version `ad8c60ea-3949-465e-a643-ebc21a580925` and source build `public-gateway-evidence-selection-v3`. All five requests completed with no failures, planner fallbacks, or skips. It used the expected 15-call estimate (five planner calls and ten answer-stage calls), totaling 731.79 answer-stage neurons. The structural result remained 5/5 cases and 7/7 supported parts, the same as run #52. The artifact still has **0/5 human-reviewed scores**, so these are not semantic acceptance results.
+
+| Case | Structural result | Citations / highlights | Passage and answer finding |
+|---|---|---:|---|
+| Kant: transcendental idealism | Pass; 1/1 part | 2 / 3 | Clear, well-supported definition using *Critique of Pure Reason*, p. 199 and *Prolegomena*, p. 22. Both cited pages have highlights; the third highlight is a second passage from p. 199. |
+| Kierkegaard on faith | Pass; 1/1 part | 5 / 3 | The answer now names Johannes de Silentio, Anti-Climacus, and Johannes Climacus separately. One sentence still generalizes from de Silentio's first-person statement that he cannot make the movement of faith into a claim about what faith does to the mind. The exact quoted span establishes his stated inability and the absurd, not that general psychological effect. |
+| Nietzsche on Christianity | Pass; 1/1 part | 3 / 3 | The answer covers Christian hedonism, resentment, the metaphysical basis of scientific faith, and the morality of pity. Its S3 highlight asks whether the church still has a right to exist, which does not support the nearby claim about Christianity's life-hostile principle and slave revolt. The evidence map contains a more relevant approved S3 span about resentment creating values, but the public selector chose the earlier span. |
+| Sunyata | Pass; 1/1 part | 4 / 3 | It supplies a basic gloss and relates sunyata to dependent co-arising and soku-hi, but still leans on Huston Smith's comparative “Infinite” framing instead of explaining emptiness in its Buddhist philosophical sense. Nishida p. 18 is explicitly marked in provenance as an editorial introduction by David A. Dilworth; the answer presents its framing as a general Buddhist claim without attribution. The displayed S2 highlight is noisy front-matter OCR and omits the more relevant soku-hi span present in the evidence map. |
+| Nietzsche on Kierkegaard | Pass; 3/3 parts | 6 / 3 | The answer distinguishes the pseudonymous Kierkegaardian voices and gives a standalone qualified hypothetical inference. Its cited Kierkegaard page (S2, *Fear and Trembling*, p. 38) supports the knight-of-faith/paradox premise. The six cited pages are represented in the evidence map, but only S1, S4, and S2 appear among the three highlights. |
+
+All 15 returned highlight quotes were located in their cited source text. However, the 15 highlights cover only 14 of the 20 cited source-page records: a second Kant excerpt uses one of the three slots, while six other cited pages have no displayed excerpt. More importantly, a quote can be exact and still be a poor highlight for the nearby answer claim, as the Nietzsche/Christianity S3 example shows. Exact-text location is a mechanical check, not claim relevance.
+
+Run #53 exposed a missed caller dependency in PR #241. That PR changed the selector's default limit from three to six, but the public answer route still calls `selectPublicEvidenceHighlights(..., 3)` explicitly. The explicit argument overrides the new default, so the live response remains capped at three. The PR's unit test exercised the selector default, while the public route integration test did not assert six returned highlights. This is a code-path mismatch, not a model or retrieval failure. The website PR improves labels for missing reviewed excerpts, but it cannot compensate for a Worker response capped at three.
+
+As a provisional review of answer text and selected spans (not the artifact's official rubric), the 0–2 ratings are:
+
+| Case | Accuracy | Question coverage | Explanation quality | Citation support | Citation completeness |
+|---|---:|---:|---:|---:|---:|
+| Kant: transcendental idealism | 2 | 2 | 2 | 2 | 2 |
+| Kierkegaard on faith | 1 | 2 | 1 | 1 | 2 |
+| Nietzsche on Christianity | 2 | 2 | 2 | 1 | 2 |
+| Sunyata | 1 | 1 | 1 | 1 | 2 |
+| Nietzsche on Kierkegaard | 1 | 2 | 1 | 1 | 2 |
+| **Mean** | **1.4** | **1.8** | **1.4** | **1.2** | **2.0** |
+
+The immediate highlight follow-up is to remove the hard-coded `3` at the public route and add an integration regression that verifies six exact spans can reach the response when six cited pages have verified anchors. The next evidence-selection improvement must also choose the most claim-relevant reviewed span for a cited page instead of blindly taking its first map entry; the current S3 and Sunyata S2 highlights show why raising the cap alone is insufficient. Keep the acceptance suite frozen until these offline route-level tests pass, then repeat one focused all-books case and manually verify the source reader. After that, proceed to the planned answer-quality milestone using the speaker, claim-span, and Sunyata findings above; only then spend the one-time seven-case acceptance budget. No code changes were made in response to run #53.
+
+## October 25, 2026: run #53 evidence-quality fix candidate
+
+The run #53 findings are now addressed in an offline Worker candidate. This is one bounded change at two connected boundaries: choose the best already-reviewed highlight for each cited page, and give the existing semantic reviewer specific scope checks for the observed overgeneralizations. It does not change retrieval, the planner, the source packet, answer structure, public response schema, or AI-call budget.
+
+The Worker highlight selector now ranks only exact, `quoteVerified` evidence-map spans against their linked claim point, using deterministic lexical overlap and a readability tie-breaker. It preserves citation order across pages, emits at most one preferred span per cited source before adding further distinct spans, and keeps the existing six-highlight limit. The public `/api/pilot-answer` route now uses that six-item default instead of overriding it with a hard-coded limit of three. A route-level regression submits six fingerprint-verified pages, cites all six, and verifies that all six approved highlights reach the response without an extra model call. Focused regressions reproduce the run #53 Nietzsche S3 and Sunyata S2 span-choice defects.
+
+The reviewer instructions now call out three general scope traps seen in run #53: a narrator's first-person inability does not establish a general psychological effect; an editor's introduction may support a claim about that commentator but not automatically the credited author's doctrine or a whole tradition; and a broad critique of Christianity alone does not establish a hypothetical judgment of a specific thinker. This strengthens the existing reviewer contract without adding a model stage or weakening fail-closed evidence requirements. Prompt-contract tests lock these instructions in place. The Sunyata retrieval facet is unchanged: the candidate page from *The Self-Overcoming of Nihilism* was not submitted to composition in run #53, and its precise page text must be checked before changing retrieval or treating it as a better source.
+
+| Candidate validation | Result |
+|---|---|
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 255 passed, 0 failed |
+| Six-page public route regression | Six citations produce six exact reviewed highlights; two AI calls, unchanged |
+| Claim-relevance regressions | The resentment passage and clean soku-hi passage rank ahead of the unrelated church question and OCR-heavy introduction excerpt |
+| Reviewer scope regressions | Contract tests require the first-person, editorial-voice, and hypothetical-bridge checks |
+| `git diff --check` | Passed |
+| Live model/workflow validation | Not run; requires merge, Worker deployment, then a focused five-case with-review run |
+
+The website source did not need a code change: the prior website PR already renders up to six Worker highlights and avoids promoting generic page previews into reviewed excerpts. Because the selector now changes ordering only among exact reviewed spans, it needs no website contract or provenance-copy update. The release gate remains the same: merge and deploy this Worker candidate, run one focused all-books with-review five-question suite, inspect both live excerpts and answer claims, and then use the unseen seven-question acceptance workflow only if the semantic review is satisfactory. Structural tests alone do not establish an answer-quality pass.
 
 ## October 25, 2026: focused run #54 after the claim-linked highlight fix
 
