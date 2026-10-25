@@ -1142,6 +1142,10 @@ function stanceSourceAuthor(question,authorBooks){
   if(subjects.size!==1)return null;
   return [...subjects.values()][0];
 }
+function isCounterfactualAuthorResponseQuestion(question){
+  return /\b(?:what|how)\s+would\b[^?!.]{0,120}\b(?:think|say|respond|react|view|regard)\b[^?!.]{0,100}\b(?:about|of|on|regarding|concerning|to)\b/i
+    .test(String(question||''));
+}
 function sourceGroupMetadata(){
   const books=Object.entries(PILOT_BOOKS).map(([bookId,title])=>({bookId,title}));
   const authorBooks=new Map();
@@ -1221,8 +1225,16 @@ function requestedSourceGroups(question,sources){
       label:author.name,bookIds:author.bookIds});
   }
   const stanceAuthor=stanceSourceAuthor(text,authorBooks);
-  if(stanceAuthor)return [{kind:'author',key:normalizedSourceGroupText(stanceAuthor.name),
-    label:stanceAuthor.name,bookIds:new Set(stanceAuthor.bookIds)}];
+  const counterfactualAuthorGroups=groups.filter(group=>group.kind==='author');
+  // In “what would A think about B's thought?” questions, the stance subject
+  // is A, but B's own work is also needed to establish what is being evaluated.
+  // Keep both explicitly named authors instead of letting stance scoping
+  // silently discard the object of the question.
+  const preserveCounterfactualSources=isCounterfactualAuthorResponseQuestion(text)&&
+    counterfactualAuthorGroups.length>=2;
+  if(stanceAuthor&&!preserveCounterfactualSources)
+    return [{kind:'author',key:normalizedSourceGroupText(stanceAuthor.name),
+      label:stanceAuthor.name,bookIds:new Set(stanceAuthor.bookIds)}];
   // If an author name maps to multiple spellings in catalog metadata, merge
   // the IDs into one author group rather than treating it as multiple people.
   const deduped=[];
@@ -3187,6 +3199,10 @@ function applyExplicitBibleVerseScope(question,sources){
 // book excerpts here: the website still retrieves the original v47 text and
 // the existing answer endpoint must independently verify exact SHA-256 pages.
 function namedGroupQueryTargets(question,bookTitle){
+  // For a hypothetical response, preserve the planner's semantic query terms
+  // and bind both author groups below. Segmenting the reader's wording here
+  // leaves only generic terms such as “think” and “thought.”
+  if(isCounterfactualAuthorResponseQuestion(question))return [];
   if(bookTitle)return [];
   const groups=requestedSourceGroups(question,[]);
   if(groups.length!==2)return [];
@@ -3247,7 +3263,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'Return EXACTLY one JSON object {"resolvedQuestion":"...","intent":"explain|compare|interpret|locate","sources":[{"label":"...","role":"primary|subject|commentary"}],"parts":["..."],"scope":"...","queries":["...","..."]}. '+
         'intent must be explain, compare, interpret, or locate. resolvedQuestion must replace follow-up references only when recent history makes the referent clear; otherwise repeat the current question. '+
         'sources is an array of up to four objects with a short label and role primary, subject, or commentary; identify only sources explicitly requested by the reader. '+
-        'parts is an array of one to six short questions that preserve every distinct requested component. Rewrite dependent pronouns such as “he,” “this passage,” or “that argument” with the parent question’s subject, work, and quoted phrase so each part can be searched independently. scope is an explicit work, chapter, verse, section, or page restriction, or an empty string. '+
+        'parts is an array of one to six short questions that preserve every distinct requested component. Do not turn related themes, possible consequences, or background into extra required parts unless the reader asked about them; for a broad single question, keep one central part and use supported context in its answer. Rewrite dependent pronouns such as “he,” “this passage,” or “that argument” with the parent question’s subject, work, and quoted phrase so each part can be searched independently. scope is an explicit work, chapter, verse, section, or page restriction, or an empty string. '+
         'Return two to four different, concise search phrases (4-13 words apiece) in queries. '+
         'They must locate original passages addressing distinct requested parts '+
         'of the question. Use one query per distinct component when there '+
@@ -3313,7 +3329,11 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'about two named works or authors, use one query per source and retain ' +
         'all requested facets that apply to it, including later clauses and ' +
         'the relation being compared. Attach each query only to its named ' +
-        'work or author. '+
+        'work or author. For a hypothetical question about what author A would ' +
+        'think of author B’s thought, use both authors’ own works: one query ' +
+        'for A’s relevant position and one for B’s actual position on the same ' +
+        'topic. Treat any response as a clearly labeled inference; do not imply ' +
+        'that either author discussed or answered the other. '+
         'For a comparison about a specific disputed concept, keep that exact '+
         'concept in each source query and seek that source’s own definition, '+
         'criterion, or explanation of it. Do not substitute a nearby doctrine, '+
@@ -3370,7 +3390,8 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
        /^[\p{L}\p{N} .,;:'"?!()\-–]+$/u.test(q)))
     throw new Error('Invalid search plan');
   let queries=options.map(q=>q.trim().replace(/\s+/g,' '));
-  const namedTargets=namedGroupQueryTargets(question,bookTitle);
+  const counterfactualResponse=isCounterfactualAuthorResponseQuestion(question);
+  const namedTargets=counterfactualResponse?[]:namedGroupQueryTargets(question,bookTitle);
   if(namedTargets.length===2){
     // The model may expand a broad user phrase into the author's actual
     // concepts (for example, faith and paradox for Kierkegaard, necessity and
@@ -3409,8 +3430,8 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
   const requested=(orderedTargets.length===2?
     orderedTargets.map(target=>target.group):requestedSourceGroups(question,bookTitle)).slice(0,4);
   const selectedBookId=Object.keys(PILOT_BOOKS).find(id=>PILOT_BOOKS[id]===bookTitle)||'';
-  const comparisonIntent=/\b(?:compare|contrast|differ|difference|different|versus|vs\.)\b/i.test(question);
-  const rawPlan={...result,queries,sources:requested.map((group,index)=>({
+  const comparisonIntent=/\b(?:compare|contrast|differ|difference|different|versus|vs\.)\b/i.test(question)||counterfactualResponse;
+  const rawPlan={...result,intent:counterfactualResponse?'compare':result.intent,queries,sources:requested.map((group,index)=>({
     label:group.label||group.key,
     role:comparisonIntent?'primary':index===0?'primary':'subject',
     bookIds:[...group.bookIds],

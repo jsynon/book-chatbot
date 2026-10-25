@@ -61,6 +61,38 @@ test('planner returns a bounded structured plan with canonical source IDs and qu
  assert.match(result.queries[0],/causal necessity|necessary connection/i);
  assert.match(result.queries[1],/causal necessity|causality/i);
 });
+test('hypothetical thinker questions keep both authors and each part scoped to both works',async()=>{
+ const question='What would Nietzsche think about the thought of Kierkegaard?';
+ const planned={resolvedQuestion:question,intent:'compare',sources:[],
+  parts:[
+   "How does Nietzsche evaluate Kierkegaard's account of faith and the individual?",
+   "What is Kierkegaard's account of faith and the individual?"
+  ],scope:'',queries:[
+   'Nietzsche critique of Kierkegaard religious individual and leap of faith',
+   'Nietzsche views on Kierkegaard Christian morality and asceticism'
+  ]};
+ let systemPrompt='';
+ const result=await planSearchQueries(question,'',{
+  run:async(_model,options)=>{
+   systemPrompt=options.messages[0].content;
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]};
+  }
+ });
+ const nietzsche=result.plan.sources.find(source=>/Nietzsche/.test(source.label));
+ const kierkegaard=result.plan.sources.find(source=>/Kierkegaard/.test(source.label));
+ assert.ok(nietzsche?.bookIds.includes('239'));
+ assert.ok(kierkegaard?.bookIds.includes('140'));
+ assert.deepEqual(result.plan.sources.map(source=>source.role),['primary','primary']);
+ assert.equal(result.plan.intent,'compare');
+ const twoSourceParts=result.plan.parts.filter(part=>part.sourceBookIds?.includes('239')&&
+  part.sourceBookIds?.includes('140'));
+ assert.ok(twoSourceParts.length>=1);
+ assert.match(twoSourceParts.at(-1).question,/compare in response to this question/i);
+ assert.ok(result.plan.parts.some(part=>part.sourceBookIds?.includes('140')&&
+  !part.sourceBookIds.includes('239')));
+ assert.deepEqual(result.queries,planned.queries);
+ assert.match(systemPrompt,/hypothetical question about what author A would think of author B/i);
+});
 test('search planner retains explicitly named authors and works for source scoping',async()=>{
  let systemPrompt='';
  await planSearchQueries('How do Aristotle and Darwin explain change?', '', {

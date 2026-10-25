@@ -20,7 +20,7 @@ The live interface is in `antilogicalism/reading-companion/`. Its search module 
 
 The Worker path in `hosting-poc/public-gateway.mjs` and `hosting-poc/evidence-answer.mjs` works as follows:
 
-1. **Plan the question.** The planner identifies the reader's intent, named works or authors, question parts, and focused search queries. Selected-book requests stay within that book.
+1. **Plan the question.** The planner identifies the reader's intent, named works or authors, question parts, and focused search queries. Author-wide questions keep that author's available works unless the reader names a distinctive work phrase; an author's name appearing inside a book title does not count as naming that work. For a hypothetical response between two thinkers, both thinkers' own works and a separately linked synthesis part are retained. Selected-book requests stay within that book.
 2. **Retrieve and select pages.** The browser searches the published v47 data and selects a bounded set of passages. Each candidate records which question parts it may support. A part link is an eligibility hint, not proof that the passage supports an answer.
 3. **Verify source text.** Before inference, the Worker checks each submitted page against published SHA-256 fingerprints and obtains canonical book, page, and PDF metadata. A mismatch is rejected. The verified page identity and PDF link come from the published data, not from model output.
 4. **Compose by question part.** The composer receives the question parts and linked verified pages. It returns a short answer for each supported part and cites the page IDs that support it. Unsupported parts remain visible as gaps.

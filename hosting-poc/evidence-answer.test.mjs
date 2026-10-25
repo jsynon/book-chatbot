@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
-import {auditFinalAnswer} from './reader-contract.mjs';
+import {auditFinalAnswer,normalizePlan} from './reader-contract.mjs';
 import {buildReviewSpans} from './review-spans.mjs';
 
 const catalog={35:'An Enquiry Concerning Human Understanding — David Hume',40:'Critique of Pure Reason — Immanuel Kant'};
@@ -62,6 +62,23 @@ test('the composer uses a short per-part answer contract without claim IDs or qu
  assert.match(REVIEW_PROMPT,/neighboring doctrine or a shared keyword is not support/);
  assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
  assert.match(REVIEW_PROMPT,/relevant span for every requiredSourceId/);
+ assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
+});
+
+test('author-wide questions retain the author works unless the reader names a distinctive work',()=>{
+ const question='What did Kierkegaard have to say about faith?';
+ const catalog={
+  '140':'Fear and Trembling — Søren Kierkegaard',
+  '192':'Philosophical Fragments — Søren Kierkegaard',
+  '253':'The Sickness Unto Death — Søren Kierkegaard',
+  '436':'Kierkegaard’s Attack Upon “Christendom,” 1854–1855 — Søren Kierkegaard'
+ };
+ const raw={intent:'explain',sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:Object.keys(catalog)}],
+  parts:["How does Kierkegaard describe faith?"],queries:['Kierkegaard faith movement']};
+ const broad=normalizePlan(raw,question,catalog);
+ assert.deepEqual(broad.parts[0].sourceBookIds,['140','192','253','436']);
+ const scoped=normalizePlan(raw,'What did Kierkegaard say about faith in Fear and Trembling?',catalog);
+ assert.deepEqual(scoped.parts[0].sourceBookIds,['140']);
 });
 
 test('a quoted technical term is not mistaken for a source quotation, while multiword quotes stay exact',()=>{
