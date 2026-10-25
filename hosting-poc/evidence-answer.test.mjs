@@ -226,6 +226,8 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/one flat top-level claims array/);
  assert.match(REVIEW_PROMPT,/There must be only one claims property/);
  assert.match(REVIEW_PROMPT,/at least one relevant span from every source cited/);
+ assert.match(REVIEW_PROMPT,/Return no more than 6 span IDs per claim/);
+ assert.match(REVIEW_PROMPT,/before selecting a second span from any source/);
  assert.match(COMPOSER_PROMPT,/Cite every factual sentence/);
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
@@ -754,12 +756,12 @@ test('the reviewer receives an explicit source checklist and missing synthesis e
  assert.equal(ai.calls.length,2);
 });
 
-test('reviewed evidence keeps a selected span from every cited source within the six-span map budget',async()=>{
+test('reviewer spans are source-balanced within the six-span per-claim budget',async()=>{
  const passage='Wollstonecraft explains how education and social position shape judgment and character. '.repeat(12);
  const sources=['S1','S4','S6'].map((id,index)=>({id,bookId:'87',title:'A Vindication of the Rights of Woman — Mary Wollstonecraft',
   page:48+index,url:`https://example.test/wollstonecraft#page=${48+index}`,text:passage,preview:passage}));
  const evidence=sources.map(source=>({sourceId:source.id,
-  spanIds:buildReviewSpans(source.id,passage).slice(0,2).map(span=>span.spanId)}));
+  spanIds:buildReviewSpans(source.id,passage).slice(0,3).map(span=>span.spanId)}));
  const plan={version:'reader-evidence-v2',intent:'explain',
   sources:[{label:'Mary Wollstonecraft',role:'primary',bookIds:['87']}],
   parts:[{id:'P1',question:'How does Wollstonecraft describe social conditions?',sourceBookIds:['87'],
@@ -775,9 +777,28 @@ test('reviewed evidence keeps a selected span from every cited source within the
  const mappedSpans=result.evidenceMap.filter(item=>item.partId==='P1');
  assert.deepEqual([...mappedSourceIds].sort(),['S1','S4','S6']);
  assert.equal(mappedSpans.length,6);
+ assert.deepEqual(Object.fromEntries([...mappedSourceIds].sort().map(sourceId=>[
+  sourceId,mappedSpans.filter(item=>item.id===sourceId).length
+ ])),{S1:2,S4:2,S6:2},'nine returned spans must preserve both map slots for all three cited sources');
  assert.ok(mappedSpans.every(item=>sources.find(source=>source.id===item.id).text.includes(item.quote)));
  assert.deepEqual(new Set(result.evidenceHighlights.map(item=>item.source_id)),mappedSourceIds);
  assert.equal(result.coverage,'full');
+ assert.equal(ai.calls.length,2);
+});
+
+test('a claim citing more sources than the span budget stays incomplete',async()=>{
+ const sourceIds=['S1','S2','S3','S4','S5','S6','S7'];
+ const sources=sourceIds.map(id=>({...hume,id,candidatePartIds:['P1']}));
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],candidateSourceIds:sourceIds}]};
+ const citations=sourceIds.join(', ');
+ const ai=makeAI([answer(`PART P1\nThe claim is supported by these seven separate pages. [${citations}]`),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',sources,ai,[],
+  {plan,catalog,trace:true});
+ assert.equal(result.coverage,'none');
+ assert.equal(result.evidenceMap.length,0);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.claimId==='P1-C1'&&issue.reason==='missing-claim-source-span'));
  assert.equal(ai.calls.length,2);
 });
 
