@@ -378,3 +378,39 @@ Source inspection also resolved the page-voice question for the run's Nietzsche 
 | Deployed run and semantic review | Pending; offline structure does not establish that cited pages support every answer claim |
 
 This is a paired local candidate and has not been merged or deployed. After both repository checks pass and the changes are deployed, repeat the same five-case focused all-books with-review run. Inspect the exact reviewer output and `finish_reason`, confirm the former truncation is gone without weakening exact-span checks, and review the Nietzsche-on-Christianity source attribution and visible excerpts against the cited page text. Keep the unseen acceptance suite frozen until that source-level review is complete.
+
+## October 25, 2026: run #46 compact-review validation
+
+After Worker PR [#235](https://github.com/jsynon/book-chatbot/pull/235) and website PR [#202](https://github.com/jsynon/antilogicalism/pull/202) merged, the user ran [focused workflow #46](https://github.com/jsynon/antilogicalism/actions/runs/40211508465) with All Books and review enabled. The artifact records site revision `16e770e3d59425342f7af840d90390a87ed6a8c6`, Worker version `4b4e359d-408f-4169-83ab-100c27d39a3f`, and corpus v48 with fingerprint schema v2. All five cases completed; there were no request failures, planner fallbacks, or skipped cases. The run used the expected 15-call baseline. Four cases passed structural checks and one failed, so the workflow is red despite completing the full set.
+
+The key run #45 failure improved: Nietzsche on Christianity now passes review. In the failing Nietzsche/Kierkegaard case, the compact reviewer returned normally with `finish_reason: stop` and 586 completion tokens, rather than truncating at the token limit. However, its JSON was invalid: the unanswered claim ended with the malformed property `"spansBySource:{}` (missing the closing quote after the key), and the response put part statuses in a non-contract top-level `parts_status` map. The model had supplied all claim IDs and span decisions, and marked the final hypothetical inference claim unanswered. Because JSON parsing failed, the Worker correctly rejected the entire review, kept all three answer parts partial and unverified, and returned no evidence map or highlights. This is a format failure, not evidence that the whole draft is unsupported; the reviewer's unanswered inference is still a useful signal.
+
+| Case | Structural result | Accuracy | Question coverage | Explanation | Citation support | Citation completeness |
+|---|---|---:|---:|---:|---:|---:|
+| Kant: transcendental idealism | Pass | 2 | 2 | 1 | 2 | 2 |
+| Kierkegaard: faith | Pass | 1 | 2 | 1 | 2 | 2 |
+| Nietzsche on Christianity | Pass | 2 | 2 | 2 | 2 | 2 |
+| Sunyata | Pass | 1 | 2 | 1 | 2 | 1 |
+| Nietzsche on Kierkegaard | Fail; unverified | 1 | 1 | 1 | 1 | 1 |
+
+These 0–2 scores are my provisional manual reading of the drafts and the artifact's exact selected spans, not workflow scores. The artifact leaves all five human scorecards pending. The averages are accuracy 1.4, coverage 1.8, explanation 1.2, citation support 1.8, and citation completeness 1.6; the failed draft is scored as a draft, not as a verified answer.
+
+The passing answers contain meaningful progress, with remaining quality limits:
+
+- **Kant:** One direct *Critique of Pure Reason* passage (p. 199) supports the definition and all five claims. The explanation repeats the appearance/representation point and does not fully distinguish empirical reality from things-in-themselves.
+- **Kierkegaard:** Exact excerpts support all seven claims, and the response now names Johannes de Silentio. But it also draws on *Philosophical Fragments* (Johannes Climacus) and *The Sickness Unto Death* (Anti-Climacus) without naming those voices, so it still generalizes distinct pseudonymous authors as Kierkegaard's single position.
+- **Nietzsche on Christianity:** This previously failing case is now structurally verified. The answer draws on direct Nietzsche passages in *The Portable Nietzsche*, pp. 462, 463, 502, and 605, with exact claim-linked spans. Page 578, the Walter Kaufmann commentary page tagged by PR #202, was retrieved but not cited; this run therefore does not validate the new visible commentary label.
+- **Sunyata:** The definition is directly supported by Huston Smith, and Suzuki supports the cited discussion of Zen. Other claims rely on David A. Dilworth's introduction to Nishida's *Last Writings* (pp. 17–18). The answer treats that commentary as a broad account of sunyata and expands into `soku hi`; a primary Buddhist source and a more qualified explanation would improve it.
+- **Nietzsche and Kierkegaard:** Retrieval supplies three Nietzsche pages and three Kierkegaard pages in the six-page packet. The draft names Johannes de Silentio and presents its conclusion as a cautious inference. That concluding inference cites Nietzsche pages only, not the Kierkegaard passage defining the target concept; the reviewer marked that claim unanswered. The formatting error prevented the system from accepting this useful distinction.
+
+| Run measure | Result |
+|---|---|
+| Completed / skipped | 5 / 0 |
+| Structural cases | 4 passed, 1 failed |
+| Question-part outcomes | 4 supported, 3 partial, 0 unsupported; all three partial parts are in the unverified final case |
+| Verified answer highlights | 12 across the four passing cases; none on the unverified draft |
+| Answer-stage calls | 10 total (two per case); expected total including planning: 15 |
+| Reviewer output in failed case | 586 tokens; `finish_reason: stop`; not truncated |
+| Artifact human rubric | 0 reviewed, 5 pending |
+
+The next bounded step is a deterministic format-recovery regression using this exact malformed response. Any recovery must preserve claim IDs, part completeness, and the current exact-span checks; it must not invent evidence or make an extra model call. Then rerun the same focused five-case set once. Track the remaining pseudonymous-voice and secondary-source issues separately rather than broadening this formatting fix. Keep the unseen acceptance suite frozen until the new run and source-level review are satisfactory.
