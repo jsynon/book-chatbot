@@ -124,8 +124,13 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     // scarce page slot on a broad, often weak hit; source-side passages can
     // support the synthesis once the Worker links them to this part.
     const syntheticComparison=/^How do the named sources compare in response to this question:/i.test(part.question);
+    const contextDependent=/\b(?:he|she|it|they|his|her|its|their|this|that|these|those|the same)\b|\b(?:this|that|the)\s+(?:soliloquy|passage|scene|argument|account|position)\b/i
+      .test(part.question);
+    const contextualQuery=contextDependent&&intent!=='compare'&&!syntheticComparison
+      ?[resolvedQuestion.slice(0,200),part.question.slice(0,200)].filter(Boolean).join(' ').slice(0,400)
+      :part.question;
     return {...part,sourceBookIds:partSourceGroups[index],
-      searchQueries:[...new Set([...matchingQueries,...(syntheticComparison?[]:[part.question])])].slice(0,5)};
+      searchQueries:[...new Set([...matchingQueries,...(syntheticComparison?[]:[contextualQuery])])].slice(0,5)};
   });
   return {version:CONTRACT_VERSION,resolvedQuestion,intent,
     sources,parts:partsWithSources,scope:bounded(raw?.scope,200),
