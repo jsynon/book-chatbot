@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 13407)
-Total output lines: 782
-
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
@@ -250,8 +247,107 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
+ assert.match(COMPOSER_PROMPT,/Cite that inference sentence with relevant evidence from each author’s source group/);
+ assert.match(REVIEW_PROMPT,/do not demand a passage documenting the hypothetical response itself/);
+ assert.match(REVIEW_PROMPT,/a missing premise, one-sided citation, or conclusion stronger than the premises is partial or unanswered/);
  assert.match(COMPOSER_PROMPT,/If provenance names a pseudonymous work voice, identify that voice/);
  assert.match(REVIEW_PROMPT,/When provenance identifies a pseudonymous work voice/);
+});
+
+const hypotheticalQuestion='What would Nietzsche think about the thought of Kierkegaard?';
+const hypotheticalCatalog={
+ '140':'Fear and Trembling — Søren Kierkegaard',
+ '239':'The Portable Nietzsche — Friedrich Nietzsche'
+};
+const hypotheticalPlan={intent:'compare',sources:[
+ {label:'Friedrich Nietzsche',role:'primary',bookIds:['239']},
+ {label:'Søren Kierkegaard',role:'primary',bookIds:['140']}
+],parts:[
+ {id:'P1',question:'What position does Nietzsche take on Christianity?',sourceBookIds:['239']},
+ {id:'P2',question:'What does Kierkegaard say about religious inwardness?',sourceBookIds:['140']},
+ {id:'P3',question:'What cautious inference follows about Nietzsche’s response to Kierkegaard?',sourceBookIds:['239','140']}
+]};
+const hypotheticalSources=[
+ {id:'S1',bookId:'239',title:hypotheticalCatalog['239'],page:598,
+  text:'Nietzsche criticizes Christian morality as a decadent rejection of earthly life.',
+  preview:'Nietzsche criticizes Christian morality as a decadent rejection of earthly life.'},
+ {id:'S2',bookId:'140',title:hypotheticalCatalog['140'],page:44,
+  text:'Johannes de Silentio says poetry should attend to the religious inwardness of personalities.',
+  preview:'Johannes de Silentio says poetry should attend to the religious inwardness of personalities.'}
+];
+function hypotheticalReview(){
+ return (_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const parts=payload.parts.map(part=>({partId:part.partId,
+   status:part.claims.length?'answered':'unanswered',reason:'',
+   claims:part.claims.map(claim=>({claimId:claim.claimId,status:'answered',reason:'',
+    spansBySource:Object.fromEntries(claim.sourceIds.map(sourceId=>{
+     const page=part.evidence.find(item=>item.id===sourceId);
+     return [sourceId,[page.spans[0].spanId]];
+    }))}))
+  }));
+  return {response:JSON.stringify({parts})};
+ };
+}
+function hypotheticalDraft(inference){
+ return answer([
+  'PART P1',
+  'Nietzsche criticizes Christian morality as a decadent rejection of earthly life. [S1]',
+  'PART P2',
+  'In Fear and Trembling, Johannes de Silentio presents religious inwardness as an important theme. [S2]',
+  'PART P3',
+  inference
+ ].join('\n'));
+}
+
+test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both authors’ reviewed evidence',async()=>{
+ const ai=makeAI([hypotheticalDraft(
+  'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1, S2]'),
+  hypotheticalReview()
+ ]);
+ const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
+  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
+ });
+ assert.equal(ai.calls.length,2,'the fix must stay within the existing compose + review budget');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[2].status,'supported');
+ assert.match(result.answer,/one cautious inference/i);
+ assert.match(result.answer,/\[S1, S2\]/);
+ assert.deepEqual(new Set(result.evidenceMap.filter(item=>item.claimId.startsWith('P3-'))
+  .map(item=>item.id)),new Set(['S1','S2']));
+ assert.equal(result.trace.reviewContract.valid,true);
+});
+
+test('a one-sided hypothetical inference is rejected and the part remains visibly incomplete',async()=>{
+ const ai=makeAI([hypotheticalDraft(
+  'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1]'),
+  hypotheticalReview()
+ ]);
+ const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
+  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[2].status,'unsupported');
+ assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
+  item.reason==='hypothetical-inference-missing-source-group-citation'));
+ assert.doesNotMatch(result.answer,/one cautious inference/i);
+ assert.match(result.missing,/what response can cautiously be inferred/i);
+});
+
+test('an unqualified hypothetical author claim is rejected even when both source groups are cited',async()=>{
+ const ai=makeAI([hypotheticalDraft(
+  'Nietzsche would have regarded Kierkegaard’s emphasis on religious inwardness as a form of the decadent outlook he attacks. [S1, S2]'),
+  hypotheticalReview()
+ ]);
+ const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
+  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'partial');
+ assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
+  item.reason==='hypothetical-inference-not-explicitly-qualified'));
+ assert.doesNotMatch(result.answer,/Nietzsche would have regarded/);
 });
 
 test('author-wide questions retain the author works unless the reader names a distinctive work',()=>{
@@ -354,7 +450,71 @@ test('a citation linked to another question part is rejected even when its sourc
  const ai=makeAI([answer('PART P1\nKant says causality is a category. [S2]\nPART P2\nKant says causality is a category. [S2]'),
   review([['P1','answered'],['P2','answered']])]);
  const result=await composeEvidenceAnswer('How do Hume and Kant explain necessity?',
-  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],{plan,catalog})…1407 tokens truncated…,sourceBookIds:['40'],searchQueries:['Kant causality'],candidateSourceIds:['S2']}]},catalog});
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],{plan,catalog});
+ assert.equal(result.questionParts[0].status,'unsupported');
+ assert.equal(result.questionParts[1].status,'supported');
+ assert.deepEqual(result.citations.map(source=>source.id),['S2']);
+});
+
+test('a bad quoted sentence is removed without discarding neighboring verified sentences',async()=>{
+ const dubois1={id:'S5',bookId:'454',title:'The Souls of Black Folk — W. E. B. Du Bois',page:141,
+  url:'https://example.test/dubois#page=141',
+  text:'It is a peculiar sensation, this double-consciousness, this sense of always looking at one’s self through the eyes of others. One ever feels his two-ness,—an American, a Negro; two souls, two thoughts, two unreconciled strivings; two warring ideals in one dark body, whose dogged strength alone keeps it from being torn asunder. The history of the American Negro is the history of this strife,—this longing to attain self-conscious manhood, to merge his double self into a better and truer self. In this merging he wishes neither of the older selves to be lost. He would not Africanize America, for America has too much to teach the world and Africa. He would not bleach his Negro soul in a flood of white Americanism, for he knows that Negro blood has a message for the world. He simply wishes to make it possible for a man to be both a Negro and an American. The problem of the twentieth century is the problem of the color-line. It is a peculiar sensation, this double life, this sense of always looking at one’s self through the eyes of others.',
+  preview:'The passage describes a double life and painful self-consciousness.'};
+ const dubois2={id:'S3',bookId:'454',title:dubois1.title,page:131,url:'https://example.test/dubois#page=131',
+  text:'The Negro is a sort of seventh son, born with a veil, and gifted with second-sight in this American world,—a world which yields him no true self-consciousness, but only lets him see himself through the revelation of the other world. It is a peculiar sensation, this double-consciousness, this sense of always looking at one’s self through the eyes of others. The history of the American Negro is the history of this strife.',
+  preview:'Du Bois describes double-consciousness.'};
+ const source={...dubois1,text:'The painful self-consciousness of the "double life" appears throughout this passage. '+dubois1.text};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'W. E. B. Du Bois',role:'primary',bookIds:['454']}],
+  parts:[{id:'P1',question:'How does Du Bois describe the double life and its effects?',sourceBookIds:['454'],
+   searchQueries:['Du Bois double life consciousness'],candidateSourceIds:['S5','S3']}],
+  queries:['Du Bois double life consciousness']};
+ const ai=makeAI([
+  answer('PART P1\nDu Bois describes a “double life” and painful self-consciousness. [S5] This existence within “double consciousness” forces Black Americans to view themselves through others’ eyes. [S5] He frames double-consciousness as an ongoing historical strife. [S3]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),part=payload.parts[0];
+   const claims=part.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    spansBySource:Object.fromEntries(claim.sourceIds.map(sourceId=>{
+     const page=part.evidence.find(item=>item.id===sourceId);
+     return [sourceId,[page.spans[0].spanId]];
+    }))}));
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',claims}]})};
+  }
+ ]);
+ const result=await composeEvidenceAnswer('How does Du Bois describe the double life and its effects?',
+  [source,dubois2],ai,[],{plan,catalog:{454:'The Souls of Black Folk — W. E. B. Du Bois'},trace:true});
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.match(result.answer,/“double life” and painful self-consciousness\. \[S5\]/);
+ assert.match(result.answer,/ongoing historical strife\. \[S3\]/);
+ assert.doesNotMatch(result.answer,/double consciousness/);
+ assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'quotation-citation-mismatch',sentenceIndex:2}]);
+ assert.deepEqual(result.citations.map(item=>item.id),['S5','S3']);
+});
+
+test('missing question parts remain visible as partial coverage instead of invalidating the answer',async()=>{
+ const ai=makeAI([
+  answer('PART P1\nHume says causal necessity arises from custom and regular conjunction. [S1]'),
+  review([['P1','answered'],['P2','answered'],['P3','partial']])
+ ]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:twoSidePlan,catalog});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.deepEqual(result.questionParts.map(part=>part.status),['supported','unsupported','unsupported']);
+ assert.equal(ai.calls.length,2);
+ assert.match(result.missing,/Kant|differ/i);
+});
+
+test('a reviewer partial decision stays incomplete without becoming a review contract failure',async()=>{
+ const ai=makeAI([answer('PART P1\nKant lists causality among the categories of relation. [S2]'),
+  review([['P1','partial']])]);
+ const result=await composeEvidenceAnswer('How does Kant justify causal necessity?',
+  [kant],ai,[],{plan:{...onePartPlan,intent:'explain',sources:[{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+   parts:[{id:'P1',question:'How does Kant justify causal necessity?',sourceBookIds:['40'],searchQueries:['Kant causality'],candidateSourceIds:['S2']}]},catalog});
  assert.equal(result.coverage,'none');
  assert.equal(result.reviewStatus,'claim-review');
  assert.equal(result.outcome,'insufficient-evidence');

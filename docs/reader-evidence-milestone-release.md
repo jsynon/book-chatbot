@@ -378,3 +378,54 @@ Source inspection also resolved the page-voice question for the run's Nietzsche 
 | Deployed run and semantic review | Pending; offline structure does not establish that cited pages support every answer claim |
 
 This is a paired local candidate and has not been merged or deployed. After both repository checks pass and the changes are deployed, repeat the same five-case focused all-books with-review run. Inspect the exact reviewer output and `finish_reason`, confirm the former truncation is gone without weakening exact-span checks, and review the Nietzsche-on-Christianity source attribution and visible excerpts against the cited page text. Keep the unseen acceptance suite frozen until that source-level review is complete.
+
+## October 25, 2026: run #46 compact-review validation
+
+After Worker PR [#235](https://github.com/jsynon/book-chatbot/pull/235) and website PR [#202](https://github.com/jsynon/antilogicalism/pull/202) merged, the user ran [focused workflow #46](https://github.com/jsynon/antilogicalism/actions/runs/40211508465) with All Books and review enabled. The artifact records site revision `16e770e3d59425342f7af840d90390a87ed6a8c6`, Worker version `4b4e359d-408f-4169-83ab-100c27d39a3f`, and corpus v48 with fingerprint schema v2. All five cases completed; there were no request failures, planner fallbacks, or skipped cases. The run used the expected 15-call baseline. Four cases passed structural checks and one failed, so the workflow is red despite completing the full set.
+
+The key run #45 failure improved: Nietzsche on Christianity now passes review. In the failing Nietzsche/Kierkegaard case, the compact reviewer returned normally with `finish_reason: stop` and 586 completion tokens, rather than truncating at the token limit. However, its JSON was invalid: the unanswered claim ended with the malformed property `"spansBySource:{}` (missing the closing quote after the key), and the response put part statuses in a non-contract top-level `parts_status` map. The model had supplied all claim IDs and span decisions, and marked the final hypothetical inference claim unanswered. Because JSON parsing failed, the Worker correctly rejected the entire review, kept all three answer parts partial and unverified, and returned no evidence map or highlights. This is a format failure, not evidence that the whole draft is unsupported; the reviewer's unanswered inference is still a useful signal.
+
+| Case | Structural result | Accuracy | Question coverage | Explanation | Citation support | Citation completeness |
+|---|---|---:|---:|---:|---:|---:|
+| Kant: transcendental idealism | Pass | 2 | 2 | 1 | 2 | 2 |
+| Kierkegaard: faith | Pass | 1 | 2 | 1 | 2 | 2 |
+| Nietzsche on Christianity | Pass | 2 | 2 | 2 | 2 | 2 |
+| Sunyata | Pass | 1 | 2 | 1 | 2 | 1 |
+| Nietzsche on Kierkegaard | Fail; unverified | 1 | 1 | 1 | 1 | 1 |
+
+These 0–2 scores are my provisional manual reading of the drafts and the artifact's exact selected spans, not workflow scores. The artifact leaves all five human scorecards pending. The averages are accuracy 1.4, coverage 1.8, explanation 1.2, citation support 1.8, and citation completeness 1.6; the failed draft is scored as a draft, not as a verified answer.
+
+The passing answers contain meaningful progress, with remaining quality limits:
+
+- **Kant:** One direct *Critique of Pure Reason* passage (p. 199) supports the definition and all five claims. The explanation repeats the appearance/representation point and does not fully distinguish empirical reality from things-in-themselves.
+- **Kierkegaard:** Exact excerpts support all seven claims, and the response now names Johannes de Silentio. But it also draws on *Philosophical Fragments* (Johannes Climacus) and *The Sickness Unto Death* (Anti-Climacus) without naming those voices, so it still generalizes distinct pseudonymous authors as Kierkegaard's single position.
+- **Nietzsche on Christianity:** This previously failing case is now structurally verified. The answer draws on direct Nietzsche passages in *The Portable Nietzsche*, pp. 462, 463, 502, and 605, with exact claim-linked spans. Page 578, the Walter Kaufmann commentary page tagged by PR #202, was retrieved but not cited; this run therefore does not validate the new visible commentary label.
+- **Sunyata:** The definition is directly supported by Huston Smith, and Suzuki supports the cited discussion of Zen. Other claims rely on David A. Dilworth's introduction to Nishida's *Last Writings* (pp. 17–18). The answer treats that commentary as a broad account of sunyata and expands into `soku hi`; a primary Buddhist source and a more qualified explanation would improve it.
+- **Nietzsche and Kierkegaard:** Retrieval supplies three Nietzsche pages and three Kierkegaard pages in the six-page packet. The draft names Johannes de Silentio and presents its conclusion as a cautious inference. That concluding inference cites Nietzsche pages only, not the Kierkegaard passage defining the target concept; the reviewer marked that claim unanswered. The formatting error prevented the system from accepting this useful distinction.
+
+| Run measure | Result |
+|---|---|
+| Completed / skipped | 5 / 0 |
+| Structural cases | 4 passed, 1 failed |
+| Question-part outcomes | 4 supported, 3 partial, 0 unsupported; all three partial parts are in the unverified final case |
+| Verified answer highlights | 12 across the four passing cases; none on the unverified draft |
+| Answer-stage calls | 10 total (two per case); expected total including planning: 15 |
+| Reviewer output in failed case | 586 tokens; `finish_reason: stop`; not truncated |
+| Artifact human rubric | 0 reviewed, 5 pending |
+
+The next bounded step is a deterministic format-recovery regression using this exact malformed response. Any recovery must preserve claim IDs, part completeness, and the current exact-span checks; it must not invent evidence or make an extra model call. Then rerun the same focused five-case set once. Track the remaining pseudonymous-voice and secondary-source issues separately rather than broadening this formatting fix. Keep the unseen acceptance suite frozen until the new run and source-level review are satisfactory.
+
+## October 25, 2026: standalone run #47 and cross-author inference handoff
+
+The user reran Nietzsche on Kierkegaard by itself in focused, all-books, with-review mode ([workflow #47](https://github.com/jsynon/antilogicalism/actions/runs/40212305825)). It completed one case with no request failure or planner fallback, using Worker version `35f82015-9600-4d32-b212-b7570273faf9` (`public-gateway-evidence-selection-v3`) and `reader-evidence-v2`. The artifact estimates three calls total (one planner plus the existing two Worker answer calls); the answer pipeline used two calls. The reviewer returned valid compact JSON and stopped normally, so the malformed JSON from run #46 did not recur.
+
+The system still failed its structural acceptance check: one of three question parts was supported, two were partial, and none were unsupported. The draft correctly named Johannes de Silentio in one sentence, but other Kierkegaard statements still collapsed pseudonymous voices into Kierkegaard's own position. More directly tied to this case, the final sentence asked what Nietzsche would think about Kierkegaard's emphasis on inwardness and cited Nietzsche sources only (`[S1, S6]`); it did not cite a Kierkegaard source for the premise. The reviewer marked that inference claim partial. The pipeline then omitted that claim from the returned answer. This is a valid-review, incomplete-evidence handoff, not a planner, request, or JSON-format failure. It pinpoints the next problem as composition's source linkage for a hypothetical cross-author conclusion.
+
+The Worker candidate in this PR addresses that specific gap without changing retrieval, the shared Worker/site contract, the public response format, or the model-call budget:
+
+- The composer prompt requires the two authors' positions to be established separately, labels the hypothetical conclusion as a cautious reader inference, and requires citations from both author source groups. It must leave the hypothetical conclusion unsupported if either premise lacks evidence.
+- The reviewer prompt says not to demand a historical passage documenting an imagined response. It instead assesses each premise against its own author's cited spans, accepts only a modest inference, and keeps one-sided or overreaching claims partial or unanswered.
+- A deterministic pre-review check recognizes hypothetical author-response questions and gates each attempted inference sentence. The sentence must be explicitly labeled and qualified and cite at least one source from every planned primary/subject author group. A failed sentence is rejected into the existing incomplete-coverage path; it cannot become a verified citation or highlight. The existing reviewer span checks remain authoritative for sentences that pass this source-link gate.
+- Regression tests cover a qualified two-source inference, a one-sided citation, an unqualified hypothetical claim, and the existing answer/citation behaviors. No additional AI call is introduced.
+
+This is a bounded attempt to fix the exact transition shown by run #47, not evidence that the answer is now reliable. Local validation passed: 46 focused `evidence-answer` tests and all 246 Worker tests, with no failures. `git diff --check` is clean. After merge and Worker deployment, first repeat the standalone Nietzsche/Kierkegaard focused all-books with-review case. Inspect the final inference sentence, its two author-source citations, and the selected exact spans; confirm structural completion and no fabricated historical attribution. If it passes, rerun the established five-question focused suite once to check for collateral effects, especially pseudonymous voice attribution. Do not call the milestone complete from offline tests or this one-case regression; keep live semantic verification and the frozen acceptance suite pending until the deployed results support that conclusion.
