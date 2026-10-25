@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 15938)
-Total output lines: 348
-
 Warning: truncated output (original token count: 37026)
 Total output lines: 859
 
@@ -127,7 +124,101 @@ The later seven-question paired run is the first direct diagnostic of the revise
 
 The source packets also exposed a question-part linkage failure: a useful Du Bois page was present but was not associated with the Wollstonecraft/Du Bois part it could answer, while the Plato common-good and Kant causal-necessity parts lacked matching pages in their submitted packets. The implementation now carries the planner's individual question parts into retrieval as separate search facets, tags each hydrated page with the parts whose facets found it, and reserves a selected page for each represented part within the existing page budget. The Worker builds an explicit source-ID list for each part before calling the composer. It rejects a claim unless its exact evidence span comes from a page linked to every part the claim covers.
 
-The composer now returns a bounded line-record format with…3938 tokens truncated…the “poison,” but the claim that Nietzsche called the church “gross and vulgar” is not present in the mapped spans. This is a residual sentence-level support gap despite the structural pass. |
+The composer now returns a bounded line-record format with one ordered block per planned question part, explicit answered/partial/unanswered status, and claims or a gap for every part. Claims include exact evidence spans and source IDs. Parsing checks that every part appears once, statuses agree with claim/gap presence, claims use planned part IDs, and evidence is linked to those parts. The reviewer receives each draft part status and gap alongside the evidence-linked claims, then judges support and completeness. A malformed composition gets the existing single format retry; persistent malformed output fails closed. This replaces the nested JSON composition format while leaving JSON for the review response. It does not add an AI call: the answer path still uses two calls normally and at most three after a format retry.
+
+## Verification after the paired-run diagnosis
+
+| Check | Result |
+|---|---|
+| Backend Worker Node suites: `node --test hosting-poc/*.test.mjs` | 212 passed, 0 failed |
+| Website companion Node suites: `node --test reading-companion/*.test.mjs` | 147 passed, 0 failed |
+| Git whitespace checks | Passed on both corrective branches |
+| Per-part retrieval facets, page-to-part tags, and selector reservation | Covered by offline retrieval and selector tests |
+| Per-part composer format, completeness, exact evidence, and source-to-part binding | Covered by offline Worker tests |
+| Planner, page packet, and answer-call count | No additional AI call; search adds local corpus queries |
+| Trace-shaped comparison plan, query-to-part linkage, and malformed record recovery | Covered by focused Worker and website regressions |
+
+These tests show that the format and linkage contracts work on controlled fixtures. They do not demonstrate that the deployed Gemma model reliably emits the format, that search returns semantically sufficient pages, or that the final prose is accurate.
+
+## Historical checkpoint: authenticated trace diagnosis and corrective candidate
+
+The one-case all-books compose-only run for “How do Hume’s *Enquiry* and Kant’s *Critique of Pure Reason* differ over how we can know causal necessity?” used Worker version `e071ea59-a87a-4475-8593-a05454c90936`. It made two answer calls and used 161.3 neurons. Both composer responses ended normally (`finish_reason: stop`); neither was truncated. The first response and its format retry both failed the parser, so review did not run and the public result was the generation-failed fallback.
+
+The trace identifies three independent issues. First, the composer omitted the `TEXT` marker, emitted an empty duplicate claim header, and added a third `PART` even though the plan contained only two. Second, the plan represented Hume and Kant separately but did not make the requested comparison its own coverage part; the model's extra third block acknowledged that gap. Third, source-specific planner queries were not used as per-part retrieval facets. Kant page 54 appeared in the six-page packet and discusses the category of causality, but had no part link; Hume page 41 was linked to the Hume part but its selected passage framed a commonly accepted doctrine rather than establishing Hume's account through custom or habit.
+
+The corrective candidate now adds a bounded comparison part when an explicit multi-source comparison plan omits it. It associates planner queries with matching source parts, passes those focused queries to both browser and evaluator retrieval, and links pages found through those facets to their parts. The composer no longer requires the redundant `TEXT` marker; it can discard an empty duplicate claim header and assigns internal claim IDs deterministically. It still requires the exact planned part sequence, validates evidence against linked pages, and fails closed on missing parts or unsupported citations. This adds no model call.
+
+This fixes the reproduced contract and query-linking failures in deterministic tests; it does not establish that the live model will make a sound Hume/Kant comparison. The used holdout case remains diagnostic, not acceptance evidence.
+
+## Acceptance status
+
+| Audit criterion | Status |
+|---|---|
+| Unknown grouped citation IDs fail evaluation | Implemented and tested |
+| A rewrite cannot bypass final checks | Candidate pipeline has no post-review prose rewrite; tested |
+| Multiword quoted text is checked against a cited source page | Implemented and tested; single-token terms are treated as terminology |
+| Portable Nietzsche remains discoverable under Nietzsche scope | Implemented and tested |
+| Browser and evaluator share retrieval assembly | Implemented; unit-tested through the shared module |
+| Evaluation records exact model context and code/data identities | Implemented for authenticated v2 runs; unit- and route-tested |
+| Declared model-call budget | Current: 1 planner + 2 answer calls per with-review case; 1 planner + 1 answer call per compose-only case; paired mode uses one planner and three answer calls per case |
+| Per-part response structure and pre-composition evidence links | Paragraph contract and source-to-part checks pass offline; latest live run linked pages for all cases but only 7 of 18 parts were marked supported, and no case passed the structural gate |
+| Public pilot answer pipeline | PR #208/#209 and follow-up PRs #183/#210 are merged; Pages deployment succeeded and the user reports the Worker was pulled and deployed |
+| Human-scored quality improves on development and unseen questions | Not yet measured |
+
+## Remaining validation before describing this as a quality release
+
+1. Re-run the same seven-question with-review diagnostic after merging and deploying this citation-placement correction. The old review response cannot validate an answer paragraph it never received, so a fresh review is needed to measure the restored Aristotle and Du Bois parts.
+2. Keep the seven-question set labeled diagnostic/regression: its prompts guided the fixes and a repeat cannot establish generalization. Run the separate unseen acceptance suite only after the candidate is frozen, with All Books and review enabled.
+3. Recheck the liv…22026 tokens truncated…ged: two answer calls with review; six-page maximum |
+| Fresh five-case reviewed holdout after merge and deployment | Pending; both PR checks pass, but the fixes are not yet merged/deployed. The rerun must determine whether the reviewer selects S5-Q9, highlights match the evidence map, and source-scoped questions improve |
+| Unseen acceptance suite and final semantic milestone | Reserved until the same focused holdout and cited-passage review support promotion |
+
+At the time this candidate was prepared, PR #227 in `book-chatbot` and paired website PR #193 in `antilogicalism` had passed checks but had not yet been merged or deployed. The following section records the user's merge, deployment, and live validation.
+
+## October 25, 2026: post-merge five-case run and claim-level evidence handoff
+
+After PR #227 and website PR #193 merged, the user ran the five-question all-books with-review workflow [40168960976](https://github.com/jsynon/antilogicalism/actions/runs/40168960976). The website source revision was `a67b9b5eb2d3f9d102169ece41693c3b75f679da`; the Worker build was `public-gateway-evidence-selection-v3`. All five requests completed with no request failures, planner fallbacks, or skipped cases. The run used the existing 15-call estimate (one planner plus composition and review per case). The structural result was 3/5: Kant, Kierkegaard's faith, and Nietzsche on Christianity passed; Sunyata and Nietzsche-on-Kierkegaard did not. The artifact did not contain human rubric scores, so 3/5 is a structure-and-handoff result, not a semantic-quality score. A subsequent run, [40169083831](https://github.com/jsynon/antilogicalism/actions/runs/40169083831), was cancelled after 30 seconds and provides no validation evidence.
+
+Trace inspection showed three distinct defects:
+
+- **Unrequested coverage inflation:** the direct definition “What is Sunyata?” was expanded into a second required part about how Sunyata operates. A sound definition answer therefore could not pass full structural coverage. The user had observed the same class of issue earlier with the transcendental-idealism question. A single-concept definition should remain one required part unless the reader explicitly coordinates another question.
+- **Two-author search corruption and packet loss:** the Nietzsche/Kierkegaard planner produced author-side queries containing detached possessive fragments (`Nietzsche s … of s religious existentialism` and `Kierkegaard s … individual s relationship`). Retrieval did not produce a useful Nietzsche source; the six-page browser packet retained Kierkegaard evidence but no usable Nietzsche page, so the inference was correctly withheld. Query ownership was already present; the remaining defect was malformed query cleanup and source-packet balancing for a hypothetical cross-author question.
+- **Part-level evidence hid a sentence-level mismatch:** Kierkegaard's faith answer passed structurally, but the reviewer selected an S5 passage about the movement of infinity and faith through the absurd for a part that also contained claims about inwardness and the individual's relation to the absolute. Because evidence was attached to the whole part, that trace did not show which sentence the exact quote supported. The selected quote was authentic, but the handoff could not justify every neighboring sentence.
+
+The follow-up candidate addresses these as linked pipeline contracts, without adding model calls or broadening the answer packet:
+
+- The shared Worker/browser reader contract collapses a plain “What is X?” or “Define X” plan to one required coverage part, while preserving explicitly requested coordinated facets such as “What is X and how does it work?” This avoids treating optional planner elaborations as reader requirements; retrieval can still use separate search leads.
+- Worker counterfactual query cleanup removes author names and detached possessive suffixes before author-scoped searches are formed. The website packet selector recognizes a question asking what one named author would think about another as a two-author comparison and reserves a candidate from each author group when available. Both changes reuse existing query and candidate budgets.
+- The composer’s already-cited sentence units receive deterministic IDs such as `P1-C1`. The existing review call must now decide support and select exact, source-scoped span IDs for each sentence separately. The Worker accepts a sentence only when each source that sentence cites has a valid selected span; a reviewer-partial or unsupported sentence is omitted while independently supported sentences may remain with partial coverage. The evidence map uses that sentence's own claim ID and text as its point, and the same verified span continues to drive the visible highlight. If the reviewer returns the previous part-only schema, the checked composer draft is retained only as explicitly unverified rather than being presented as reviewed.
+- The five-case evaluator's existing stage progress and 15-second startup heartbeat remain unchanged. These fixes do not add planning, composition, review, repair, or retry calls: reviewed cases still use one planner call and two answer-stage calls.
+
+The claim-level regression reproduces the Kierkegaard handoff: a source span that supports the movement-of-infinity sentence cannot also validate an adjacent “inwardness” sentence. The latter is removed, coverage is partial, and the evidence map names only the supported sentence. Other regressions verify Sunyata stays one coverage part unless a second facet is explicit; malformed apostrophe/suffix artifacts disappear from author-side queries; and the hypothetical answer packet reserves a page from each named author. Existing comparison completeness, citation scope, source fingerprint, exact span, and public security gates remain in place.
+
+| Candidate validation | Result |
+|---|---|
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 231 passed, 0 failed |
+| Full website suite: `node --test reading-companion/*.test.mjs` | 172 passed, 0 failed |
+| JavaScript syntax checks and `git diff --check` | Passed in both worktrees |
+| Shared Worker/site reader contract | Byte-identical |
+| Answer-stage call budget / source packet | Unchanged: composition plus review; six pages maximum |
+| Workflow stage progress and startup heartbeat | Existing behavior preserved and its tests pass |
+| GitHub PR checks for this follow-up | Passed: Worker contracts [40170911108](https://github.com/jsynon/book-chatbot/actions/runs/40170911108), website smoke [40170802873](https://github.com/jsynon/antilogicalism/actions/runs/40170802873), and website retrieval evaluation [40170802893](https://github.com/jsynon/antilogicalism/actions/runs/40170802893) |
+| Fresh five-case deployed with-review run | Pending; must check structure, selected quote per sentence, both author pages in the Nietzsche/Kierkegaard packet, and the two definition questions |
+| Human semantic evaluation and unseen acceptance suite | Pending; keep the unseen suite frozen until the deployed candidate is reviewed |
+
+At that point, the next release gate was review and merge of PRs #228 and #194, Worker deployment, and a fresh five-case all-books with-review run. The user completed that gate; the results and remaining checks are recorded below.
+
+## October 25, 2026: post-merge five-case run #39
+
+After Worker PR #228 and website PR #194 merged and the Worker was deployed, the user ran the same five-case all-books, with-review focused workflow: [run #39](https://github.com/jsynon/antilogicalism/actions/runs/40171341219). The site revision was `f69032774bedfd1169c2ee794b35b329c7b07cfa`, which includes website PR #194; the Worker version was `0b621531-5199-4207-ad0e-017e1748c846`. All five requests completed: no request failures, planner fallbacks, skips, or stopped cases. The run used the existing 15-call estimate (one planner and two answer-stage calls for each of five cases). The artifact reports 4/5 structural passes, compared with 3/5 in the previous deployed five-case run. It does not contain formal human rubric scores (0/5 reviewed); structural pass rate must not be read as semantic quality.
+
+The job log also confirms that stage progress is visible during execution: it emits per-case planner, retrieval, and answer start/completion events, reports the selected page count, and emits an `ANSWER WAITING` heartbeat while a Worker request is still running. This meets the previously requested real-time observability behavior for this run.
+
+| Case | Automated result | Evidence-based assessment |
+|---|---|---|
+| Kant: transcendental idealism | Pass; one requested part, full coverage | Five cited sentences link to a single page of the *Prolegomena*. The selected spans directly cover representation, space/time and appearances, Kant's use of “transcendental,” and the limits of experience. The direct-definition normalization now matches the reader's one-part question. |
+| Kierkegaard: faith | Pass; one requested part, full coverage | The earlier unsupported inwardness sentence is now linked to its own matching claim evidence, rather than borrowing the movement-of-infinity quote. The answer is very long for this broad question and expands into multiple examples and conditions; structural validity does not show that this level of detail is helpful. |
+| Nietzsche on Christianity | Pass; one requested part, full coverage | Most claim spans match the associated statement. The final sentence bundles several claims: selected evidence supports the church's description as an obstruction to the spread of the “poison,” but the claim that Nietzsche called the church “gross and vulgar” is not present in the mapped spans. This is a residual sentence-level support gap despite the structural pass. |
 | Sunyata | Pass; one requested part, full coverage | The planner's extra “how it operates” requirement is gone. The citations support the Zen-centered description and examples. The answer gives only a brief “concept of emptiness” definition and then proceeds into Zen associations; it still does not explain the underlying philosophical sense of emptiness in much depth. |
 | Nietzsche on Kierkegaard | Fail; no supported parts, no citations | The assistant safely abstained. The Nietzsche-scoped search returned zero candidates; the Kierkegaard-side search returned 13 and the broad question search 26, yet the six-page packet contained Kierkegaard sources only. Without a Nietzsche passage the reviewer had no basis to support either author's position or the inferred comparison. This is now a retrieval/source-availability failure, earlier than composition or claim-level review. |
 
@@ -187,7 +278,7 @@ The composer and reviewer now receive structured bibliographic context for credi
 | Full Worker suite: `node --test hosting-poc/*.test.mjs` | 235 passed, 0 failed |
 | Full website suite: `node --test reading-companion/*.test.mjs` | 175 passed, 0 failed |
 | Shared Worker/site `reader-contract.mjs` | Byte-identical after separating credited editors from translators |
-| `git diff --check` | Passed in both repositories |
+| `git diff --check` | Pending final branch validation |
 | AI call estimate / answer packet | Unchanged: 15 estimated calls for the five reviewed cases; six-page maximum |
 | Run #40 regression fixtures | Kant's complete legacy-shaped review can recover; Sunyata's fenced/trailing-tail JSON parses, but the unselected S5 span remains insufficient and does not enter the evidence map |
 | Current candidate status | Paired PRs [#230](https://github.com/jsynon/book-chatbot/pull/230) and [#196](https://github.com/jsynon/antilogicalism/pull/196) are open; repository checks are pending; neither is merged or deployed |
@@ -233,7 +324,39 @@ The paired follow-up changes only the two existing handoff points:
 | Model-call budget / packet limit | Unchanged: 15 baseline calls across five reviewed cases; six submitted pages maximum |
 | Semantic answer review | Pending; structural tests do not prove that a recovered Nietzsche passage supports the comparison |
 
-The paired follow-up is available as Worker [PR #233](https://github.com/jsynon/book-chatbot/pull/233) and website [PR #199](https://github.com/jsynon/antilogicalism/pull/199). The Worker contract check, website smoke check, and website library evaluation have all completed successfully ([Worker run 40181348428](https://github.com/jsynon/book-chatbot/actions/runs/40181348428), [website evaluation 40181346756](https://github.com/jsynon/antilogicalism/actions/runs/40181346756), [website smoke 40181346801](https://github.com/jsynon/antilogicalism/actions/runs/40181346801)). The Worker run passed on the code commit; the follow-up report-only commit did not change implementation code. Both PRs are ready for review and merge. After both PRs merge and deploy, rerun the same five-case focused, all-books, with-review workflow. After both PRs merge and deploy, rerun the same five-case focused, all-books, with-review workflow. Inspect the exact Nietzsche passages in `retrievalCandidates` and `submittedSources`, verify the review response remains contract-valid, and check all cited page text against the answer. Keep the unseen acceptance suite frozen until that source-level review is satisfactory.
+The paired follow-up was delivered in Worker [PR #233](https://github.com/jsynon/book-chatbot/pull/233) and website [PR #199](https://github.com/jsynon/antilogicalism/pull/199); both were merged before the next run. Their checks passed ([Worker run 40181348428](https://github.com/jsynon/book-chatbot/actions/runs/40181348428), [website evaluation 40181346756](https://github.com/jsynon/antilogicalism/actions/runs/40181346756), [website smoke 40181346801](https://github.com/jsynon/antilogicalism/actions/runs/40181346801)). The v48 live-evaluator correction followed in website [PR #201](https://github.com/jsynon/antilogicalism/pull/201), also merged before run #45. The five-case v48 results and remaining source-level checks are recorded below. Keep the unseen acceptance suite frozen until those checks are satisfactory.
+
+
+## October 25, 2026: v48 focused run #45
+
+After website PR #201 corrected the v48 preflight, focused workflow [40183728454](https://github.com/jsynon/antilogicalism/actions/runs/40183728454) completed all five configured cases with `all-books` and `with-review`. The artifact records site revision `d7e459b21d88c41bad0d964b0c58b5892c64db25`, corpus v48 at `data-v48/`, fingerprint schema v2, and Worker version `fbbfccdd-4226-4479-b53f-86bacdcbabbb` (`public-gateway-evidence-selection-v3`). This is the five-question focused regression set, not the separate seven-question holdout.
+
+| Run measure | Result |
+|---|---|
+| Cases | 5 completed; 0 skipped |
+| Structural result | 4 passed, 1 failed |
+| Request failures / planner fallbacks | 0 / 0 |
+| Estimated baseline calls | 15; no conditional repair calls recorded |
+| Corpus / fingerprint pairing | v48 / v2; preflight succeeded |
+| Question-part decisions | 6 supported, 1 partial, 0 unsupported across 7 parts |
+| Highlights | 12 exact-text-located highlights on the four verified answers; none on the safely unverified draft |
+| Artifact human rubric | Pending for all five cases; no semantic scores were written by the workflow |
+
+The main failure changed from run #42's malformed reviewer response to a completion-length failure. For Nietzsche on Christianity, composition produced a five-claim cited draft, but the reviewer ended with `finish_reason: length` at exactly 1,800 completion tokens. Its response echoed much of the submitted review payload and was cut off inside a source-span object, so it was not valid JSON. The Worker correctly kept the answer `unverified-source-draft`, marked the part partial, and emitted no evidence highlights. This is evidence of reviewer-output truncation, not proof that each draft claim is false. The prompt addition in PR #233 did not prevent this distinct failure mode. The current review path allows 1,800 completion tokens and makes no extra repair call.
+
+There are concrete gains in the other cases. The Nietzsche/Kierkegaard retrieval packet now contains three Nietzsche pages and three Kierkegaard pages, and all three planned answer parts have structural evidence links; the missing-author retrieval defect from run #42 did not recur. The sunyata answer's highlight list begins with the cited definition on *Forgotten Truth*, p. 66, followed by its Suzuki citations; all three excerpts are text-located. The Kant answer cites the relevant passages in *Critique of Pure Reason*, p. 199, and *Prolegomena*, p. 22.
+
+My manual scores below are an independent read of the draft and available source text on a 0–2 scale. They are not scores from the artifact. The Nietzsche/Christianity draft remains unverified, and its *Portable Nietzsche*, p. 578 citation has editorial/source-voice ambiguity that needs page-context review. The two Kierkegaard answers summarize works whose curated metadata identifies pseudonymous voices (Johannes de Silentio, Johannes Climacus, and Anti-Climacus), but the prose attributes the views directly to Kierkegaard without naming that mediation. The Nietzsche/Kierkegaard hypothetical is clearly labeled as inference, yet its final inference sentence cites Nietzsche's framework without also citing the Kierkegaard passage it says Nietzsche would critique. Sunyata draws on Suzuki and Huston Smith commentary rather than a primary Buddhist text and compresses emptiness to “emptiness or a void”; it is usable as an introduction, with that scope and qualification made clear.
+
+| Case | Accuracy | Question coverage | Explanation quality | Citation support | Citation completeness |
+|---|---:|---:|---:|---:|---:|
+| Kant: transcendental idealism | 2 | 2 | 1 | 2 | 2 |
+| Kierkegaard: faith | 1 | 2 | 1 | 1 | 2 |
+| Nietzsche: Christianity (unverified draft) | 1 | 2 | 1 | 1 | 2 |
+| Sunyata | 1 | 2 | 1 | 2 | 2 |
+| Nietzsche and Kierkegaard | 1 | 2 | 1 | 1 | 1 |
+
+The next fix should target reviewer completion reliability without adding a model call: reduce redundant review-payload fields and require a compact decision-only JSON response while retaining per-claim/per-cited-source span checks and provenance context. Add a regression for `finish_reason: length` to preserve the fail-closed behavior and make the incomplete-review reason visible in diagnostics. Do not treat a higher token ceiling alone as proof of reliability. After that change, rerun these same five v48 cases and inspect the exact speaker/page context for Kierkegaard and the Nietzsche p. 578 passage, along with the final inference citation.
 
 ## October 25, 2026: run #45 reviewer handoff and page attribution follow-up
 
