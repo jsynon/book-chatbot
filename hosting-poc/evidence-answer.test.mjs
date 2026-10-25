@@ -621,6 +621,49 @@ test('known editorial and pseudonymous source voices must be named or mediated',
  assert.equal(named.result.coverage,'full');
 });
 
+test('prior speaker attribution carries across accepted claims without crossing to another pseudonymous voice',async()=>{
+ const silentioTitle='Fear and Trembling — Søren Kierkegaard';
+ const climacusTitle='Philosophical Fragments — Søren Kierkegaard';
+ const sources=[
+  {...hume,id:'S1',bookId:'140',title:silentioTitle,page:32,
+   text:'Johannes de Silentio describes faith as a relation to God.',
+   preview:'Johannes de Silentio describes faith as a relation to God.'},
+  {...hume,id:'S2',bookId:'192',title:climacusTitle,page:24,
+   text:'Johannes Climacus discusses a philosophical lesson about faith.',
+   preview:'Johannes Climacus discusses a philosophical lesson about faith.'}
+ ];
+ const question='What does Kierkegaard say about faith?';
+ const plan={...onePartPlan,
+  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140','192']}],
+  parts:[{...onePartPlan.parts[0],question,sourceBookIds:['140','192'],
+   candidateSourceIds:['S1','S2']}]};
+ const draft=[
+  'Johannes de Silentio describes faith as a relation to God. [S1]',
+  'He presents faith as an inward relation. [S1]',
+  'He distinguishes faith from ordinary belief. [S1]',
+  'He emphasizes the paradox of faith. [S1]',
+  'He frames faith as requiring an absolute relation to God. [S1]',
+  'Kierkegaard describes faith as a philosophical lesson. [S2]'
+ ].join(' ');
+ const ai=makeAI([answer('PART P1\n'+draft),(_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ }]);
+ const result=await composeEvidenceAnswer(question,sources,ai,[],{
+  plan,catalog:{...catalog,140:silentioTitle,192:climacusTitle},trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'partial');
+ assert.match(result.answer,/Johannes de Silentio describes faith/);
+ assert.match(result.answer,/He frames faith as requiring an absolute relation to God/);
+ assert.doesNotMatch(result.answer,/Kierkegaard describes faith as a philosophical lesson/);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S2'&&issue.reason==='pseudonymous-voice-unidentified'));
+});
+
 test('flat reviewer input keeps multi-part claims linked once and duplicate claims keys fail closed',async()=>{
  let reviewPayload;
  const draft=hypotheticalDraft(
