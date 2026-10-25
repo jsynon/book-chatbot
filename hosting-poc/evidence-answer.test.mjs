@@ -179,6 +179,8 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
  assert.match(REVIEW_PROMPT,/relevant span for every sourceId cited by that sentence/);
  assert.match(REVIEW_PROMPT,/one supported clause does not make an unsupported clause true/);
+ assert.match(REVIEW_PROMPT,/do not put source wording or terms in quotation marks/i);
+ assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
 });
 
@@ -506,6 +508,35 @@ test('reviewer contract errors preserve citation-checked text as an explicitly u
  assert.equal(result.coverage,'partial');
  assert.equal(result.reviewStatus,'review-contract-incomplete');
  assert.match(result.answer,/custom and regular conjunction/);
+ assert.equal(ai.calls.length,2);
+});
+
+test('malformed reviewer JSON with unescaped quotation marks fails closed and preserves the cited draft as unverified',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  {response:'{"parts":[{"partId":"P1","status":"answered","reason":"The phrase "denial of self" is supported.","claims":[]}]}' }]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.reviewStatus,'review-format-failed');
+ assert.match(result.answer,/custom and regular conjunction/);
+ assert.deepEqual(result.trace.reviewContract.issues,['model-output-invalid-format']);
+ assert.equal(ai.calls.length,2,'format handling must not make an additional model call');
+});
+
+test('a repeated top-level parts key cannot produce a verified draft after JSON parsing drops a part decision',async()=>{
+ const duplicate='{"parts":[{"partId":"P1","status":"answered","reason":"supported","claims":[]}],'+
+  '"status":"answered","parts":[{"partId":"P2","status":"answered","reason":"supported","claims":[]}]}';
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  {response:duplicate}]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.reviewStatus,'review-contract-incomplete');
+ assert.match(result.answer,/custom and regular conjunction/);
+ assert.ok(result.trace.reviewContract.issues.includes('unknown-part'));
+ assert.ok(result.trace.reviewContract.issues.includes('missing-part-decision'));
  assert.equal(ai.calls.length,2);
 });
 
