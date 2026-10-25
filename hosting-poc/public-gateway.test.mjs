@@ -2435,7 +2435,7 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
      const payload=JSON.parse(input.messages[1].content);
      content=JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
        reason:'The selected source span directly supports the stated distinction.',
-       claims:part.answers.map(answer=>({claimId:answer.claimId,status:'answered',
+       claims:part.claims.map(answer=>({claimId:answer.claimId,status:'answered',
         reason:'The selected span directly supports this sentence.',
         evidence:answer.sourceIds.map(sourceId=>({sourceId,spanIds:[sourceId+'-Q1']}))}))}))});
    }else if(system.startsWith('Answer the reader\'s question')){

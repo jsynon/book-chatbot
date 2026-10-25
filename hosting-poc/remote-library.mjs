@@ -35,6 +35,13 @@ export function isNavigationPage(text) {
   const words = raw.match(/[a-z]+/gi) || [];
   const refs = raw.match(/\b\d{1,4}(?:[-–]\d{1,4})?\b/g) || [];
   const sentences = (raw.match(/[.!?]["')\]]?\s+(?=[A-Z])/g) || []).length;
+  // Scanned indexes often place the printed folio before the heading
+  // ("182 / INDEX") after OCR has already emitted several entries. Detect
+  // that label anywhere near the top, but require locator density as well so
+  // an ordinary prose mention of an index remains eligible.
+  const head = raw.slice(0, 2500);
+  if (/\bindex\b/i.test(head) && words.length >= 20 && refs.length >= 5 &&
+      refs.length / words.length >= 0.08 && (raw.split(',').length >= 6 || raw.split(';').length >= 3)) return true;
   return words.length >= 20 && refs.length >= 10 &&
     refs.length / words.length >= 0.12 &&
     (raw.split(',').length >= 16 || raw.split(';').length >= 4) &&

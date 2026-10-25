@@ -49,6 +49,12 @@ test('detects index locator entries without rejecting historical prose', () => {
  assert.equal(isNavigationPage(index),true);
  assert.equal(isNavigationPage('The city feared the growing power of its opponent. The chronicler distinguishes immediate disputes from the deeper cause of the war.'),false);
 });
+
+test('detects an OCR index when the folio and INDEX heading occur after the first entries',()=>{
+ const index='intrinsic, 14f Vedanta, 55, 170: advaita, 58n Vedas, 105; Vedic, 147, 168 Virgin Mother, 148; virtue: as synonym for quality or being, 2nf 182 / INDEX traditio, 146 Transformist Illusion, 111 transpersonal: journal of Psychology, 156n; Trauma of Birth, 162, 165; trikaya, 58n; Tristes Tropiques, 126; truth: as not needing us, 58; objective, 7, 10; subjective, 7';
+ assert.equal(isNavigationPage(index),true);
+ assert.equal(isNavigationPage('An index of the evidence can be useful. The author then explains how the argument depends on experience and judgment.'),false);
+});
 test('does not rank unrelated single-word matches over a multi-term history book', async () => {
  const data = structuredClone(files);
  data['manifest.json'].pages=7;

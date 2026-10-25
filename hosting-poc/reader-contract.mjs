@@ -8,11 +8,13 @@ export function citationIds(text){
 export function catalogIdentity(title){
   const [work,...rest]=String(title||'').split(/\s+[—–]\s+/);
   const byline=rest.join(' ');
-  const editor=byline.match(/\b(?:edited|translated) by\s+([^)]*)/i)?.[1]?.trim()||'';
+  const editor=byline.match(/\bedited by\s+([^)]*)/i)?.[1]?.trim()||'';
+  const translator=byline.match(/\btranslated by\s+([^)]*)/i)?.[1]?.trim()||'';
   const author=byline.replace(/\([^)]*\)/g,'').replace(/\b(?:edited|translated) by\b.*$/i,'').trim();
   const aliases=[work,...[...work.matchAll(/\(([^)]+)\)/g)].map(m=>m[1]),
     work.replace(/\([^)]*\)/g,'').trim(),...work.split(':').slice(1)];
   return {work,authors:author.split(/\s+and\s+/i).filter(Boolean),editors:editor?[editor]:[],
+    translators:translator?[translator]:[],
     aliases:[...new Set(aliases.flatMap(v=>{const clean=v.trim();return [clean,clean.replace(/^(the|a|an)\s+/i,'').trim()];}).filter(v=>v.length>=4))]};
 }
 export function normalizeQuote(text){

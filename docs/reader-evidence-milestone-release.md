@@ -790,3 +790,30 @@ The Worker composer contract now asks for a direct, concise 3–5 sentence answe
 | Unseen acceptance suite | Remains frozen pending deployed evidence and manual semantic review |
 
 This is a local candidate across the Worker and website repositories. It has passed offline contract and retrieval tests, but has not yet been merged, deployed, or evaluated against the live corpus. A 5/5 structural result remains insufficient by itself; promotion still requires inspection of the exact retrieved and cited passages and the user-visible highlights.
+
+## October 25, 2026: run #40 reviewer recovery and page-voice context
+
+After Worker PR #229 and website PR #195 merged and the Worker was deployed, the user ran the five-case focused, all-books, with-review workflow [40173370353](https://github.com/jsynon/antilogicalism/actions/runs/40173370353). The site revision was `f5d56b2cf0ff3cf713121c35c45918bf3f3ce87e`; the Worker version was `b9ea08ea-3123-4cd1-87c1-64fe169c658f`. All five cases completed with no request failures or planner fallbacks, using the established 15-call estimate. Structural checks passed 3/5. This is evidence of a working end-to-end path with two reviewer handoff failures, not a semantic-quality score.
+
+The authenticated trace localized both misses to reviewer format and exposed one source-selection defect:
+
+- **Kant, transcendental idealism:** The reviewer returned six claim decisions with valid claim IDs and selected span IDs, but mirrored the input field `answers` while the output contract required `claims`; it also omitted the part-level status. The Worker correctly kept the answer as an unverified partial draft. The underlying cited passages were relevant, but this answer was not verified by the run's review contract.
+- **Sunyata:** The reviewer returned the expected claim decisions in fenced JSON with an extra trailing `]}`. Its definition claim cited S4 and S5 but selected a span only from S4. Source inspection in Drive confirmed Huston Smith's *Forgotten Truth*, p. 66 directly defines sunyata as emptiness/a void, while p. 193 is an alphabetical index. The current evidence gate correctly refuses to let S4 validate the missing S5 citation; the browser's navigation-page detector had failed to exclude p. 193 from candidates.
+- **Source voice and editorial context:** Drive inspection confirmed that *Last Writings: Nothingness and the Religious Worldview*, p. 18, is in David A. Dilworth's introduction, so it is secondary commentary rather than Nishida's own prose. The *Fear and Trembling* front matter identifies Johannes de Silentio as the pseudonymous voice. These are real attribution distinctions the answer path must receive and preserve; a catalog author or an intended `primary` source role alone cannot establish who speaks on an individual page.
+
+The next implementation fixes the handoff and context as one bounded change. The review request now uses `claims` for the answer sentences and the reviewer's decisions. A compatibility adapter accepts the observed `answers` alias and derives an omitted part status only when every supplied claim has a recognized status; missing, duplicate, unknown, or incomplete claim/span decisions remain rejected or partial. The JSON reader recovers a single balanced object from a code fence and tolerates only the observed unmatched `]}` tail. It then runs the unchanged strict contract checks, so formatting recovery cannot create evidence or validate an unsupported citation.
+
+The composer and reviewer now receive structured bibliographic context for credited authors, editors and translators, the planner's intended source role, and any explicit page-heading hint. The prompts say that these fields are context only: inspect the page for an authorial, pseudonymous, quoted, reported, narrative, editorial, or translator voice; keep commentary separate from primary text; and use an unnamed/uncertain attribution when the passage does not establish a speaker. This preserves the existing one-composition/one-review call path. The website's page filter now detects OCR index pages where the folio and `INDEX` heading occur after several locator entries; the same generic check is covered in the Worker-side source-library tests.
+
+| Candidate validation | Result |
+|---|---|
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 235 passed, 0 failed |
+| Full website suite: `node --test reading-companion/*.test.mjs` | 175 passed, 0 failed |
+| Shared Worker/site `reader-contract.mjs` | Byte-identical after separating credited editors from translators |
+| `git diff --check` | Pending final branch validation |
+| AI call estimate / answer packet | Unchanged: 15 estimated calls for the five reviewed cases; six-page maximum |
+| Run #40 regression fixtures | Kant's complete legacy-shaped review can recover; Sunyata's fenced/trailing-tail JSON parses, but the unselected S5 span remains insufficient and does not enter the evidence map |
+| Current candidate status | Paired PRs [#230](https://github.com/jsynon/book-chatbot/pull/230) and [#196](https://github.com/jsynon/antilogicalism/pull/196) are open; repository checks are pending; neither is merged or deployed |
+| Next release gate | Open paired PRs, pass repository checks, merge/deploy both, and repeat the same five-case run; inspect exact reviewer spans, speaker/section attribution, index exclusion, and visible highlights |
+
+The unseen acceptance suite remains frozen. Even a 5/5 structural run will not complete this milestone until the selected passages support the text, commentary and pseudonymous voices are not presented as an author's direct words, citations avoid index pages, and the user-visible highlights point to the matching reviewed claim.
