@@ -2447,8 +2447,8 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
    if(system.startsWith('Review every answer sentence separately')){
      const payload=JSON.parse(input.messages[1].content);
      content=JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),
-       claims:payload.parts.flatMap(part=>part.claims.map(answer=>({claimId:answer.claimId,status:'answered',
-        spanIds:answer.sourceIds.map(sourceId=>sourceId+'-Q1')})))});
+       claims:payload.claims.map(answer=>({claimId:answer.claimId,status:'answered',
+        spanIds:answer.sourceIds.map(sourceId=>sourceId+'-Q1')}))});
    }else if(system.startsWith('Answer the reader\'s question')){
      const payload=JSON.parse(input.messages[1].content);
      content=payload.parts.map(part=>'PART '+part.partId+'\nThe passage identifies the deeper cause as fear of growing power. [S1]').join('\n\n');
