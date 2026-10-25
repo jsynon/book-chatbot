@@ -15,6 +15,7 @@
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
 import {normalizePlan} from './reader-contract.mjs';
+import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v47/';
 // Keep a generous character ceiling that fits the bounded model output while
 // allowing detailed, evidence-supported answers without turning them into 502s.
@@ -2114,65 +2115,6 @@ function removeStaleQuestionPartNotice(answer,questionParts){
     .join('\n\n').trim();
 }
 
-function normalizedEvidenceQuote(text) {
-  return String(text||'').toLocaleLowerCase().normalize('NFKC')
-    // OCR in older scans often substitutes the multi-purpose glyph Ɵ for “ti”
-    // (e.g. “jusƟﬁed”). Normalize it for quote matching while retaining the
-    // original indexed wording in displayed excerpts and citation anchors.
-    .replace(/[Ɵɵ]/g,'ti')
-    .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-}
-function verifiedEvidenceQuote(quote,text) {
-  const supplied=String(quote||'').trim();
-  const normalized=normalizedEvidenceQuote(supplied);
-  const source=String(text||'');
-  const normalizedSource=normalizedEvidenceQuote(source);
-  // Keep verification fail-closed: reduce a quote only after the entire
-  // supplied quote is verified as one contiguous span in this exact excerpt.
-  if(supplied.length<12||normalized.length<12||
-    !normalizedSource.includes(normalized))return null;
-  let bounded=supplied;
-  if(bounded.length>220){
-    const sentences=bounded.match(/[^.!?]+[.!?]+|[^.!?]+$/gu)||[];
-    const sentence=sentences.map(value=>value.trim()).find(value=>
-      value.length>=12&&value.length<=220&&
-      normalizedSource.includes(normalizedEvidenceQuote(value)));
-    if(sentence)bounded=sentence;
-    else{
-      const words=[...bounded.matchAll(/[\p{L}\p{N}]+(?:[’'\-][\p{L}\p{N}]+)*/gu)];
-      let exact='';
-      for(let count=words.length;count>0;count--){
-        const end=words[count-1].index+words[count-1][0].length;
-        const candidate=bounded.slice(0,end).trim();
-        if(candidate.length<=220&&candidate.length>=12&&
-          normalizedSource.includes(normalizedEvidenceQuote(candidate))){
-          exact=candidate;break;
-        }
-      }
-      if(!exact)return null;
-      bounded=exact;
-    }
-  }
-  return {quote:bounded,anchorQuote:completeEvidenceAnchor(source,bounded)};
-}
-function completeEvidenceAnchor(text,quote,max=320) {
-  const content=String(text||'').replace(/\s+/g,' ').trim();
-  const target=normalizedEvidenceQuote(quote);
-  if(!target)return quote;
-  const boundary=/[.!?](?:["'’”)}\]]*)(?=\s|$)/g;
-  let start=0,match;
-  while((match=boundary.exec(content))) {
-    const end=boundary.lastIndex;
-    const sentence=content.slice(start,end).trim();
-    if(sentence&&normalizedEvidenceQuote(sentence).includes(target))
-      return sentence.length<=max?sentence:quote;
-    start=end;
-  }
-  const tail=content.slice(start).trim();
-  if(tail&&normalizedEvidenceQuote(tail).includes(target))
-    return tail.length<=max?tail:quote;
-  return quote;
-}
 const SPEECH_ATTRIBUTION_VERBS='(?:said|says|asked|answered|replied|muttered|began|continued|cried|shouted|exclaimed|whispered|inquired|remarked|observed|added|interrupted|declared|asserted|suggested|argued|maintained)';
 function hasDialogueSpeech(text) {
   const value=String(text||'');
@@ -3298,7 +3240,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'Return EXACTLY one JSON object {"resolvedQuestion":"...","intent":"explain|compare|interpret|locate","sources":[{"label":"...","role":"primary|subject|commentary"}],"parts":["..."],"scope":"...","queries":["...","..."]}. '+
         'intent must be explain, compare, interpret, or locate. resolvedQuestion must replace follow-up references only when recent history makes the referent clear; otherwise repeat the current question. '+
         'sources is an array of up to four objects with a short label and role primary, subject, or commentary; identify only sources explicitly requested by the reader. '+
-        'parts is an array of one to six short questions that preserve every distinct requested component. scope is an explicit work, chapter, verse, section, or page restriction, or an empty string. '+
+        'parts is an array of one to six short questions that preserve every distinct requested component. Rewrite dependent pronouns such as “he,” “this passage,” or “that argument” with the parent question’s subject, work, and quoted phrase so each part can be searched independently. scope is an explicit work, chapter, verse, section, or page restriction, or an empty string. '+
         'Return two to four different, concise search phrases (4-13 words apiece) in queries. '+
         'They must locate original passages addressing distinct requested parts '+
         'of the question. Use one query per distinct component when there '+
@@ -3370,7 +3312,9 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'criterion, or explanation of it. Do not substitute a nearby doctrine, '+
         'a passage that merely reports the other thinker’s position, or a '+
         'general discussion of the topic for the named source’s answer to the '+
-        'question. '+
+        'question. For Kant on causal necessity, search the Second Analogy and '+
+        'the rule connecting events through cause and effect; a passage about '+
+        'regulative or absolute necessity alone is not a direct answer. '+
         'When the reader asks how a claim, principle, or necessity can be known, '+
         'justified, or established, preserve that epistemic relation and the '+
         'exact phenomenon in the source query. Seek the source’s argument, '+

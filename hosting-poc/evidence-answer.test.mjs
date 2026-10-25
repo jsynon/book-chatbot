@@ -41,8 +41,10 @@ test('the composer uses a short per-part answer contract without claim IDs or qu
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
  assert.doesNotMatch(REVIEW_PROMPT,/claimIds|verdict/);
- assert.match(REVIEW_PROMPT,/12–320 character/);
- assert.match(REVIEW_PROMPT,/exact supporting quote from every cited source ID/);
+ assert.match(REVIEW_PROMPT,/12–2000 character/);
+ assert.match(REVIEW_PROMPT,/neighboring doctrine or a shared keyword is not support/);
+ assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
+ assert.match(REVIEW_PROMPT,/exact supporting evidence from every cited source ID/);
 });
 
 test('a quoted technical term is not mistaken for a source quotation, while multiword quotes stay exact',()=>{
@@ -158,17 +160,32 @@ test('a reviewer cannot mark an answer supported without an exact quote from a c
  assert.equal(result.evidenceMap.length,0);
 });
 
-test('the reviewer accepts an exact supporting quote longer than the old 220-character cap',async()=>{
+test('the active evidence-v2 reviewer verifies a long exact quote before storing a bounded source anchor',async()=>{
  const longText='A verified passage explains the form and matter relation in detail: '+
-  'the soul is the first actuality of a natural body that has life potentially, and this relation is clarified by the comparison between the shape of wax and the wax itself. '.repeat(2);
+  'the soul is the first actuality of a natural body that has life potentially, and this relation is clarified by the comparison between the shape of wax and the wax itself. '.repeat(3);
  const source={...hume,text:longText,preview:longText};
- const exactQuote=longText.slice(0,260);
+ const exactQuote=longText.slice(0,462);
  const ai=makeAI([answer('PART P1\nAristotle treats soul as the actuality of a living body. [S1]'),
   review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',quote:exactQuote}]}})]);
  const result=await composeEvidenceAnswer('How does Aristotle relate soul and body?',[source],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.coverage,'full');
- assert.equal(result.evidenceMap[0].quote.length,260);
+ assert.ok(result.evidenceMap[0].quote.length<=320);
+ assert.ok(longText.includes(result.evidenceMap[0].quote));
+ assert.equal(result.trace.reviewContract.supportIssues.length,0);
+});
+
+test('the active reviewer accepts OCR-normalized exact evidence and anchors to original source text',async()=>{
+ const source={...hume,text:'James writes that faith is jusƟﬁed by works, and this is not an empty formula.',
+  preview:'James writes that faith is jusƟﬁed by works, and this is not an empty formula.'};
+ const ai=makeAI([answer('PART P1\nJames relates faith to works. [S1]'),
+  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',
+   quote:'James writes that faith is justified by works, and this is not an empty formula.'}]}})]);
+ const result=await composeEvidenceAnswer('How does James relate faith and works?',[source],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.coverage,'full');
+ assert.match(result.evidenceMap[0].quote,/jusƟﬁed/);
+ assert.equal(result.trace.reviewContract.supportIssues.length,0);
 });
 
 test('an answered review must quote every source cited by that part',async()=>{
