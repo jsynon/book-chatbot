@@ -753,8 +753,15 @@ function excerptStem(value){
   if(word.length>4&&word.endsWith('e'))word=word.slice(0,-1);
   return word;
 }
+export function stripWebCaptureFooters(text) {
+  // Keep the predicate deliberately narrow: a URL must occupy the whole line
+  // and include Acrobat's page counter plus captured local timestamp.
+  const footer=/^[ \t\f]*(?:file:\s*\/{1,3}|https?:\/\/|www\.)[^\r\n]*?\(\s*\d+\s+of\s+\d+\s*\)\s*\[\s*\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)\s*\][ \t\f]*$/gim;
+  return String(text==null?'':text).replace(footer,'');
+}
+
 export function sourceExcerpt(text,question,max=1080) {
-  const content=String(text||'').replace(/\s+/g,' ').trim();
+  const content=stripWebCaptureFooters(text).replace(/\s+/g,' ').trim();
   if(content.length<=max)return content;
   const words=queryWords(question);
   const sentences=[];
