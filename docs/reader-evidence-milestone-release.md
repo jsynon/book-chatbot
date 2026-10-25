@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: PRs #183, #210, #211, and #212 are merged; the post-deploy seven-question run completed with 0/7 structural passes; source-based assistant scoring and exact-trace inspection are recorded below. A citation-placement correction and browser/Worker contract synchronization are under validation; a fresh reviewed run and unseen acceptance remain open.
+Status: PRs #183, #210, #211, and #212 are merged; PR #213 (Worker citation placement) and PR #184 (website/Worker contract sync) are open, and their required checks have passed. The post-deploy seven-question run completed with 0/7 structural passes; source-based assistant scoring and exact-trace inspection are recorded below. A fresh reviewed run and unseen acceptance remain open.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -298,6 +298,7 @@ The browser and Worker `reader-contract.mjs` copies had drifted despite the cont
 |---|---|
 | Worker suite: `node --test hosting-poc/*.test.mjs` | 214 passed, 0 failed |
 | Website suite: `node --test reading-companion/*.test.mjs` | 154 passed, 0 failed |
+| GitHub PR checks | Worker contract workflow and website smoke workflow passed; PRs #213 and #184 remain open for review |
 | Exact saved compose-response replay, Aristotle P2 and Du Bois P2 | Both retained; no `quotation-citation-mismatch` rejection |
 | Browser/Worker contract copies | Byte-identical in candidate branches |
 | Fresh reviewed quality run, unseen acceptance suite, and live transcendental-idealism check | Still required |
