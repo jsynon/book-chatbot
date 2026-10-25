@@ -70,7 +70,7 @@ export function auditFinalAnswer(answer,sources){
     // Bind to the first following citation group in this sentence/paragraph.
     // Do not allow an unrelated quote anywhere in the packet to validate it.
     const tail=answer.slice(quote.end);
-    const next=tail.match(/^[^\n.!?]*(?:[.!?]\s*)?(\[\s*S\d+(?:\s*,\s*S\d+)*\s*\])/);
+    const next=tail.match(/^[^\n.!?]*?(?:[.!?](?=\s*\[))?\s*(\[\s*S\d+(?:\s*,\s*S\d+)*\s*\])/);
     const ownIds=next?citationIds(next[1]):[];
     if(!ownIds.length||!ownIds.some(id=>normalizeQuote(byId.get(id)?.text??byId.get(id)?.preview)
       .includes(normalizeQuote(quoteText))))quoteFailures.push({...quote,sourceIds:ownIds});
