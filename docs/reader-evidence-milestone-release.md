@@ -608,4 +608,32 @@ The answer packet remains capped at six full pages, the request-byte and verifie
 | Additional model calls or answer-packet pages | None; existing two-call reviewed path and six-page limit retained |
 | Fresh deployed seven-case all-books with-review run | Pending; required to assess the 7/7 milestone and semantic quality |
 
-After website PR #189 is merged and Pages publishes, rerun the full seven-question all-books with-review holdout with real-time progress visible. Check that Hamlet's cited source is in books 212/564 and includes p. 152, and that the Kant packet contains the *Second Analogy* evidence and explains how its causal rule grounds objective succession. The workflow's structural 7/7 is necessary but not sufficient: independently review accuracy, part coverage, explanation, citation support, and citation completeness before calling the milestone complete. Keep the unseen acceptance suite reserved until this deployed run is stable.
+The next step was to merge website PR #189 and rerun the full seven-question all-books with-review holdout after Pages published. The October 25 run below records that validation.
+
+## October 25, 2026: first post-PR #189 seven-case reviewed holdout
+
+After PR #189 merged, the live answer-evaluation workflow ran [#40161350052](https://github.com/jsynon/antilogicalism/actions/runs/40161350052) against website revision `91a0749e2d97fabf3e3344def7b9901490692596` and Worker version `1cf155d3-db05-4998-9853-3536c1a2ee69` (`public-gateway-evidence-selection-v3`). This is the first all-books, with-review seven-case holdout on the merged retrieval fix.
+
+All seven cases completed: **7/7 structural pass**, 17/17 question parts marked supported, no request failures, planner fallbacks, or skipped cases. Each answer used two answer-pipeline calls; the workflow estimated 21 calls total, including one planner call per case. The 14 answer-pipeline calls used 77,038 input tokens, 4,537 output tokens, and 824.08 neurons; those usage figures do not include planner usage. All seven automated review contracts were valid. The artifact's separate human-review fields remain pending (0 reviewed, 7 pending), so this establishes structural completion, not the final semantic-quality gate.
+
+The two targeted retrieval failures are resolved in this live run:
+
+- **Hamlet:** the answer cites Shakespeare book 212, pp. 453–454, and *Elizabethan Drama* book 564, p. 152. Both expected Shakespeare source IDs were retrieved and cited. The cited p. 152 contains the alternatives and the death/unknown-dream passage; the prior run instead cited Voltaire's reproduction and failed the source-group gate.
+- **Hume/Kant:** the answer cites Hume's *Enquiry* (book 35, pp. 23 and 38) and Kant's *Critique of Pure Reason* (book 40, pp. 104 and 218). Page 104 now supplies the Second Analogy account of temporal succession under a causal rule and its role in possible experience. Both named source groups are linked to their own supported parts; the prior run's Kant packet contained only a general deduction page.
+
+The other cases also passed their structural checks: Herodotus (book 149, pp. 144, 146–147); Aristotle's *De Anima* (book 4, pp. 15–17); James 2:14–26 (NKJV book 335, p. 5493); Plato/Rousseau (books 74 and 245, pp. 125, 176, 24, and 43); and Wollstonecraft/Du Bois (books 87 and 454, pp. 125, 138, 131, and 143). All expected named-work groups were cited in the three cross-work comparisons. The Plato/Rousseau trace carries a `part-query-budget-exceeded` warning, but all four parts still have cited mapped evidence and both source groups align; monitor this cap warning rather than treating that case as a structural failure.
+
+The saved drafts still need semantic review before calling the quality milestone complete. In particular, Aristotle's answer states that the soul is inseparable from the body, while its cited passage qualifies that “certain parts” are inseparable; preserve that qualification. The Hume/Kant draft now has the direct Kant passage but also adds a page 218 claim about reason's faculty of causality that appears to concern a distinct Kantian issue and should not be conflated with theoretical causal necessity. The Wollstonecraft/Du Bois answer is well sourced but mostly juxtaposes the two accounts instead of making their comparison explicit. These are draft-review findings, not additional retrieval failures.
+
+| Validation | Result |
+|---|---|
+| Run #40161350052: all-books, with-review, seven cases | 7/7 structural; 17/17 parts supported |
+| Request failures / planner fallbacks / skipped cases | 0 / 0 / 0 |
+| Worker AI-call estimate | 21 total; 14 answer-stage calls (two per case) |
+| Hamlet source-group routing | Shakespeare books 212 and 564 retrieved and cited; p. 152 cited |
+| Hume/Kant named-source alignment | Both works cited; Kant p. 104 supplies the Second Analogy evidence |
+| Automated review-contract validity | 7/7 valid |
+| Human rubric entries in artifact | 0 reviewed; 7 pending |
+| Next milestone | Review factual accuracy, part coverage, explanation, citation support, and citation completeness; structural 7/7 alone does not close semantic quality |
+
+Next, hold the retrieval implementation steady while reviewing these seven saved drafts and traces against the cited passages. Keep the two scoped issues above visible, check the Plato/Rousseau query-budget warning, and test a fresh reader-authored live question such as “What is transcendental idealism?” The acceptance milestone requires both a stable 7/7 structural run and answers that are accurate, sufficiently explanatory, and fully supported by the cited pages. Keep the unseen acceptance suite reserved until those quality checks are satisfied.
