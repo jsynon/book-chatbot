@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: PRs #183, #210, #211, and #212 are merged; PR #213 (Worker citation placement) and PR #184 (website/Worker contract sync) are open, and their required checks have passed. The post-deploy seven-question run completed with 0/7 structural passes; source-based assistant scoring and exact-trace inspection are recorded below. A fresh reviewed run and unseen acceptance remain open.
+Status: PRs #183, #210, #211, #212, #213 (Worker citation placement), #214 (documentation), and #184 (website/Worker contract sync) are merged. The October 25 post-deploy seven-question run completed with 4/7 structural passes and zero request failures. The latest evidence-linking and bounded-quote corrections are in candidate branches `codex/link-complete-part-evidence` and `codex/fix-review-evidence-bounds`; offline suites pass, while a fresh live reviewed run and unseen acceptance remain open.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -298,9 +298,31 @@ The browser and Worker `reader-contract.mjs` copies had drifted despite the cont
 |---|---|
 | Worker suite: `node --test hosting-poc/*.test.mjs` | 214 passed, 0 failed |
 | Website suite: `node --test reading-companion/*.test.mjs` | 154 passed, 0 failed |
-| GitHub PR checks | Worker contract workflow and website smoke workflow passed; PRs #213 and #184 remain open for review |
+| GitHub PR checks at that checkpoint | Worker contract workflow and website smoke workflow passed; PR #213 and PR #184 have since merged |
 | Exact saved compose-response replay, Aristotle P2 and Du Bois P2 | Both retained; no `quotation-citation-mismatch` rejection |
 | Browser/Worker contract copies | Byte-identical in candidate branches |
 | Fresh reviewed quality run, unseen acceptance suite, and live transcendental-idealism check | Still required |
 
 The source-based scores above describe the deployed artifact's final answers, not a new live result from this candidate. The next meaningful measurement is one fresh all-books with-review run with visible progress, followed by the unseen acceptance set only if the candidate behavior is stable. Do not interpret the regression or replay as proof that Gemma's new reviewer will accept the restored paragraphs or that overall answer quality has passed.
+
+## Latest live trace and evidence-handoff correction (October 25, 2026)
+
+The user ran the seven-question all-books evaluation after the previous merged changes. [GitHub Actions run 40145430668](https://github.com/jsynon/antilogicalism/actions/runs/40145430668) completed all cases with zero request failures and 4/7 structural passes. Three structural misses remained: Hamlet, Plato/Rousseau, and Wollstonecraft/Du Bois. This is progress over the prior 0/7 run, but not an acceptance result; the remaining misses expose specific handoffs.
+
+The authenticated trace for Hamlet shows that the useful primary-text page was found: *Elizabethan Drama, Vol. I*, p. 152 contains the “To be, or not to be” soliloquy. Retrieval assigned that candidate no question-part IDs, so the part-aware selector could not reserve it. The final answer instead cited a clipped *Complete Works* excerpt and a secondary translation. The part question included a distinctive quoted phrase, but ordinary overlap dropped common words and did not recognize OCR that split “To” into “T o”.
+
+The Rousseau review supplied a 462-character quotation that was exact in its source excerpt. The Worker rejected it solely because review quotes were capped at 220 characters; without a verified quote, the affected evidence map and part coverage were incomplete. In the Du Bois trace, the reviewer attached a quote to the wrong page and used an ellipsis to join separated text. Those quotations correctly failed exact-source verification. The correction must recover valid long quotations while preserving that fail-closed behavior for wrong-source or stitched text.
+
+The current website candidate passes each part's natural-language question through both live and evaluation retrieval. For a distinctive quoted phrase in that question, it now checks the hydrated page for the phrase in order and tolerates OCR splitting a short word into adjacent letters. This can link the page to that part and gives a phrase-matching eligible page priority in the answer packet. The tag only makes the page eligible and prioritizes it; the Worker still validates source identity, scope, part citations, and semantic review. A regression models the Hamlet failure, confirms the p. 152 page receives the part link despite `T o`, and confirms it is selected ahead of a higher-ranked related page.
+
+The Worker candidate still requires the entire supplied quote to match the same source excerpt before it can accept it. When that full quote is longer than 220 characters, it stores a contiguous sentence or word-bounded span of at most 220 characters as the verified anchor. Altered quotes and quotes joined across text with ellipses stay unverified. Both the initial review and compact retry prompts now direct the reviewer to quote one exact contiguous span, never join text with ellipses, and never attribute a quote to another source. This adds no model call and does not weaken source checks.
+
+| Validation | Candidate result |
+|---|---|
+| Website suite: `node --test reading-companion/*.test.mjs` | 155 passed, 0 failed |
+| Worker suite: `node --test hosting-poc/*.test.mjs` | 215 passed, 0 failed |
+| Targeted regressions | Hamlet-style quoted phrase links and reserves the OCR-spaced source page; exact long quote is bounded; altered and non-contiguous quotes remain rejected |
+| `git diff --check` and JavaScript syntax checks | Passed |
+| Fresh production run, new citation trace, unseen acceptance suite | Not yet run against these candidate branches |
+
+These changes address the concrete failures in the latest artifact without reopening the broad pipeline design. The live quality question remains whether the source pages and reviewer now support complete, accurate answers. After these branches are reviewed, merged, and deployed, run the same seven-question all-books with-review workflow once with its real-time progress visible. Inspect the three prior misses plus all seven citations and part statuses; compare the structural result with 4/7, but do not treat the repeated holdout as unseen acceptance evidence. If that run is stable, use the reserved unseen acceptance suite for the release decision.
