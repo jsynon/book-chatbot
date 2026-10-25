@@ -324,4 +324,36 @@ The paired follow-up changes only the two existing handoff points:
 | Model-call budget / packet limit | Unchanged: 15 baseline calls across five reviewed cases; six submitted pages maximum |
 | Semantic answer review | Pending; structural tests do not prove that a recovered Nietzsche passage supports the comparison |
 
-The paired follow-up is available as Worker [PR #233](https://github.com/jsynon/book-chatbot/pull/233) and website [PR #199](https://github.com/jsynon/antilogicalism/pull/199). The Worker contract check, website smoke check, and website library evaluation have all completed successfully ([Worker run 40181348428](https://github.com/jsynon/book-chatbot/actions/runs/40181348428), [website evaluation 40181346756](https://github.com/jsynon/antilogicalism/actions/runs/40181346756), [website smoke 40181346801](https://github.com/jsynon/antilogicalism/actions/runs/40181346801)). The Worker run passed on the code commit; the follow-up report-only commit did not change implementation code. Both PRs are ready for review and merge. After both PRs merge and deploy, rerun the same five-case focused, all-books, with-review workflow. After both PRs merge and deploy, rerun the same five-case focused, all-books, with-review workflow. Inspect the exact Nietzsche passages in `retrievalCandidates` and `submittedSources`, verify the review response remains contract-valid, and check all cited page text against the answer. Keep the unseen acceptance suite frozen until that source-level review is satisfactory.
+The paired follow-up was delivered in Worker [PR #233](https://github.com/jsynon/book-chatbot/pull/233) and website [PR #199](https://github.com/jsynon/antilogicalism/pull/199); both were merged before the next run. Their checks passed ([Worker run 40181348428](https://github.com/jsynon/book-chatbot/actions/runs/40181348428), [website evaluation 40181346756](https://github.com/jsynon/antilogicalism/actions/runs/40181346756), [website smoke 40181346801](https://github.com/jsynon/antilogicalism/actions/runs/40181346801)). The v48 live-evaluator correction followed in website [PR #201](https://github.com/jsynon/antilogicalism/pull/201), also merged before run #45. The five-case v48 results and remaining source-level checks are recorded below. Keep the unseen acceptance suite frozen until those checks are satisfactory.
+
+
+## October 25, 2026: v48 focused run #45
+
+After website PR #201 corrected the v48 preflight, focused workflow [40183728454](https://github.com/jsynon/antilogicalism/actions/runs/40183728454) completed all five configured cases with `all-books` and `with-review`. The artifact records site revision `d7e459b21d88c41bad0d964b0c58b5892c64db25`, corpus v48 at `data-v48/`, fingerprint schema v2, and Worker version `fbbfccdd-4226-4479-b53f-86bacdcbabbb` (`public-gateway-evidence-selection-v3`). This is the five-question focused regression set, not the separate seven-question holdout.
+
+| Run measure | Result |
+|---|---|
+| Cases | 5 completed; 0 skipped |
+| Structural result | 4 passed, 1 failed |
+| Request failures / planner fallbacks | 0 / 0 |
+| Estimated baseline calls | 15; no conditional repair calls recorded |
+| Corpus / fingerprint pairing | v48 / v2; preflight succeeded |
+| Question-part decisions | 6 supported, 1 partial, 0 unsupported across 7 parts |
+| Highlights | 12 exact-text-located highlights on the four verified answers; none on the safely unverified draft |
+| Artifact human rubric | Pending for all five cases; no semantic scores were written by the workflow |
+
+The main failure changed from run #42's malformed reviewer response to a completion-length failure. For Nietzsche on Christianity, composition produced a five-claim cited draft, but the reviewer ended with `finish_reason: length` at exactly 1,800 completion tokens. Its response echoed much of the submitted review payload and was cut off inside a source-span object, so it was not valid JSON. The Worker correctly kept the answer `unverified-source-draft`, marked the part partial, and emitted no evidence highlights. This is evidence of reviewer-output truncation, not proof that each draft claim is false. The prompt addition in PR #233 did not prevent this distinct failure mode. The current review path allows 1,800 completion tokens and makes no extra repair call.
+
+There are concrete gains in the other cases. The Nietzsche/Kierkegaard retrieval packet now contains three Nietzsche pages and three Kierkegaard pages, and all three planned answer parts have structural evidence links; the missing-author retrieval defect from run #42 did not recur. The sunyata answer's highlight list begins with the cited definition on *Forgotten Truth*, p. 66, followed by its Suzuki citations; all three excerpts are text-located. The Kant answer cites the relevant passages in *Critique of Pure Reason*, p. 199, and *Prolegomena*, p. 22.
+
+My manual scores below are an independent read of the draft and available source text on a 0–2 scale. They are not scores from the artifact. The Nietzsche/Christianity draft remains unverified, and its *Portable Nietzsche*, p. 578 citation has editorial/source-voice ambiguity that needs page-context review. The two Kierkegaard answers summarize works whose curated metadata identifies pseudonymous voices (Johannes de Silentio, Johannes Climacus, and Anti-Climacus), but the prose attributes the views directly to Kierkegaard without naming that mediation. The Nietzsche/Kierkegaard hypothetical is clearly labeled as inference, yet its final inference sentence cites Nietzsche's framework without also citing the Kierkegaard passage it says Nietzsche would critique. Sunyata draws on Suzuki and Huston Smith commentary rather than a primary Buddhist text and compresses emptiness to “emptiness or a void”; it is usable as an introduction, with that scope and qualification made clear.
+
+| Case | Accuracy | Question coverage | Explanation quality | Citation support | Citation completeness |
+|---|---:|---:|---:|---:|---:|
+| Kant: transcendental idealism | 2 | 2 | 1 | 2 | 2 |
+| Kierkegaard: faith | 1 | 2 | 1 | 1 | 2 |
+| Nietzsche: Christianity (unverified draft) | 1 | 2 | 1 | 1 | 2 |
+| Sunyata | 1 | 2 | 1 | 2 | 2 |
+| Nietzsche and Kierkegaard | 1 | 2 | 1 | 1 | 1 |
+
+The next fix should target reviewer completion reliability without adding a model call: reduce redundant review-payload fields and require a compact decision-only JSON response while retaining per-claim/per-cited-source span checks and provenance context. Add a regression for `finish_reason: length` to preserve the fail-closed behavior and make the incomplete-review reason visible in diagnostics. Do not treat a higher token ceiling alone as proof of reliability. After that change, rerun these same five v48 cases and inspect the exact speaker/page context for Kierkegaard and the Nietzsche p. 578 passage, along with the final inference citation.
