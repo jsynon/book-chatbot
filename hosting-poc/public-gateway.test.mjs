@@ -361,6 +361,28 @@ test('quote matching normalizes the common OCR glyph Ɵ without changing display
  assert.equal(review.evidenceMap[0].quoteVerified,true);
  assert.match(review.evidenceMap[0].anchorQuote,/jusƟﬁed/);
 });
+test('an exact long review quote is reduced to a bounded source anchor without trusting altered or joined text',()=>{
+ const first='The will of the people is the foundation of political authority, and each citizen must take part in forming that common will. ';
+ const second='When a person obeys a law made by the community, that person remains free because the law expresses the general will. ';
+ const third='This account distinguishes the shared public interest from the private wishes of any one person.';
+ const preview=first+second+third;
+ const exact=preview;
+ assert.ok(exact.length>220);
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
+  id:'S1',point:'Rousseau grounds political authority in the common will.',quote:exact
+ }]}),[{id:'S1',preview}]);
+ assert.equal(review.evidenceMap[0].quoteVerified,true);
+ assert.ok(review.evidenceMap[0].anchorQuote.length<=220);
+ assert.ok(preview.includes(review.evidenceMap[0].anchorQuote));
+ const altered=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
+  id:'S1',point:'A claim with an invalid source quote.',quote:exact.replace('foundation','secret foundation')
+ }]}),[{id:'S1',preview}]);
+ assert.equal(altered.evidenceMap[0].quoteVerified,false);
+ const joined=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
+  id:'S1',point:'A claim joined from distant text.',quote:first.slice(0,42)+' … '+third.slice(-42)
+ }]}),[{id:'S1',preview}]);
+ assert.equal(joined.evidenceMap[0].quoteVerified,false);
+});
 test('same-book answers select complementary passages and synthesize every question part',async()=>{
  const question='How does Aristotle explain habituation, and how do repeated actions shape character?';
  const sources=[
@@ -3520,6 +3542,9 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  }};
  const result=await composeVerifiedAnswer('What does Kierkegaard say about faith?',sources,ai);
  assert.equal(calls.length,2);
+ assert.match(calls[0].messages[0].content,/one exact, contiguous quote of at most 220 characters/);
+ assert.match(calls[0].messages[0].content,/Never join distant text with ellipses/);
+ assert.match(calls[0].messages[0].content,/attribute text from another source/);
  assert.deepEqual(result.evidenceMap,[{id:'S1',point:'Christianity makes faith the opposite of sin, not virtue.',quoteVerified:false}]);
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
