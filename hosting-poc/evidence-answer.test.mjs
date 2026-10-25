@@ -16,17 +16,18 @@ function review(statuses,{evidenceByPart={},includeEvidence=true}={}){
  return (_model,{messages})=>{
   const payload=JSON.parse(messages[1].content);
   const statusByPart=new Map(statuses);
-  const parts=payload.parts.map(part=>{
+  const parts=payload.parts.map(part=>({partId:part.partId,
+   status:statusByPart.get(part.partId)||'partial'}));
+  const claims=payload.parts.flatMap(part=>{
    const status=statusByPart.get(part.partId)||'partial';
-   const claims=part.claims.map(claim=>{
+   return part.claims.map(claim=>{
     const defaultEvidence=claim.sourceIds.map(sourceId=>({sourceId,spanIds:[sourceId+'-Q1']}));
     const evidence=!includeEvidence||status==='unanswered'?[]:
      (evidenceByPart[part.partId]||defaultEvidence).filter(item=>claim.sourceIds.includes(item.sourceId));
-    return {claimId:claim.claimId,status,reason:includeEvidence?'This exact sentence is supported by its cited passage.':'',evidence};
+    return {claimId:claim.claimId,status,spanIds:evidence.flatMap(item=>item.spanIds)};
    });
-   return {partId:part.partId,status,reason:includeEvidence?'The cited passage directly supports this part.':'',claims};
   });
-  return {response:JSON.stringify({parts})};
+  return {response:JSON.stringify({parts,claims})};
  };
 }
 function makeAI(responses){
@@ -87,10 +88,8 @@ test('review request orders the cited page by the answer sentence while preservi
   reviewPayload=JSON.parse(messages[1].content);
   const selected=reviewPayload.parts[0].evidence[0].spans[0];
   const claim=reviewPayload.parts[0].claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    reason:'The cited passage directly states this relation and qualification.',
-    claims:[{claimId:claim.claimId,status:'answered',reason:'This passage directly states the faith relation.',
-     evidence:[{sourceId:'S1',spanIds:[selected.spanId]}]}]}]})};
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+   claims:[{claimId:claim.claimId,status:'answered',spanIds:[selected.spanId]}]})};
  }};
  const result=await composeEvidenceAnswer('What is the relation between faith and probability?',[source],ai,[],{
   catalog,plan:{intent:'explain',sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
@@ -108,9 +107,8 @@ test('compact review decisions validate exact spans without rationale text or re
   reviewPayload=JSON.parse(messages[1].content);
   const claim=reviewPayload.parts[0].claims[0],span=reviewPayload.parts[0].evidence[0].spans[0];
   assert.equal(max_completion_tokens,1200);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',claims:[{
-   claimId:claim.claimId,status:'answered',spansBySource:{S1:[span.spanId]}
-  }]}]})};
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+   claims:[{claimId:claim.claimId,status:'answered',spanIds:[span.spanId]}]})};
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
@@ -127,9 +125,8 @@ test('compact review cannot verify a sentence unless every cited source has a se
  const ai=makeAI([answer('PART P1\nHume grounds necessity in custom, while Kant treats causality as a priori. [S1, S2]'),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content),part=payload.parts[0],claim=part.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',claims:[{
-    claimId:claim.claimId,status:'answered',spansBySource:{S1:['S1-Q1']}
-   }]}]})};
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+    claims:[{claimId:claim.claimId,status:'answered',spanIds:['S1-Q1']}]})};
   }]);
  const plan={...twoSidePlan,parts:[{id:'P1',question:'How do Hume and Kant differ?',sourceBookIds:['35','40'],
   candidateSourceIds:['S1','S2']}]};
@@ -166,13 +163,10 @@ test('claim-level review removes a sentence when its cited quote supports only a
   answer('PART P1\nFaith follows the movement of infinity and the absurd. [S5] Faith is inwardness higher than outwardness. [S5]'),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content),part=payload.parts[0],quote=part.evidence[0].spans[0].spanId;
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-    reason:'The first sentence is supported, but the second claim is absent from the cited passage.',
-    claims:[
-     {claimId:part.claims[0].claimId,status:'answered',reason:'The passage directly describes the movement preceding faith.',
-      evidence:[{sourceId:'S5',spanIds:[quote]}]},
-     {claimId:part.claims[1].claimId,status:'partial',reason:'The cited passage does not establish inwardness over outwardness.',evidence:[]}
-    ]}]})};
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:[
+    {claimId:part.claims[0].claimId,status:'answered',spanIds:[quote]},
+    {claimId:part.claims[1].claimId,status:'partial',spanIds:[]}
+   ]})};
   }
  ]);
  const result=await composeEvidenceAnswer('What does Kierkegaard say about faith?',[source],ai,[],{
@@ -196,11 +190,8 @@ test('claim review rejects a compound sentence when its quote supports only one 
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content),part=payload.parts[0],claim=part.claims[0];
    const span=part.evidence[0].spans[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-    reason:'The selected passage establishes only that the church hinders the spread; it says nothing about the church being vulgar.',
-    claims:[{claimId:claim.claimId,status:'partial',
-     reason:'The quote supports the second clause but not the description of the church as vulgar.',
-     evidence:[{sourceId:'S1',spanIds:[span.spanId]}]}]}]})};
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],
+    claims:[{claimId:claim.claimId,status:'partial',spanIds:[span.spanId]}]})};
   }
  ]);
  const result=await composeEvidenceAnswer('What did Nietzsche say about the church?',[source],ai,[],{
@@ -237,17 +228,19 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
  assert.match(REVIEW_PROMPT,/Review every answer sentence separately/);
  assert.match(REVIEW_PROMPT,/stable claimId/);
- assert.match(REVIEW_PROMPT,/Do not attach evidence to a different sentence/);
+ assert.match(REVIEW_PROMPT,/Do not use citations attached to a neighboring clause as support/);
  assert.match(REVIEW_PROMPT,/Select span IDs only/);
- assert.match(REVIEW_PROMPT,/"spansBySource":\{"S1":\["S1-Q2"\]\}/);
+ assert.match(REVIEW_PROMPT,/"spanIds":\["S1-Q2","S2-Q1"\]/);
+ assert.doesNotMatch(REVIEW_PROMPT,/spansBySource/);
  assert.match(REVIEW_PROMPT,/neighboring doctrine or a shared keyword is not support/);
  assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
- assert.match(REVIEW_PROMPT,/at least one relevant span from every source cited by that sentence/);
- assert.match(REVIEW_PROMPT,/one supported clause does not make an unsupported clause true/i);
+ assert.match(REVIEW_PROMPT,/only span IDs from its cited source pages/);
+ assert.match(REVIEW_PROMPT,/every material clause/i);
  assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
- assert.match(COMPOSER_PROMPT,/Cite that inference sentence with relevant evidence from each author’s source group/);
+ assert.match(COMPOSER_PROMPT,/End it with one citation group containing relevant evidence from each author’s source group/);
+ assert.match(REVIEW_PROMPT,/single citation group includes relevant evidence from every author source group/);
  assert.match(REVIEW_PROMPT,/do not demand a passage documenting the hypothetical response itself/);
  assert.match(REVIEW_PROMPT,/a missing premise, one-sided citation, or conclusion stronger than the premises is partial or unanswered/);
  assert.match(COMPOSER_PROMPT,/If provenance names a pseudonymous work voice, identify that voice/);
@@ -278,15 +271,10 @@ const hypotheticalSources=[
 function hypotheticalReview(){
  return (_model,{messages})=>{
   const payload=JSON.parse(messages[1].content);
-  const parts=payload.parts.map(part=>({partId:part.partId,
-   status:part.claims.length?'answered':'unanswered',reason:'',
-   claims:part.claims.map(claim=>({claimId:claim.claimId,status:'answered',reason:'',
-    spansBySource:Object.fromEntries(claim.sourceIds.map(sourceId=>{
-     const page=part.evidence.find(item=>item.id===sourceId);
-     return [sourceId,[page.spans[0].spanId]];
-    }))}))
-  }));
-  return {response:JSON.stringify({parts})};
+  const parts=payload.parts.map(part=>({partId:part.partId,status:part.claims.length?'answered':'unanswered'}));
+  const claims=payload.parts.flatMap(part=>part.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+   spanIds:claim.sourceIds.map(sourceId=>part.evidence.find(item=>item.id===sourceId).spans[0].spanId)})));
+  return {response:JSON.stringify({parts,claims})};
  };
 }
 function hypotheticalDraft(inference){
@@ -333,6 +321,21 @@ test('a one-sided hypothetical inference is rejected and the part remains visibl
   item.reason==='hypothetical-inference-missing-source-group-citation'));
  assert.doesNotMatch(result.answer,/one cautious inference/i);
  assert.match(result.missing,/what response can cautiously be inferred/i);
+});
+
+test('a neighboring comparison clause cannot lend its citation group to a hypothetical inference',async()=>{
+ const ai=makeAI([hypotheticalDraft(
+  'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1], whereas Kierkegaard’s own position is expressed by Johannes de Silentio. [S2]'),
+  hypotheticalReview()
+ ]);
+ const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
+  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
+ });
+ assert.equal(result.coverage,'partial');
+ assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
+  item.reason==='hypothetical-inference-missing-source-group-citation'));
+ assert.doesNotMatch(result.answer,/one cautious inference/i);
+ assert.equal(ai.calls.length,2);
 });
 
 test('an unqualified hypothetical author claim is rejected even when both source groups are cited',async()=>{
@@ -389,6 +392,17 @@ test('a quoted technical term is not mistaken for a source quotation, while mult
  assert.equal(auditFinalAnswer('The account turns on “whatness.” [S1]',[hume]).ok,true);
  assert.equal(auditFinalAnswer('The source says “custom and habit.” [S1]',[hume]).ok,false);
  assert.equal(auditFinalAnswer('The source says “mind is determined by custom.” [S1]',[hume]).ok,true);
+});
+
+test('a quote binds to the first following citation, not a later comparison citation',()=>{
+ const nietzsche={id:'S4',text:'Nietzsche attacks the cause of this fictitious morality and religion.'};
+ const kantSource={id:'S2',text:'Kant discusses appearances and things in themselves.'};
+ const humeSource={id:'S3',text:'Hume describes custom and habit.'};
+ const answer='A cautious reader might infer that Nietzsche rejects the “fictitious morality” [S4], whereas Kierkegaard takes a different view. [S2, S3]';
+ assert.equal(auditFinalAnswer(answer,[nietzsche,kantSource,humeSource]).ok,true);
+ assert.equal(auditFinalAnswer('The passage describes “double life” and painful self-consciousness. [S4]',[
+  {...nietzsche,text:'The passage describes "double life" and painful self-consciousness.'}
+ ]).ok,true,'a quote earlier in a sentence binds to its citation after the sentence-ending punctuation');
 });
 
 test('part linking preserves evidence discovered by each side for a synthesis part',()=>{
@@ -475,11 +489,8 @@ test('a bad quoted sentence is removed without discarding neighboring verified s
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content),part=payload.parts[0];
    const claims=part.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    spansBySource:Object.fromEntries(claim.sourceIds.map(sourceId=>{
-     const page=part.evidence.find(item=>item.id===sourceId);
-     return [sourceId,[page.spans[0].spanId]];
-    }))}));
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',claims}]})};
+    spanIds:claim.sourceIds.map(sourceId=>part.evidence.find(item=>item.id===sourceId).spans[0].spanId)}));
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims})};
   }
  ]);
  const result=await composeEvidenceAnswer('How does Du Bois describe the double life and its effects?',
@@ -541,10 +552,8 @@ test('invented and cross-source span IDs cannot enter the reviewed evidence map'
  const ai=makeAI([answer('PART P1\nHume grounds necessity in custom and regularity. [S1]'),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content),claim=payload.parts[0].claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    reason:'The source explains the custom based inference clearly.',claims:[{claimId:claim.claimId,
-     status:'answered',reason:'This source explains the custom based inference.',evidence:[
-      {sourceId:'S1',spanIds:['S2-Q1','S1-Q999']},{sourceId:'S99',spanIds:['S99-Q1']}]}]}]})};
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{claimId:claim.claimId,
+    status:'answered',spanIds:['S2-Q1','S1-Q999','S99-Q1']}]})};
   }]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan,catalog,trace:true});
@@ -620,11 +629,9 @@ test('the reviewer receives an explicit source checklist and missing synthesis e
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content);
    const supported={P1:['S1','S2'],P2:['S3','S6'],P3:['S1','S3','S6']};
-   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
-    reason:'The cited passages establish the requested claims.',claims:part.claims.map(claim=>({
-     claimId:claim.claimId,status:'answered',reason:'These spans support this exact answer sentence.',
-     evidence:claim.sourceIds.filter(id=>supported[part.partId].includes(id)).map(sourceId=>({sourceId,
-      spanIds:[sourceId+'-Q1']}))}))}))})};
+   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),
+    claims:payload.parts.flatMap(part=>part.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     spanIds:claim.sourceIds.filter(id=>supported[part.partId].includes(id)).map(sourceId=>sourceId+'-Q1')})))} )};
   }
  ]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',sources,ai,[],
@@ -644,7 +651,7 @@ test('reviewed evidence keeps a selected span from every cited source within the
  const sources=['S1','S4','S6'].map((id,index)=>({id,bookId:'87',title:'A Vindication of the Rights of Woman — Mary Wollstonecraft',
   page:48+index,url:`https://example.test/wollstonecraft#page=${48+index}`,text:passage,preview:passage}));
  const evidence=sources.map(source=>({sourceId:source.id,
-  spanIds:buildReviewSpans(source.id,passage).slice(0,3).map(span=>span.spanId)}));
+  spanIds:buildReviewSpans(source.id,passage).slice(0,2).map(span=>span.spanId)}));
  const plan={version:'reader-evidence-v2',intent:'explain',
   sources:[{label:'Mary Wollstonecraft',role:'primary',bookIds:['87']}],
   parts:[{id:'P1',question:'How does Wollstonecraft describe social conditions?',sourceBookIds:['87'],
@@ -668,7 +675,7 @@ test('reviewed evidence keeps a selected span from every cited source within the
 
 test('reviewer contract errors preserve citation-checked text as an explicitly unverified partial draft',async()=>{
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
-  {response:JSON.stringify({parts:[]})}]);
+  {response:JSON.stringify({parts:[],claims:[]})}]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog});
  assert.equal(result.outcome,'unverified-source-draft');
@@ -691,9 +698,23 @@ test('malformed reviewer JSON with unescaped quotation marks fails closed and pr
  assert.equal(ai.calls.length,2,'format handling must not make an additional model call');
 });
 
+test('run 48 reviewer typo fails closed without exposing unreviewed evidence',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  {response:'{"parts":[{"partId":"P1","status":"partial"}],"claims":[{"claimId":"P1-C1","status":"unanswered","spansBySource:{}}'}]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.reviewStatus,'review-format-failed');
+ assert.deepEqual(result.evidenceMap,[]);
+ assert.deepEqual(result.evidenceHighlights,[]);
+ assert.equal(result.trace.reviewContract.issues[0],'model-output-invalid-format');
+ assert.equal(ai.calls.length,2);
+});
+
 test('a repeated top-level parts key cannot produce a verified draft after JSON parsing drops a part decision',async()=>{
- const duplicate='{"parts":[{"partId":"P1","status":"answered","reason":"supported","claims":[]}],'+
-  '"status":"answered","parts":[{"partId":"P2","status":"answered","reason":"supported","claims":[]}]}';
+ const duplicate='{"parts":[{"partId":"P1","status":"answered"}],"claims":[],'+
+  '"status":"answered","parts":[{"partId":"P2","status":"answered"}]}';
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
   {response:duplicate}]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
@@ -707,7 +728,7 @@ test('a repeated top-level parts key cannot produce a verified draft after JSON 
  assert.equal(ai.calls.length,2);
 });
 
-test('review schema aliases and an omitted part status recover only from complete claim decisions',async()=>{
+test('flat reviewer decisions retain exact provenance and source-encoded spans',async()=>{
  const source={...hume,title:'An Enquiry Concerning Human Understanding — David Hume (edited by Walter Editor)',
   text:"EDITOR'S INTRODUCTION\n"+hume.text};
  let composePayload,reviewPayload;
@@ -718,9 +739,8 @@ test('review schema aliases and an omitted part status recover only from complet
   }
   reviewPayload=JSON.parse(messages[1].content);
   const claim=reviewPayload.parts[0].claims[0];
-  return {response:'```json\n'+JSON.stringify({parts:[{partId:'P1',reason:'The evidence directly supports this claim.',
-   answers:[{claimId:claim.claimId,status:'answered',reason:'The selected span states this relation.',
-    evidence:[{sourceId:'S1',spanIds:['S1-Q1']}]}]}]})+'\n```'};
+  return {response:'```json\n'+JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+   claims:[{claimId:claim.claimId,status:'answered',spanIds:['S1-Q1']}]})+'\n```'};
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[source],ai,[],{
   plan:{...onePartPlan,sources:[{label:'Hume commentary',role:'commentary',bookIds:['35']}]},catalog,trace:true});
@@ -734,7 +754,7 @@ test('review schema aliases and an omitted part status recover only from complet
   pageSectionHint:'introduction',pageVoiceHint:'editor-authored section',
   roleMeaning:'The planner role describes intended source selection, not the voice or genre of this individual page.'});
  assert.deepEqual(reviewPayload.parts[0].evidence[0].provenance,composePayload.evidence[0].provenance);
- assert.deepEqual(result.trace.reviewContract.recovered,['P1:answers-alias','P1:part-status-derived']);
+ assert.deepEqual(result.trace.reviewContract.recovered,[]);
  assert.match(REVIEW_PROMPT,/credited author is not automatically/i);
 });
 
@@ -746,9 +766,8 @@ test('a fenced reviewer object with the observed stray closing tail parses but s
  const ai=makeAI([answer('PART P1\nSunyata means emptiness or a void in Buddhism [S4, S5].'),
   (_model,{messages})=>{
    const part=JSON.parse(messages[1].content).parts[0],claim=part.claims[0];
-   return {response:'```json\n'+JSON.stringify({parts:[{partId:'P1',status:'answered',
-    reason:'The available passage gives the definition.',claims:[{claimId:claim.claimId,status:'answered',
-     reason:'The span on S4 states the definition.',evidence:[{sourceId:'S4',spanIds:['S4-Q1']}]}]}]})+' ]}\n```'};
+   return {response:'```json\n'+JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+    claims:[{claimId:claim.claimId,status:'answered',spanIds:['S4-Q1']}]})+' ]}\n```'};
   }]);
  const plan={...onePartPlan,sources:[{label:'Huston Smith',role:'primary',bookIds:['35']}],parts:[
   {...onePartPlan.parts[0],question:'What is sunyata?',candidateSourceIds:['S4','S5']} ]};
