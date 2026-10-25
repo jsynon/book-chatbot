@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 20063)
+Total output lines: 424
+
 Warning: truncated output (original token count: 32426)
 Total output lines: 705
 
@@ -219,8 +222,7 @@ The job log also confirms that stage progress is visible during execution: it em
 | Kant: transcendental idealism | Pass; one requested part, full coverage | Five cited sentences link to a single page of the *Prolegomena*. The selected spans directly cover representation, space/time and appearances, Kant's use of “transcendental,” and the limits of experience. The direct-definition normalization now matches the reader's one-part question. |
 | Kierkegaard: faith | Pass; one requested part, full coverage | The earlier unsupported inwardness sentence is now linked to its own matching claim evidence, rather than borrowing the movement-of-infinity quote. The answer is very long for this broad question and expands into multiple examples and conditions; structural validity does not show that this level of detail is helpful. |
 | Nietzsche on Christianity | Pass; one requested part, full coverage | Most claim spans match the associated statement. The final sentence bundles several claims: selected evidence supports the church's description as an obstruction to the spread of the “poison,” but the claim that Nietzsche called the church “gross and vulgar” is not present in the mapped spans. This is a residual sentence-level support gap despite the structural pass. |
-| Sunyata | Pass; one requested part, full coverage | The planner's extra “how it operates” requirement is…12426 tokens truncated… corresponding evidence exposed |
-| Hypothetical inference regressions | Both-source cautious inference is supported; comparison-only synthesis is partial; one-sided inference remains incomplete |
+| Sunyata | Pass; one request…63 tokens truncated…is is partial; one-sided inference remains incomplete |
 | AI calls in regressions | 2 (composition and review), unchanged |
 | `git diff --check` | Passed |
 | Worker PR | [#239](https://github.com/jsynon/book-chatbot/pull/239) merged at 18:12 UTC before run #51 |
@@ -421,4 +423,4 @@ The next candidate keeps the pipeline and call count unchanged. It carries the c
 
 Run #55 is useful evidence that per-source review is now protecting the answer from unsupported pages; it is not a semantic-quality pass. The immediate candidate closes the attribution-context gap and reduces noisy citations on the inference. The Sunyata answer still needs source-level validation after deployment; the current evidence does not justify broad retrieval changes or a promise of a complete definition. No live model result is claimed for this candidate.
 
-The paired implementation PRs are open: [Worker #245](https://github.com/jsynon/book-chatbot/pull/245) and [website #206](https://github.com/jsynon/antilogicalism/pull/206). They are unmerged. At this check, the GitHub connector reported no individual status checks for either head commit.
+The paired implementation PRs are open: [Worker #245](https://github.com/jsynon/book-chatbot/pull/245) and [website #206](https://github.com/jsynon/antilogicalism/pull/206). Both are unmerged. Worker contract workflow [#40232082838](https://github.com/jsynon/book-chatbot/actions/runs/40232082838) and website smoke workflow [#40232081357](https://github.com/jsynon/antilogicalism/actions/runs/40232081357) completed successfully.
