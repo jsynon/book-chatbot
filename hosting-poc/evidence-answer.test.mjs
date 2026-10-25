@@ -263,12 +263,25 @@ test('legacy claim and evidence markers can be reduced to a cited per-part answe
  assert.equal(result.trace.recovery.code,'legacy-record-format');
 });
 
-test('comparison answers preserve citations in canonical form and remove model citation placement noise',async()=>{
+test('sentence-level citations stay with their claims through quote validation and final assembly',async()=>{
+ const ai=makeAI([answer('PART P1\nThe source says “mind is determined by custom” [S1]. Repetition shapes the inference. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.trace.rejected,[]);
+ assert.match(result.answer,/“mind is determined by custom” \[S1\]\. Repetition shapes the inference\. \[S1\]$/);
+ assert.equal((result.answer.match(/\[S1\]/g)||[]).length,2);
+ assert.equal(auditFinalAnswer(result.answer,[hume]).ok,true);
+});
+
+test('repeated citation IDs remain valid when a later sentence uses the same source',async()=>{
  const ai=makeAI([answer('PART P1\nHume grounds necessity in habit [S1] after repeated conjunction. [S1]'),
   review([['P1','answered']])]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
- assert.equal((result.answer.match(/\[S1\]/g)||[]).length,1);
+ assert.equal((result.answer.match(/\[S1\]/g)||[]).length,2);
  assert.equal(result.trace.stages[0].stage,'compose');
 });
 
