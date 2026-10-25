@@ -1064,8 +1064,8 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
       page,globalPageId:match.globalPageId,
       url:'https://drive.google.com/file/d/'+p.pdfDriveId+
         '/view?usp=sharing#page='+page,
-      // Keep the original hashed page available to the evidence pipeline.
-      // `preview` remains the compact browser-facing snippet.
+      // The exact submitted text has passed SHA-256 verification above.
+      // Keep that digest, and pass a footer-cleaned copy into evidence reasoning.
       text:stripWebCaptureFooters(item.text),sha256:actual,preview:sourceExcerpt(item.text,question),
       ...(Array.isArray(item.candidatePartIds)?{candidatePartIds:[...new Set(item.candidatePartIds)]}:{}),
       fingerprintBytes:packetBytes});
