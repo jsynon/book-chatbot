@@ -1419,7 +1419,7 @@ test('forged packet metadata and duplicate claimed physical pages fail closed',a
 
 
 test('native SHA-256 accepts exact UTF-8 and binds original PDF metadata',async()=>{
- const content='The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes. See https://example.org/history for context.\nfile:////WINDOWS/Desktop/blahh/i.html (4 of 5) [2/20/2001 3:15:45 AM]';
+ const content='The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes. See https://example.org/history for context.\nfile:///C|/WINDOWS/Desktop/blahh/i.html (4 of 5) [2/20/2001 3:15:45 AM]';
  const raw=new TextEncoder().encode(content);
  const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',raw)),x=>x.toString(16).padStart(2,'0')).join('');
  const canonical={
