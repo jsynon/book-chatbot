@@ -1,121 +1,74 @@
-# Reading Companion: architecture and roadmap
+# Reading Companion architecture and development guide
 
-The [Antilogicalism](https://jsynon.github.io/antilogicalism/) Reading Companion is a primary-source-grounded local reading assistant. It is intended to cover the full digital library, not only the current Aristotle pilot. The application deliberately separates bibliographic metadata, indexed PDF text, retrieval, answer composition and verification of citation identities.
+The Antilogicalism Reading Companion helps readers move from a question to relevant passages in the library and back to the original books. The public site is a pilot for accurate, question-aware answers with citations. Treat answers as guides to reading: valid page links and model review do not guarantee that every claim is correct or complete.
 
-## Architecture in v1.4.6
+Use the [live Reading Companion](https://jsynon.github.io/antilogicalism/reading-companion/) to ask a question, inspect cited passages, open the original PDF page, and continue with a follow-up.
 
-Versions 1.4.3–1.4.5 introduced cross-disciplinary evaluation, passage-form checks, and optional model-suggested gap searches. **v1.4.6 is the final planned quality iteration before v1.5.** It applies an independent, deterministic coverage pass to multipart questions even when Gemma supplies no extra search terms, and groups nearby original passages into coherent, citable scenes. No new inference call is made and the benchmark does not modify retrieval ranking.
+## The three repositories
 
+| Repository | Responsibility |
+| --- | --- |
+| [antilogicalism](https://github.com/jsynon/antilogicalism) | Static website, Bookshelf, Library Search, Reading Companion interface, and live evaluation workflows. |
+| [antilogicalism-library-data](https://github.com/jsynon/antilogicalism-library-data) | Published catalog and v47 search data, extracted book pages, source fingerprints, and original PDF metadata. |
+| [book-chatbot](https://github.com/jsynon/book-chatbot) | Cloudflare Worker API for the public pilot and a separate Python/Ollama workbench for local development. |
 
-The library now has **two supported retrieval scopes** sharing the same answer pipeline.
+The repositories share published catalog and book data. The Worker does not host a second copy of the full library. The public site and local workbench use different answer-generation implementations, so a local answer is not a direct test of the live Worker.
 
-**One selected book** resolves an ID against the existing website catalog and a matching compressed book shard. The app indexes that book on first use, caches a small number of indexes, and only discusses the chosen work. The user's conversation resets when switching books.
+## Public answer path
 
-**Across the library (experimental)** uses the separate library-data repository's original **v47 full-text inverted index** to discover pages across the collection *before opening any source books*. It then loads only a few highly ranked book shards, selects a bounded set of matching pages and immediate context, and constructs one temporary passage index across those works.
+The live interface is in `antilogicalism/reading-companion/`. Its search module reads the published library index, finds candidate pages, and tags pages with the question parts that led to them. It sends the selected page text and locations to the Worker; the browser does not decide which text is trusted.
 
-### Source repositories
+The Worker path in `hosting-poc/public-gateway.mjs` and `hosting-poc/evidence-answer.mjs` works as follows:
 
-- **antilogicalism** supplies digital-library/library-catalog.json: title, author, subject tags and verified Google Drive PDF URLs for 643 known catalog entries.
-- **antilogicalism-library-data** supplies data-v47/manifest.json.gz, terms-xx.json.gz and book-N.json.gz. Its manifest documents **644 books, 280,699 global page IDs and 1,332 term partitions**. It is authoritative for index version, book/page membership, and the extra indexed book absent from the website catalog.
-- **book-chatbot** contains the conversation server, bounded retrieval logic and UI. It must not copy PDF text or recreate a second 644-book index.
+1. **Plan the question.** The planner identifies the reader's intent, named works or authors, question parts, and focused search queries. Selected-book requests stay within that book.
+2. **Retrieve and select pages.** The browser searches the published v47 data and selects a bounded set of passages. Each candidate records which question parts it may support. A part link is an eligibility hint, not proof that the passage supports an answer.
+3. **Verify source text.** Before inference, the Worker checks each submitted page against published SHA-256 fingerprints and obtains canonical book, page, and PDF metadata. A mismatch is rejected. The verified page identity and PDF link come from the published data, not from model output.
+4. **Compose by question part.** The composer receives the question parts and linked verified pages. It returns a short answer for each supported part and cites the page IDs that support it. Unsupported parts remain visible as gaps.
+5. **Validate citations and review.** Deterministic checks reject unknown, out-of-scope, wrong-book, or wrong-part source IDs. Multiword text presented as a quotation is checked against a cited page; short single-word terms are treated as terminology. With review enabled, a second model call assesses each answer part against its cited pages and must provide exact supporting text to mark it supported. A failed or incomplete review can leave a checked draft explicitly unverified or partial.
+6. **Return readable evidence.** The response includes source-linked citations, page details, and evidence highlights for the site to display. Readers can open the excerpt or follow its link to the original PDF page.
 
-The manifest maps each global page ID to a book ID. Each two-character term partition stores sorted **delta-encoded global page postings**; the compressed per-book source records carry matching global page IDs plus **physical PDF page numbers**. The two numbers are distinct and must not be confused. Term lookup opens only partitions needed by the reader's content words. The manifest is cached lazily, with at most eight decompressed term partitions retained by default.
+The public pilot uses the evidence pipeline unless `READER_PIPELINE=legacy` selects the rollback path. Public requests remain behind the Worker’s origin, Turnstile, visitor-rate, global-rate, and source-fingerprint checks. Full prompts, full source pages, and raw model responses are available only through the authenticated evaluation trace, not the ordinary public answer.
 
-### Query flow
+### Model calls
 
-1. **Scope and topic.** In one-book mode, use the established cached passage index. In across-library mode, separate subject terms from question framing such as "different authors," "library," or "question." Normalize possessives and exclude generic catalog bylines (including "Various authors") from named-person detection. Group all catalog works by each actually named author. This deterministic extraction supports any topic words; it is not an encyclopedia of philosophy or a paid semantic search call.
-2. **Find global page matches.** For ordinary questions, read delta postings for up to eight literal topic words. For a genuine hypothetical comparison between **two to four verified named authors**, the first of the two Ollama calls instead generates **2-5 distinct topic hints per author**. Each author's hinted words are matched only against THAT person's actual catalog works, never treated as quotations or historical claims. If the plan is invalid or has no usable indexed matches, bounded literal retrieval replaces it without adding a third model call. Versioned page IDs are always verified; malformed postings fail closed.
-3. **Choose bounded books and pages.** Prefer books with multiple subject terms on the same page, strong topic density, and title/subject metadata matches; discourage incidental matches in giant collections without excluding collections altogether. Explicit named-author comparisons allocate coverage by *person*, with up to two works per author when space permits. General surveys prioritize distinct individually attributed authors over four generic anthology bylines. If a requested author's matched books are unavailable, report that limitation. Open no more than **four compressed book shards**, retain no more than **nine original PDF pages per book**, and diversify similarly scored pages across the argument. The global mode doesn't add full-book indexes to the one-book cache.
-4. **Retrieve passages with book diversity.** Reconstruct original passages from just those source pages and their immediate neighbors. Rerank original passages by coverage of the reader's *subject terms* and their proximity in the actual text, rather than accepting results that happen to mention "library" or "question." The 24-candidate pool alternates across selected books. Every passage includes its own book ID, title, author metadata (when available), PDF identity, data version, physical pages and deterministic passage ID.
-5. **Choose evidence.** Ordinary questions use the first local Ollama call to select up to six decisive passages. A hypothetically planned question uses a deterministic, topic-ranked set of up to six original passages instead: the first inference call has already prepared the search plan. In both cases, author coverage is enforced using only actual retrieved sources. A citation to Aristotle's *Ethics* satisfies Aristotle even if the Works anthology also ranked highly. This protects representation, not interpretive correctness.
-6. **Read the argument, then compose.** Preceding or following argument-dependent passages are arranged **in original reading order** with distinct citations. The model sees author and subject metadata plus whether a source is an edited collection. It is reminded to distinguish editorial commentary and a fictional character's speech from an author's endorsed view. For a hypothetical question it must explicitly label conjectural reconstruction as such; the passages cannot establish that one author actually read or responded to the other. The second Ollama call writes the explanation. There is **no reviewer or automatic repair loop**, and this does not guarantee accuracy.
-7. **Validate citation identity.** The shared Python binder checks every output source ID, including optional inline or grouped references, against the passages actually supplied. Unknown, conflicting or excessive references fail closed. The browser makes source links with the correct **individual book's PDF file ID**, and displays its title alongside the citation.
+The Worker uses Cloudflare Workers AI with Gemma 4 26B A4B for answer composition and review. The planner is a separate call. A reviewed question normally uses one planning call, one composition call, and one review call. Compose-only skips review, so it uses one planning call and one composition call. The review is a fallible model judgment, not a truth certificate.
 
-Source excerpts and page links come from the compressed texts and verified metadata, never from the model's own assertion of provenance. Book prose is treated as untrusted data and rendered as text, not as executable HTML.
+## Evaluation and quality limits
 
-## API and runtime
+The website repository contains the live holdout and acceptance workflows. They report planner, retrieval, answer, and review progress while a run is underway. Authenticated runs can save the exact prompts, model outputs, source pages, rejection reasons, usage, and final answer for diagnosis.
 
-- **GET /api/health** — build, configured pilot book, catalog and availability of global manifest.
-- **GET /api/books** — titles and locally available individual works.
-- **GET /api/library/status** — whether the local versioned whole-library manifest is installed and current bounds.
-- **POST /api/chat** — accepts question, model, history and pipeline. The optional **scope** is either **book** (default; optional numeric book_id) or **library** (across corpus). The returned response includes an explicit scope, book-specific sources and, for global mode, **library_discovery** listing selected books, matched page counts and actual opened pages. Diagnostics contain the model inputs and source selection details only when requested.
+Use the [evidence milestone release report](reader-evidence-milestone-release.md) for the project history, decisions, workflow findings, current fixes, and remaining validation. The seven-question development set is diagnostic; it is not evidence of general performance because it has informed changes. Reserve the unseen acceptance set for a frozen candidate.
 
-**Resource limits** in whole_library.py: at most 8 literal topic terms for ordinary questions (up to 5 validated thematic terms per named author in planned comparisons), 4 source books, 5 matching page hints per book, 9 reconstructed physical pages per book, 24 evidence candidates, 6 source passages and **two Ollama calls**. The manifest and up to 8 term partitions are cached; book shards are loaded only for the active global query. Large book shards are still decompressed in full to locate selected pages. This is bounded **book count**, not true streaming I/O over compressed shards.
+The pipeline can still miss a passage because retrieval is limited and language in a question may differ from the book's wording. OCR damage can make a verified page hard to interpret. Fingerprints prove that submitted text matches the published page text; they do not prove that the OCR is correct or that a claim follows from the page. Model review can miss errors or downgrade supported prose. Structural tests check contracts such as source IDs, scope, and part links; they cannot establish philosophical, historical, or literary accuracy. Inspect cited passages whenever the interpretation matters.
 
-The browser defaults to **One selected book**, preserving the usable Aristotle demo; the **Across library (experimental)** scope is opt-in. It resets conversation history when switching scopes, disables the single-book picker in global mode and labels all cited books clearly. The old comparison controls remain collapsed and optional; Gemma3:12b is the primary local development model.
+## Code map
 
-## What v1.4.1 changed on real v47 data
+| Path | Purpose |
+| --- | --- |
+| `hosting-poc/public-gateway.mjs` | Worker routes, public pilot gates, page fingerprint verification, and response handling. |
+| `hosting-poc/evidence-answer.mjs` | Question-part linking, composition and review prompts, citation checks, coverage status, and answer assembly. |
+| `hosting-poc/reader-contract.mjs` | Worker planner, citation, and source contract. The website has a corresponding `antilogicalism/reading-companion/reader-contract.mjs`; keep shared behavior aligned when either copy changes. |
+| `hosting-poc/*.test.mjs` | Offline Worker and pipeline regression tests. |
+| `docs/reader-evidence-milestone-release.md` | Ongoing evidence and release record. |
 
-The real library smoke now extracts only **happiness, good, life** from the Aristotle/Tolstoy question and retrieves candidates from Aristotle's *Nicomachean Ethics* and *Politics* plus Tolstoy's *A Confession* and *War and Peace*. In particular, it no longer gives three of four selected book slots to Aristotle.
+Run the Worker checks from this repository:
 
-For the broad meaning-of-life question it extracts only **life, meaning**, recognizes **zero** named authors (correctly ignoring the words "different authors"), and selects *Man's Search for Meaning* (Frankl), *A Confession* (Tolstoy), *Man Has No Nature* (Ortega), and *How to Make Our Ideas Clear* (Peirce). Some of those passages may still be tangential. The smoke validates **retrieval**, not Gemma's eventual answer.
+```sh
+node --test hosting-poc/*.test.mjs
+```
 
-## What v1.4.2 adds: hypothetical cross-author reasoning
+Run browser search, interface, and evaluator checks from the `antilogicalism` repository:
 
-The test question “What would Nietzsche think about Kierkegaard's thought?” originally collapsed to a single vague index term, **thought**, and gave both models a pool of irrelevant passages. In v1.4.2 a validated catalog lookup determines the two authors; the first model call chooses possible **thematic lookup words separately** for each writer. It may recommend concepts such as faith, paradox and religion for one, and Christian morality, guilt and ascetic criticism for the other. **These are model-proposed search terms, not source-derived historical facts.**
+```sh
+node --test reading-companion/*.test.mjs
+```
 
-The read-only real-v47 audit of that mechanism (using representative terms, no Ollama) retrieved *Fear and Trembling*, *The Sickness Unto Death*, Nietzsche's *On the Genealogy of Morals*, and an edited Nietzsche collection. Passages now concern the paradox of faith, individual versus universal, Christian morality and guilt, rather than random uses of “thought.” Ranking gently discounts collections when comparable standalone works exist; it does not exclude valuable anthologies. Source provenance is recorded in the diagnostics.
+These suites use offline fixtures. They do not replace a live model run or source-based answer review.
 
-The first model call is repurposed, **not added**. The evidence composer still cites only real original text and must distinguish hypothetical comparisons from documented historical commentary. The system does not know whether Nietzsche encountered Kierkegaard, and the library evidence alone cannot prove their personal reactions.
+## Separate local workbench
 
-## Verified behavior and remaining limits
+The repository also contains a Python application for local experimentation. It runs a local model through Ollama and does not call the Cloudflare Worker. On Windows, run `start.bat`; otherwise start it with `python app.py` and open `http://127.0.0.1:8765/`. Its developer view is at `http://127.0.0.1:8765/developer`.
 
-The v47 manifest, postings encoding and matching page IDs were inspected against the **actual public library-data repository**. A read-only smoke fetched just the manifest, relevant compressed partitions, Aristotle's *Nicomachean Ethics* and Tolstoy's *A Confession*. It confirmed both named works appear in the result pool, with correct original PDF IDs and pages, without loading the other 642 book shards. Offline fixtures exercise equivalent data structures with deterministic test providers.
+For full-library local retrieval, the workbench needs local checkouts of `antilogicalism` and `antilogicalism-library-data` beside this repository. Follow the root [README](../README.md) for its setup. Local-model output tests the local pipeline only; use the website's authenticated workflow to test the public Worker.
 
-A successful answer is deliberately labeled **draft**. It means source IDs are valid, not that the model's interpretation is true, complete or supported sentence by sentence. OCR damage, lexical mismatch, limited passage context, overconfident synthesis, and missing conceptual links remain real risks. A fixed set of passages cannot prove what an author *never* says across a book.
-
-The library ranking currently relies on lexical term matches and page-level presence. It is not a pretrained semantic embedding system; references to the same idea using very different vocabulary may be missed. A broad question samples up to four books; it is **not an exhaustive overview of all 644 works**. When appropriate, ask a more specific question or open an individual book. Some Google Drive PDF previews ignore the page anchor, so the physical page is also displayed.
-
-## v1.4.6: finite release gate and coherent evidence
-
-`evidence_structure.py` performs a bounded source search for the reader's already-detected question facets. It scores actual indexed original prose by lexical match, checks whether each facet has strong enough existing evidence, and may reserve at most **two original additional passages** if clear candidates exist. It respects the existing **six core sources** and is followed by author-level coverage and evidence-context budget checks. The source map is explicitly labeled lexical, **not** a semantic proof; if an important facet still has no clear match the user receives a caution rather than an invented historical event or character motive.
-
-`render_argument_context()` now groups **up to three neighboring selected original passages** from the same work into one ordered scene. Text and source IDs are not duplicated. It refuses cross-book or distant-page grouping, and separately notes that only source *order*, not the identity or reliability of speakers, is established.
-
-The single read-only real-v47 audit, `python scripts/audit_release_gate_v146.py`, has been run on Darwin, Thucydides and Dostoevsky. The tests also document residual lexical limitations: unnamed historical disputes and some novelistic relationships may not be found from the literal question alone. This is accepted as a *visible limitation* for the demonstration, not scored as a semantic pass. The ordinary local Gemma3:12b model still can misinterpret original passages.
-
-**Release policy:** freeze v1.4 answer-quality tweaks after this milestone except critical source-integrity defects. Begin **v1.5** by polishing the responsive frontend, phone-width reading, source/PDF navigation, usable one-book local demo and documented local installation. Hosting an Antilogicalism static frontend on GitHub Pages is feasible; inference requires a separate API/server, not GitHub Pages.
-
-## Evidence-gap recovery and quote audit (v1.4.5)
-
-The normal two-call route now performs **retrieval → first Ollama call (selection with optional search hints) → deterministic gap lookup → second Ollama call (cited synthesis)**. The selector sees separately numbered parts of the reader's question. When existing passages miss a distinct part, it may return up to two short lexical search suggestions in an additional JSON field. The backend normalizes and bounds these as untrusted index terms, retrieves **actual original text** only from the already-open passage index, verifies topical co-occurrence for multiword phrases, allocates stable fresh passage IDs, and retains at most two relevant additional anchors. A full source pool reserves slots for both gap additions *before replacing lower-priority original selections*, so the second gap cannot accidentally evict the first. Author-level coverage checks and the original six-anchor, three-context, 17,200-character evidence budget still apply. If hints are missing, invalid, or unhelpful, the normal source selection survives. The hypothetical cross-author conceptual route still uses its distinct first call; there is **never a third model invocation**.
-
-For speech attribution, the synthesis context now includes links between **nearby selected passages in the same book and original reading order**, rather than presenting fragments of the same dialogue without their relationship. This helps identify a reporting speaker followed by a character's own qualification while deliberately avoiding any automatic speaker identification. The page-level contents-page identity survives when the source is split into smaller windows: an orphaned contents fragment stays navigation rather than becoming evidence merely because its heading was in an earlier window.
-
-The separate `quote_audit.py` checks long double-quoted passages mechanically against the full cited original excerpts, with Unicode/punctuation normalization. It catches changed words such as **“an struggle”** versus the original **“A struggle”**. A mismatch is disclosed to the reader and recorded in diagnostics; the app does not silently alter the prose, infer truth, or claim a quote from an unseen volume is authenticated. Short scare quotes and paraphrase are not automatically judged. All quoted passages and voice attribution still require reader assessment.
-
-`tests/test_evidence_coverage.py` tests bounded recovery, two-call count, distinct source provenance, contents-page propagation, adjacent source links, and quote warnings using synthetic book text. `scripts/audit_facet_recovery_v145.py` optionally downloads the existing public v47 Darwin/Thucydides/Dostoevsky shards to a temp directory and checks those mechanisms with no Ollama or corpus changes. Network-dependent audits are intentionally separate from offline CI.
-
-## Source-form quality and cautious attribution (v1.4.4)
-
-**Problem seen in actual reports:** Darwin's *Origin of Species* selected contents and chapter headers as if they contained evidence; Thucydides' quoted Corinthians reporting the Corcyraeans' position were mistaken for the Corinthians' own judgment; and Raskolnikov's reported theory plus a later scene were conflated with direct dialogue and a final confession.
-
-The original in-memory passage index now uses `passage_quality.source_form()` when ranking to suppress **obvious navigation and OCR-damaged running headers**, without deleting any page text. A second, bounded filter before the first Ollama call excludes navigational candidates if there are at least two substantive prose candidates. Requests explicitly about book contents/chapters are exempt. If the index is too sparse to offer real prose, the available evidence is retained instead of silently withheld. Original passage identities and PDF citations never change.
-
-The separate `passage_quality.discourse_cues()` exposes **visible** features: quotation marks, reporting verbs, and excerpts beginning mid-sentence or with unattributed dialogue. It does not attempt to assign identities or decide whose thesis is endorsed. When a selected excerpt opens mid-speech, `select_neighbor_context()` can bring in its actual immediately preceding passage, keeping an independent source ID and the existing context-page and character limits. The composer sees that context in original book order, along with uncertainty markers. It is instructed not to treat another party's view as the reporter's own, or to call a passage the final scene/confession unless the selected evidence actually establishes that sequence. These are not guarantees of correctness.
-
-**Performance:** All of these checks are deterministic Python; no extra Ollama call, external API, embedding model or new corpus is needed. Both the normal selector+composer and hypothetical author planner+composer still require **at most two local inference calls**. The work also applies to all authors/disciplines, rather than containing special-case author, work or question logic.
-
-Run `python -m unittest discover -s tests -p 'test_passage_quality.py' -v` for the source-form/discourse contracts. The optional, read-only public-v47 audit is `python scripts/audit_source_quality_v144.py`, which temporarily downloads the Darwin, Thucydides and Dostoevsky compressed texts. CI validates the synthetic contracts offline; the real-data audit has also been exercised separately. Neither audit proves the semantic quality of a Gemma answer.
-
-## Evaluation across the library's disciplines
-
-The fixed [cross-disciplinary evaluation manifest](../benchmarks/cross-disciplinary-v1.json) pairs seven specific catalog book IDs with questions and adds an eighth cross-author philosophy control. Each discipline has two distinct reasoning requirements: science (mechanisms versus theory/uncertainty), history (causes versus source criticism), literature (character versus author and recurring themes), philosophy (conceptual synthesis versus hypothetical comparison).
-
-The local **GET /api/benchmarks/cross-disciplinary** returns sanitized evaluation metadata only and never calls Ollama. The browser renders these as a closed, responsive question picker; selecting an entry sets the book or whole-library scope, clears the old conversation, and populates the question field. The user must click Ask to run the model.
-
-The separate `scripts/run_cross_discipline.py` CLI uses the same `POST /api/chat` contract, with Gemma3:12b and evidence-first as defaults, explicit opt-in to selected questions or all eight, fresh conversation histories, serialized requests, and one resumable report per case under gitignored `reports/`. `benchmark_suite.py` validates benchmark scope and expected book groups and checks basic source/citation/PDF identity, but explicitly marks *human interpretation unchecked*. Neither the benchmark nor its expected book IDs influence live source ranking, the generation prompt, or inference selection.
-
-The evaluation deliberately asks different disciplines different critical questions: historical claims versus reported traditions; scientific observations versus theoretical predictions; a narrator or character versus the author's point of view; and documented ideas versus conjectural philosophical comparisons. Existing caveats about OCR corruption, limited context, and false inferences remain in force.
-
-## Testing and future work
-
-Run the Python synthetic contract suites for the pipeline, catalog, global index and intent-aware author/topic retrieval. The GitHub Actions workflow checks Python imports/compilation, browser script syntax and those offline contracts. For a manually requested compatibility check against the public v47 data, run **python scripts/audit_library_index.py --remote**, **python scripts/smoke_relevance_v141.py**, or **python scripts/smoke_conceptual_v142.py**. The real-data smoke makes public file downloads but **does not send requests to Ollama** or modify source data. A local question using Gemma3:12b is still necessary to test answer quality and latency.
-
-Near-term goals:
-
-1. Confirm that the new cross-book reader produces useful, book-specific citations on real questions, and calibrate evidence diversity using failed cases.
-2. Improve interpretive fidelity, for example by preserving the right direction of a contrast, distinguishing an author's conclusion from an objection, and accurately connecting passages separated by chapters.
-3. Stabilize an engaging one-book public demo and design a sustainable inference backend. GitHub Pages can host the static UI but cannot run Python/Ollama itself.
-
-The aim is source-grounded reading and critical inquiry, not a competition between local LLM benchmarks.
+**Guiding principle:** use AI to help readers find and understand the books while keeping the source text accessible and open to inspection.
