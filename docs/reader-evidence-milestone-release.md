@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: The October 25 post-merge seven-question all-books reviewed run [40147644388](https://github.com/jsynon/antilogicalism/actions/runs/40147644388) exposed active evidence-v2 quote-validation, part-context retrieval, OCR page-boundary, and semantic-selection gaps. Focused fixes are proposed in [Worker PR #217](https://github.com/jsynon/book-chatbot/pull/217) and companion [website PR #186](https://github.com/jsynon/antilogicalism/pull/186). Offline targeted regression suites pass; GitHub checks and a fresh deployed reviewed run remain pending.
+Status: The October 25 post-merge seven-question all-books reviewed run [40147644388](https://github.com/jsynon/antilogicalism/actions/runs/40147644388) exposed active evidence-v2 quote-validation, part-context retrieval, OCR page-boundary, and semantic-selection gaps. Focused fixes are proposed in [Worker PR #217](https://github.com/jsynon/book-chatbot/pull/217) and companion [website PR #186](https://github.com/jsynon/antilogicalism/pull/186). Offline targeted regression suites and the current GitHub checks pass; a fresh deployed reviewed run remains pending.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -376,10 +376,10 @@ Website PR #186 keeps its reader-contract copy synchronized with the Worker, con
 
 | Validation | Candidate result |
 |---|---|
-| Worker evidence-answer and shared review-quote suites | 26 passed, 0 failed |
-| Website evidence-search and scoped remote-library suites | 63 passed, 0 failed |
+| Worker evidence-answer and shared review-quote suites: `node --test hosting-poc/review-evidence.test.mjs hosting-poc/evidence-answer.test.mjs` | 26 passed, 0 failed |
+| Worker search-planner suite: `node --test hosting-poc/search-planner.test.mjs` | 20 passed, 0 failed |\n| Website evidence-search and scoped remote-library suites: `node --test reading-companion/evidence-search.test.mjs reading-companion/remote-library.scoped.test.mjs` | 63 passed, 0 failed |
 | New regression coverage | Long exact quote bounded after verification; OCR ligature normalization; altered, non-contiguous, too-short, and oversized quotes rejected; contextual part-query and quoted-phrase link; relevant adjacent continuation; irrelevant adjacent page excluded |
-| GitHub PR checks | Pending at report update |
+| GitHub PR checks | Worker contract workflow [40149970497](https://github.com/jsynon/book-chatbot/actions/runs/40149970497) passed; website smoke [40149943090](https://github.com/jsynon/antilogicalism/actions/runs/40149943090) and library evaluation [40149943005](https://github.com/jsynon/antilogicalism/actions/runs/40149943005) passed |
 | Fresh deployed reviewed run | Not run; this change did not spend live model calls |
 | Reserved unseen acceptance suite | Still required for release confidence |
 
