@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
-import {auditFinalAnswer,normalizePlan} from './reader-contract.mjs';
+import {auditFinalAnswer,normalizePlan,sourceProvenance} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
 const catalog={35:'An Enquiry Concerning Human Understanding — David Hume',40:'Critique of Pure Reason — Immanuel Kant'};
@@ -34,6 +34,18 @@ function makeAI(responses){
  return {calls,run:async(model,request)=>{calls.push({model,request});const next=responses.shift();
    if(next instanceof Error)throw next;return typeof next==='function'?next(model,request):next;}};
 }
+
+test('curated provenance is title-guarded and distinguishes pseudonymous work voice from page voice',()=>{
+ const plan={sources:[{role:'primary',bookIds:['140']}]};
+ const fear=sourceProvenance({bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:32},plan);
+ assert.deepEqual(fear.workVoice,{kind:'pseudonymous-author',name:'Johannes de Silentio',creditedAuthor:'Søren Kierkegaard'});
+ assert.equal(fear.pageVoice,undefined,'work-level pseudonym does not assert that every page sentence uses that voice');
+ const mismatched=sourceProvenance({bookId:'140',title:'Unrelated work — Someone Else',page:32},plan);
+ assert.equal(mismatched.workVoice,undefined,'a changed catalog title disables curated metadata');
+ const intro=sourceProvenance({bookId:'185',title:'Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida',page:18},
+  {sources:[{role:'primary',bookIds:['185']}]},'INTRODUCTION\nA discussion of Nishida follows.');
+ assert.deepEqual(intro.pageVoice,{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'});
+});
 
 test('review span IDs map only to exact contiguous source slices and stay within the prompt bound',()=>{
  const text='A first short sentence. '+('A long sentence contains a precise claim and supporting qualification. '.repeat(8))+
@@ -560,6 +572,18 @@ test('compose-only uses one call and never labels the unreviewed answer as fully
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.reviewStatus,'answer-draft-unverified');
  assert.equal(result.coverage,'partial');
+});
+
+test('final citation records carry provenance for the browser and saved evaluator artifact',async()=>{
+ const title='Fear and Trembling — Søren Kierkegaard';
+ const source={...hume,bookId:'140',title,page:32};
+ const plan={...onePartPlan,sources:[{label:'Kierkegaard',role:'primary',bookIds:['140']}]};
+ const ai=makeAI([answer('PART P1\nThe passage presents a difficult account of faith. [S1]')]);
+ const result=await composeEvidenceAnswer('What does Kierkegaard say about faith?',[source],ai,[],
+  {plan,catalog:{...catalog,140:title},review:false});
+ assert.equal(result.citations[0].provenance.workVoice.name,'Johannes de Silentio');
+ assert.equal(result.citations[0].provenance.creditedAuthors[0],'Søren Kierkegaard');
+ assert.equal('text' in result.citations[0],false,'full verified page text never enters public citation metadata');
 });
 
 test('comparison cannot receive full coverage unless both named source groups are cited',async()=>{
