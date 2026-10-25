@@ -150,13 +150,14 @@ test('Turnstile denial prevents any trusted corpus retrieval and AI',async()=>{
  assert.equal(result.status,403);assert.equal(corpus,0);
 });
 test('trusted corpus provides the page content and PDF link, not untrusted client fields',async()=>{
- const sources=await trustedSources(question,payload.sources,fetcher);
+ const sources=await trustedSources(question,[{...payload.sources[0],title:'Forged title',
+   url:'https://attacker.example/forged.pdf#page=900',preview:'Forged preview',
+   text:'Forged source text',sha256:'0'.repeat(64)}],fetcher);
  assert.equal(sources.length,1);assert.equal(sources[0].page,38);
- assert(sources[0].preview.includes('real cause'));
- assert.equal(sources[0].sha256,hash,'the fingerprint remains for the exact original text');
- assert.equal(sources[0].text,'The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes. See https://example.org/history for context.\n');
- assert.match(sources[0].text,/https:\/\/example\.org\/history/);
- assert.doesNotMatch(sources[0].text,/file:\/\/\/C\|/);
+ assert.equal(sources[0].preview,sourceExcerpt(pages.pages[0].text,question));
+ assert.equal(sources[0].title,manifest.books['152'].title);
+ assert.equal('text' in sources[0],false,'legacy source previews do not expose raw page text');
+ assert.equal('sha256' in sources[0],false,'exact text fingerprints belong to the verified fingerprint pipeline');
  assert.equal(stripWebCaptureFooters('Read https://example.org/path (not a captured footer).'),'Read https://example.org/path (not a captured footer).');
  assert(sources[0].url.endsWith('#page=38'));
  assert(sources[0].url.includes(PDF));

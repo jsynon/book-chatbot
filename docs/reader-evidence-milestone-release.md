@@ -583,4 +583,29 @@ The regression reproduces the artifact's ranking and routing pattern: the NKJV p
 | Added AI calls or answer-source budget | None |
 | Live deployed answer quality | Pending merge/deploy and a fresh reviewed holdout |
 
-The next step is to merge website PR #188, let Pages publish, and rerun the same seven-question all-books with-review workflow with visible progress. Inspect the James case's executed scoped queries, linked page IDs, submitted sources, and final citations. The acceptance target is that James no longer abstains and that citations reopen the NKJV page covering the relevant verses; then independently check the actual claims against that page. Keep the unseen acceptance suite reserved until the deployed run confirms complete, source-supported answers across the full set.
+At that point, the next step was to merge website PR #188, let Pages publish, and rerun the same seven-question all-books with-review workflow with visible progress. The following run and its new failures are recorded below.
+
+## October 25, 2026: post-PR #188 reviewed holdout and shared retrieval fix
+
+After merging PR #188, the user ran the seven-case all-books with-review holdout [40158981841](https://github.com/jsynon/antilogicalism/actions/runs/40158981841) on website revision `c325d32b176cf0f536afaec4c218f649bff17304` and Worker version `7edb8da2-5c3e-4240-a01d-1e75dbebd5e6`. All seven cases completed with no request failures, planner fallbacks, or skipped cases. The structural gate passed 6/7; all 17 question parts were marked supported, but the workflow's human review remained pending for all seven answers. The run estimated 21 Worker calls: one planner and two answer-stage calls per case. The 14 answer-stage calls used 76,564 input tokens, 4,587 output tokens, and 821.14 neurons; planner usage is not included in those answer-stage totals.
+
+The only structural miss was Hamlet. The expected source group was Shakespeare books 212 and 564. Those books were retrieved, but neither was cited; the six-page answer packet instead included Voltaire's anthology (book 552, p. 140), which reproduces the soliloquy. The focused Shakespeare search had also returned *Elizabethan Drama* p. 152 at rank six, with the soliloquy's decisive lines, but that page did not reach the answer packet. This is a source-aware candidate-selection and part-scope failure, not a missing-text or Worker outage.
+
+Hume/Kant passed the structural gate, but that does not establish semantic completeness. Hume's *Enquiry* evidence on constant conjunction and custom was direct. The answer cited Kant's *Critique of Pure Reason*, p. 58, for the need to justify the pure concepts of understanding, but did not explain Kant's positive argument for the necessity of causal judgments. The corpus's *Second Analogy* (pp. 98–104) explains that objective succession requires a rule connecting cause and effect; none of those pages reached the six-page packet. The planner prompt already requested the *Second Analogy*, but the saved planner query omitted it and retrieval returned general deduction passages instead.
+
+Website PR [#189](https://github.com/jsynon/antilogicalism/pull/189) addresses these two traces in shared retrieval logic:
+
+- Part-specific facets now retain up to two high-ranked pages per catalog-resolved source, rather than spending the reservation on two pages from the first source returned. When the planner leaves a part's source IDs blank, retrieval carries forward the catalog IDs resolved from that part's own focused query. The same resolved scope governs part eligibility, so a global quotation from a secondary anthology cannot stand in for a requested Shakespeare source.
+- When searching Kant's named *Critique of Pure Reason* for causality, local lexical search also uses the work's source-native terms—*Second Analogy*, succession, rule, cause/effect, experience, and objective. It retains the reader's query and stays within the existing search and answer flow.
+
+The answer packet remains capped at six full pages, the request-byte and verified-text limits are unchanged, and the source fingerprint/citation checks remain in force. No model or retry calls were added. Regression tests use the saved Hamlet retrieval pattern and the corpus wording of the *Second Analogy*; they verify that Shakespeare p. 152 survives to the packet, the Voltaire page cannot satisfy the scoped Hamlet parts, and the direct Kant passage outranks the generic deduction passage. These deterministic checks do not establish what the live planner or composer will produce after deployment.
+
+| Validation | Result |
+|---|---|
+| Focused retrieval, citation-scope, and source-index tests | 72 passed, 0 failed |
+| Full website Reading Companion suite: `node --test reading-companion/*.test.mjs` | 163 passed, 0 failed |
+| Existing scripture, Hume/Kant, named-work, and source-budget regressions | Passed |
+| Additional model calls or answer-packet pages | None; existing two-call reviewed path and six-page limit retained |
+| Fresh deployed seven-case all-books with-review run | Pending; required to assess the 7/7 milestone and semantic quality |
+
+After website PR #189 is merged and Pages publishes, rerun the full seven-question all-books with-review holdout with real-time progress visible. Check that Hamlet's cited source is in books 212/564 and includes p. 152, and that the Kant packet contains the *Second Analogy* evidence and explains how its causal rule grounds objective succession. The workflow's structural 7/7 is necessary but not sufficient: independently review accuracy, part coverage, explanation, citation support, and citation completeness before calling the milestone complete. Keep the unseen acceptance suite reserved until this deployed run is stable.
