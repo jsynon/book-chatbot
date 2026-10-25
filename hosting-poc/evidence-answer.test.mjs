@@ -61,7 +61,7 @@ test('the composer uses a short per-part answer contract without claim IDs or qu
  assert.match(REVIEW_PROMPT,/"spanIds":\["S1-Q2"\]/);
  assert.match(REVIEW_PROMPT,/neighboring doctrine or a shared keyword is not support/);
  assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
- assert.match(REVIEW_PROMPT,/supporting span from every cited source ID/);
+ assert.match(REVIEW_PROMPT,/relevant span for every requiredSourceId/);
 });
 
 test('a quoted technical term is not mistaken for a source quotation, while multiword quotes stay exact',()=>{
@@ -268,6 +268,74 @@ test('an answered review must quote every source cited by that part',async()=>{
   issue.reason==='missing-cited-source-span'));
 });
 
+test('the reviewer receives an explicit source checklist and missing synthesis evidence stays partial',async()=>{
+ const sources=[
+  {...hume,id:'S1',candidatePartIds:['P1','P3']},
+  {...hume,id:'S2',page:34,text:'External objects reveal no idea of power or necessary connection in particular instances.',
+   preview:'External objects reveal no idea of power.',candidatePartIds:['P1','P3']},
+  {...kant,id:'S3',page:24,text:'A priori principles of connection require universality and necessity.',
+   preview:'A priori principles require universality and necessity.',candidatePartIds:['P2','P3']},
+  {...kant,id:'S6',page:54,text:'Causality belongs among the primitive categories of the pure understanding.',
+   preview:'Causality is a category of the pure understanding.',candidatePartIds:['P2','P3']}
+ ];
+ const plan={...twoSidePlan,parts:[
+  {...twoSidePlan.parts[0],candidateSourceIds:['S1','S2']},
+  {...twoSidePlan.parts[1],candidateSourceIds:['S3','S6']},
+  {...twoSidePlan.parts[2],candidateSourceIds:['S1','S2','S3','S6']}
+ ]};
+ const ai=makeAI([
+  answer('PART P1\nHume grounds necessity in custom and regular conjunction. [S1] External objects do not reveal power directly. [S2]\n'+
+   'PART P2\nKant treats causal connection as a priori and necessary. [S3, S6]\n'+
+   'PART P3\nHume explains necessity through custom, while Kant grounds causal connection in a priori categories. [S1, S2, S3, S6]'),
+  {response:JSON.stringify({parts:[
+   {partId:'P1',status:'answered',reason:'The cited Hume pages explain custom and limits of direct perception.',
+    evidence:[{sourceId:'S1',spanIds:['S1-Q1']},{sourceId:'S2',spanIds:['S2-Q1']}]},
+   {partId:'P2',status:'answered',reason:'The cited Kant pages explain categories and a priori necessity.',
+    evidence:[{sourceId:'S3',spanIds:['S3-Q1']},{sourceId:'S6',spanIds:['S6-Q1']}]},
+   {partId:'P3',status:'answered',reason:'The comparison combines Hume custom with Kant categories and necessity.',
+    evidence:[{sourceId:'S1',spanIds:['S1-Q1']},{sourceId:'S3',spanIds:['S3-Q1']},
+     {sourceId:'S6',spanIds:['S6-Q1']}]}
+  ]})}
+ ]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',sources,ai,[],
+  {plan,catalog,trace:true});
+ const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
+ const synthesis=reviewPayload.parts.find(part=>part.partId==='P3');
+ assert.deepEqual(synthesis.requiredSourceIds,['S1','S2','S3','S6']);
+ assert.equal(result.questionParts[2].status,'partial');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P3'&&issue.reason==='missing-cited-source-span'));
+ assert.equal(result.evidenceMap.some(item=>item.partId==='P3'&&item.id==='S2'),false);
+ assert.equal(ai.calls.length,2);
+});
+
+test('reviewed evidence keeps a selected span from every cited source within the six-span map budget',async()=>{
+ const passage='Wollstonecraft explains how education and social position shape judgment and character. '.repeat(12);
+ const sources=['S1','S4','S6'].map((id,index)=>({id,bookId:'87',title:'A Vindication of the Rights of Woman — Mary Wollstonecraft',
+  page:48+index,url:`https://example.test/wollstonecraft#page=${48+index}`,text:passage,preview:passage}));
+ const evidence=sources.map(source=>({sourceId:source.id,
+  spanIds:buildReviewSpans(source.id,passage).slice(0,3).map(span=>span.spanId)}));
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Mary Wollstonecraft',role:'primary',bookIds:['87']}],
+  parts:[{id:'P1',question:'How does Wollstonecraft describe social conditions?',sourceBookIds:['87'],
+   searchQueries:['Wollstonecraft social conditions'],candidateSourceIds:sources.map(source=>source.id)}],
+  queries:['Wollstonecraft social conditions']};
+ const ai=makeAI([
+  answer('PART P1\nWollstonecraft connects women’s development to education and social position. [S1, S4, S6]'),
+  review([['P1','answered']],{evidenceByPart:{P1:evidence}})
+ ]);
+ const result=await composeEvidenceAnswer('How does Wollstonecraft describe social conditions?',sources,ai,[],
+  {plan,catalog:{87:'A Vindication of the Rights of Woman — Mary Wollstonecraft'},trace:true});
+ const mappedSourceIds=new Set(result.evidenceMap.filter(item=>item.partId==='P1').map(item=>item.id));
+ const mappedSpans=result.evidenceMap.filter(item=>item.partId==='P1');
+ assert.deepEqual([...mappedSourceIds].sort(),['S1','S4','S6']);
+ assert.equal(mappedSpans.length,6);
+ assert.ok(mappedSpans.every(item=>sources.find(source=>source.id===item.id).text.includes(item.quote)));
+ assert.deepEqual(new Set(result.evidenceHighlights.map(item=>item.source_id)),mappedSourceIds);
+ assert.equal(result.coverage,'full');
+ assert.equal(ai.calls.length,2);
+});
+
 test('reviewer contract errors preserve citation-checked text as an explicitly unverified partial draft',async()=>{
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
   {response:JSON.stringify({parts:[]})}]);
@@ -310,6 +378,9 @@ test('a comparison with cited evidence from both named source groups may be revi
  const result=await composeEvidenceAnswer('How do Hume and Kant differ?',linkedSources,ai,[],{plan:twoSidePlan,catalog});
  assert.equal(result.coverage,'full');
  assert.equal(result.questionParts[0].status,'supported');
+ const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
+ assert.deepEqual(reviewPayload.parts.find(part=>part.partId==='P3').requiredSourceIds,['S1','S2']);
+ assert.deepEqual([...new Set(result.evidenceMap.filter(item=>item.partId==='P3').map(item=>item.id))],['S1','S2']);
 });
 
 test('malformed composition is reported as generation failure without retrying or calling review',async()=>{
