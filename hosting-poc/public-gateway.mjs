@@ -24,7 +24,7 @@ const FRONTEND_ORIGIN = 'https://jsynon.github.io';
 const EXPECTED_TURNSTILE_HOST = 'jsynon.github.io';
 const TURNSTILE_ACTION = 'companion_ask';
 
-export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=3){
+export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=6){
   const byId=new Map(citations.map(source=>[String(source?.id||''),source]));
   const citationOrder=[...new Set([...citationIds(answer),...citations.map(source=>String(source?.id||''))])]
     .filter(id=>byId.has(id));
@@ -40,7 +40,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     return true;
   };
   // First show one verified passage per cited source in the order the answer
-  // invokes it. If the three-card limit leaves room, show further spans from
+  // invokes it. If the six-source limit leaves room, show further spans from
   // those same cited sources. Never synthesize a highlight from a preview.
   for(const id of citationOrder){
     const quote=anchors.get(id)?.[0];

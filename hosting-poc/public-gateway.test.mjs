@@ -2246,12 +2246,15 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(answerData.workerVersionTimestamp,metadata.timestamp);
 });
 test('public highlights follow inline citation order and include only verified source spans',()=>{
- const citations=['S1','S2','S3','S4'].map(id=>({id,title:id,page:Number(id.slice(1)),url:'https://example.test/'+id}));
+ const citations=['S1','S2','S3','S4','S5','S6'].map(id=>({id,title:id,page:Number(id.slice(1)),url:'https://example.test/'+id}));
  const evidenceMap=citations.map(source=>({id:source.id,quoteVerified:true,quote:'verified anchor '+source.id}));
- const answer='The definition appears first [S4]. Then context [S1], comparison [S2], detail [S3].';
+ const answer='The definition appears first [S4]. Then context [S1], comparison [S2], detail [S3], source five [S5], source six [S6].';
  const highlights=selectPublicEvidenceHighlights(answer,citations,evidenceMap,3);
  assert.deepEqual(highlights.map(item=>item.source_id),['S4','S1','S2']);
  assert.deepEqual(highlights.map(item=>item.quote),['verified anchor S4','verified anchor S1','verified anchor S2']);
+ const allCited=selectPublicEvidenceHighlights(answer,citations,evidenceMap);
+ assert.deepEqual(allCited.map(item=>item.source_id),['S4','S1','S2','S3','S5','S6']);
+ assert.equal(allCited.length,6,'the public default exposes verified anchors up to the existing six-page packet limit');
  assert.deepEqual(selectPublicEvidenceHighlights('Claim [S1].',citations,[
   {id:'S1',quoteVerified:false,quote:'unverified excerpt'}]),[]);
  assert.deepEqual(selectPublicEvidenceHighlights('Claim [S1].',citations,[]),[],
