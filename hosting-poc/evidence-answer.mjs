@@ -346,7 +346,7 @@ function sourceVoiceAttributionIssue(text,source,plan,precedingAnswers=[],source
   if(editorial){
     const commentator=String(editorial.name||'').trim().split(/\s+/u).at(-1)||'';
     const named=contains(textValue,commentator)||isMediated(textValue);
-    const priorAttribution=precedingAnswers.slice(-3).some(previous=>
+    const priorAttribution=precedingAnswers.some(previous=>
       (previous.sourceIds||[]).includes(source.id)&&
       (contains(previous.text,commentator)||isMediated(previous.text)));
     if(!named&&!priorAttribution)return 'editorial-source-attribution-unqualified';
@@ -354,7 +354,7 @@ function sourceVoiceAttributionIssue(text,source,plan,precedingAnswers=[],source
   if(pseudonymous){
     const speaker=String(pseudonymous.name||'').trim();
     const named=contains(textValue,speaker);
-    const priorSameVoice=precedingAnswers.slice(-3).some(previous=>
+    const priorSameVoice=precedingAnswers.some(previous=>
       contains(previous.text,speaker)&&(previous.sourceIds||[]).some(id=>{
         const previousSource=sourceById.get(id);
         const previousProvenance=sourceProvenance(previousSource,plan,
