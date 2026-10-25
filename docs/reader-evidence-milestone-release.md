@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: PRs #183, #210, #211, #212, #213 (Worker citation placement), #214 (documentation), and #184 (website/Worker contract sync) are merged. The October 25 post-deploy seven-question run completed with 4/7 structural passes and zero request failures. Follow-up fixes are open as [website PR #185](https://github.com/jsynon/antilogicalism/pull/185) and [Worker PR #215](https://github.com/jsynon/book-chatbot/pull/215); their offline suites pass, while a fresh live reviewed run and unseen acceptance remain open.
+Status: Earlier release changes and follow-ups [website PR #185](https://github.com/jsynon/antilogicalism/pull/185) and [Worker PR #215](https://github.com/jsynon/book-chatbot/pull/215) are merged. The October 25 post-merge seven-question all-books reviewed run [40147644388](https://github.com/jsynon/antilogicalism/actions/runs/40147644388) completed all cases with 2/7 structural passes and zero request failures. The run exposed an active evidence-v2 review-contract mismatch plus remaining retrieval and semantic-support gaps; focused fixes and unseen acceptance remain open.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -327,3 +327,38 @@ Worker PR #215 still requires the entire supplied quote to match the same source
 | Fresh production run, new citation trace, unseen acceptance suite | Not yet run against these candidate branches |
 
 These changes address the concrete failures in the latest artifact without reopening the broad pipeline design. The live quality question remains whether the source pages and reviewer now support complete, accurate answers. After these branches are reviewed, merged, and deployed, run the same seven-question all-books with-review workflow once with its real-time progress visible. Inspect the three prior misses plus all seven citations and part statuses; compare the structural result with 4/7, but do not treat the repeated holdout as unseen acceptance evidence. If that run is stable, use the reserved unseen acceptance suite for the release decision.
+
+
+## October 25, 2026: post-merge reviewed holdout run
+
+The seven-question `holdout`, `all-books`, `with-review` workflow [run 40147644388](https://github.com/jsynon/antilogicalism/actions/runs/40147644388) completed all seven cases against corpus v47. It used Worker version `702d954d-28c7-421e-b139-ff4f9c6691fe` and website source revision `0be54f5504369373e8649503cc6018f07657d38d` (the merge commit for website PR #185). The workflow estimated 21 Worker AI calls: one planner and two answer-pipeline calls per case. There were no request failures, planner fallbacks, or skipped cases.
+
+The machine marked two cases structurally passed (Herodotus/Helen and Aristotle’s soul/body) and five failed. Across 18 question parts, 11 were marked supported, six partial, and one unsupported. These are structural/evidence-review outcomes, not semantic quality scores. Independent draft review on the existing 0–2 rubric:
+
+| Case | Accuracy | Question coverage | Explanation | Citation support | Citation completeness | Assessment |
+|---|---:|---:|---:|---:|---:|---|
+| Herodotus and Helen | 1 | 2 | 2 | 1 | 2 | Complete answer, but it reverses whether Proteus was detaining Helen. |
+| Hamlet’s soliloquy | 2 | 1 | 1 | 2 | 2 | The suffering-versus-resistance choice is supported; the answer omits how uncertainty about death affects Hamlet. |
+| Aristotle on soul and body | 2 | 2 | 2 | 2 | 2 | Strong, directly supported explanation of actuality/form, matter, and the analogies. |
+| James on faith and works | 2 | 2 | 2 | 2 | 2 | The answer covers faith, works, Abraham, and Rahab; the retrieved NKJV page contains the cited material. |
+| Hume and Kant on causal necessity | 1 | 2 | 1 | 1 | 2 | Hume is well supported; the Kant discussion uses a passage about regulative principles and absolute necessity that does not establish Kant’s account of causal necessity. |
+| Plato and Rousseau on political order | 2 | 2 | 2 | 2 | 2 | The submitted pages support the claims about virtuous rulers, the social compact, general will, and common good. |
+| Wollstonecraft and Du Bois on unequal conditions | 2 | 2 | 2 | 2 | 2 | The cited pages support the answer’s claims about social formation, reciprocal prejudice, and Du Bois’s examples of response. |
+
+These manual scores assess the answer text against the submitted page excerpts; they were not entered into the artifact’s human-review fields, which remain pending. A score of 2 for citation completeness means the answer attached citations to its claims; it does not imply every cited page is semantically adequate. In particular, the Kant answer has a completeness score of 2 but weak citation support.
+
+### What the traces establish
+
+The workflow ran the `reader-evidence-v2` pipeline. Its review prompt still requires an exact contiguous quote of 12–320 characters, and the active validator in `hosting-poc/evidence-answer.mjs` enforces the same 320-character ceiling. Worker PR #215 is merged, but its bounded-quote change is in the separate legacy review path in `public-gateway.mjs`; the live evidence-v2 route calls `composeEvidenceAnswer` from `evidence-answer.mjs`. Therefore PR #215 does not change the validator exercised by this run. This is a code-path mismatch, not evidence that PR #215 failed to deploy.
+
+The trace shows examples of review evidence longer than 320 characters for Plato/Rousseau and Du Bois. Their exact source text appears in the submitted pages, while the review contract rejects the quotes and downgrades those parts. James is another distinct case: the NKJV excerpt contains OCR ligatures such as `jusƟﬁed` and `oﬀered`, while the reviewer quotes normalized spellings. The page contains the argument, but exact quote matching does not accept those strings. These cases point to a mismatch between source-text normalization and quote validation, alongside the hard length cap; they should not be treated as proof that the answer prose lacked evidence.
+
+There are also real content/retrieval issues. The Hamlet packet lacks the page containing the afterlife reasoning, so the second part is genuinely unanswered in this draft; PR #185’s phrase-to-part linking cannot help when the needed page is absent from the submitted packet. The Hume/Kant draft has all parts populated, but its Kant claims outrun the retrieved Kant passage. The Herodotus draft makes a material attribution/negation error despite passing the structural checks. These examples confirm that structural pass rates alone cannot serve as release quality evidence.
+
+### Remaining validation and next milestone
+
+1. Align the exact-quote bound and OCR/Unicode normalization in the active evidence-v2 prompt and validator, with tests for long exact source spans, OCR ligatures, altered quotes, and non-contiguous text. Keep the verifier fail-closed when a quote is genuinely unsupported.
+2. Improve Hamlet retrieval so the page containing the afterlife passage enters the candidate packet, then verify that the live page-to-question-part linking reserves it for the right part.
+3. Correct Kant evidence selection for causal necessity and require direct support for Kant’s relevant argument before composition; retain the existing abstention behavior when the needed passage is unavailable.
+4. Add semantic checks for attribution and negation, including the Herodotus/Proteus claim, and review all final citations against page text.
+5. Rerun the same seven-question reviewed holdout after the focused fixes, inspect live progress and traces, then run the reserved unseen acceptance suite. Require complete part coverage and source-supported claims; do not equate a structural pass with factual accuracy.
