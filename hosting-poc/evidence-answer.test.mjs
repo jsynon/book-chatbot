@@ -274,6 +274,63 @@ test('claim-level review removes a sentence when its cited quote supports only a
  assert.equal(result.evidenceMap[0].quote,text);
 });
 
+test('a single-author sentence can drop an explicitly unsupported extra citation',async()=>{
+ const unrelated={...hume,id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:17,
+  text:'The knight of faith lives an ordinary life after making the movement of infinity.',
+  preview:'The knight of faith lives an ordinary life after making the movement of infinity.'};
+ const supporting={...unrelated,id:'S2',page:93,
+  text:'The opposite of sin is faith.',preview:'The opposite of sin is faith.'};
+ const plan={intent:'explain',sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
+  parts:[{id:'P1',question:'What is the Christian opposite of sin?',sourceBookIds:['140']}]};
+ const ai=makeAI([answer('PART P1\nThe Christian opposite of sin is faith. [S2, S1]'),(_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+  const spanFor=sourceId=>claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+   claimId:claim.claimId,status:'answered',sources:[
+    {sourceId:'S2',status:'answered',spanIds:[spanFor('S2')]},
+    {sourceId:'S1',status:'unanswered',spanIds:[]}
+   ]}]})};
+ }]);
+ const result=await composeEvidenceAnswer('What is the Christian opposite of sin?',[unrelated,supporting],ai,[],{
+  catalog:{...catalog,140:unrelated.title},plan,trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/The Christian opposite of sin is faith\. \[S2\]/);
+ assert.doesNotMatch(result.answer,/S1/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S2']);
+ assert.deepEqual(result.evidenceMap.map(item=>item.id),['S2']);
+ assert.deepEqual(result.trace.reviewContract.recovered,[{
+  partId:'P1',claimId:'P1-C1',sourceIds:['S1'],reason:'unsupported-extra-citations-pruned'
+ }]);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.claimId==='P1-C1'&&issue.sourceId==='S1'&&issue.reason==='claim-source-not-supported'));
+});
+
+test('a failed author-side premise cannot be pruned from a hypothetical inference citation',async()=>{
+ const ai=makeAI([hypotheticalDraft(
+  'From these passages, one cautious inference is that Nietzsche might reject Kierkegaard’s account of faith. [S1, S2]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,
+     status:claim.partId==='P3'&&sourceId==='S2'?'unanswered':'answered',
+     spanIds:claim.partId==='P3'&&sourceId==='S2'?[]:[sourceId+'-Q1']}))}));
+   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),claims})};
+  }
+ ]);
+ const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
+  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.questionParts[2].status,'unsupported');
+ assert.equal(result.coverage,'partial');
+ assert.doesNotMatch(result.answer,/one cautious inference is that Nietzsche might reject/);
+ assert.equal(result.trace.reviewContract.recovered.some(item=>item.partId==='P3'),false);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P3'&&issue.sourceId==='S2'&&issue.reason==='claim-source-not-supported'));
+});
+
 test('claim review rejects a compound sentence when its quote supports only one factual clause',async()=>{
  const text='It seems that the church obstructs and hinders the progress of this poison.';
  const source={...hume,id:'S1',bookId:'239',title:'The Portable Nietzsche — Friedrich Nietzsche',text,preview:text};
@@ -338,6 +395,7 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
+ assert.match(COMPOSER_PROMPT,/anchor it to the specific point of contact established by both cited passages/);
  assert.match(COMPOSER_PROMPT,/End it with one citation group containing the smallest relevant set of evidence from each author’s source group/);
  assert.match(COMPOSER_PROMPT,/smallest relevant set of evidence from each author’s source group/);
  assert.match(COMPOSER_PROMPT,/do not attach every retrieved page or every page from an author group/);
@@ -345,6 +403,7 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/source decisions include relevant evidence from every author source group/);
  assert.match(REVIEW_PROMPT,/do not demand a passage documenting the hypothetical response itself/);
  assert.match(REVIEW_PROMPT,/a missing premise, one-sided citation, or conclusion stronger than the premises is partial or unanswered/);
+ assert.match(REVIEW_PROMPT,/same specific point of contact the conclusion draws/);
  assert.match(REVIEW_PROMPT,/A claim need not cite every page available in an author group/);
  assert.match(COMPOSER_PROMPT,/If provenance names a pseudonymous work voice, identify that voice/);
  assert.match(REVIEW_PROMPT,/When provenance identifies a pseudonymous work voice/);
@@ -368,11 +427,11 @@ const hypotheticalPlan={intent:'compare',sources:[
 ]};
 const hypotheticalSources=[
  {id:'S1',bookId:'239',title:hypotheticalCatalog['239'],page:598,
-  text:'Nietzsche criticizes Christian morality as a decadent rejection of earthly life.',
-  preview:'Nietzsche criticizes Christian morality as a decadent rejection of earthly life.'},
+  text:'Nietzsche describes Christian faith as metaphysical faith in God as truth and questions the will to truth behind it.',
+  preview:'Nietzsche describes Christian faith as metaphysical faith in God as truth and questions the will to truth behind it.'},
  {id:'S2',bookId:'140',title:hypotheticalCatalog['140'],page:44,
-  text:'Johannes de Silentio says poetry should attend to the religious inwardness of personalities.',
-  preview:'Johannes de Silentio says poetry should attend to the religious inwardness of personalities.'}
+  text:'Johannes de Silentio describes faith as belief by virtue of the absurd and as a relation to God.',
+  preview:'Johannes de Silentio describes faith as belief by virtue of the absurd and as a relation to God.'}
 ];
 function hypotheticalReview(){
  return (_model,{messages})=>{
@@ -388,9 +447,9 @@ function hypotheticalReview(){
 function hypotheticalDraft(inference){
  return answer([
   'PART P1',
-  'Nietzsche criticizes Christian morality as a decadent rejection of earthly life. [S1]',
+  'Nietzsche describes Christian faith as metaphysical faith in God as truth. [S1]',
   'PART P2',
-  'In Fear and Trembling, Johannes de Silentio presents religious inwardness as an important theme. [S2]',
+  'In Fear and Trembling, Johannes de Silentio describes faith as belief by virtue of the absurd and a relation to God. [S2]',
   'PART P3',
   inference
  ].join('\n'));
@@ -398,7 +457,7 @@ function hypotheticalDraft(inference){
 
 test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both authors’ reviewed evidence',async()=>{
  const ai=makeAI([hypotheticalDraft(
-  'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1, S2]'),
+  'From these passages, one cautious inference is that Nietzsche might have challenged Kierkegaard’s grounding of faith in God and the absurd as a basis for belief; they do not establish his view of Kierkegaard’s whole philosophy. [S1, S2]'),
   hypotheticalReview()
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
@@ -408,11 +467,37 @@ test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both 
  assert.equal(result.coverage,'full');
  assert.equal(result.questionParts[2].status,'supported');
  assert.match(result.answer,/one cautious inference/i);
+ assert.match(result.answer,/grounding of faith in God and the absurd/);
  assert.match(result.answer,/\[S1, S2\]/);
  assert.deepEqual(new Set(result.evidenceMap.filter(item=>item.claimId.startsWith('P3-'))
   .map(item=>item.id)),new Set(['S1','S2']));
  assert.equal(result.trace.reviewContract.valid,true);
  assert.deepEqual(result.trace.coverageGaps,[]);
+});
+
+test('a broad hypothetical conclusion stays partial even when both premise sources are supported',async()=>{
+ const ai=makeAI([hypotheticalDraft(
+  'From these passages, one cautious inference is that Nietzsche would reject Kierkegaard’s entire philosophy as life-denying. [S1, S2]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const claims=payload.claims.map(claim=>({claimId:claim.claimId,
+    status:claim.partId==='P3'?'partial':'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}));
+   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,
+    status:part.partId==='P3'?'partial':'answered'})),claims})};
+  }
+ ]);
+ const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
+  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.questionParts[1].status,'supported');
+ assert.equal(result.questionParts[2].status,'unsupported');
+ assert.doesNotMatch(result.answer,/reject Kierkegaard’s entire philosophy/);
+ assert.equal(result.trace.reviewContract.recovered.some(item=>item.partId==='P3'),false);
 });
 
 test('a hypothetical can cite one relevant page per author when more group pages are available',async()=>{
