@@ -55,13 +55,15 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   const intent=['explain','compare','interpret','locate'].includes(raw?.intent)?raw.intent:'explain';
   const queries=Array.isArray(raw?.queries)?raw.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[];
   const parts=(Array.isArray(raw?.parts)?raw.parts:[]).slice(0,6).map((p,i)=>({id:'P'+(i+1),question:bounded(typeof p==='string'?p:p?.question,240)})).filter(p=>p.question);
-  const normalizedParts=parts.length?parts:[{id:'P1',question}];
+  let normalizedParts=parts.length?parts:[{id:'P1',question}];
   const identityText=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
     .replace(/[’‘]/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
   const containsPhrase=(haystack,phrase)=>{
     const normalized=identityText(phrase);
     return normalized.length>=4&&(' '+identityText(haystack)+' ').includes(' '+normalized+' ');
   };
+  const hypotheticalAuthorResponse=/\b(?:what|how)\s+would\b[^?!.]{0,120}\b(?:think|say|respond|react|view|regard)\b[^?!.]{0,100}\b(?:about|of|on|regarding|concerning|to)\b/i.test(resolvedQuestion);
+  const comparisonPattern=/\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|versus|vs\.?|similar(?:ity)?|alike)\b/i;
   const sourcePhrases=source=>{
     const phrases=[source.label];
     for(const token of String(source.label||'').split(/[^\p{L}\p{N}]+/u))
@@ -73,6 +75,28 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     }
     return [...new Set(phrases.map(identityText).filter(value=>value.length>=4))];
   };
+  const sourceMentionIndex=source=>sourcePhrases(source).map(phrase=>({
+    index:identityText(resolvedQuestion).indexOf(phrase)
+  })).filter(item=>item.index>=0).sort((a,b)=>a.index-b.index)[0]?.index??Number.MAX_SAFE_INTEGER;
+  const counterfactualSources=sources.filter(source=>['primary','subject'].includes(source.role)&&source.bookIds.length);
+  if(hypotheticalAuthorResponse&&counterfactualSources.length===2){
+    counterfactualSources.sort((a,b)=>sourceMentionIndex(a)-sourceMentionIndex(b));
+    const [stance,object]=counterfactualSources;
+    sources.splice(0,sources.length,...counterfactualSources,...sources.filter(source=>!counterfactualSources.includes(source)));
+    // Keep retrieval responsibilities distinct: each thinker is grounded in
+    // their own books, while the synthesis explicitly permits a cautious
+    // inference from both sides.
+    normalizedParts=[
+      {id:'P1',question:`What position does ${stance.label} take on the ideas under discussion?`},
+      {id:'P2',question:`What position does ${object.label} take on the ideas under discussion?`},
+      {id:'P3',question:'How do the two positions compare, and what response can cautiously be inferred from the original question?'}
+    ];
+  }else if(intent!=='compare'&&sources.length===1){
+    const broadAuthorQuestion=resolvedQuestion.match(/^\s*what\s+(?:(?:did|does|do)\s+)?(.{2,100}?)\s+(?:have\s+to\s+say|say|think|argue|believe|write|teach|hold|maintain)\s+(?:anything\s+)?(?:about|on|regarding|concerning)\s+(.+?)\??\s*$/i);
+    const topic=broadAuthorQuestion?.[2]||'';
+    if(broadAuthorQuestion&&!/\b(?:and|or|versus|vs\.?|compare|contrast)\b/i.test(topic))
+      normalizedParts=[{id:'P1',question:resolvedQuestion}];
+  }
   const partSourceGroups=normalizedParts.map(part=>{
     let matches=sources.map((source,index)=>({source,index,phrases:sourcePhrases(source)}))
       .filter(group=>group.phrases.some(phrase=>containsPhrase(part.question,phrase)));
@@ -107,8 +131,6 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     });
     return narrowed.length?[...new Set(narrowed)]:null;
   });
-  const comparisonPattern=/\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|versus|vs\.?|similar(?:ity)?|alike)\b/i;
-  const hypotheticalAuthorResponse=/\b(?:what|how)\s+would\b[^?!.]{0,120}\b(?:think|say|respond|react|view|regard)\b[^?!.]{0,100}\b(?:about|of|on|regarding|concerning|to)\b/i.test(resolvedQuestion);
   const comparisonSources=sources.filter(source=>['primary','subject'].includes(source.role)&&source.bookIds.length);
   const hasPlannedComparison=normalizedParts.some((part,index)=>comparisonPattern.test(part.question)&&
     comparisonSources.filter(source=>source.bookIds.some(id=>(partSourceGroups[index]||[]).includes(id))).length>=2);
@@ -130,14 +152,16 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     // planned source-side searches. Searching its generic wording spends a
     // scarce page slot on a broad, often weak hit; source-side passages can
     // support the synthesis once the Worker links them to this part.
-    const syntheticComparison=/^How do the named sources compare in response to this question:/i.test(part.question);
+    const syntheticComparison=/^How do the named sources compare in response to this question:/i.test(part.question)||
+      (hypotheticalAuthorResponse&&index===2&&comparisonPattern.test(part.question));
+    const sourceSidePart=hypotheticalAuthorResponse&&index<2;
     const contextDependent=/\b(?:he|she|it|they|his|her|its|their|this|that|these|those|the same)\b|\b(?:this|that|the)\s+(?:soliloquy|passage|scene|argument|account|position)\b/i
       .test(part.question);
     const contextualQuery=contextDependent&&intent!=='compare'&&!syntheticComparison
       ?[resolvedQuestion.slice(0,200),part.question.slice(0,200)].filter(Boolean).join(' ').slice(0,400)
       :part.question;
     return {...part,sourceBookIds:partSourceGroups[index],
-      searchQueries:[...new Set([...matchingQueries,...(syntheticComparison?[]:[contextualQuery])])].slice(0,5)};
+      searchQueries:[...new Set([...matchingQueries,...(syntheticComparison||sourceSidePart?[]:[contextualQuery])])].slice(0,5)};
   });
   return {version:CONTRACT_VERSION,resolvedQuestion,intent,
     sources,parts:partsWithSources,scope:bounded(raw?.scope,200),

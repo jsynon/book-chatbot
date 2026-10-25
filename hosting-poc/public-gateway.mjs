@@ -1247,6 +1247,31 @@ function requestedSourceGroups(question,sources){
   if(deduped.length<2)return [];
   return deduped.map(group=>({...group,bookIds:new Set(group.bookIds)}));
 }
+function counterfactualSourceQueries(question,queries,groups){
+  if(groups.length!==2||queries.length<2)return queries;
+  const normalizedQuestion=normalizedSourceGroupText(question);
+  const mentionIndex=group=>{
+    const full=normalizedQuestion.indexOf(group.key);
+    if(full>=0)return full;
+    const surname=normalizedSourceGroupText(group.label||group.key).split(' ').at(-1)||'';
+    return surname?normalizedQuestion.indexOf(surname):Number.MAX_SAFE_INTEGER;
+  };
+  const ordered=[...groups].sort((a,b)=>mentionIndex(a)-mentionIndex(b));
+  const escape=value=>String(value||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const names=ordered.flatMap(group=>{
+    const authors=[...sourceGroupMetadata().authorBooks.values()]
+      .filter(author=>[...author.bookIds].some(id=>group.bookIds.has(String(id))))
+      .flatMap(author=>[author.name,author.surname]);
+    return [...new Set([group.label,group.key,...authors].filter(Boolean))];
+  }).sort((a,b)=>b.length-a.length);
+  return ordered.map((target,index)=>{
+    let terms=String(queries[index]||'');
+    for(const name of names)terms=terms.replace(new RegExp('(?:^|[^\\p{L}\\p{N}])'+escape(name)+'(?=$|[^\\p{L}\\p{N}])','giu'),' ');
+    terms=terms.replace(/[’'`]/gu,' ').replace(/[^\p{L}\p{N} -]/gu,' ')
+      .replace(/\s+/gu,' ').trim();
+    return [target.label,terms].filter(Boolean).join(' ').slice(0,160);
+  });
+}
 function explicitNamedWorkBookIds(question){
   const {titleBooks}=sourceGroupMetadata();
   const text=String(question||'');
@@ -3391,6 +3416,10 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
     throw new Error('Invalid search plan');
   let queries=options.map(q=>q.trim().replace(/\s+/g,' '));
   const counterfactualResponse=isCounterfactualAuthorResponseQuestion(question);
+  if(counterfactualResponse){
+    const requested=requestedSourceGroups(question,bookTitle);
+    if(requested.length===2)queries=counterfactualSourceQueries(question,queries,requested);
+  }
   const namedTargets=counterfactualResponse?[]:namedGroupQueryTargets(question,bookTitle);
   if(namedTargets.length===2){
     // The model may expand a broad user phrase into the author's actual
@@ -3700,8 +3729,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     const evidenceHighlights=[];
     const verifiedAnchors=new Map(highlightedSources.map(source=>[source.id,
       [...new Set((output.evidenceMap||[]).filter(item=>item.id===source.id&&
-        item.quoteVerified&&typeof item.anchorQuote==='string'&&item.anchorQuote.trim())
-        .map(item=>item.anchorQuote.trim()))]]));
+        item.quoteVerified===true&&
+        typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
+        .map(item=>(item.anchorQuote||item.quote).trim()))]]));
     const usedAnchors=new Map();
     const addHighlight=(source,quote)=>{
       if(evidenceHighlights.length>=3)return false;

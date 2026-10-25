@@ -2455,6 +2455,8 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
  assert.equal(answerData.coverage,'full');
  assert.ok(answerData.evidenceMap[0].quote.length>12);
  assert.ok(pilot.fixture.body.sources[0].text.includes(answerData.evidenceMap[0].quote));
+ assert.equal(answerData.evidenceHighlights[0].quote,answerData.evidenceMap[0].quote,
+  'evidence-v2 highlights must use the exact reviewer-approved span from evidenceMap');
  assert.equal(pilot.stats().verifyCalls,0);
  assert(pilot.stats().calls>=2);
 

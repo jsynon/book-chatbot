@@ -63,3 +63,29 @@ export function buildReviewSpans(sourceId,text,{maxSpanLength=DEFAULT_MAX_SPAN_L
     spanId:`${sourceId}-Q${index+1}`,start:span.start,end:span.end,text:span.text
   }));
 }
+
+const REVIEW_STOP_WORDS=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
+function reviewTerms(value){
+  return new Set((String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>{
+      const simple=term.replace(/(?:ing|ed|es|s)$/u,'');
+      return simple.length>=3?simple:term;
+    }).filter(term=>!REVIEW_STOP_WORDS.has(term)));
+}
+
+/**
+ * Put likely answer-bearing spans first while preserving every exact span and
+ * its stable ID. This helps a bounded reviewer notice direct evidence without
+ * turning lexical overlap into a support decision.
+ */
+export function rankReviewSpans(spans,{question='',answer=''}={}){
+  const answerTerms=reviewTerms(answer),questionTerms=reviewTerms(question);
+  const score=text=>{
+    const terms=reviewTerms(text);
+    let value=0;
+    for(const term of terms){if(answerTerms.has(term))value+=3;if(questionTerms.has(term))value+=1;}
+    return value;
+  };
+  return spans.map((span,index)=>({span,index,score:score(span.text)}))
+    .sort((a,b)=>b.score-a.score||a.index-b.index).map(item=>item.span);
+}
