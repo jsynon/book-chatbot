@@ -12,7 +12,8 @@ PART P2
 The two accounts differ in the role they assign to experience. [S1, S2]`;
 
 export const REVIEW_PROMPT=`Review each answer part against only its cited, fingerprint-verified source pages. Each page supplies deterministic evidence spans with IDs and exact source text. Select span IDs only; do not copy or rewrite quotations. The supplied spans are the only evidence that may support the answer. Check attribution, qualifications, negation, and whether the answer explains the requested reasoning. A category name alone is incomplete when the question asks how something is justified or known; require the source's grounds, argument, or conditions of validity. For comparisons, require directly relevant support from each named source. A citation's presence or topical overlap alone does not establish support. Check whether the selected spans establish the same requested concept, actor, action, polarity, and qualification as the answer; a passage about a neighboring doctrine or a shared keyword is not support. Treat a reversed negation or attribution as a material contradiction.
-Return JSON only: {"parts":[{"partId":"P1","status":"answered|partial|unanswered","reason":"briefly explain what the cited passage establishes and what remains missing","evidence":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}. Include every supplied part exactly once. For answered, select at least one supporting span from every cited source ID and ensure the selected spans support the answer's main claims; for a comparison, select directly relevant spans from each named source. For partial, select any spans that support the answer and state what remains missing. For unanswered, use an empty evidence array. Select only IDs listed under that exact source. Never invent an ID. Do not rewrite the answer or add claims.`;
+Each part includes a deterministic requiredSourceIds list, derived from the sources cited in its answer. For an answered part, return at least one relevant span for every requiredSourceId. Do not omit a source because another source seems stronger or covers a similar claim. If a required source has no relevant span, mark the part partial and say what remains unsupported; do not invent or borrow a span.
+Return JSON only: {"parts":[{"partId":"P1","status":"answered|partial|unanswered","reason":"briefly explain what the cited passage establishes and what remains missing","evidence":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}. Include every supplied part exactly once. For answered, selected spans must support the answer's main claims; for a comparison, select directly relevant spans from each named source. For partial, select any spans that support the answer and state what remains missing. For unanswered, use an empty evidence array. Select only IDs listed under that exact source. Never invent an ID. Do not rewrite the answer or add claims.`;
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -228,19 +229,36 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps){
     const allowedIds=new Set((answerPart?.answers||[]).flatMap(answer=>answer.sourceIds));
     const reviewerPart=review?.parts?.find(item=>String(item?.partId||'').toUpperCase()===part.id);
     const reason=typeof reviewerPart?.reason==='string'?reviewerPart.reason.trim().slice(0,240):'';
-    const evidence=[];
-    const selectedSpans=new Set();
-    if(Array.isArray(reviewerPart?.evidence))for(const item of reviewerPart.evidence.slice(0,6)){
+    const selectedBySource=new Map();
+    if(Array.isArray(reviewerPart?.evidence))for(const item of reviewerPart.evidence){
       const source=sourceById.get(String(item?.sourceId||''));
       if(!source||!allowedIds.has(source.id)||!Array.isArray(item?.spanIds))continue;
       const spans=reviewSpanMaps.get(source.id);
+      const sourceSelections=selectedBySource.get(source.id)||[];
       for(const spanId of item.spanIds.slice(0,3)){
-        if(typeof spanId!=='string'||selectedSpans.has(spanId)||evidence.length>=6)continue;
+        if(sourceSelections.length>=3)break;
+        if(typeof spanId!=='string'||sourceSelections.some(value=>value.spanId===spanId))continue;
         const span=spans?.get(spanId);
         if(!span)continue;
-        selectedSpans.add(spanId);
-        evidence.push({sourceId:source.id,spanId,quote:span.text,anchorQuote:span.text});
+        sourceSelections.push({sourceId:source.id,spanId,quote:span.text,anchorQuote:span.text});
       }
+      if(sourceSelections.length)selectedBySource.set(source.id,sourceSelections);
+    }
+    // Preserve one reviewer-selected span for every cited source before
+    // spending the existing six-span display budget on additional support.
+    // The old source-first loop could fill all six slots with early sources
+    // and silently discard a later cited source that the reviewer had selected.
+    const evidence=[];
+    for(const sourceId of allowedIds){
+      const selected=selectedBySource.get(sourceId)?.[0];
+      if(selected)evidence.push(selected);
+    }
+    for(const sourceId of allowedIds){
+      for(const selected of selectedBySource.get(sourceId)?.slice(1)||[]){
+        if(evidence.length>=6)break;
+        evidence.push(selected);
+      }
+      if(evidence.length>=6)break;
     }
     let status=supplied.get(part.id)||'partial';
     const reviewerClaimedAnswered=status==='answered';
@@ -339,6 +357,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         const citedIds=new Set(part.answers.flatMap(answer=>answer.sourceIds));
         return {partId:part.partId,question:part.question,
           candidateSourceIds:planned?.candidateSourceIds||[],answers:part.answers,
+          requiredSourceIds:[...citedIds],
           evidence:[...pageById.values()].filter(page=>citedIds.has(page.id)).map(page=>{
             const source=sources.find(item=>item.id===page.id);
             const spanText=source?.scopeText||page.text||'';

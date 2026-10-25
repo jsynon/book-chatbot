@@ -1,7 +1,10 @@
+Warning: truncated output (original token count: 23743)
+Total output lines: 560
+
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: Worker PR #217 and website PR #186 were merged, followed by reviewed all-books runs [40150160023](https://github.com/jsynon/antilogicalism/actions/runs/40150160023) and [40152944637](https://github.com/jsynon/antilogicalism/actions/runs/40152944637). The latter improved structural passes from 1/7 to 2/7 and supported parts from 5/16 to 9/17, with zero unsupported parts and zero request failures; eight parts remained partial because of reviewer quote transcription errors. Worker PR #220 now proposes deterministic source-span IDs for the active evidence-v2 review path. Local Worker and website suites pass; a fresh deployed reviewed run is pending.
+Status: Worker PRs #217 and #220 and website PR #186 are merged. The post-PR #220 reviewed all-books run [40155204645](https://github.com/jsynon/antilogicalism/actions/runs/40155204645) completed all seven cases with no request failures or planner fallbacks and improved structural passes from 2/7 to 5/7. Two evidence-map failures remain: the reviewer omitted a cited Hume source from the Kant comparison part, and the Worker dropped a selected Wollstonecraft span when its six-span map filled. A focused Worker candidate now sends an explicit per-part cited-source checklist and reserves one selected span per cited source before filling the existing map budget. Full local suites pass: 225 Worker tests and 160 website tests. GitHub checks are pending.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -227,79 +230,7 @@ The failures identify four concrete seams in the current pipeline:
 
 The follow-up candidate keeps the existing paragraph composer and two-call reviewed path. Website retrieval now tolerates malformed optional part facets, falls back to the valid part question where possible, bounds facet work to 12 links and six unique queries, and records warnings in progress events and case reports. After a page is loaded, its own text may link it to an additional question part only when it overlaps at least two distinctive terms from that part's query. This is an eligibility signal, not proof of support; the Worker still enforces source identity, part scope, citations, and review.
 
-The Worker now treats short one-word quoted terms as terminology rather than exact-quotation claims, while keeping multiword quotes bound to cited source text. Review evidence may be up to 320 characters, must be exact contiguous text, and an `answered` part must provide a validated quote from every source ID cited for that part. This keeps the evidence map consistent with the answer citations and avoids rejecting long but valid review excerpts. It does not make semantic review infallible: a real quote can still be only topically related, so the model rationale and human source check remain necessary.
-
-| Verification | Result |
-|---|---|
-| Website full Node suite: `node --test reading-companion/*.test.mjs` | 154 passed, 0 failed after the final adjustment |
-| Worker full Node suite: `node --test hosting-poc/*.test.mjs` | 213 passed, 0 failed |
-| Malformed optional part facets | Regression confirms invalid hints are dropped/fallback is used within bounded facet budgets instead of aborting base retrieval |
-| Shared page across question parts | Regression confirms a page found through one facet can be linked to another part when its full text contains that part's distinctive terms |
-| Review quote contract | Regression confirms exact 260-character review quotes are accepted and an answer citing two pages is downgraded unless both pages have exact review evidence |
-| Live model answer quality, OCR fidelity, and published-site behavior | Not yet validated on this candidate |
-
-PR #183 and PR #210 have since been merged. The Pages workflow succeeded, the user reports deploying the Worker, and the post-deploy rerun is recorded below. Because this holdout has guided code changes, neither run is acceptance evidence; the separate unseen acceptance suite remains reserved for a frozen candidate. The user confirmed that the workflow's real-time progress output was visible.
-
-## Post-deployment seven-question holdout (October 24, 2026)
-
-The user ran the all-books, with-review holdout after merging PRs #183 and #210 and deploying the Worker. [GitHub Actions run 40142267190](https://github.com/jsynon/antilogicalism/actions/runs/40142267190) completed all seven cases and published artifact `reading-companion-holdout-answer-evaluation-with-review-all-books-all` (artifact ID `12579058117`). The workflow conclusion is `failure` because its structural gate found 0/7 passing answers; it was not a request outage: there were zero request failures, zero skipped cases, and zero planner fallbacks. Real-time stage progress was visible during this run, as the user confirmed.
-
-The run used all-books scope, `with-review`, website source revision `bd3f478afa06d2d302902c5e45f6911152bd7d2e`, Worker version `335d572f-5027-4acf-82e0-5614dfc86112`, and library v47. The report records hashes for the published corpus/index inputs. Its estimated budget was 21 Worker AI calls (one planner plus two answer calls for each case); actual answer-stage usage recorded 14 calls, 67,594 input tokens, 4,419 output tokens, and 735.009 neurons. Planner usage is not included in that answer-stage usage total.
-
-All 18 planned parts were represented in the result: 7 supported, 8 partial, and 3 unsupported. The workflow's own reviewer-score fields remain blank; an independent source-based assistant assessment is recorded below. Automated statuses alone do not tell us whether each passage supports its prose. The case-level evidence shows where the latest changes helped and where the answer path still breaks:
-
-| Case | What the run shows |
-|---|---|
-| Herodotus / Helen | Retrieval linked page evidence to both requested parts, including the credibility part, but the review response failed format validation. A usable draft was preserved as unverified/partial; this is a review-contract failure, not missing retrieval. |
-| Hamlet | The alternatives in the soliloquy were supported, but the afterlife-uncertainty part remained unsupported. |
-| Aristotle | The soul/body part was supported; the form-and-matter explanation remained unsupported after citation/evidence validation. |
-| James 2 | Faith and works were supported; Abraham/Rahab remained partial because the review evidence did not fully support the cited material. |
-| Hume / Kant | Hume's account and the comparison were marked supported, while Kant's basis for causal necessity remained partial. The response itself acknowledged the supplied Kant text did not establish that basis. |
-| Plato / Rousseau | All four parts remained partial. Retrieval completed despite malformed optional facet data, but reported `part-query-budget-exceeded`; the available citations did not establish the full requested claims. |
-| Wollstonecraft / Du Bois | Wollstonecraft's part was supported; Du Bois's remained unsupported even though Du Bois pages were retrieved, because no Du Bois citation survived into the answer. |
-
-The clearest verified improvements are operational and contract-level: the run completed all cases without request failure; progress output was visible; Herodotus evidence was associated with both parts; and Plato/Rousseau retrieval survived malformed optional facet data instead of aborting. The run does **not** demonstrate answer-quality acceptance: structural success was 0/7, the workflow's own score fields were blank, and retrieval linkage alone is not semantic evidence. Compared with previous seven-question rounds, treat aggregate part counts cautiously because the planner's decomposition differs across runs; this was not a controlled paired comparison.
-
-At the time of initial review, no code changes had yet been made in response to this run. The assistant source-based scores and trace inspection are recorded in the next section; the workflow's own review-score fields remain blank. The follow-up exact-trace audit and resulting correction are documented at the end of this report. Keep the separate unseen acceptance suite untouched until a candidate is frozen. Re-test “what is transcendental idealism?” as an explicit definition-and-appearance distinction check.
-
-## Assistant source-based review of the post-deployment drafts (October 24, 2026)
-
-The artifact was retrieved directly from GitHub Actions run 40142267190 (artifact ID `12579058117`). No user download was needed. For each case, `evidenceTrace.evidence` contains the exact verified text sent to the answer path, with source ID, title, page, and page hash; `submittedSources` shows the shorter excerpts and part links; `stages` records the compose and review prompts/responses; and `rejected`, `reviewContract`, `evidenceMap`, and `final` show validation decisions and the final user-facing draft. The review below compares the final draft with those source passages. It is an independent assistant assessment, not a human score entered into the workflow artifact; that artifact still has 0/7 reviewer entries.
-
-Scores use the agreed 0–2 scale (2 strong, 1 partial, 0 absent/incorrect). The score order is accuracy / question coverage / explanation quality / citation support / citation completeness. Coverage reflects whether the final draft answers every requested part. Citation support and completeness assess the claims actually present in the final draft; a missing part is reflected primarily under coverage.
-
-| Case | Scores | Source-based assessment |
-|---|---:|---|
-| Herodotus / Helen | 2 / 2 / 2 / 2 / 2 | Both parts are answered accurately: the Egyptian account is given on Herodotus pp. 145–146, and his reasoning about why Troy would have surrendered Helen appears on p. 146. The citations match those passages. The workflow left the answer unverified because the review response was invalid JSON. It was fenced, but the parser accepts fences; the model inserted an extra quote before the second evidence object. |
-| Hamlet | 2 / 1 / 1 / 2 / 2 | The alternatives in the soliloquy are accurately summarized and cited to Shakespeare's text and a second printed version. The answer leaves the afterlife-uncertainty part blank, so coverage is partial; its explanation of the part it does answer is concise but basic. |
-| Aristotle | 2 / 1 / 2 / 2 / 2 | The deployed final answer accurately explains soul as actuality/form related to an organized living body and cites *De Anima* pp. 14–18, but omits the requested form-and-matter comparison. The raw compose response contained a supported wax/shape analogy and exact phrases; the post-composition audit rejected P2 as `quotation-citation-mismatch`. The exact cause is documented below: validation first removed sentence-level citations and then moved them to the paragraph end. |
-| James 2 | 2 / 2 / 2 / 2 / 2 | Both parts are accurately summarized. The submitted NKJV page 5493 explicitly covers Abraham's offering of Isaac, faith working with works, and Rahab receiving the messengers; pages 5492–5493 support the faith/works explanation. The reviewer did not provide an accepted exact support quote for P2, so the automated result downgraded it to partial despite the directly relevant text on the cited page. |
-| Hume / Kant | 2 / 1 / 1 / 1 / 1 | Hume's custom and constant-conjunction account is directly supported by *Enquiry* pp. 42 and 48. The Kant paragraph accurately admits that the submitted *Critique* evidence does not establish Kant's positive account of causal necessity; p. 239 supports a limit on applying causality outside the sensible world, not the requested argument for its a priori necessity. The answer therefore does not fully answer the comparison and repeats Hume's account. |
-| Plato / Rousseau | 2 / 2 / 2 / 2 / 2 | All four parts are supported by the submitted pages: Plato p. 176 connects wise and virtuous rulers, refusal of private advantage, and a well-ordered state; Rousseau pp. 14 and 24 connect the social compact, the general will, equal conventions, and the general good. The model review supplied incomplete per-source quote records and downgraded every part, but direct inspection of the cited pages supports the final paragraphs. |
-| Wollstonecraft / Du Bois | 2 / 1 / 2 / 2 / 1 | The Wollstonecraft paragraph is accurate and supported by *Vindication* pp. 58, 125, and 138. The deployed final answer contains no Du Bois paragraph, so it does not answer the comparison fully. The raw compose response did contain a Du Bois paragraph supported by *Souls of Black Folk* pp. 131 and 141; its exact “double life” and “morbid sense of personality” phrases were rejected by the same citation-relocation bug described below. |
-
-The assessment changes how the 0/7 structural result should be interpreted, but does not overturn it. The final user-facing answers were not structurally complete, yet several of their included claims are directly supported. In particular, Aristotle and Du Bois show that relevant text and a plausible answer could be present in the raw compose response and then disappear at the final citation-validation boundary. Herodotus shows invalid reviewer JSON, not a Markdown-fence parsing failure. James and Plato/Rousseau show that the automated review can be more conservative than direct inspection of the exact source pages. Hume/Kant remains a genuine evidence-selection and coverage gap: the supplied Kant pages do not establish the requested positive argument.
-
-## Exact-trace audit and citation-placement correction (October 25, 2026)
-
-I traced the live route from `companion-v110.mjs` and `live-answer-evaluation.mjs` through shared `evidence-search.mjs`, then through `/api/pilot-plan`, page fingerprint verification, `/api/pilot-answer`, `composeEvidenceAnswer`, per-part citation checks, optional semantic review, final answer construction, and the workflow's structural gate. The website sends bounded full page text plus candidate part IDs; the Worker re-fetches canonical fingerprint metadata, checks the exact page hash, attaches source IDs, constrains each answer part to linked/in-scope sources, composes, validates citations/quotes, reviews cited passages, and returns both answer and trace. The workflow progress events cover planner/retrieval/answer calls and waits, not internal Worker steps.
-
-The Aristotle and Du Bois trace exposed a deterministic bug in the final Worker boundary. `validatePartAnswers` removed every inline citation from the paragraph, merged the source IDs, and appended that group after the full paragraph before calling `auditFinalAnswer`. The quote checker binds each multiword quotation to a citation in the same sentence or paragraph. Moving a citation past later sentences therefore made exact quotations such as Aristotle's “formulable essence” and Du Bois's “double life” appear unsupported, even though the original composer response placed the correct citation immediately after the quoted sentence and the cited fingerprint-verified page contained the phrase. The paragraph was then dropped.
-
-The candidate fix validates each paragraph with its original citation placement, retains the validated rendered paragraph through final assembly, and runs the final integrity check against that same text. The non-rendered `answerText` remains citation-free for coverage reporting, while the reader-facing answer retains sentence-level citations. This preserves the exact location relationship the validator is designed to enforce; it does not weaken quote checks or semantic review and adds no AI call.
-
-Offline regression tests now cover a multi-sentence answer with a verified quote and citations after separate sentences, repeated IDs from the same source, and the final answer audit. Replaying the original compose responses as compose-only accepts both the Aristotle and Du Bois second paragraphs with no rejection and retains their source IDs. The saved review responses were generated from packets that did not contain those previously rejected paragraphs, so they cannot be reused to measure the new reviewed result; a fresh with-review workflow is required. Hamlet's missing afterlife evidence and Kant's missing positive argument remain retrieval/coverage gaps.
-
-The Herodotus trace was also inspected byte-for-byte. The review output is fenced JSON, which `parseJson` already supports, but it is invalid because the model emits an extra quotation mark immediately before the second evidence object. The pipeline correctly preserves the answer as unverified rather than accepting a malformed review. This is a separate reviewer-output reliability issue and remains open.
-
-The browser and Worker `reader-contract.mjs` copies had drifted despite the contract's explicit byte-identity comment. The website copy lacked the current planner behavior for linking source-specific queries to their question parts and for adding a synthetic comparison coverage part without spending a generic retrieval facet. The web candidate synchronizes this file with the Worker and updates the selector regression to expect only the two planned source queries for the synthetic comparison. The live Worker already returns this normalized plan; the sync prevents local contract and test fixtures from describing older behavior.
-
-| Validation | Candidate result |
-|---|---|
-| Worker suite: `node --test hosting-poc/*.test.mjs` | 214 passed, 0 failed |
-| Website suite: `node --test reading-companion/*.test.mjs` | 154 passed, 0 failed |
-| GitHub PR checks at that checkpoint | Worker contract workflow and website smoke workflow passed; PR #213 and PR #184 have since merged |
-| Exact saved compose-response replay, Aristotle P2 and Du Bois P2 | Both retained; no `quotation-citation-mismatch` rejection |
+The Worker now treats short one-word quoted terms as terminology rather than exact-quotation claims, while keeping multiword quotes bound to cited source text. Review evidence may be up to 320 characters, must be exact contiguous text, and an `answered` part must provide a validated quote from every source ID cited for that part. This keeps the evidence map consistent with the answer citations and avoids rejecting long but valid review ex…3743 tokens truncated…| Exact saved compose-response replay, Aristotle P2 and Du Bois P2 | Both retained; no `quotation-citation-mismatch` rejection |
 | Browser/Worker contract copies | Byte-identical in candidate branches |
 | Fresh reviewed quality run, unseen acceptance suite, and live transcendental-idealism check | Still required |
 
@@ -377,7 +308,8 @@ Website PR #186 keeps its reader-contract copy synchronized with the Worker, con
 | Validation | Candidate result |
 |---|---|
 | Worker evidence-answer and shared review-quote suites: `node --test hosting-poc/review-evidence.test.mjs hosting-poc/evidence-answer.test.mjs` | 26 passed, 0 failed |
-| Worker search-planner suite: `node --test hosting-poc/search-planner.test.mjs` | 20 passed, 0 failed |\n| Website evidence-search and scoped remote-library suites: `node --test reading-companion/evidence-search.test.mjs reading-companion/remote-library.scoped.test.mjs` | 63 passed, 0 failed |
+| Worker search-planner suite: `node --test hosting-poc/search-planner.test.mjs` | 20 passed, 0 failed |
+| Website evidence-search and scoped remote-library suites: `node --test reading-companion/evidence-search.test.mjs reading-companion/remote-library.scoped.test.mjs` | 63 passed, 0 failed |
 | New regression coverage | Long exact quote bounded after verification; OCR ligature normalization; altered, non-contiguous, too-short, and oversized quotes rejected; contextual part-query and quoted-phrase link; relevant adjacent continuation; irrelevant adjacent page excluded |
 | GitHub PR checks | Worker contract workflow [40149970497](https://github.com/jsynon/book-chatbot/actions/runs/40149970497) passed; website smoke [40149943090](https://github.com/jsynon/antilogicalism/actions/runs/40149943090) and library evaluation [40149943005](https://github.com/jsynon/antilogicalism/actions/runs/40149943005) passed |
 | Fresh deployed reviewed run | Not run; this change did not spend live model calls |
@@ -508,4 +440,52 @@ The resolved spans flow through the existing `evidenceMap` and `evidenceHighligh
 | `git diff --check` and Worker syntax checks | Passed |
 | Fresh deployed reviewed holdout | Pending; no model calls were made for this candidate |
 
-After PR #220 is reviewed, merged, and deployed, rerun the same seven-question all-books with-review workflow with real-time progress visible. Inspect whether the eight partial parts now receive exact evidence-map spans, check each selected span against its traced page, and independently score answer accuracy, coverage, explanation quality, citation support, and citation completeness. Keep the unseen acceptance set reserved until the repeated holdout is stable.
+After PR #220 was merged and deployed, the user reran the same seven-question all-books with-review workflow. The run and the next focused handoff candidate are recorded below.
+
+## October 25, 2026: post-PR #220 reviewer-handoff run and follow-up
+
+The user ran the seven-question all-books with-review workflow [40155204645](https://github.com/jsynon/antilogicalism/actions/runs/40155204645) after merging and deploying PR #220. The artifact completed all seven cases using Worker `423ffc3d-5505-495e-8f96-b8883012ba0c`, source build `public-gateway-evidence-selection-v3`, and website revision `61c6022bd063025ff8e01d93e484f6c11862c69b`. It used the expected 21 Worker AI calls, with zero request failures, planner fallbacks, or skipped cases. GitHub marked the workflow failed because two answers did not meet the structural evidence gate.
+
+The result improved from run 40152944637: structurally complete answers rose from 2/7 to 5/7, and supported parts rose from 9/17 to 16/18. The part denominator changed because the planner split the James question into three parts in this run instead of two; use case-level passes as the cleaner comparison. Hamlet, Aristotle, and James moved from partial to full. Herodotus and Plato/Rousseau stayed full. Hume/Kant and Wollstonecraft/Du Bois remained partial. The artifact's own five-dimension human-review fields remain blank.
+
+| Case | Automated result | Trace finding |
+|---|---|---|
+| Herodotus / Helen | Full | Both planned parts have reviewed source spans and complete citations. |
+| Hamlet | Full | Both the alternatives and afterlife-uncertainty parts are supported. |
+| Aristotle | Full | The soul/body relation and form/matter comparison are supported. |
+| James | Full | The planner split this into three supported parts: faith/works, Abraham, and Rahab. |
+| Hume / Kant | Partial | The three source-specific/comparison parts were planned. The comparison answer cites Hume page S2, but the reviewer selected no S2 span for P3; the Worker correctly records `missing-cited-source-span`. |
+| Plato / Rousseau | Full | Four parts are supported, with evidence from both works. |
+| Wollstonecraft / Du Bois | Partial | Du Bois is supported. For Wollstonecraft P1, the reviewer selected S1, S4, and S6 spans, but the final map omitted S6. |
+
+The Wollstonecraft trace exposed a Worker-side truncation: `normalizeReview` added up to three spans from each early source, then stopped at six total spans before preserving the reviewer's selected span from the later cited S6 source. The Hume/Kant trace is different: the reviewer response itself omitted S2 from P3 even though the answer cited it. The existing strict validator therefore downgraded P3 as intended. These failures should not be collapsed into a single source-specific exception or hidden by loosening the validator.
+
+The follow-up candidate in this branch makes two general changes in `hosting-poc/evidence-answer.mjs`:
+
+- Each review part now carries a deterministic `requiredSourceIds` list derived from its answer citations. The reviewer prompt explicitly requires a relevant selected span for every listed source and directs it to mark the part partial if a source has no relevant span. The Worker keeps the existing strict validation, so an omitted source still fails closed.
+- Review normalization first preserves one reviewer-selected span for each cited source, then spends remaining slots from the existing six-span per-part map budget on additional spans. It resolves only IDs the reviewer actually selected; it does not fabricate or copy evidence between parts.
+
+The candidate adds trace-based contract regressions for the Hume/Kant omission and Wollstonecraft's late-source span, including checks that missing Hume evidence remains partial and that a selected S6 span reaches both the final evidence map and highlights. Replaying the two actual run-40155204645 traces through this candidate, with the saved model responses and source text and no new model calls, confirms the distinction: Wollstonecraft now has full evidence coverage, while Hume/Kant remains partial because the saved reviewer response still omits S2 for P3. The new required-source checklist may change a future live reviewer response; this replay cannot establish that. The candidate keeps the existing two answer-stage calls and adds no model calls.
+
+| Validation | Result |
+|---|---|
+| Targeted Worker answer suite: `node --test hosting-poc/evidence-answer.test.mjs` | 28 passed, 0 failed |
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 225 passed, 0 failed |
+| Website companion suite: `node --test reading-companion/*.test.mjs` in the website worktree | 160 passed, 0 failed |
+| Worker/website shared reader contract files | Byte-identical |
+| JavaScript syntax and `git diff --check` | Passed |
+| GitHub checks | Pending PR creation |
+
+My separate source-based draft scores for run 40155204645 use the agreed 0–2 scale, in order: accuracy / question coverage / explanation quality / citation support / citation completeness. They are not artifact scores:
+
+| Case | Scores | Assessment |
+|---|---|---|
+| Herodotus / Helen | 2 / 2 / 2 / 2 / 2 | The priests' account and Herodotus's reasoning are clearly distinguished and supported. |
+| Hamlet | 2 / 2 / 2 / 2 / 2 | The alternatives and the effect of uncertainty about death are both explained with relevant citations. |
+| Aristotle | 2 / 2 / 2 / 2 / 2 | The answer explains actuality/form and the body as matter, including the wax and eye analogies. |
+| James | 2 / 2 / 2 / 2 / 2 | Faith/works and the Abraham and Rahab examples are directly addressed. |
+| Hume / Kant | 1 / 1 / 1 / 1 / 1 | The Hume account is strong, but the comparison's source mapping is incomplete and Kant's causal-necessity grounds remain comparatively thin. |
+| Plato / Rousseau | 2 / 2 / 2 / 2 / 2 | The answer gives distinct accounts of legitimacy and their relation to the common good. |
+| Wollstonecraft / Du Bois | 2 / 2 / 2 / 1 / 1 | The answer is substantively strong, but the final evidence map omits a selected cited source for Wollstonecraft. |
+
+The next validation should be the same seven-question reviewed holdout after this candidate merges and the Worker is deployed. It should confirm that all selected source spans survive in the final per-part evidence map and that the reviewer returns evidence for every source named in each answer part. Do not move to the unseen acceptance suite until those checks and independent semantic review are stable. If the reviewer still omits Hume S2, keep that part partial and investigate its prompt/evidence selection behavior; do not treat the presence of S2 in another question part as automatic proof for the comparison.
