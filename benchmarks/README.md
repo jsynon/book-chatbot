@@ -1,68 +1,44 @@
-# Cross-disciplinary evaluation of the Reading Companion
+# Local cross-disciplinary benchmark
 
-The Reading Companion must be a **reading aid for the entire Antilogicalism library**, not only a philosophy chatbot. The benchmark in [cross-disciplinary-v1.json](cross-disciplinary-v1.json) contains **eight fixed questions**: two each from science, history, literature, and philosophy. The seven one-book questions bind to existing catalog book IDs. The Nietzsche–Kierkegaard control deliberately tests bounded retrieval across multiple works.
+This folder contains an **offline evaluation workbench for the local Python/Ollama app**. Its eight fixed questions in [cross-disciplinary-v1.json](cross-disciplinary-v1.json) cover science, history, literature, and philosophy. Seven questions target one catalog book; a Nietzsche–Kierkegaard control checks retrieval across two works.
 
-The questions are evaluation fixtures, **never answer keys or production retrieval boost rules**. Do not copy expected interpretations into model prompts. Each question starts with an empty chat history and uses the same baseline model/pipeline unless you deliberately run a separate experiment.
+This benchmark is separate from production. It does not exercise the deployed Cloudflare Worker, the website's live retrieval path, or the GitHub live-answer workflows. Use the website repository's `reading-companion-live-answer-evaluation.yml` for live-answer checks and `reading-companion-holdout-answer-evaluation.yml` for the seven-question reviewed holdout. A local benchmark pass cannot establish that the live pipeline works, and live workflow results should not be recorded as results from this local fixture.
 
-## Run one question at a time
+The questions are evaluation fixtures, **not answer keys or production retrieval boosts**. Do not put expected interpretations into prompts. Each case starts with an empty chat history and uses the same local baseline unless you are deliberately running a separate experiment.
 
-From your **D:\Downloads\book-chatbot** directory in PowerShell, with Ollama running and start.bat already started:
+## Run cases
 
-\`\`\`powershell
+From the repository root, with Ollama running and the local app started:
+
+```powershell
 python scripts\run_cross_discipline.py --list
 python scripts\run_cross_discipline.py --case science-darwin-selection
 python scripts\run_cross_discipline.py --case history-thucydides-causes
 python scripts\run_cross_discipline.py --summary
-\`\`\`
+```
 
-The script **lists questions without running Ollama** by default. Running a selected case invokes up to **two local Ollama calls** and saves one full JSON report under reports/cross-disciplinary-v1/. If the report already exists, it is preserved; use **--rerun** to replace it. Tests run sequentially, never concurrently. When ready to run the entire suite, **--all --resume** runs only unanswered cases. Reports contain question, build, model, elapsed seconds, actual cited original passages, citation/integrity findings, retrieval trace, and **blank human-review scores**. The entire reports/ folder is gitignored to keep full transcripts out of the public code repository. `--summary` groups saved results by **build and discipline**, reports times and structural source checks, and averages human scores **only for explicitly reviewed answers**.
+Listing does not call Ollama. A selected case makes up to **two local Ollama calls** and saves a full JSON report under `reports/cross-disciplinary-v1/`. Existing reports are preserved unless `--rerun` is supplied. Cases run sequentially. When ready for all eight, `--all --resume` runs only cases without saved reports. Reports include the question, build, model, elapsed time, cited passages, citation and integrity findings, retrieval trace, and blank human-review scores. The reports directory is gitignored because it contains full transcripts. `--summary` groups results by build and discipline, reports timing and structural source checks, and averages scores only for reviewed answers.
 
-The reader's local web page also has a **collapsed cross-disciplinary question picker**. Select a question to switch to its assigned book and populate the question field; the page **never sends the question until Ask is clicked**. Enable troubleshooting to download a diagnostic JSON from an individual chat.
+The local page also has a collapsed cross-disciplinary question picker. Choosing a case selects its assigned book and fills the question field; it does not submit until **Ask** is clicked. Troubleshooting mode can download a diagnostic JSON for one chat.
 
-## What to review (not computed automatically)
+## Review answers
 
-Score each question manually from 0 (serious problem) to 3 (very good) in these five areas:
+Score each answer manually from 0 (serious problem) to 3 (very good):
 
-| Criterion | Key question |
+| Criterion | Review question |
 | --- | --- |
-| Accuracy | Does the explanation faithfully reflect the actual work? |
-| Completeness | Does it cover all requested concepts or episodes? |
-| Explanatory value | Does it connect ideas and causes rather than listing facts? |
-| Citation support | Do the linked passages support the specific assertions, not merely share vocabulary? |
-| Readability | Is it organized, clear, and sufficiently concise? |
+| Accuracy | Does the explanation faithfully reflect the source work? |
+| Completeness | Does it cover every requested concept or episode? |
+| Explanatory value | Does it connect ideas and causes rather than list facts? |
+| Citation support | Does each linked passage support the claim beside it? |
+| Readability | Is the answer organized, clear, and concise enough? |
 
-Specific considerations differ across the disciplines.
+For science, check the mechanism and separate historical claims from modern consensus. For history, separate chronology from an author's causal account, speeches, hearsay, and personal judgment. For literature, distinguish narrator and character from the author and cite scenes rather than generic commentary. For philosophy, check technical distinctions, qualifications, objections, and whether a reconstruction is clearly labeled.
 
-**Science:** check the mechanism, definitions, and distinction between observations, models, theoretical predictions, and speculation. Avoid attributing modern knowledge to the historical author, and do not confuse a citation to Hawking or Darwin with proof of scientific consensus.
+## Interpret automated checks
 
-**History:** distinguish event chronology from an author's causal interpretation; identify reported speeches, hearsay, contested traditions, and the historian's personal judgment. A primary-source narrative is evidence of what the author *said*, not automatically what happened.
+The script checks assigned book IDs, citation markers, Google Drive URL shape, physical PDF page references, distinct PDF identities, and call count. These are provenance and structure checks. They do not fetch or read the linked PDF page, and they do not establish semantic support. OCR can be imperfect, and a fluent answer with structurally valid citations can still be wrong. Human scores remain blank until a person reviews the answer.
 
-**Literature:** distinguish speakers and narrators from the novelist, trace how a character or theme develops, and cite original scenes rather than generic introductions or criticism. Literary interpretation may be arguable; it should nevertheless have concrete textual support.
+`python scripts/audit_cross_discipline_sources.py` downloads the seven original v47 single-book shards to a temporary directory, checks catalog/PDF identities, and prints sample passages found by the local lexical index. It makes no Ollama calls. This network-dependent audit is separate from offline CI; its output is useful for spotting discovery and ranking problems, not for grading answer quality.
 
-**Philosophy:** connect technical concepts faithfully, recognize objections and qualifications, and identify hypothetical reconstruction as such rather than historical fact. Preserve differences between two authors' own source passages.
-
-## What automated checks can and cannot establish
-
-The benchmark records source book IDs, citation markers, verified-looking Google Drive URL formats, physical PDF page references, distinct PDF identities within each response, and the model call count. For one-book tests, citations must belong to the assigned book. For cross-author tests, citations must represent both author groups. Those are **structural** checks. They do not independently fetch a PDF page or prove that a claim is semantically supported. Some PDF previews ignore page anchors, and OCR errors remain possible.
-
-A fluent, fully cited answer could earn zero for accuracy. A provenance pass is **never** an automatic human-review pass; the report's human scores remain null until someone reviews it.
-
-## Audit the real book texts without a model
-
-Run `python scripts/audit_cross_discipline_sources.py` to download the seven original v47 single-book shards into a temporary folder, verify their catalog/PDF identities, and print a few passages the local lexical index would find. This is read-only and uses **no Ollama calls**. The initial real-v47 audit passed all seven books; its output showed meaningful but uneven relevance. Aristotle's aim/means passage appeared; history and literary-character questions sometimes retrieved incidental terms in their top results. **That is evidence of remaining ranking work, not an accuracy pass.** The network-dependent audit is deliberately separate from GitHub's offline CI.
-
-## How to use results to guide development
-
-Collect one or two representative runs first, starting with **Darwin, Thucydides, and Dostoevsky**, then inspect those reports before running all eight. They exercise different failure types: scientific mechanisms, historical causation, and character/author distinction.
-
-Separate failures into:
-
-1. **Discovery:** the correct work or relevant passage never appeared.
-2. **Selection:** relevant passages were retrieved but omitted from the answer context.
-3. **Interpretation:** the model received the right passage and misunderstood it.
-4. **Citation:** an answer uses a real but irrelevant or wrongly attributed source.
-5. **Presentation:** it is overly verbose, confusing, or incomplete.
-
-Prefer one general improvement that helps multiple subjects. Avoid rules tailored to Darwin, Thucydides, or Raskolnikov. Keep the one-book live demo stable, preserve the two-call budget, and account for mobile browsing and eventual deployment on an Antilogicalism website page.
-
-The baseline is **Gemma3:12b**, Evidence-first, using the existing v47 source repository. The benchmark is not a contest between installed models.
+Use results to localize failures to discovery, selection, interpretation, citation, or presentation. Prefer one general change supported by more than one case, keep the local call budget visible, and inspect saved traces before broad evaluation runs. This benchmark informs local-app work; validate production changes with the website's live workflows.
