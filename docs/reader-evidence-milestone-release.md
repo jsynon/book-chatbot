@@ -637,3 +637,35 @@ The saved drafts still need semantic review before calling the quality milestone
 | Next milestone | Review factual accuracy, part coverage, explanation, citation support, and citation completeness; structural 7/7 alone does not close semantic quality |
 
 Next, hold the retrieval implementation steady while reviewing these seven saved drafts and traces against the cited passages. Keep the two scoped issues above visible, check the Plato/Rousseau query-budget warning, and test a fresh reader-authored live question such as “What is transcendental idealism?” The acceptance milestone requires both a stable 7/7 structural run and answers that are accurate, sufficiently explanatory, and fully supported by the cited pages. Keep the unseen acceptance suite reserved until those quality checks are satisfied.
+
+
+## October 25, 2026: five-question focused run and source-scope correction
+
+The latest five live cases were all-books, with-review runs on Worker source build public-gateway-evidence-selection-v3. The first four used quality with one focused case selected; the last used focused with one case selected. All five requests completed with no planner fallback or skipped planning. Two passed structural coverage (Kant and sunyata); three were partial (Kierkegaard on faith, Nietzsche on Christianity, and Nietzsche on Kierkegaard). The human semantic rubric remains unscored in the artifacts, so this is a diagnosis of answer structure and evidence flow, not a truth or quality score.
+
+| Case | Run | Structural result | Main finding |
+|---|---|---|---|
+| Kant: transcendental idealism | [40164524550](https://github.com/jsynon/antilogicalism/actions/runs/40164524550) | Pass | Both parts were supported and cited from *Prolegomena*, p. 22. This is a useful control, though structural pass does not certify every interpretation. |
+| Kierkegaard: faith | [40164827676](https://github.com/jsynon/antilogicalism/actions/runs/40164827676) | Partial, 2/3 parts | The shared plan normalization narrowed each author-wide faith part to book 436 (*Attack Upon “Christendom”*) because the catalog work title contains “Kierkegaard.” Relevant pages from *Fear and Trembling* and *Philosophical Fragments* reached the packet with empty part links, so the Worker could not use them for the missing movement-of-faith part. |
+| Nietzsche: Christianity | [40164925542](https://github.com/jsynon/antilogicalism/actions/runs/40164925542) | Partial, 2/3 parts | The planner added nihilism as a separate required part to a broad question about Christianity, then left it unsupported. This is avoidable coverage debt from over-decomposition. |
+| Sunyata | [40165032709](https://github.com/jsynon/antilogicalism/actions/runs/40165032709) | Pass | Both parts had evidence links and citations from Nishida and *The Teaching of Buddha*. Review the cited text semantically before treating the broad definition as established. |
+| Nietzsche on Kierkegaard | [40165202141](https://github.com/jsynon/antilogicalism/actions/runs/40165202141) | Partial, 1/2 parts | The planner kept only Nietzsche in its source plan and both parts' allowed book IDs. A *Fear and Trembling* page reached retrieval and submission but had no part link; the final answer cited Nietzsche alone. A cross-source inference was therefore impossible to support. |
+
+The Worker candidate fix addresses these causes in the shared contracts and planner:
+
+- Author-level question parts now narrow to a book only when the question contains a distinctive work phrase. The author name alone cannot select a title that happens to contain it. The website's matching reader-contract copy is updated with the same behavior.
+- The planner preserves both explicitly named authors in a counterfactual “what would A think of B?” question, retains its semantic query terms, and marks the plan as comparative. The normalized plan adds a synthesis part linked to both authors' books. Composition guidance requires evidence for both positions and labels any conclusion as an inference, not a historical exchange.
+- The planner prompt now discourages turning adjacent themes, consequences, or background into mandatory answer parts unless the reader asked about them. Existing missing-part behavior remains strict: unsupported requested parts stay partial and visible.
+
+These changes reuse the existing planner, composition, and review calls; they add no model calls and do not raise the six-page answer-packet limit. The focused five-case run is already available as one workflow job: select focused, case ID all, All Books, and with-review. The single-case runs above did not test the all-five dispatch.
+
+| Validation | Result |
+|---|---|
+| Full Worker suite (`hosting-poc/*.test.mjs`) | 227 passed, 0 failed |
+| Full website suite (`reading-companion/*.test.mjs`) | 169 passed, 0 failed |
+| Worker/website shared reader contract copies | Byte-identical |
+| Model calls and answer-source budget | Unchanged; no extra calls or pages |
+| Fresh live five-case focused run after merge/deploy | Pending |
+| Semantic review of the five saved answers and cited passages | Pending |
+
+The next live run should use the same five cases together in focused mode with-review. Check that the faith parts can cite the author's relevant works, the Nietzsche/Kierkegaard answer includes both thinkers and a clearly marked inference, and the Christianity plan does not impose an unrelated extra subquestion. Treat 5/5 structural coverage as necessary evidence-handoff progress; still review the exact cited passages for semantic support before calling the milestone complete.

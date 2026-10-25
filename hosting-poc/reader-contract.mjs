@@ -87,26 +87,33 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
       matches=sources.map((source,index)=>({source,index}));
     const narrowed=matches.flatMap(group=>{
       const bookIds=group.source.bookIds;
-      // A part may name only its author while the original question names a
-      // particular work. Honor that explicit title hint when it uniquely
-      // identifies one of the author's books in the catalog.
+      // Narrow an author's works only when the reader's question names a
+      // distinctive work phrase. A lone author token can also occur inside a
+      // catalog title and must not silently turn an author-wide question into
+      // one book.
       const titleMatches=bookIds.filter(id=>{
         const title=catalog[id];if(!title)return false;
-        const work=catalogIdentity(title).work;
-        const titleTokens=work.match(/[\p{Lu}][\p{L}\p{N}]*/gu)||[];
-        return titleTokens.some(token=>token.length>=5&&new RegExp('(?:^|[^\\p{L}\\p{N}])'+
-          token.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?=$|[^\\p{L}\\p{N}])','u').test(resolvedQuestion));
+        const identity=catalogIdentity(title);
+        const authorTokens=new Set(identity.authors.flatMap(author=>identityText(author).split(' ')));
+        const titlePhrases=[identity.work,...identity.aliases].map(value=>{
+          const tokens=identityText(value).split(' ')
+            .filter(token=>token&&!/^\d+$/.test(token)&&token!=='s'&&!authorTokens.has(token));
+          while(['the','a','an'].includes(tokens[0]))tokens.shift();
+          return tokens.join(' ');
+        });
+        return titlePhrases.some(phrase=>containsPhrase(resolvedQuestion,phrase));
       });
       return titleMatches.length===1?titleMatches:bookIds;
     });
     return narrowed.length?[...new Set(narrowed)]:null;
   });
   const comparisonPattern=/\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|versus|vs\.?|similar(?:ity)?|alike)\b/i;
+  const hypotheticalAuthorResponse=/\b(?:what|how)\s+would\b[^?!.]{0,120}\b(?:think|say|respond|react|view|regard)\b[^?!.]{0,100}\b(?:about|of|on|regarding|concerning|to)\b/i.test(resolvedQuestion);
   const comparisonSources=sources.filter(source=>['primary','subject'].includes(source.role)&&source.bookIds.length);
   const hasPlannedComparison=normalizedParts.some((part,index)=>comparisonPattern.test(part.question)&&
     comparisonSources.filter(source=>source.bookIds.some(id=>(partSourceGroups[index]||[]).includes(id))).length>=2);
   const comparisonBookIds=[...new Set(comparisonSources.flatMap(source=>source.bookIds))];
-  if(intent==='compare'&&comparisonPattern.test(resolvedQuestion)&&comparisonSources.length>=2&&
+  if(intent==='compare'&&(comparisonPattern.test(resolvedQuestion)||hypotheticalAuthorResponse)&&comparisonSources.length>=2&&
     comparisonBookIds.length>=2&&!hasPlannedComparison){
     normalizedParts.push({id:'P'+(normalizedParts.length+1),
       question:bounded('How do the named sources compare in response to this question: '+resolvedQuestion,240)});
