@@ -738,4 +738,55 @@ The claim-level regression reproduces the Kierkegaard handoff: a source span tha
 | Fresh five-case deployed with-review run | Pending; must check structure, selected quote per sentence, both author pages in the Nietzsche/Kierkegaard packet, and the two definition questions |
 | Human semantic evaluation and unseen acceptance suite | Pending; keep the unseen suite frozen until the deployed candidate is reviewed |
 
-The next release gate is review and merge of PRs #228 and #194, followed by Worker deployment and a fresh five-case all-books with-review run. Inspect the full cited text and authenticated trace for the Kierkegaard faith claims, both author sources and the explicitly labeled inference in the Nietzsche/Kierkegaard case, and Sunyata's single requested definition. Also try “What is transcendental idealism?” and an explicitly two-part definition question to ensure normalization fixes the extra-part failure without discarding real reader intent. A structural 5/5 is necessary but does not establish semantic quality; compare each retained sentence to its own cited page, check visible highlights against the evidence map, and only then consider a frozen acceptance run.
+At that point, the next release gate was review and merge of PRs #228 and #194, Worker deployment, and a fresh five-case all-books with-review run. The user completed that gate; the results and remaining checks are recorded below.
+
+## October 25, 2026: post-merge five-case run #39
+
+After Worker PR #228 and website PR #194 merged and the Worker was deployed, the user ran the same five-case all-books, with-review focused workflow: [run #39](https://github.com/jsynon/antilogicalism/actions/runs/40171341219). The site revision was `f69032774bedfd1169c2ee794b35b329c7b07cfa`, which includes website PR #194; the Worker version was `0b621531-5199-4207-ad0e-017e1748c846`. All five requests completed: no request failures, planner fallbacks, skips, or stopped cases. The run used the existing 15-call estimate (one planner and two answer-stage calls for each of five cases). The artifact reports 4/5 structural passes, compared with 3/5 in the previous deployed five-case run. It does not contain formal human rubric scores (0/5 reviewed); structural pass rate must not be read as semantic quality.
+
+The job log also confirms that stage progress is visible during execution: it emits per-case planner, retrieval, and answer start/completion events, reports the selected page count, and emits an `ANSWER WAITING` heartbeat while a Worker request is still running. This meets the previously requested real-time observability behavior for this run.
+
+| Case | Automated result | Evidence-based assessment |
+|---|---|---|
+| Kant: transcendental idealism | Pass; one requested part, full coverage | Five cited sentences link to a single page of the *Prolegomena*. The selected spans directly cover representation, space/time and appearances, Kant's use of “transcendental,” and the limits of experience. The direct-definition normalization now matches the reader's one-part question. |
+| Kierkegaard: faith | Pass; one requested part, full coverage | The earlier unsupported inwardness sentence is now linked to its own matching claim evidence, rather than borrowing the movement-of-infinity quote. The answer is very long for this broad question and expands into multiple examples and conditions; structural validity does not show that this level of detail is helpful. |
+| Nietzsche on Christianity | Pass; one requested part, full coverage | Most claim spans match the associated statement. The final sentence bundles several claims: selected evidence supports the church's description as an obstruction to the spread of the “poison,” but the claim that Nietzsche called the church “gross and vulgar” is not present in the mapped spans. This is a residual sentence-level support gap despite the structural pass. |
+| Sunyata | Pass; one requested part, full coverage | The planner's extra “how it operates” requirement is gone. The citations support the Zen-centered description and examples. The answer gives only a brief “concept of emptiness” definition and then proceeds into Zen associations; it still does not explain the underlying philosophical sense of emptiness in much depth. |
+| Nietzsche on Kierkegaard | Fail; no supported parts, no citations | The assistant safely abstained. The Nietzsche-scoped search returned zero candidates; the Kierkegaard-side search returned 13 and the broad question search 26, yet the six-page packet contained Kierkegaard sources only. Without a Nietzsche passage the reviewer had no basis to support either author's position or the inferred comparison. This is now a retrieval/source-availability failure, earlier than composition or claim-level review. |
+
+The paired selector change did its intended conditional job: it reserves both authors when a candidate from each is present. This trace shows the limit of that fix—selection cannot preserve a Nietzsche page that upstream retrieval never found. The next implementation should target author-scoped retrieval for this prompt family, using terms that occur in Nietzsche's indexed books (for example Christianity, Christian morality, religion, faith, ascetic ideal, or God) rather than relying on “religious existentialism.” Keep each side's query restricted to its own author, preserve the current source and call budgets, and verify the actual indexed query results before expecting an answer. Do not force a synthesis from Kierkegaard-only evidence.
+
+As an independent, provisional review of the answer text and its linked spans in this artifact—not a score recorded by GitHub—the cases score as follows on the project's 0–2 rubric:
+
+| Case | Accuracy | Question coverage | Explanation | Citation support | Citation completeness |
+|---|---:|---:|---:|---:|---:|
+| Kant: transcendental idealism | 2 | 2 | 2 | 2 | 2 |
+| Kierkegaard: faith | 2 | 2 | 1 | 2 | 2 |
+| Nietzsche on Christianity | 1 | 2 | 2 | 1 | 2 |
+| Sunyata | 2 | 1 | 1 | 2 | 2 |
+| Nietzsche on Kierkegaard | 2* | 0 | 0 | 0 | 0 |
+
+`*` The last case receives 2 for accuracy only in the narrow sense that its abstention avoids unsupported factual claims; it provides no substantive answer. The scores are provisional because they assess the answer and evidence spans exposed by the artifact, not a separate human review of every full cited page. They should not be confused with the artifact's still-pending rubric fields.
+
+The next release gate is a targeted retrieval correction followed by this same five-case run. Inspect the returned Nietzsche-side candidates and exact cited text, retain safe abstention when one side is absent, and recheck the multi-claim Nietzsche/Christianity sentence and the answer length for Kierkegaard/faith. After that, run a manual question against the live site to verify the user-visible citations and highlights. Keep the unseen acceptance suite frozen until the deployed run demonstrates both reliable source availability and claim-to-passage support; a 5/5 structural result alone is not sufficient.
+
+## October 25, 2026: bounded retrieval recovery and answer-quality guardrails
+
+The next candidate implements the retrieval and answer-quality work indicated by run #39 as one connected change across the browser and Worker. The Nietzsche/Kierkegaard miss originates before composition: the planned Nietzsche-side query returned no result, so source selection could not preserve a Nietzsche page. Meanwhile, the Nietzsche/Christianity sentence and the overly expansive Kierkegaard/faith response showed that retrieval success and structural coverage alone are not enough.
+
+The website retrieval path now detects two disjoint author-side parts plus their combined synthesis part. Only when one side has no results and the counterpart does, it makes one best-effort local search using counterpart topic terms, scoped to the missing side's already planned catalog book IDs. It filters results to that scope and records `fallbackFrom` and `fallbackReason` on the search trace. A failed retry leaves the side empty so the Worker can preserve abstention. This does not add a model call, widen the planned author scope, alter the six-page answer packet, or weaken citation validation. The packet selector also uses remaining slots for another linked book for a question part before unlinked search-facet noise, when such a page exists. The retrieval-complete progress event reports successful fallbacks, keeping the live workflow observable as requested.
+
+The Worker composer contract now asks for a direct, concise 3–5 sentence answer to broad single-part questions, treats planner queries as retrieval leads rather than required extra topics, and avoids bundling distinct factual claims into one sentence. The review contract now says that support for one clause cannot validate an unrelated clause in the same sentence. A regression reproduces a sentence where the cited quote supports only its second clause; the whole sentence is rejected while the answer remains a safe partial result. These are guidance and checked-review changes, not an expansion of the model-call budget or a deterministic promise of semantic accuracy.
+
+| Candidate validation | Result |
+|---|---|
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 232 passed, 0 failed |
+| Full website suite: `node --test reading-companion/*.test.mjs` | 174 passed, 0 failed |
+| Worker/site shared `reader-contract.mjs` | Byte-identical |
+| `git diff --check` in both worktrees | Passed |
+| AI call estimate / page packet | Unchanged: focused reviewed workflow remains 15 baseline calls for five cases; answer packet remains capped at six pages |
+| Live retry visibility | Retrieval progress includes a retry count and a scoped-recovery message; successful search traces include the original query and fallback reason |
+| Fresh deployed five-case run and cited-passage review | Pending; must verify whether Nietzsche-side retrieval recovers, both author sides reach composition, broad answers stay focused, and every sentence's mapped quote supports its material claims |
+| Unseen acceptance suite | Remains frozen pending deployed evidence and manual semantic review |
+
+This is a local candidate across the Worker and website repositories. It has passed offline contract and retrieval tests, but has not yet been merged, deployed, or evaluated against the live corpus. A 5/5 structural result remains insufficient by itself; promotion still requires inspection of the exact retrieved and cited passages and the user-visible highlights.

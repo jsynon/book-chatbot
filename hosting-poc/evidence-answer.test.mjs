@@ -110,6 +110,34 @@ test('claim-level review removes a sentence when its cited quote supports only a
  ]);
  assert.equal(result.evidenceMap[0].quote,text);
 });
+
+test('claim review rejects a compound sentence when its quote supports only one factual clause',async()=>{
+ const text='It seems that the church obstructs and hinders the progress of this poison.';
+ const source={...hume,id:'S1',bookId:'239',title:'The Portable Nietzsche — Friedrich Nietzsche',text,preview:text};
+ const ai=makeAI([
+  answer('PART P1\nNietzsche called the church vulgar and said that it hindered the spread of these values. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),part=payload.parts[0],claim=part.answers[0];
+   const span=part.evidence[0].spans[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+    reason:'The selected passage establishes only that the church hinders the spread; it says nothing about the church being vulgar.',
+    claims:[{claimId:claim.claimId,status:'partial',
+     reason:'The quote supports the second clause but not the description of the church as vulgar.',
+     evidence:[{sourceId:'S1',spanIds:[span.spanId]}]}]}]})};
+  }
+ ]);
+ const result=await composeEvidenceAnswer('What did Nietzsche say about the church?',[source],ai,[],{
+  catalog:{239:'The Portable Nietzsche — Friedrich Nietzsche'},
+  plan:{intent:'explain',sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['239']}],
+   parts:[{id:'P1',question:'What did Nietzsche say about the church?',sourceBookIds:['239']}],
+   queries:['Nietzsche church criticism']},trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'none');
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.evidenceMap.length,0);
+ assert.doesNotMatch(result.answer,/vulgar|hinders/i);
+});
 const onePartPlan={version:'reader-evidence-v2',intent:'explain',
  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
  parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
@@ -124,6 +152,9 @@ const twoSidePlan={version:'reader-evidence-v2',resolvedQuestion:'How do Hume an
 
 test('the composer uses a short per-part answer contract and the reviewer links exact quotes to claims',()=>{
  assert.match(COMPOSER_PROMPT,/one heading and one short answer paragraph for each supplied part/);
+ assert.match(COMPOSER_PROMPT,/three to five concise sentences/);
+ assert.match(COMPOSER_PROMPT,/planner's search queries are retrieval leads, not a list of topics/);
+ assert.match(COMPOSER_PROMPT,/one main claim/);
  assert.match(COMPOSER_PROMPT,/Cite every factual sentence/);
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
@@ -135,6 +166,7 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/neighboring doctrine or a shared keyword is not support/);
  assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
  assert.match(REVIEW_PROMPT,/relevant span for every sourceId cited by that sentence/);
+ assert.match(REVIEW_PROMPT,/one supported clause does not make an unsupported clause true/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
 });
 
