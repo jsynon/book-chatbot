@@ -39,10 +39,20 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     const suspicious=[...quote].filter(char=>/[�¤ᤄ]/u.test(char)).length;
     return letters/quote.length-suspicious/quote.length;
   };
+  const usefulQuote=value=>{
+    const quote=String(value||'').trim();
+    const words=quote.match(/[\p{L}\p{N}]{2,}/gu)||[];
+    // Short fragments may be exact but provide too little reading context.
+    // A page number followed by an all-caps running title is likely OCR header
+    // material, even when body text was joined to it on the same line.
+    const runningHeader=/^\s*\d{1,4}\s+(?:[A-Z][A-Z0-9'’:-]*\s+){2,}/u.test(quote);
+    return quote.length>=32&&words.length>=5&&readableQuote(quote)>=0.78&&!runningHeader;
+  };
   const anchors=new Map(citationOrder.map(id=>{
     const candidates=evidenceMap.filter(item=>item?.id===id&&item.quoteVerified===true&&
       typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
       .map((item,index)=>({quote:(item.anchorQuote||item.quote).trim(),point:item.point||'',index}))
+      .filter(item=>usefulQuote(item.quote))
       .filter((item,index,all)=>all.findIndex(other=>other.quote===item.quote)===index);
     // Reviewer-approved spans are already exact and source-verified. When a
     // page has several, prefer the span whose vocabulary best matches its

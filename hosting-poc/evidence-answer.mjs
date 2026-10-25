@@ -13,8 +13,8 @@ PART P2
 The two accounts differ in the role they assign to experience. [S1, S2]`;
 
 export const REVIEW_PROMPT=`Review every answer sentence separately against only its cited, fingerprint-verified source pages. The input has question parts with their page evidence and one flat top-level claims array. Each claim has a partId, stable claimId, exact sentence text, cited sourceIds, and a sourceEvidence index that lists claim-specific candidate span IDs for each cited source. Use partId to connect a claim to its question and that part's evidence. Use sourceEvidence to locate evidence for this claim within the matching page's supplied spans; it is a navigation aid, not evidence by itself. Each page supplies deterministic evidence spans with IDs and exact source text, ordered with likely answer-bearing spans first; inspect the supplied span text rather than assuming no support from a missed keyword. Select span IDs only; do not copy or rewrite quotations. The supplied spans are the only evidence that may support the answer. Check attribution, qualifications, negation, and whether the answer explains the requested reasoning. The page metadata gives cataloged authors, editors/translators, planner source role, and any known work voice; these are context, not proof of who is speaking on that page. Use the supplied page text/context to distinguish authorial text, pseudonymous voice, quoted or reported speaker, narrator, editor's introduction, translator's note, and commentary. A title's credited author is not automatically the passage's speaker, and a planner role of "primary" does not guarantee every page is primary text. When provenance identifies a pseudonymous work voice, require the answer to name or clearly preserve that voice unless the page establishes another speaker. For editorial introductions and commentary, allow claims about what that commentator says, but do not treat them as the credited author's doctrine or as a tradition-wide definition unless independent primary-text evidence establishes that scope. Reject or qualify a sentence that presents commentary or a reported view as the author's own. Keep claims within the passage's scope: a first-person narrator's inability or personal experience does not establish a general psychological effect or definition (for example, "I cannot make the movement of faith" does not establish what faith generally does to a person's mind). A broad criticism of Christianity does not by itself establish how an author would judge a specific thinker or doctrine; keep any hypothetical inference explicitly modest and tied to the exact supported premises. A category name alone is incomplete when the question asks how something is justified or known; require the source's grounds, argument, or conditions of validity. For ordinary comparisons, require directly relevant support from each named source. For a clearly labeled hypothetical author-to-author inference, do not demand a passage documenting the hypothetical response itself: assess each cited premise against its own author's spans, then decide whether the explicitly cautious conclusion follows modestly from those supported premises. Require evidence spans from every cited source group; a missing premise, one-sided citation, or conclusion stronger than the premises is partial or unanswered. Treat the inference as a reader's reasoning, never as a reported historical view. A citation's presence or topical overlap alone does not establish support. Check whether the selected spans establish the same requested concept, actor, action, polarity, and qualification as that exact sentence; a passage about a neighboring doctrine or a shared keyword is not support. Treat a reversed negation or attribution as a material contradiction. If a supplied span states the same relationship or qualification as an answer sentence in different words, select that span rather than reporting that the source has no evidence.
-For each answer claim, select only span IDs from its cited source pages. When marking a claim answered, return at least one relevant span from every source cited by that claim before selecting a second span from any source. Return no more than ${MAX_REVIEW_SPANS_PER_CLAIM} span IDs per claim; if more detail helps, use remaining slots only after every cited source has one span. If a cited page does not support a material clause, mark the claim partial or unanswered instead of omitting that source's span. A claim is answered only when selected spans support every material clause; otherwise mark it partial or unanswered. For a hypothetical inference, the inference must be a standalone claim whose single citation group includes relevant evidence from every author source group. Do not use citations attached to a neighboring clause as support for that inference. The part status summarizes whether the answer covers the requested question, not only whether its listed claims have support.
-Return one valid JSON object only, with no Markdown or explanation. Do not copy source wording into the response. Use exactly this flat shape: {"parts":[{"partId":"P1","status":"answered|partial|unanswered"}],"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","spanIds":["S1-Q2","S2-Q1"]}]}. For a multi-part answer, return one parts array and one claims array containing claims from all parts, for example {"parts":[{"partId":"P1","status":"answered"},{"partId":"P2","status":"partial"}],"claims":[{"claimId":"P1-C1","status":"answered","spanIds":["S1-Q1"]},{"claimId":"P2-C1","status":"partial","spanIds":["S2-Q2"]}]}. Include every supplied part exactly once in parts and every supplied claim exactly once in the single top-level claims array. There must be only one claims property; do not repeat it for individual parts. A part with no supplied claims is unanswered. An unanswered claim uses an empty spanIds array. For all other claims, return only supplied span IDs that are relevant to the claim's cited sources. A span ID begins with its source ID (for example, S1-Q2); the Worker checks that relationship and resolves it against the exact source text. Do not include nested claim arrays, rationales, answer text, page text, or extra fields. Never invent an ID, change a claim ID, or omit a claim or part.`
+For each answer claim, review each cited source separately. Return one source decision for every source ID in that claim's sourceIds, in the same order. A source is answered only if its own exact spans support the claim's material clause or premise; otherwise mark that source partial or unanswered and return no unsupported span. The claim can be answered only when every cited source decision is answered and has at least one relevant span. Return no more than ${MAX_REVIEW_SPANS_PER_CLAIM} span IDs total per claim; reserve one span for every cited source before selecting a second span from any source. If the budget cannot cover every cited source, the claim is partial. Do not omit a source decision to avoid reporting that its page does not support the claim. A hypothetical inference must be a standalone claim whose source decisions include relevant evidence from every author source group. Do not use citations attached to a neighboring clause as support for that inference. The part status summarizes whether the answer covers the requested question, not only whether its listed claims have support.
+Return one valid JSON object only, with no Markdown or explanation. Do not copy source wording into the response. Use exactly this flat shape: {"parts":[{"partId":"P1","status":"answered|partial|unanswered"}],"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q2"]},{"sourceId":"S2","status":"answered|partial|unanswered","spanIds":["S2-Q1"]}]}]}. Include every supplied part exactly once and every supplied claim exactly once in the single top-level claims array. There must be only one claims property. Include each cited source ID exactly once in every claim's sources array. An unanswered claim or source decision uses an empty spanIds array. For other decisions, return only supplied span IDs from that source's sourceEvidence list that are relevant to the claim. The Worker checks source/span relationships against exact source text. Do not include nested claim arrays, rationales, answer text, page text, or extra fields. Never invent an ID or omit a claim, part, or cited source.`
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -180,10 +180,11 @@ function asksForHypotheticalAuthorResponse(question){
 }
 function hypotheticalInferenceWording(text){
   const value=String(text||'');
+  const limitation=/\b(?:(?:the|these|those|supplied) passages? (?:do|does) not (?:warrant|support|establish) (?:a reliable )?(?:inference|conclusion|answer)|(?:cannot|can't) (?:reliably )?(?:infer|determine|say|establish)|not enough (?:evidence|support) to (?:reliably )?(?:infer|determine))\b/i.test(value);
   return {
-    attempted:/\b(?:infer(?:ence|red)?|synthesis|would|might|may|could|perhaps|possibly|likely)\b/i.test(value),
-    labeled:/\b(?:infer(?:ence|red)?|reader(?:'s)? synthesis|synthesis of (?:these|the) (?:passages|positions|texts))\b/i.test(value),
-    qualified:/\b(?:cautious(?:ly)?|might|may|could|perhaps|possibly|tentative(?:ly)?|likely)\b/i.test(value),
+    attempted:limitation||/\b(?:infer(?:ence|red)?|synthesis|would|might|may|could|perhaps|possibly|likely)\b/i.test(value),
+    labeled:limitation||/\b(?:infer(?:ence|red)?|reader(?:'s)? synthesis|synthesis of (?:these|the) (?:passages|positions|texts))\b/i.test(value),
+    qualified:limitation||/\b(?:cautious(?:ly)?|might|may|could|perhaps|possibly|tentative(?:ly)?|likely)\b/i.test(value),
   };
 }
 
@@ -271,18 +272,21 @@ function hasRecognizedStatus(value){
 function reviewSpanSourceId(spanId){
   return String(spanId||'').match(/^(S[1-9]\d*)-Q[1-9]\d*$/)?.[1]||'';
 }
-function selectReviewSpansBySource(spanIds,citedIds,sources,reviewSpanMaps,
+function selectReviewSpansBySource(spanIdsBySource,citedIds,sources,reviewSpanMaps,
  limit=MAX_REVIEW_SPANS_PER_CLAIM){
   const sourceById=new Map(sources.map(source=>[source.id,source]));
   const candidates=new Map([...citedIds].map(sourceId=>[sourceId,[]]));
-  for(const spanId of spanIds){
-    const sourceId=reviewSpanSourceId(spanId),source=sourceById.get(sourceId);
-    if(!source||!candidates.has(sourceId))continue;
-    const span=reviewSpanMaps.get(sourceId)?.get(spanId);
-    if(!span)continue;
-    const sourceCandidates=candidates.get(sourceId);
-    if(!sourceCandidates.some(candidate=>candidate.spanId===spanId))
-      sourceCandidates.push({sourceId,spanId,quote:span.text,anchorQuote:span.text});
+  for(const sourceId of citedIds){
+    if(!sourceById.has(sourceId))continue;
+    for(const spanId of spanIdsBySource.get(sourceId)||[]){
+      if(reviewSpanSourceId(spanId)!==sourceId)continue;
+      const span=reviewSpanMaps.get(sourceId)?.get(spanId);
+      if(!span)continue;
+      const sourceCandidates=candidates.get(sourceId);
+      if(!sourceCandidates.some(candidate=>candidate.spanId===spanId))
+        sourceCandidates.push({sourceId,spanId,quote:span.text,anchorQuote:span.text,
+          start:span.start,end:span.end});
+    }
   }
   const selectedBySource=new Map(),sourceIds=[...candidates.keys()];
   let selectedCount=0;
@@ -303,6 +307,20 @@ function selectReviewSpansBySource(spanIds,citedIds,sources,reviewSpanMaps,
   }
   return selectedBySource;
 }
+function editorialAttributionIsUnqualified(text,source,plan){
+  const provenance=sourceProvenance(source,plan,source?.scopeText||source?.text||source?.preview||'');
+  const voice=provenance.pageVoice;
+  if(!voice?.kind?.startsWith('editorial'))return false;
+  const words=String(voice.creditedAuthor||'').trim().split(/\s+/u);
+  const author=words.at(-1)||'';
+  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  if(!author||!new RegExp(`\\b${escape(author)}\\b`,'iu').test(String(text||'')))return false;
+  if(!/\b(?:argu(?:e|es|ed|ing)|claim(?:s|ed)?|say(?:s|ing)?|said|writ(?:e|es|ing)|wrote|think(?:s|ing)?|thought|believ(?:e|es|ed|ing)|hold(?:s|ing)?|held|maintain(?:s|ed)?|propos(?:e|es|ed)|describ(?:e|es|ed)|defin(?:e|es|ed)|regard(?:s|ed)?|treat(?:s|ed)?|view(?:s|ed)?|reject(?:s|ed)?|affirm(?:s|ed)?)\b/iu.test(String(text||'')))return false;
+  const commentator=(String(voice.name||'').trim().split(/\s+/u).at(-1)||'');
+  const explicitlyMediated=/\b(?:according to|commentary|editorial|editor(?:'s)? introduction|editor(?:'s)? preface|footnote|editor(?:'s)? note|translator(?:'s)? note)\b/iu.test(String(text||''))||
+    (commentator&&new RegExp(`\\b${escape(commentator)}\\b`,'iu').test(String(text||'')));
+  return !explicitlyMediated;
+}
 function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps){
   const suppliedParts=new Map(),suppliedClaims=new Map(),issues=[];
   if(!Array.isArray(review?.parts))issues.push('missing-parts');
@@ -319,9 +337,23 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps){
     const id=String(item?.claimId||'');
     if(!expectedClaims.has(id)){issues.push('unknown-claim');continue;}
     if(!hasRecognizedStatus(item?.status)){issues.push('invalid-claim-status');continue;}
-    if(!Array.isArray(item?.spanIds)){issues.push('invalid-claim-spans');continue;}
+    let sourceDecisions=item?.sources;
+    if(!Array.isArray(sourceDecisions)&&Array.isArray(item?.spanIds)){
+      // Accept the previous flat span list during rollout, but expand it by
+      // source and apply the same per-cited-source evidence gate below.
+      const answer=answerParts.flatMap(part=>part.answers||[])
+        .find(candidate=>candidate.claimId===id);
+      sourceDecisions=(answer?.sourceIds||[]).map(sourceId=>{
+        const spanIds=item.spanIds.filter(spanId=>reviewSpanSourceId(spanId)===sourceId);
+        const claimStatus=normalizeStatus(item.status);
+        const status=claimStatus==='unanswered'?'unanswered':
+          claimStatus==='answered'&&spanIds.length?'answered':'partial';
+        return {sourceId,status,spanIds,legacyMissingSpan:!spanIds.length};
+      });
+    }
+    if(!Array.isArray(sourceDecisions)){issues.push('invalid-claim-sources');continue;}
     if(suppliedClaims.has(id)){issues.push('duplicate-claim');continue;}
-    suppliedClaims.set(id,{status:normalizeStatus(item.status),spanIds:item.spanIds});
+    suppliedClaims.set(id,{status:normalizeStatus(item.status),sources:sourceDecisions});
   }
   const supportIssues=[];
   const parts=plan.parts.map(part=>{
@@ -333,18 +365,44 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps){
       const decision=suppliedClaims.get(answer.claimId);
       if(!decision){issues.push('missing-claim-decision');supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-decision'});continue;}
       let claimStatus=decision.status;
-      const reviewerClaimedAnswer=claimStatus==='answered';
       const citedIds=new Set(answer.sourceIds);
+      const sourceDecisions=new Map();
+      for(const sourceDecision of decision.sources){
+        const sourceId=String(sourceDecision?.sourceId||'');
+        if(!citedIds.has(sourceId)){issues.push('unknown-claim-source');continue;}
+        if(sourceDecisions.has(sourceId)){issues.push('duplicate-claim-source');continue;}
+        if(!hasRecognizedStatus(sourceDecision?.status)||!Array.isArray(sourceDecision?.spanIds)){
+          issues.push('invalid-claim-source-decision');continue;
+        }
+        sourceDecisions.set(sourceId,{status:normalizeStatus(sourceDecision.status),spanIds:sourceDecision.spanIds,
+          legacyMissingSpan:sourceDecision.legacyMissingSpan===true});
+      }
+      const spanIdsBySource=new Map([...sourceDecisions].map(([sourceId,sourceDecision])=>
+        [sourceId,sourceDecision.spanIds]));
       const selectedBySource=selectReviewSpansBySource(
-        decision.spanIds,citedIds,sources,reviewSpanMaps);
+        spanIdsBySource,citedIds,sources,reviewSpanMaps);
+      const sourceById=new Map(sources.map(source=>[source.id,source]));
+      for(const sourceId of citedIds){
+        const sourceDecision=sourceDecisions.get(sourceId);
+        const selected=selectedBySource.get(sourceId)||[];
+        if(sourceDecision?.status==='answered'&&
+          editorialAttributionIsUnqualified(answer.text,sourceById.get(sourceId),plan)){
+          sourceDecision.status='partial';
+          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
+            reason:'editorial-source-attribution-unqualified'});
+        }
+        if(!sourceDecision||sourceDecision.status!=='answered'||!selected.length){
+          claimStatus=claimStatus==='unanswered'?'unanswered':'partial';
+          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
+            reason:!sourceDecision?'missing-claim-source-decision':sourceDecision.legacyMissingSpan?'missing-claim-source-span':
+              sourceDecision.status!=='answered'?'claim-source-not-supported':'missing-claim-source-span'});
+        }
+      }
       for(const selections of selectedBySource.values())for(const selection of selections){
         selection.claimId=answer.claimId;
         selection.point=answer.text;
       }
       const claimEvidence=[...citedIds].flatMap(sourceId=>selectedBySource.get(sourceId)?.slice(0,2)||[]);
-      if(reviewerClaimedAnswer&&[...citedIds].some(sourceId=>!selectedBySource.has(sourceId))){
-        claimStatus='partial';supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-source-span'});
-      }
       if(claimStatus==='answered'){acceptedAnswers.push(answer);evidence.push(...claimEvidence);}
     }
     let status=reviewerPart?.status||'unanswered';

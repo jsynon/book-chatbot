@@ -53,6 +53,33 @@ test('curated provenance is title-guarded and distinguishes pseudonymous work vo
   'direct Nietzsche text elsewhere in the volume does not inherit the page-578 editorial label');
 });
 
+test('editorial commentary cannot be surfaced as the credited author speaking without mediation',async()=>{
+ const title='The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)';
+ const source={...hume,id:'S1',bookId:'239',title,page:578,
+  text:'Kaufmann discusses Nietzsche’s view of the New Testament in this editorial passage.',
+  preview:'Kaufmann discusses Nietzsche’s view of the New Testament in this editorial passage.'};
+ const plan={...onePartPlan,sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['239']}],
+  parts:[{...onePartPlan.parts[0],question:'What did Nietzsche say about Christianity?',sourceBookIds:['239'],candidateSourceIds:['S1']}]};
+ const run=async(draft)=>{
+  const ai=makeAI([answer('PART P1\n'+draft),(_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0],sourceDecision=claim.sourceEvidence[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:[sourceDecision.spanIds[0]]}]}]})};
+  }]);
+  return composeEvidenceAnswer('What did Nietzsche say about Christianity?',[source],ai,[],
+   {plan,catalog:{...catalog,239:title},trace:true});
+ };
+ const unqualified=await run('Nietzsche argued that the New Testament represented a decline. [S1]');
+ assert.equal(unqualified.coverage,'none');
+ assert.ok(unqualified.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='editorial-source-attribution-unqualified'));
+ assert.doesNotMatch(unqualified.answer,/Nietzsche argued/);
+ const mediated=await run('Kaufmann’s commentary presents Nietzsche as viewing the New Testament as a decline. [S1]');
+ assert.equal(mediated.coverage,'full');
+ assert.match(mediated.answer,/Kaufmann’s commentary/);
+});
+
 test('review span IDs map only to exact contiguous source slices and stay within the prompt bound',()=>{
  const text='A first short sentence. '+('A long sentence contains a precise claim and supporting qualification. '.repeat(8))+
   'A final sentence.';
@@ -118,6 +145,29 @@ test('compact review decisions validate exact spans without rationale text or re
  assert.deepEqual(Object.keys(reviewPayload.claims[0]).sort(),['claimId','partId','sourceEvidence','sourceIds','text']);
  assert.equal('candidateSourceIds' in reviewPayload.parts[0],false);
  assert.equal('sha256' in reviewPayload.parts[0].evidence[0],false);
+});
+
+test('source-grouped review makes each cited source decision explicit and keeps a missing side partial',async()=>{
+ const plan={...twoSidePlan,parts:[{id:'P1',question:'How do Hume and Kant differ?',sourceBookIds:['35','40'],
+  candidateSourceIds:['S1','S2']}]};
+ const ai=makeAI([answer('PART P1\nHume grounds necessity in custom, while Kant treats causality as a priori. [S1, S2]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   const sourceDecision=(sourceId,status)=>({sourceId,status,spanIds:status==='answered'?
+    [claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]:[]});
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[sourceDecision('S1','answered'),sourceDecision('S2','partial')]}]})};
+  }]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],{plan,catalog,trace:true});
+ const payload=JSON.parse(ai.calls[1].request.messages[1].content);
+ assert.deepEqual(payload.claims[0].sourceIds,['S1','S2']);
+ assert.deepEqual(payload.claims[0].sourceEvidence.map(item=>item.sourceId),['S1','S2']);
+ assert.equal(result.coverage,'none');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S2'&&issue.reason==='claim-source-not-supported'));
+ assert.equal(result.evidenceMap.length,0);
+ assert.equal(ai.calls.length,2);
 });
 test('compact review cannot verify a sentence unless every cited source has a selected span',async()=>{
  const ai=makeAI([answer('PART P1\nHume grounds necessity in custom, while Kant treats causality as a priori. [S1, S2]'),
@@ -225,8 +275,8 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/sourceEvidence index/);
  assert.match(REVIEW_PROMPT,/one flat top-level claims array/);
  assert.match(REVIEW_PROMPT,/There must be only one claims property/);
- assert.match(REVIEW_PROMPT,/at least one relevant span from every source cited/);
- assert.match(REVIEW_PROMPT,/Return no more than 6 span IDs per claim/);
+ assert.match(REVIEW_PROMPT,/one source decision for every source ID/);
+ assert.match(REVIEW_PROMPT,/Return no more than 6 span IDs total per claim/);
  assert.match(REVIEW_PROMPT,/before selecting a second span from any source/);
  assert.match(COMPOSER_PROMPT,/Cite every factual sentence/);
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
@@ -235,18 +285,18 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/stable claimId/);
  assert.match(REVIEW_PROMPT,/Do not use citations attached to a neighboring clause as support/);
  assert.match(REVIEW_PROMPT,/Select span IDs only/);
- assert.match(REVIEW_PROMPT,/"spanIds":\["S1-Q2","S2-Q1"\]/);
+ assert.match(REVIEW_PROMPT,/"sources":\[\{"sourceId":"S1"/);
  assert.doesNotMatch(REVIEW_PROMPT,/spansBySource/);
  assert.match(REVIEW_PROMPT,/neighboring doctrine or a shared keyword is not support/);
  assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
- assert.match(REVIEW_PROMPT,/only span IDs from its cited source pages/);
- assert.match(REVIEW_PROMPT,/every material clause/i);
+ assert.match(REVIEW_PROMPT,/review each cited source separately/);
+ assert.match(REVIEW_PROMPT,/material clause or premise/i);
  assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
  assert.match(COMPOSER_PROMPT,/End it with one citation group containing relevant evidence from each author’s source group/);
  assert.match(COMPOSER_PROMPT,/A comparison alone does not answer the hypothetical part/);
- assert.match(REVIEW_PROMPT,/single citation group includes relevant evidence from every author source group/);
+ assert.match(REVIEW_PROMPT,/source decisions include relevant evidence from every author source group/);
  assert.match(REVIEW_PROMPT,/do not demand a passage documenting the hypothetical response itself/);
  assert.match(REVIEW_PROMPT,/a missing premise, one-sided citation, or conclusion stronger than the premises is partial or unanswered/);
  assert.match(COMPOSER_PROMPT,/If provenance names a pseudonymous work voice, identify that voice/);
@@ -315,6 +365,19 @@ test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both 
  assert.deepEqual(new Set(result.evidenceMap.filter(item=>item.claimId.startsWith('P3-'))
   .map(item=>item.id)),new Set(['S1','S2']));
  assert.equal(result.trace.reviewContract.valid,true);
+ assert.deepEqual(result.trace.coverageGaps,[]);
+});
+
+test('a hypothetical part can give an explicit evidence limitation instead of silently omitting the part',async()=>{
+ const limitation='The supplied passages do not warrant a reliable inference about how Nietzsche would respond to Kierkegaard. [S1, S2]';
+ const ai=makeAI([hypotheticalDraft(limitation),hypotheticalReview()]);
+ const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
+  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[2].status,'supported');
+ assert.match(result.answer,/do not warrant a reliable inference/);
  assert.deepEqual(result.trace.coverageGaps,[]);
 });
 
@@ -656,7 +719,7 @@ test('a reviewer cannot mark an answer supported without selecting a span from i
  assert.equal(result.coverage,'none');
  assert.equal(result.questionParts[0].status,'unsupported');
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
-  {partId:'P1',claimId:'P1-C1',reason:'missing-claim-source-span'}]);
+  {partId:'P1',claimId:'P1-C1',sourceId:'S2',reason:'missing-claim-source-span'}]);
  assert.equal(result.evidenceMap.length,0);
 });
 
@@ -672,7 +735,7 @@ test('invented and cross-source span IDs cannot enter the reviewed evidence map'
   {plan,catalog,trace:true});
  assert.equal(result.questionParts[0].status,'unsupported');
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
-  {partId:'P1',claimId:'P1-C1',reason:'missing-claim-source-span'}]);
+  {partId:'P1',claimId:'P1-C1',sourceId:'S1',reason:'missing-claim-source-span'}]);
  assert.equal(result.evidenceMap.length,0);
  assert.equal(ai.calls.length,2);
 });
