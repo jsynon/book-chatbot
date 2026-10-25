@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: Worker PRs #217, #220, #221, #227 and website PRs #186, #187, #188, #193 are merged. The latest five-question all-books with-review run [40168960976](https://github.com/jsynon/antilogicalism/actions/runs/40168960976) completed without request failures, fallbacks, or skipped cases but passed only 3/5 structural cases. It exposed an over-expanded Sunyata definition plan, broken possessive cleanup in the Nietzsche/Kierkegaard source queries, and a quote-to-claim mismatch in a passing Kierkegaard answer. Paired follow-up PRs [#228](https://github.com/jsynon/book-chatbot/pull/228) and [#194](https://github.com/jsynon/antilogicalism/pull/194) address those failures across the Worker planner/reviewer and website source selector. Local suites pass 231/231 and 172/172; all three PR checks also passed. The PRs remain open pending review/merge, and a fresh deployed live-model run is still required. The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
+Status: Worker PR #237 and its run #48 reviewer handoff repair were merged and deployed before run #49. The focused five-question all-books with-review run [40216345480](https://github.com/jsynon/antilogicalism/actions/runs/40216345480) completed all cases with no request failures, planner fallbacks, or skips; structural checks passed 4/5. It isolated a Nietzsche/Christianity claim-to-source handoff miss: both relevant pages reached composition, but the reviewer selected only the span for one material clause. The current Worker candidate adds claim-specific span pointers to the review request while retaining the existing per-cited-source validation gate. Its offline suite passes 250/250; Worker PR [#238](https://github.com/jsynon/book-chatbot/pull/238) is open for review; merge, deployment, and a repeated live five-case run remain pending. Historical run findings and PR states below reflect their recorded dates. The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -453,4 +453,30 @@ The change stays inside the Worker answer path. It does not alter retrieval, cor
 
 After this candidate is merged and deployed, rerun the standalone Nietzsche/Kierkegaard focused all-books with-review case first. Confirm that the reviewer returns the flat shape and valid span IDs, the final inference is a standalone sentence with both author groups in one citation group, and the exact selected spans support each premise. Then rerun the established five-case focused set once for collateral effects. Structural completion is necessary but not sufficient; manually inspect the answer's authorship and source passages. Keep the broader unseen acceptance set frozen until those checks pass.
 
-This candidate is open as Worker PR [#237](https://github.com/jsynon/book-chatbot/pull/237). It changes the reviewer, quote-audit contract, Worker tests, public-gateway test fixture, and this report. The remote compare confirms the large test fixture is intact. No GitHub status checks were reported at the time of this update. The PR is not merged or deployed.
+Worker PR [#237](https://github.com/jsynon/book-chatbot/pull/237) merged on October 25 at 17:23 UTC and was deployed before run #49. The run's flat reviewer contract and two-call answer path confirm that this repair was active. The result and the next review-handoff finding are recorded in the run #49 entry below.
+
+
+## October 25, 2026: run #49 and claim-specific reviewer handoff
+
+After Worker PR #237 was merged and deployed, the focused five-question all-books with-review workflow [40216345480](https://github.com/jsynon/antilogicalism/actions/runs/40216345480) ran on corpus v48, site revision `cce7533bcba0988c301452d9f999233f8586e053`, Worker version `bdc599a9-ab6d-49c6-a5bc-3559a510bb77`, and source build `public-gateway-evidence-selection-v3`. All five cases completed with no request failures, planner fallbacks, or skips. Structural checks passed 4/5. The run used the expected 15 estimated calls (10 Worker answer calls) and all 15/15 highlights were located in source text. These are useful structural and trace results, not a semantic accuracy score.
+
+The remaining miss was Nietzsche on Christianity. The draft sentence `P1-C3` joined two material claims: moral degradation of imagination and rejection of both the lowest and highest desires. It cited S4 (*The Portable Nietzsche*, p. 502) and S5 (p. 607). Both pages were present in the evidence packet, so this was not retrieval loss. The reviewer selected only S5-Q7, which supports the imagination clause, and omitted S4-Q2, which supports the desires clause. The existing Worker correctly downgraded the claim and kept the question partial. This is a reviewer claim-to-source handoff problem; the current prompt's generic one-main-claim instruction had not prevented the compound sentence.
+
+The next Worker candidate addresses this at the smallest shared boundary:
+
+- The composer now explicitly separates claims when different passages support them and keeps each citation beside its sentence.
+- The review request adds a `sourceEvidence` index to each claim: for every cited page, it lists up to three span IDs ranked against that exact claim. Exact source text still appears once in the page evidence list; the index adds pointers, not duplicate quotations.
+- The reviewer is told to use the pointers to locate claim-specific evidence and to return a relevant span from every cited page before marking a claim answered. If a cited page does not support a material clause, it must mark the claim partial or unanswered.
+- The Worker response schema and `normalizeReview` fail-closed gate are unchanged. The Worker still resolves returned IDs only against exact spans built from fingerprint-verified pages and requires a selected span from every source cited by the sentence. Retrieval, the public response contract, model choice, and the two-call compose/review budget are unchanged.
+
+| Candidate validation | Result |
+|---|---|
+| Focused evidence-answer tests | 50 passed, 0 failed |
+| Full Worker tests: `node --test hosting-poc/*.test.mjs` | 250 passed, 0 failed |
+| Claim-specific regression | Missing S4 span remains partial; selecting one exact span from S4 and S5 yields full coverage |
+| Answer calls in regression | 2 (composition and review), unchanged |
+| `git diff --check` | Passed |
+| Worker PR | [#238](https://github.com/jsynon/book-chatbot/pull/238) open; GitHub contract workflow [#714](https://github.com/jsynon/book-chatbot/actions/runs/40218084523) passed |
+| Deployed live run / semantic review | Pending |
+
+After merge and Worker deployment, repeat the same five-question focused all-books with-review workflow once. Inspect the Nietzsche/Christianity answer to confirm separate claims are cited locally and each reviewed claim maps to the relevant page span. Also inspect the exact span text and visible highlights; a structural pass alone does not establish semantic correctness. Keep other observed quality questions and the unseen acceptance suite as separate validation work.

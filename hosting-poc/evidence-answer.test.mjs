@@ -117,7 +117,7 @@ test('compact review decisions validate exact spans without rationale text or re
  assert.equal(result.coverage,'full');
  assert.equal(result.failureCode,undefined);
  assert.deepEqual(result.evidenceMap.map(item=>item.quote),[reviewPayload.parts[0].evidence[0].spans[0].text]);
- assert.deepEqual(Object.keys(reviewPayload.parts[0].claims[0]).sort(),['claimId','sourceIds','text']);
+ assert.deepEqual(Object.keys(reviewPayload.parts[0].claims[0]).sort(),['claimId','sourceEvidence','sourceIds','text']);
  assert.equal('candidateSourceIds' in reviewPayload.parts[0],false);
  assert.equal('sha256' in reviewPayload.parts[0].evidence[0],false);
 });
@@ -223,6 +223,9 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/three to five concise sentences/);
  assert.match(COMPOSER_PROMPT,/planner's search queries are retrieval leads, not a list of topics/);
  assert.match(COMPOSER_PROMPT,/one main claim/);
+ assert.match(COMPOSER_PROMPT,/If distinct claims rely on different passages, write separate sentences/);
+ assert.match(REVIEW_PROMPT,/sourceEvidence index/);
+ assert.match(REVIEW_PROMPT,/at least one relevant span from every source cited/);
  assert.match(COMPOSER_PROMPT,/Cite every factual sentence/);
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
@@ -421,6 +424,52 @@ test('comparison evidence linking follows the planned source groups even when th
  assert.deepEqual(linked.parts[2].candidateSourceIds,['S1','S2']);
 });
 
+test('run 49 claim-specific source pointers expose each passage and retain the per-source review gate',async()=>{
+ const source4={...hume,id:'S4',bookId:'239',title:'The Portable Nietzsche — Friedrich Nietzsche',page:502,
+  text:'No to both the lowest and highest desires of life.',preview:'No to both the lowest and highest desires of life.'};
+ const source5={...hume,id:'S5',bookId:'239',title:'The Portable Nietzsche — Friedrich Nietzsche',page:607,
+  text:'Christian morality is a systematic degradation of the imagination.',
+  preview:'Christian morality is a systematic degradation of the imagination.'};
+ const sources=[source4,source5];
+ const plan={...onePartPlan,sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['239']}],
+  parts:[{...onePartPlan.parts[0],question:'What did Nietzsche say about Christianity?',sourceBookIds:['239'],
+   candidateSourceIds:['S4','S5']}]};
+ const draft='PART P1\nThis moral system is described as a systematic degradation of imagination and a rejection of the highest and lowest desires of life. [S4, S5]';
+ let reviewPayload;
+ const missingSourceAI=makeAI([answer(draft),(_model,{messages})=>{
+  reviewPayload=JSON.parse(messages[1].content);
+  const claim=reviewPayload.parts[0].claims[0];
+  const s5=claim.sourceEvidence.find(item=>item.sourceId==='S5').spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+   claims:[{claimId:claim.claimId,status:'answered',spanIds:[s5]}]})};
+ }]);
+ const partial=await composeEvidenceAnswer('What did Nietzsche say about Christianity?',sources,missingSourceAI,[],
+  {plan,catalog:{...catalog,239:'The Portable Nietzsche — Friedrich Nietzsche'},trace:true});
+ const claim=reviewPayload.parts[0].claims[0];
+ assert.deepEqual(claim.sourceIds,['S4','S5']);
+ assert.deepEqual(claim.sourceEvidence.map(item=>item.sourceId),['S4','S5']);
+ for(const item of claim.sourceEvidence){
+  const page=reviewPayload.parts[0].evidence.find(source=>source.id===item.sourceId);
+  assert.ok(item.spanIds.length>0);
+  assert.ok(item.spanIds.every(id=>page.spans.some(span=>span.spanId===id)));
+ }
+ assert.equal(partial.coverage,'none');
+ assert.ok(partial.trace.reviewContract.supportIssues.some(issue=>
+  issue.claimId==='P1-C1'&&issue.reason==='missing-claim-source-span'));
+ assert.equal(missingSourceAI.calls.length,2);
+
+ const supportedAI=makeAI([answer(draft),(_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content),claim=payload.parts[0].claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+   claims:[{claimId:claim.claimId,status:'answered',spanIds:claim.sourceEvidence.flatMap(item=>item.spanIds.slice(0,1))}]})};
+ }]);
+ const supported=await composeEvidenceAnswer('What did Nietzsche say about Christianity?',sources,supportedAI,[],
+  {plan,catalog:{...catalog,239:'The Portable Nietzsche — Friedrich Nietzsche'},trace:true});
+ assert.equal(supported.coverage,'full');
+ assert.deepEqual([...new Set(supported.evidenceMap.map(item=>item.id))],['S4','S5']);
+ assert.equal(supportedAI.calls.length,2);
+});
+
 test('validates cited sources against each part and preserves a complete cited answer in two calls',async()=>{
  const ai=makeAI([
   answer('PART P1\nHume says necessity arises from regular conjunction and the mind’s habitual inference. [S1]'),
@@ -441,7 +490,7 @@ test('validates cited sources against each part and preserves a complete cited a
  const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
  assert.deepEqual(composePayload.parts[0].candidateSourceIds,['S1']);
  assert.equal('candidateSourceIds' in reviewPayload.parts[0],false);
- assert.deepEqual(Object.keys(reviewPayload.parts[0].claims[0]).sort(),['claimId','sourceIds','text']);
+ assert.deepEqual(Object.keys(reviewPayload.parts[0].claims[0]).sort(),['claimId','sourceEvidence','sourceIds','text']);
  assert.deepEqual(reviewPayload.parts[0].evidence.map(source=>source.id),['S1']);
 });
 
