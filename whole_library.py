@@ -1,6 +1,6 @@
-"""Bounded cross-book retrieval from the existing Antilogicalism v47 search data.
+"""Bounded cross-book retrieval from the existing Antilogicalism v48 search data.
 
-No new text corpus or vector database is created. The already-published v47
+No new text corpus or vector database is created. The already-published v48
 manifest maps global page IDs to books, and terms-xx.json.gz stores sorted,
 delta-encoded global page IDs. After matching a reader's terms, open ONLY
 the top few compressed book shards and build a short-lived PassageIndex over
@@ -208,7 +208,7 @@ class WholeLibraryLocator:
         if not matched:
             return None
         pdf_id = matched.group(1)
-        # The manifest is the source of truth for v47 book/page membership;
+        # The manifest is the source of truth for v48 book/page membership;
         # the website catalog supplies rich names. Reject conflicts rather
         # than accidentally linking another book's PDF.
         if existing and existing.get("pdf_file_id") and existing["pdf_file_id"] != pdf_id:
@@ -227,7 +227,7 @@ class WholeLibraryLocator:
     def _diverse_page_hints(hits, count):
         """Keep strong matches while avoiding all hints from the first pages.
 
-        The v47 inverted index stores term presence, not term positions or
+        The v48 inverted index stores term presence, not term positions or
         document frequencies within a page. On a one-word query, all pages
         therefore tie. Cover the argument's early, middle and late appearances
         rather than always choosing the earliest five PDF pages.
@@ -506,7 +506,7 @@ class WholeLibraryLocator:
             if not chosen:
                 raise LibrarySearchError(
                     "No locally installed books with verified source PDFs "
-                    "matched this question in the v47 full-text index."
+                    "matched this question in the v48 full-text index."
                 )
             books = []
             details = []

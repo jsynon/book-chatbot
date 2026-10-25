@@ -5,7 +5,7 @@ import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,v
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
-const manifest={version:47,books:{152:{title:'History of the Peloponnesian War — Thucydides',
+const manifest={version:48,books:{152:{title:'History of the Peloponnesian War — Thucydides',
   drive_url:'https://drive.google.com/file/d/'+PDF+'/view'}},
   page_books:[152,152]};
 const pages={pages:[
@@ -146,7 +146,7 @@ test('request format contains only locators, not client-supplied evidence',()=>{
 test('Turnstile denial prevents any trusted corpus retrieval and AI',async()=>{
  let corpus=0;
  const bad={...payload,turnstileToken:'invalid'};
- const result=await handleRequest(request(bad),env(),(url,opts)=>{if(String(url).includes('data-v47'))corpus++;return fetcher(url,opts);});
+ const result=await handleRequest(request(bad),env(),(url,opts)=>{if(String(url).includes('data-v48'))corpus++;return fetcher(url,opts);});
  assert.equal(result.status,403);assert.equal(corpus,0);
 });
 test('trusted corpus provides the page content and PDF link, not untrusted client fields',async()=>{
@@ -1374,7 +1374,7 @@ test('Cloudflare fetch(request,env,ctx) does not mistake ctx for a network fetch
 test('authenticated static packet is bound to canonical cited source metadata',async()=>{
  const saved=globalThis.fetch;
  const packet={
-  schema:'antilogicalism-reader-packet-v1',libraryVersion:47,
+  schema:'antilogicalism-reader-packet-v2',libraryVersion:48,
   bookId:'152',title:'History of the Peloponnesian War — Thucydides',
   pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
   pages:[{page:38,globalPageId:34403,
@@ -1406,7 +1406,7 @@ test('packet probe fails closed before any network traffic when token absent',as
 });
 test('forged packet metadata and duplicate claimed physical pages fail closed',async()=>{
  const original={
-  schema:'antilogicalism-reader-packet-v1',libraryVersion:47,
+  schema:'antilogicalism-reader-packet-v2',libraryVersion:48,
   bookId:'152',title:'A Book',pdfDriveId:PDF,
   chunk:1,firstPage:33,lastPage:64,pages:[
    {page:38,globalPageId:34403,text:'This is the original indexed text copied into the packet. It contains historical sources.'}
@@ -1425,13 +1425,13 @@ test('native SHA-256 accepts exact UTF-8 and binds original PDF metadata',async(
  const raw=new TextEncoder().encode(content);
  const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',raw)),x=>x.toString(16).padStart(2,'0')).join('');
  const canonical={
-   schema:'antilogicalism-reader-fingerprints-v1',hashAlgorithm:'SHA-256-utf8-exact',
-   libraryVersion:47,bookId:'152',chunk:1,firstPage:33,lastPage:64,
+   schema:'antilogicalism-reader-fingerprints-v2',hashAlgorithm:'SHA-256-utf8-exact',
+   libraryVersion:48,bookId:'152',chunk:1,firstPage:33,lastPage:64,
    title:'Canonical History — Thucydides',pdfDriveId:PDF,
    pages:[{page:38,globalPageId:34403,utf8Bytes:raw.byteLength,sha256:hash}]
  };
  const fetcher=async(url)=>{
-   assert.equal(url,'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/books/152/1.json');
+   assert.equal(url,'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v2/books/152/1.json');
    return Response.json(canonical);
  };
  const sources=await verifiedFingerprintSources(question,[{bookId:'152',page:38,text:content,
@@ -1453,8 +1453,8 @@ test('one-byte tamper is rejected before AI even when request is authenticated',
  const content='The original source passage is entirely different from text invented by the visitor. Its claim is grounded in this book page.';
  const textBytes=new TextEncoder().encode(content);
  const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',textBytes)),b=>b.toString(16).padStart(2,'0')).join('');
- const meta={schema:'antilogicalism-reader-fingerprints-v1',hashAlgorithm:'SHA-256-utf8-exact',
-    libraryVersion:47,bookId:'152',title:'A Trusted Book',pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
+ const meta={schema:'antilogicalism-reader-fingerprints-v2',hashAlgorithm:'SHA-256-utf8-exact',
+    libraryVersion:48,bookId:'152',title:'A Trusted Book',pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
     pages:[{page:38,globalPageId:34403,utf8Bytes:textBytes.length,sha256:digest}]};
  const url=HOST+'/internal/fingerprint-probe',secret='valid-long-local-fingerprint-test-secret-123';
  let aiCalls=0,remoteFetches=0;
@@ -1512,8 +1512,8 @@ async function fingerprintTestFixture() {
  const bytes=new TextEncoder().encode(text);
  const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),
     b=>b.toString(16).padStart(2,'0')).join('');
- const fingerprint={schema:'antilogicalism-reader-fingerprints-v1',
-    hashAlgorithm:'SHA-256-utf8-exact',libraryVersion:47,
+ const fingerprint={schema:'antilogicalism-reader-fingerprints-v2',
+    hashAlgorithm:'SHA-256-utf8-exact',libraryVersion:48,
     bookId:'152',title:'History of the Peloponnesian War — Thucydides',
     pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
     pages:[38,39,40,41,42,43].map((page,index)=>({page,globalPageId:34403+index,
@@ -1526,7 +1526,7 @@ async function fingerprintTestFixture() {
  const fetcher=async requestUrl=>{
     fetchCount++;
     assert.equal(requestUrl,
-      'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/books/152/1.json');
+      'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v2/books/152/1.json');
     return Response.json(fingerprint);
  };
  const run=async(_model,input)=>{
@@ -1552,7 +1552,7 @@ async function fingerprintTestFixture() {
  };
  return {body,secret,response,fetcher,stats:()=>({aiCount,fetchCount}),run};
 }
-test('v1.9.4 exact v47 source generates two bounded AI stages with canonical citation',async()=>{
+test('v1.9.4 exact v48 source generates two bounded AI stages with canonical citation',async()=>{
  const fixture=await fingerprintTestFixture();
  const result=await fixture.response();
  assert.equal(result.status,200);
@@ -2631,7 +2631,7 @@ test('v1.10 allows any fingerprint-verified page from additional approved books'
  const alt={...source,bookId:'7',page:4};
  const original=fixture.fetcher;
  let fetches=0,calls=0;
- const fetched=await original('https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/books/152/1.json');
+ const fetched=await original('https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v2/books/152/1.json');
  const fp=await fetched.json();
  fp.bookId='7';fp.chunk=0;fp.firstPage=1;fp.lastPage=32;fp.pages[0].page=4;
  const environment=env({...pilotBaseEnv,AI:{run:async(_m,input)=>{

@@ -54,7 +54,7 @@ DEFAULT_LIBRARY_DATA = ROOT.parent / "antilogicalism-library-data"
 LIBRARY_DATA_ROOT = Path(
     os.environ.get("BOOK_CHATBOT_LIBRARY_DATA", str(DEFAULT_LIBRARY_DATA))
 ).expanduser()
-DATA_VERSION = os.environ.get("BOOK_CHATBOT_DATA_VERSION", "v47")
+DATA_VERSION = os.environ.get("BOOK_CHATBOT_DATA_VERSION", "v48")
 DEFAULT_BOOK_ID = "7"
 
 
@@ -83,7 +83,7 @@ def resolve_book_file(root: Path = ROOT, settings: dict | None = None) -> Path:
     library_root = Path(
         settings.get("BOOK_CHATBOT_LIBRARY_DATA", str(root.parent / "antilogicalism-library-data"))
     ).expanduser()
-    version = settings.get("BOOK_CHATBOT_DATA_VERSION", "v47")
+    version = settings.get("BOOK_CHATBOT_DATA_VERSION", "v48")
     shared_corpus = library_root / f"data-{version}" / f"book-{book_id}.json.gz"
     if shared_corpus.is_file():
         return shared_corpus
@@ -915,7 +915,7 @@ LIBRARY_REGISTRY = LibraryIndexRegistry(
     max_cached=int(os.environ.get("BOOK_CHATBOT_CACHED_BOOKS", "2")),
 )
 
-# Global v47 search manifest is loaded lazily only when a reader selects
+# Global v48 search manifest is loaded lazily only when a reader selects
 # "Across library"; the original Aristotle and single-book paths remain intact.
 WHOLE_LIBRARY = WholeLibraryLocator(
     LIBRARY_REGISTRY, tokenize, likely_page_continuation,

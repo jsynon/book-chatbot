@@ -1,7 +1,7 @@
 """Read an original PDF page from the locally indexed Antilogicalism corpus.
 
 This is deliberately independent of retrieval and Ollama. The physical page
-number in the original v47 book shard is authoritative; a global search page
+number in the original v48 book shard is authoritative; a global search page
 ID is never a physical PDF page. The reader only accepts catalog/manifest
 book identities with verified Drive PDF IDs.
 """
@@ -48,7 +48,7 @@ class SourcePageReader:
         return number
 
     def _book_details(self, book_id):
-        # Only a validated catalog ID or an identity verified by the v47
+        # Only a validated catalog ID or an identity verified by the v48
         # manifest can be used to locate a compressed source shard.
         try:
             metadata = self.registry.description(str(book_id))

@@ -17,7 +17,7 @@ export function catalogIdentity(title){
     translators:translator?[translator]:[],
     aliases:[...new Set(aliases.flatMap(v=>{const clean=v.trim();return [clean,clean.replace(/^(the|a|an)\s+/i,'').trim()];}).filter(v=>v.length>=4))]};
 }
-// Corpus-specific voice notes are deliberately guarded by both the stable v47
+// Corpus-specific voice notes are deliberately guarded by both the stable v48
 // book ID and its exact title. They describe publication/section context, not
 // proof that every sentence on a page is spoken by that voice.
 const CURATED_VOICE_IDENTITIES=Object.freeze({
