@@ -153,6 +153,7 @@ test('trusted corpus provides the page content and PDF link, not untrusted clien
  const sources=await trustedSources(question,payload.sources,fetcher);
  assert.equal(sources.length,1);assert.equal(sources[0].page,38);
  assert(sources[0].preview.includes('real cause'));
+ assert.equal(sources[0].sha256,hash,'the fingerprint remains for the exact original text');
  assert.equal(sources[0].text,'The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes. See https://example.org/history for context.\n');
  assert.match(sources[0].text,/https:\/\/example\.org\/history/);
  assert.doesNotMatch(sources[0].text,/file:\/\/\/C\|/);
