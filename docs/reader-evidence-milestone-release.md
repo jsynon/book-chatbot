@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: Earlier release changes and follow-ups [website PR #185](https://github.com/jsynon/antilogicalism/pull/185) and [Worker PR #215](https://github.com/jsynon/book-chatbot/pull/215) are merged. The October 25 post-merge seven-question all-books reviewed run [40147644388](https://github.com/jsynon/antilogicalism/actions/runs/40147644388) completed all cases with 2/7 structural passes and zero request failures. The run exposed an active evidence-v2 review-contract mismatch plus remaining retrieval and semantic-support gaps; focused fixes and unseen acceptance remain open.
+Status: The October 25 post-merge seven-question all-books reviewed run [40147644388](https://github.com/jsynon/antilogicalism/actions/runs/40147644388) exposed active evidence-v2 quote-validation, part-context retrieval, OCR page-boundary, and semantic-selection gaps. Focused fixes are proposed in [Worker PR #217](https://github.com/jsynon/book-chatbot/pull/217) and companion [website PR #186](https://github.com/jsynon/antilogicalism/pull/186). Offline targeted regression suites pass; GitHub checks and a fresh deployed reviewed run remain pending.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -362,3 +362,25 @@ There are also real content/retrieval issues. The Hamlet packet lacks the page c
 3. Correct Kant evidence selection for causal necessity and require direct support for Kant’s relevant argument before composition; retain the existing abstention behavior when the needed passage is unavailable.
 4. Add semantic checks for attribution and negation, including the Herodotus/Proteus claim, and review all final citations against page text.
 5. Rerun the same seven-question reviewed holdout after the focused fixes, inspect live progress and traces, then run the reserved unseen acceptance suite. Require complete part coverage and source-supported claims; do not equate a structural pass with factual accuracy.
+
+
+## October 25, 2026: focused evidence-handoff fixes (PRs #217 and #186)
+
+The reviewed holdout was traced through both sides of the active pipeline. Website retrieval hydrates and selects page candidates, attaches question-part eligibility, and submits the original page text; the Worker revalidates fingerprints and scope, composes the answer, checks per-part citations, and reviews exact source quotes. This split matters: fixing a legacy validator alone would not have fixed the active evidence-v2 route, and retrieval-side part labels cannot establish that a passage entails the final answer.
+
+Worker PR #217 changes the active v2 review contract and the shared quote-verification boundary. The reviewer can return a complete exact contiguous quote up to 2,000 characters. The Worker verifies that full quote against the specific cited page before storing a bounded contiguous anchor (up to 220 characters) for the evidence map. Known OCR ligature substitutions are normalized only for matching; the displayed anchor is taken from original page text. Altered, over-limit, too-short, wrong-source, or stitched quotes remain rejected. The same helper is used by the legacy route, removing the code-path mismatch that let the active v2 validator retain its old 320-character cap.
+
+The Worker prompts now explicitly require the requested concept, actor, action, polarity, qualification, and reasoning to match the cited evidence. When a question asks how a principle is justified or known, the answer must explain the source's grounds or conditions. Kant causal-necessity planning is directed toward the Second Analogy, and a nearby discussion of regulative or absolute necessity is not accepted as a substitute. Dependent non-comparison parts may carry the resolved parent question into retrieval, so pronouns such as “he” or “this soliloquy” do not become the only search context.
+
+Website PR #186 keeps its reader-contract copy synchronized with the Worker, connects a distinctive quoted phrase in a question part to hydrated page text despite OCR spacing, and detects a page cutoff where OCR joined the next sentence's capitalization (for example, “sleepNo”). It requests the adjacent page only when that page independently passes the existing relevance check. Part tags continue to affect eligibility and selection only; Worker source, scope, citation, and review checks remain authoritative.
+
+| Validation | Candidate result |
+|---|---|
+| Worker evidence-answer and shared review-quote suites | 26 passed, 0 failed |
+| Website evidence-search and scoped remote-library suites | 63 passed, 0 failed |
+| New regression coverage | Long exact quote bounded after verification; OCR ligature normalization; altered, non-contiguous, too-short, and oversized quotes rejected; contextual part-query and quoted-phrase link; relevant adjacent continuation; irrelevant adjacent page excluded |
+| GitHub PR checks | Pending at report update |
+| Fresh deployed reviewed run | Not run; this change did not spend live model calls |
+| Reserved unseen acceptance suite | Still required for release confidence |
+
+The fixes address several concrete failures exposed by run 40147644388, but do not establish that the live model will choose the right passage, preserve attribution/negation, or produce complete answers. After both PRs pass checks and merge, deploy the Worker and website, then run the same seven-question all-books reviewed holdout with visible progress. Inspect Hamlet's afterlife part, Kant's causal-necessity support, Herodotus's attribution, and every reviewer quote against the traced source page. If those results are stable, evaluate the reserved unseen acceptance set; the repeated holdout is regression evidence, not unseen acceptance evidence.
