@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: Worker PRs #217 and #220 and website PR #186 are merged. The post-PR #220 reviewed all-books run [40155204645](https://github.com/jsynon/antilogicalism/actions/runs/40155204645) completed all seven cases with no request failures or planner fallbacks and improved structural passes from 2/7 to 5/7. Two evidence-map failures remain: the reviewer omitted a cited Hume source from the Kant comparison part, and the Worker dropped a selected Wollstonecraft span when its six-span map filled. A focused Worker candidate now sends an explicit per-part cited-source checklist and reserves one selected span per cited source before filling the existing map budget. Full local suites pass: 225 Worker tests and 160 website tests. The candidate is in [Worker PR #221](https://github.com/jsynon/book-chatbot/pull/221); when checked, GitHub had not reported PR workflow runs or commit status checks for its head.
+Status: Worker PRs #217 and #220 and website PR #186 are merged. The post-PR #220 reviewed all-books run [40155204645](https://github.com/jsynon/antilogicalism/actions/runs/40155204645) completed all seven cases with no request failures or planner fallbacks and improved structural passes from 2/7 to 5/7. Two evidence-map failures remain: the reviewer omitted a cited Hume source from the Kant comparison part, and the Worker dropped a selected Wollstonecraft span when its six-span map filled. A focused Worker candidate now sends an explicit per-part cited-source checklist and reserves one selected span per cited source before filling the existing map budget. Full local suites pass: 225 Worker tests and 160 website tests. The candidate is in [Worker PR #221](https://github.com/jsynon/book-chatbot/pull/221), and its [Reading Companion v1.4.6 contracts workflow](https://github.com/jsynon/book-chatbot/actions/runs/40156797965) passed.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -543,7 +543,7 @@ The candidate adds trace-based contract regressions for the Hume/Kant omission a
 | Website companion suite: `node --test reading-companion/*.test.mjs` in the website worktree | 160 passed, 0 failed |
 | Worker/website shared reader contract files | Byte-identical |
 | JavaScript syntax and `git diff --check` | Passed |
-| GitHub checks | PR #221 is open; the GitHub Actions and commit-status endpoints returned no checks when inspected |
+| GitHub checks | PR #221 Reading Companion v1.4.6 contracts workflow passed: [run 40156797965](https://github.com/jsynon/book-chatbot/actions/runs/40156797965) |
 
 My separate source-based draft scores for run 40155204645 use the agreed 0–2 scale, in order: accuracy / question coverage / explanation quality / citation support / citation completeness. They are not artifact scores:
 
