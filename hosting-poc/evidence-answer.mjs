@@ -150,10 +150,13 @@ function validatePartAnswers(draftParts,sources,plan){
       for(const group of groupsWithIds)prose=prose.replace(group.raw,'');
       prose=prose.replace(/\s+([,.;!?])/g,'$1').replace(/\s{2,}/g,' ').trim();
       if(prose.length<8){rejected.push({partId:part.id,reason:'answer-text-too-short'});continue;}
-      if(!auditFinalAnswer(prose+' ['+ids.join(', ')+']',sources).ok){
+      // Validate while citations are still beside the sentences they support.
+      // Aggregating them at the paragraph end first can make an exact quote
+      // look uncited when later sentences intervene.
+      if(!auditFinalAnswer(paragraph,sources).ok){
         rejected.push({partId:part.id,reason:'quotation-citation-mismatch'});continue;
       }
-      answers.push({text:prose,sourceIds:ids});
+      answers.push({text:prose,renderedText:paragraph,sourceIds:ids});
     }
     output.push({partId:part.id,question:part.question,answers});
   }
@@ -325,8 +328,9 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   });
   const included=parts.filter(item=>item.status!=='unanswered'&&item.answers.length);
   const answer=included.flatMap(item=>item.answers.map(value=>{
-    const ids=[...new Set(value.sourceIds)];
-    return value.text+' ['+ids.join(', ')+']';
+    // Keep the composer's verified sentence-level citation placement in the
+    // user-facing answer and final integrity audit.
+    return value.renderedText||value.text+' ['+[...new Set(value.sourceIds)].join(', ')+']';
   })).join('\n\n');
   const final=auditFinalAnswer(answer,sources);
   if(!final.ok)throw Error('Final answer integrity failed');
