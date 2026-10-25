@@ -187,7 +187,7 @@ The composer and reviewer now receive structured bibliographic context for credi
 | Full Worker suite: `node --test hosting-poc/*.test.mjs` | 235 passed, 0 failed |
 | Full website suite: `node --test reading-companion/*.test.mjs` | 175 passed, 0 failed |
 | Shared Worker/site `reader-contract.mjs` | Byte-identical after separating credited editors from translators |
-| `git diff --check` | Pending final branch validation |
+| `git diff --check` | Passed in both repositories |
 | AI call estimate / answer packet | Unchanged: 15 estimated calls for the five reviewed cases; six-page maximum |
 | Run #40 regression fixtures | Kant's complete legacy-shaped review can recover; Sunyata's fenced/trailing-tail JSON parses, but the unselected S5 span remains insufficient and does not enter the evidence map |
 | Current candidate status | Paired PRs [#230](https://github.com/jsynon/book-chatbot/pull/230) and [#196](https://github.com/jsynon/antilogicalism/pull/196) are open; repository checks are pending; neither is merged or deployed |
