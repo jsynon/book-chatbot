@@ -1,4 +1,4 @@
-Warning: truncated output (original token count: 36987)
+Warning: truncated output (original token count: 37026)
 Total output lines: 859
 
 # Reading Companion evidence milestone: release report
@@ -169,8 +169,7 @@ This fixes the reproduced contract and query-linking failures in deterministic t
 
 1. Re-run the same seven-question with-review diagnostic after merging and deploying this citation-placement correction. The old review response cannot validate an answer paragraph it never received, so a fresh review is needed to measure the restored Aristotle and Du Bois parts.
 2. Keep the seven-question set labeled diagnostic/regression: its prompts guided the fixes and a repeat cannot establish generalization. Run the separate unseen acceptance suite only after the candidate is frozen, with All Books and review enabled.
-3. Recheck the liv…21987 tokens truncated…ke workflow | [Run 40168668807](https://github.com/jsynon/antilogicalism/actions/runs/40168668807) passed |
-| Model-call budget and answer packet | Unchanged: two answer calls with review; six-page maximum |
+3. Recheck the liv…22026 tokens truncated…ged: two answer calls with review; six-page maximum |
 | Fresh five-case reviewed holdout after merge and deployment | Pending; both PR checks pass, but the fixes are not yet merged/deployed. The rerun must determine whether the reviewer selects S5-Q9, highlights match the evidence map, and source-scoped questions improve |
 | Unseen acceptance suite and final semantic milestone | Reserved until the same focused holdout and cited-passage review support promotion |
 
@@ -325,4 +324,4 @@ The paired follow-up changes only the two existing handoff points:
 | Model-call budget / packet limit | Unchanged: 15 baseline calls across five reviewed cases; six submitted pages maximum |
 | Semantic answer review | Pending; structural tests do not prove that a recovered Nietzsche passage supports the comparison |
 
-The paired follow-up is available as Worker [PR #233](https://github.com/jsynon/book-chatbot/pull/233) and website [PR #199](https://github.com/jsynon/antilogicalism/pull/199). At the time of this report update, the Worker contract check and website smoke check have passed; the website library evaluation is still running ([Worker run 40181348428](https://github.com/jsynon/book-chatbot/actions/runs/40181348428), [website evaluation 40181346756](https://github.com/jsynon/antilogicalism/actions/runs/40181346756), [website smoke 40181346801](https://github.com/jsynon/antilogicalism/actions/runs/40181346801)). Wait for the evaluation to finish successfully before merging. After both PRs merge and deploy, rerun the same five-case focused, all-books, with-review workflow. Inspect the exact Nietzsche passages in `retrievalCandidates` and `submittedSources`, verify the review response remains contract-valid, and check all cited page text against the answer. Keep the unseen acceptance suite frozen until that source-level review is satisfactory.
+The paired follow-up is available as Worker [PR #233](https://github.com/jsynon/book-chatbot/pull/233) and website [PR #199](https://github.com/jsynon/antilogicalism/pull/199). The Worker contract check, website smoke check, and website library evaluation have all completed successfully ([Worker run 40181348428](https://github.com/jsynon/book-chatbot/actions/runs/40181348428), [website evaluation 40181346756](https://github.com/jsynon/antilogicalism/actions/runs/40181346756), [website smoke 40181346801](https://github.com/jsynon/antilogicalism/actions/runs/40181346801)). The Worker run passed on the code commit; the follow-up report-only commit did not change implementation code. Both PRs are ready for review and merge. After both PRs merge and deploy, rerun the same five-case focused, all-books, with-review workflow. After both PRs merge and deploy, rerun the same five-case focused, all-books, with-review workflow. Inspect the exact Nietzsche passages in `retrievalCandidates` and `submittedSources`, verify the review response remains contract-valid, and check all cited page text against the answer. Keep the unseen acceptance suite frozen until that source-level review is satisfactory.
