@@ -11,9 +11,9 @@ The passage explains the author's position and the reason for it. [S1]
 PART P2
 The two accounts differ in the role they assign to experience. [S1, S2]`;
 
-export const REVIEW_PROMPT=`Review each answer part against only its cited, fingerprint-verified source pages. Each page supplies deterministic evidence spans with IDs and exact source text, ordered with likely answer-bearing spans first; inspect the supplied span text rather than assuming no support from a missed keyword. Select span IDs only; do not copy or rewrite quotations. The supplied spans are the only evidence that may support the answer. Check attribution, qualifications, negation, and whether the answer explains the requested reasoning. A category name alone is incomplete when the question asks how something is justified or known; require the source's grounds, argument, or conditions of validity. For comparisons, require directly relevant support from each named source. A citation's presence or topical overlap alone does not establish support. Check whether the selected spans establish the same requested concept, actor, action, polarity, and qualification as the answer; a passage about a neighboring doctrine or a shared keyword is not support. Treat a reversed negation or attribution as a material contradiction. If a supplied span states the same relationship or qualification as an answer sentence in different words, select that span rather than reporting that the source has no evidence.
-Each part includes a deterministic requiredSourceIds list, derived from the sources cited in its answer. For an answered part, return at least one relevant span for every requiredSourceId. Do not omit a source because another source seems stronger or covers a similar claim. If a required source has no relevant span, mark the part partial and say what remains unsupported; do not invent or borrow a span.
-Return JSON only: {"parts":[{"partId":"P1","status":"answered|partial|unanswered","reason":"briefly explain what the cited passage establishes and what remains missing","evidence":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}. Include every supplied part exactly once. For answered, selected spans must support the answer's main claims; for a comparison, select directly relevant spans from each named source. For partial, select any spans that support the answer and state what remains missing. For unanswered, use an empty evidence array. Select only IDs listed under that exact source. Never invent an ID. Do not rewrite the answer or add claims.`;
+export const REVIEW_PROMPT=`Review every answer sentence separately against only its cited, fingerprint-verified source pages. Each answer has a stable claimId, exact sentence text, and its cited sourceIds. Each page supplies deterministic evidence spans with IDs and exact source text, ordered with likely answer-bearing spans first; inspect the supplied span text rather than assuming no support from a missed keyword. Select span IDs only; do not copy or rewrite quotations. The supplied spans are the only evidence that may support the answer. Check attribution, qualifications, negation, and whether the answer explains the requested reasoning. A category name alone is incomplete when the question asks how something is justified or known; require the source's grounds, argument, or conditions of validity. For comparisons, require directly relevant support from each named source. A citation's presence or topical overlap alone does not establish support. Check whether the selected spans establish the same requested concept, actor, action, polarity, and qualification as that exact sentence; a passage about a neighboring doctrine or a shared keyword is not support. Treat a reversed negation or attribution as a material contradiction. If a supplied span states the same relationship or qualification as an answer sentence in different words, select that span rather than reporting that the source has no evidence.
+For each claim, return at least one relevant span for every sourceId cited by that sentence. Do not attach evidence for a different sentence, and do not omit a cited source because another source seems stronger or covers a similar claim. A claim may be answered only when its own cited spans support it; otherwise mark that claim partial or unanswered and explain what remains unsupported. The part status summarizes the claims but does not replace claim-level decisions.
+Return JSON only: {"parts":[{"partId":"P1","status":"answered|partial|unanswered","reason":"brief part-level summary","claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","reason":"briefly explain what this sentence's cited passage establishes or what remains missing","evidence":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}]}. Include every supplied part and every supplied claim exactly once. For an answered claim, selected spans must support that exact sentence from every source it cites. For partial, select only spans that support that sentence and state what remains missing. For unanswered, use an empty evidence array. Select only IDs listed under that exact source. Never invent an ID. Do not rewrite the answer or add claims.`;
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -186,7 +186,7 @@ function validatePartAnswers(draftParts,sources,plan){
       if(!auditFinalAnswer(unit,sources).ok){
         rejected.push({partId:part.id,reason:'quotation-citation-mismatch',...(units.length>1?{sentenceIndex:sentenceIndex+1}:{})});continue;
       }
-      answers.push({text:prose,renderedText:unit,sourceIds:ids,paragraphIndex});
+      answers.push({claimId:part.id+'-C'+(answers.length+1),text:prose,renderedText:unit,sourceIds:ids,paragraphIndex});
       }
     }
     output.push({partId:part.id,question:part.question,answers});
@@ -205,6 +205,16 @@ function renderAnswerParagraphs(answers){
   return [...paragraphs.values()].map(values=>values.join(' ')).join('\n\n');
 }
 
+function normalizeStatus(value){
+  const raw=String(value||'').toLowerCase();
+  return ['answered','supported','complete'].includes(raw)?'answered':
+    ['partial','incomplete'].includes(raw)?'partial':
+    ['unanswered','unsupported','none'].includes(raw)?'unanswered':'partial';
+}
+function hasRecognizedStatus(value){
+  return ['answered','supported','complete','partial','incomplete','unanswered','unsupported','none']
+    .includes(String(value||'').toLowerCase());
+}
 function statusRank(status){return status==='answered'?0:status==='partial'?1:2;}
 function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps){
   const supplied=new Map(),issues=[];
@@ -212,71 +222,68 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps){
   else for(const item of review.parts){
     const id=String(item?.partId||'').toUpperCase();
     if(!plan.parts.some(part=>part.id===id)){issues.push('unknown-part');continue;}
-    const raw=String(item?.status||'').toLowerCase();
-    const status=['answered','supported','complete'].includes(raw)?'answered':
-      ['partial','incomplete'].includes(raw)?'partial':
-      ['unanswered','unsupported','none'].includes(raw)?'unanswered':'partial';
-    if(!['answered','supported','complete','partial','incomplete','unanswered','unsupported','none'].includes(raw))issues.push('invalid-status');
+    if(!hasRecognizedStatus(item?.status))issues.push('invalid-status');
     const previous=supplied.get(id);
-    if(previous){issues.push('duplicate-part');if(statusRank(status)>statusRank(previous))supplied.set(id,status);}
-    else supplied.set(id,status);
+    if(previous){issues.push('duplicate-part');if(statusRank(normalizeStatus(item?.status))>statusRank(normalizeStatus(previous.status)))supplied.set(id,item);}
+    else supplied.set(id,item);
   }
   const sourceById=new Map(sources.map(source=>[source.id,source]));
   const supportIssues=[];
   const parts=plan.parts.map(part=>{
     const answerPart=answerParts.find(item=>item.partId===part.id);
-    const hasAnswer=(answerPart?.answers.length||0)>0;
-    const allowedIds=new Set((answerPart?.answers||[]).flatMap(answer=>answer.sourceIds));
-    const reviewerPart=review?.parts?.find(item=>String(item?.partId||'').toUpperCase()===part.id);
+    const reviewerPart=supplied.get(part.id);
     const reason=typeof reviewerPart?.reason==='string'?reviewerPart.reason.trim().slice(0,240):'';
-    const selectedBySource=new Map();
-    if(Array.isArray(reviewerPart?.evidence))for(const item of reviewerPart.evidence){
-      const source=sourceById.get(String(item?.sourceId||''));
-      if(!source||!allowedIds.has(source.id)||!Array.isArray(item?.spanIds))continue;
-      const spans=reviewSpanMaps.get(source.id);
-      const sourceSelections=selectedBySource.get(source.id)||[];
-      for(const spanId of item.spanIds.slice(0,3)){
-        if(sourceSelections.length>=3)break;
-        if(typeof spanId!=='string'||sourceSelections.some(value=>value.spanId===spanId))continue;
-        const span=spans?.get(spanId);
-        if(!span)continue;
-        sourceSelections.push({sourceId:source.id,spanId,quote:span.text,anchorQuote:span.text});
+    if(!reviewerPart)issues.push('missing-part-decision');
+    const decisions=new Map();
+    if(!Array.isArray(reviewerPart?.claims))supportIssues.push({partId:part.id,reason:'missing-claim-decisions'});
+    else for(const decision of reviewerPart.claims){
+      const id=String(decision?.claimId||'');
+      if(!(answerPart?.answers||[]).some(answer=>answer.claimId===id)){issues.push('unknown-claim');continue;}
+      if(!hasRecognizedStatus(decision?.status))issues.push('invalid-claim-status');
+      if(decisions.has(id)){issues.push('duplicate-claim');continue;}
+      decisions.set(id,decision);
+    }
+    const acceptedAnswers=[],evidence=[];
+    for(const answer of answerPart?.answers||[]){
+      const decision=decisions.get(answer.claimId);
+      if(!decision){issues.push('missing-claim-decision');supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-decision'});continue;}
+      let claimStatus=normalizeStatus(decision.status);
+      const reviewerClaimedAnswer=claimStatus==='answered';
+      const claimReason=typeof decision.reason==='string'?decision.reason.trim().slice(0,240):'';
+      const citedIds=new Set(answer.sourceIds),selectedBySource=new Map();
+      if(Array.isArray(decision.evidence))for(const item of decision.evidence){
+        const source=sourceById.get(String(item?.sourceId||''));
+        if(!source||!citedIds.has(source.id)||!Array.isArray(item?.spanIds))continue;
+        const spans=reviewSpanMaps.get(source.id),selections=selectedBySource.get(source.id)||[];
+        for(const spanId of item.spanIds.slice(0,3)){
+          if(typeof spanId!=='string'||selections.some(value=>value.spanId===spanId))continue;
+          const span=spans?.get(spanId);
+          if(span)selections.push({sourceId:source.id,spanId,quote:span.text,anchorQuote:span.text,
+            claimId:answer.claimId,point:answer.text});
+        }
+        if(selections.length)selectedBySource.set(source.id,selections);
       }
-      if(sourceSelections.length)selectedBySource.set(source.id,sourceSelections);
-    }
-    // Preserve one reviewer-selected span for every cited source before
-    // spending the existing six-span display budget on additional support.
-    // The old source-first loop could fill all six slots with early sources
-    // and silently discard a later cited source that the reviewer had selected.
-    const evidence=[];
-    for(const sourceId of allowedIds){
-      const selected=selectedBySource.get(sourceId)?.[0];
-      if(selected)evidence.push(selected);
-    }
-    for(const sourceId of allowedIds){
-      for(const selected of selectedBySource.get(sourceId)?.slice(1)||[]){
-        if(evidence.length>=6)break;
-        evidence.push(selected);
+      const claimEvidence=[...citedIds].flatMap(sourceId=>selectedBySource.get(sourceId)?.slice(0,2)||[]);
+      if(reviewerClaimedAnswer&&claimReason.length<12){
+        claimStatus='partial';supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-rationale'});
       }
-      if(evidence.length>=6)break;
+      if(reviewerClaimedAnswer&&[...citedIds].some(sourceId=>!selectedBySource.has(sourceId))){
+        claimStatus='partial';supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-source-span'});
+      }
+      if(claimStatus==='answered'){acceptedAnswers.push(answer);evidence.push(...claimEvidence);}
     }
-    let status=supplied.get(part.id)||'partial';
-    const reviewerClaimedAnswered=status==='answered';
-    if(!supplied.has(part.id))issues.push('missing-part-decision');
-    if(!hasAnswer)status='unanswered';
-    else if(status==='answered'&&!evidence.length){
-      status='partial';supportIssues.push({partId:part.id,reason:'no-cited-source-span-selected'});
-    }else if(status==='answered'&&[...allowedIds].some(id=>!evidence.some(item=>item.sourceId===id))){
-      status='partial';supportIssues.push({partId:part.id,reason:'missing-cited-source-span'});
-    }
-    if(reviewerClaimedAnswered&&reason.length<24){
-      status='partial';supportIssues.push({partId:part.id,reason:'missing-support-rationale'});
-    }
-    if(reviewerClaimedAnswered&&hasAnswer&&plan.intent==='compare'&&
+    let status=normalizeStatus(reviewerPart?.status);
+    const allClaimsSupported=(answerPart?.answers.length||0)>0&&acceptedAnswers.length===answerPart.answers.length;
+    if(!acceptedAnswers.length)status='unanswered';
+    else if(status!=='answered'||!allClaimsSupported)status='partial';
+    if(status==='answered'&&plan.intent==='compare'&&
        !comparisonReviewEvidenceComplete(part,plan,sources,evidence)){
       status='partial';supportIssues.push({partId:part.id,reason:'comparison-support-missing-source-group'});
     }
-    return {partId:part.id,status,evidence,reason};
+    if(status==='answered'&&reason.length<12){
+      status='partial';supportIssues.push({partId:part.id,reason:'missing-support-rationale'});
+    }
+    return {partId:part.id,status,evidence,answers:acceptedAnswers,reason};
   });
   return {parts,issues:[...new Set(issues)],supportIssues};
 }
@@ -357,7 +364,6 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         const citedIds=new Set(part.answers.flatMap(answer=>answer.sourceIds));
         return {partId:part.partId,question:part.question,
           candidateSourceIds:planned?.candidateSourceIds||[],answers:part.answers,
-          requiredSourceIds:[...citedIds],
           evidence:[...pageById.values()].filter(page=>citedIds.has(page.id)).map(page=>{
             const source=sources.find(item=>item.id===page.id);
             const spanText=source?.scopeText||page.text||'';
@@ -391,13 +397,13 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const unreviewed=options.review===false||Boolean(reviewFailure);
   const parts=plan.parts.map(part=>{
     const answerPart=validatedAnswers.find(item=>item.partId===part.id);
-    const answers=answerPart?.answers||[];
-    let status=review?.parts.find(item=>item.partId===part.id)?.status||
+    const reviewed=review?.parts.find(item=>item.partId===part.id);
+    const answers=unreviewed?(answerPart?.answers||[]):(reviewed?.answers||[]);
+    let status=reviewed?.status||
       (answers.length?'partial':'unanswered');
     if(unreviewed&&answers.length)status='partial';
     if(!answers.length)status='unanswered';
     if(status==='answered'&&!comparisonEvidenceComplete(part,plan,sources,answers))status='partial';
-    const reviewed=review?.parts.find(value=>value.partId===part.id);
     return {part,answers,status,evidence:reviewed?.evidence||[],reviewReason:reviewed?.reason||''};
   });
   const included=parts.filter(item=>item.status!=='unanswered'&&item.answers.length);
@@ -412,14 +418,13 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     questionParts.some(part=>part.status!=='unsupported')?'partial':'none';
   const missing=questionParts.filter(part=>part.status!=='supported').map(part=>part.part).join('; ');
   const used=new Set(citationIds(answer));
-  const evidenceMap=[],evidenceHighlights=[];let nextClaim=0;
+  const evidenceMap=[],evidenceHighlights=[];
   for(const item of parts){
     if(item.status==='unanswered')continue;
-    const claimId='C'+(++nextClaim);
     for(const support of item.evidence){
       const source=sources.find(value=>value.id===support.sourceId);if(!source)continue;
       const sourceAnchor=support.anchorQuote||support.quote;
-      evidenceMap.push({id:source.id,claimId,point:item.part.question,partId:item.part.id,
+      evidenceMap.push({id:source.id,claimId:support.claimId||'C1',point:support.point||item.part.question,partId:item.part.id,
         quoteVerified:true,quote:sourceAnchor,reason:item.reviewReason});
       evidenceHighlights.push({source_id:source.id,page:source.page,quote:sourceAnchor});
     }

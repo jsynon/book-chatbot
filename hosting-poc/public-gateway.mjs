@@ -1266,7 +1266,9 @@ function counterfactualSourceQueries(question,queries,groups){
   }).sort((a,b)=>b.length-a.length);
   return ordered.map((target,index)=>{
     let terms=String(queries[index]||'');
-    for(const name of names)terms=terms.replace(new RegExp('(?:^|[^\\p{L}\\p{N}])'+escape(name)+'(?=$|[^\\p{L}\\p{N}])','giu'),' ');
+    for(const name of names)terms=terms.replace(new RegExp(
+      '(?:^|[^\\p{L}\\p{N}])'+escape(name)+'(?:(?:\\x27s|’s)|(?:\\s+s))?(?=$|[^\\p{L}\\p{N}])','giu'),' ');
+    terms=terms.replace(/\bs\b/giu,' ');
     terms=terms.replace(/[’'`]/gu,' ').replace(/[^\p{L}\p{N} -]/gu,' ')
       .replace(/\s+/gu,' ').trim();
     return [target.label,terms].filter(Boolean).join(' ').slice(0,160);
