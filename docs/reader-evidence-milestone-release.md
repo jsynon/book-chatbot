@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
-Status: Worker PRs #217 and #220 and website PR #186 are merged. The post-PR #220 reviewed all-books run [40155204645](https://github.com/jsynon/antilogicalism/actions/runs/40155204645) completed all seven cases with no request failures or planner fallbacks and improved structural passes from 2/7 to 5/7. Two evidence-map failures remain: the reviewer omitted a cited Hume source from the Kant comparison part, and the Worker dropped a selected Wollstonecraft span when its six-span map filled. A focused Worker candidate now sends an explicit per-part cited-source checklist and reserves one selected span per cited source before filling the existing map budget. Full local suites pass: 225 Worker tests and 160 website tests. The candidate is in [Worker PR #221](https://github.com/jsynon/book-chatbot/pull/221), and its [Reading Companion v1.4.6 contracts workflow](https://github.com/jsynon/book-chatbot/actions/runs/40156797965) passed.
+Status: Worker PRs #217, #220, and #221 and website PRs #186 and #187 are merged. Reviewed all-books run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) completed all seven cases with zero request failures or planner fallbacks; six of seven met the structural gate, with 15/18 supported parts and three unsupported. Hume/Kant and Wollstonecraft/Du Bois were complete. The remaining James 2:14–26 miss was traced to a retrieval handoff: the full-question search found the NKJV page, but part rewrites omitted the verse range and treated “James” as William James, while the relevant Bible page did not survive candidate selection. Website PR [#188](https://github.com/jsynon/antilogicalism/pull/188) now carries a single explicit scripture reference into unscoped part searches and reserves relevant pages from the direct-question facet; all 161 website tests pass locally, and its [website smoke](https://github.com/jsynon/antilogicalism/actions/runs/40158758745) and [production retrieval evaluation](https://github.com/jsynon/antilogicalism/actions/runs/40158758766) workflows passed. A fresh deployed reviewed run is still needed to establish live answer behavior.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -558,3 +558,29 @@ My separate source-based draft scores for run 40155204645 use the agreed 0–2 s
 | Wollstonecraft / Du Bois | 2 / 2 / 2 / 1 / 1 | The answer is substantively strong, but the final evidence map omits a selected cited source for Wollstonecraft. |
 
 The next validation should be the same seven-question reviewed holdout after this candidate merges and the Worker is deployed. It should confirm that all selected source spans survive in the final per-part evidence map and that the reviewer returns evidence for every source named in each answer part. Do not move to the unseen acceptance suite until those checks and independent semantic review are stable. If the reviewer still omits Hume S2, keep that part partial and investigate its prompt/evidence selection behavior; do not treat the presence of S2 in another question part as automatic proof for the comparison.
+
+
+## October 25, 2026: reviewed holdout and James scripture retrieval correction
+
+The user ran the seven-question all-books with-review workflow [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) after Worker PR #221 and website PR #187 were merged and deployed. The workflow completed all seven cases with zero request failures, planner fallbacks, or skipped cases. Six of seven cases passed the structural gate; the report counted 15 supported parts and three unsupported parts. Hume/Kant and Wollstonecraft/Du Bois completed, consistent with the Worker evidence-map changes. The remaining James case had no linked evidence for the planned parts, so the Worker safely returned an abstention. This was a retrieval/handoff failure, not a composer outage.
+
+The exact trace shows the causal chain:
+
+- The main question asks about “James 2:14–26.” The full-question facet found the requested NKJV Bible page (Book ID 335, page 5493), but at rank six.
+- The planner's natural-language part queries for Abraham and Rahab omitted the scripture reference. In all-books mode, the bare name “James” caused those searches to target William James; neither part received a Bible candidate link.
+- The Bible page did not survive into the bounded hydrated candidate set, leaving both relevant parts with no answer sources. The Worker correctly abstained rather than inventing a source-backed response.
+
+Website PR [#188](https://github.com/jsynon/antilogicalism/pull/188) addresses this at the retrieval-to-part handoff. When the original question contains exactly one explicit Bible reference, unscoped part queries inherit that reference for retrieval; their original wording remains in place for part-link checks and the inherited scope is exposed in bounded search diagnostics. Relevant direct-question results are reserved during facet merging when their retrieved page text overlaps a planned part, which preserves the rank-six NKJV page within the existing candidate and answer-source budgets. For a scripture-scoped question, a matching unannotated Bible page is preferred among qualifying direct-question results. Explicit selected-book scopes remain authoritative, and questions containing multiple references do not inherit an ambiguous scope.
+
+The regression reproduces the artifact's ranking and routing pattern: the NKJV page is absent from stronger unrelated facet results but present at rank six in the direct-question results; the rewritten P2/P3 searches otherwise return William James pages. With the correction, the NKJV page survives the bounded candidate set, links to P1/P2/P3 from its page text, and reaches the Worker answer packet. William James does not become linked evidence. This is a deterministic saved-trace-shaped replay, not a new model answer or proof of semantic quality.
+
+| Validation | Result |
+|---|---|
+| Website suite: `node --test reading-companion/*.test.mjs` | 161 passed, 0 failed |
+| Changed module syntax checks and `git diff --check` | Passed |
+| Saved-trace-shaped retrieval replay | NKJV page retained and linked to the matching parts; no William James link |
+| GitHub PR #188 checks | Website smoke [40158758745](https://github.com/jsynon/antilogicalism/actions/runs/40158758745) and production retrieval evaluation [40158758766](https://github.com/jsynon/antilogicalism/actions/runs/40158758766) passed |
+| Added AI calls or answer-source budget | None |
+| Live deployed answer quality | Pending merge/deploy and a fresh reviewed holdout |
+
+The next step is to merge website PR #188, let Pages publish, and rerun the same seven-question all-books with-review workflow with visible progress. Inspect the James case's executed scoped queries, linked page IDs, submitted sources, and final citations. The acceptance target is that James no longer abstains and that citations reopen the NKJV page covering the relevant verses; then independently check the actual claims against that page. Keep the unseen acceptance suite reserved until the deployed run confirms complete, source-supported answers across the full set.
