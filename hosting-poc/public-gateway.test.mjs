@@ -2422,10 +2422,21 @@ test('v1.9.5 blocks requests before model when pilot rate limiter rejects',async
 });
 test('opt-in evaluation bearer reaches real pilot endpoints without bypassing rate limits',async()=>{
  const token='evaluation-only-secret-'.repeat(3);
- const model=async(_model,input)=>({choices:[{finish_reason:'stop',message:{content:
-   input.max_completion_tokens===720?' {"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}':
-   input.max_completion_tokens===520?JSON.stringify({coverage:'partial',missing:'',evidence:[{id:'S1',point:'Relevant supported passage point.'}]}):
-   'The passage identifies the deeper cause as fear of growing power [S1].'}}],usage:{neurons:1}});
+ const model=async(_model,input)=>{
+   const system=input.messages?.[0]?.content||'';
+   let content;
+   if(system.startsWith('Review each answer part against only its cited')){
+     const payload=JSON.parse(input.messages[1].content);
+     content=JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
+       reason:'The selected source span directly supports the stated distinction.',
+       evidence:[...new Set(part.answers.flatMap(answer=>answer.sourceIds))]
+         .map(sourceId=>({sourceId,spanIds:[sourceId+'-Q1']}))}))});
+   }else if(system.startsWith('Answer the reader\'s question')){
+     const payload=JSON.parse(input.messages[1].content);
+     content=payload.parts.map(part=>'PART '+part.partId+'\nThe passage identifies the deeper cause as fear of growing power. [S1]').join('\n\n');
+   }else content='{"queries":["specific war causes and diplomatic disputes","underlying power growth and rival fear"]}';
+   return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:1}};
+ };
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
    PILOT_EVALUATION_TOKEN:token},model});
  const headers={Authorization:'Bearer '+token};
@@ -2433,7 +2444,11 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
  assert.equal(planned.status,200);
  const answered=await pilot.post({headers});
  assert.equal(answered.status,200);
- assert.equal((await answered.clone().json()).pipeline,'reader-evidence-v2');
+ const answerData=await answered.clone().json();
+ assert.equal(answerData.pipeline,'reader-evidence-v2');
+ assert.equal(answerData.coverage,'full');
+ assert.ok(answerData.evidenceMap[0].quote.length>12);
+ assert.ok(pilot.fixture.body.sources[0].text.includes(answerData.evidenceMap[0].quote));
  assert.equal(pilot.stats().verifyCalls,0);
  assert(pilot.stats().calls>=2);
 

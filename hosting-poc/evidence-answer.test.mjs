@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
 import {auditFinalAnswer} from './reader-contract.mjs';
+import {buildReviewSpans} from './review-spans.mjs';
 
 const catalog={35:'An Enquiry Concerning Human Understanding — David Hume',40:'Critique of Pure Reason — Immanuel Kant'};
 const hume={id:'S1',bookId:'35',title:catalog[35],page:42,url:'https://example.test/hume#page=42',
@@ -15,14 +16,29 @@ function review(statuses,{evidenceByPart={},includeEvidence=true}={}){
  return {response:JSON.stringify({parts:statuses.map(([partId,status])=>({partId,status,
   reason:includeEvidence?'The cited passage directly supports this part.':'',
   evidence:!includeEvidence||status==='unanswered'?[]:evidenceByPart[partId]||
-   (partId==='P3'?[{sourceId:'S1',quote:hume.text},{sourceId:'S2',quote:kant.text}]:
-    [{sourceId:partId==='P2'?'S2':'S1',quote:partId==='P2'?kant.text:hume.text}])}))})};
+   (partId==='P3'?[{sourceId:'S1',spanIds:['S1-Q1']},{sourceId:'S2',spanIds:['S2-Q1']}]:
+    [{sourceId:partId==='P2'?'S2':'S1',spanIds:[(partId==='P2'?'S2':'S1')+'-Q1']}])}))})};
 }
 function makeAI(responses){
  const calls=[];
  return {calls,run:async(model,request)=>{calls.push({model,request});const next=responses.shift();
    if(next instanceof Error)throw next;return typeof next==='function'?next(model,request):next;}};
 }
+
+test('review span IDs map only to exact contiguous source slices and stay within the prompt bound',()=>{
+ const text='A first short sentence. '+('A long sentence contains a precise claim and supporting qualification. '.repeat(8))+
+  'A final sentence.';
+ const spans=buildReviewSpans('S7',text);
+ assert.ok(spans.length>2);
+ assert.equal(new Set(spans.map(span=>span.spanId)).size,spans.length);
+ for(const span of spans){
+  assert.ok(span.text.length>=12&&span.text.length<=220);
+  assert.equal(text.slice(span.start,span.end),span.text);
+  assert.ok(text.includes(span.text));
+ }
+ assert.ok(spans.every(span=>/^S7-Q[1-9]\d*$/.test(span.spanId)));
+ assert.deepEqual(buildReviewSpans('not-a-source',text),[]);
+});
 const onePartPlan={version:'reader-evidence-v2',intent:'explain',
  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
  parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
@@ -41,10 +57,11 @@ test('the composer uses a short per-part answer contract without claim IDs or qu
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
  assert.doesNotMatch(REVIEW_PROMPT,/claimIds|verdict/);
- assert.match(REVIEW_PROMPT,/12–2000 character/);
+ assert.match(REVIEW_PROMPT,/Select span IDs only/);
+ assert.match(REVIEW_PROMPT,/"spanIds":\["S1-Q2"\]/);
  assert.match(REVIEW_PROMPT,/neighboring doctrine or a shared keyword is not support/);
  assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
- assert.match(REVIEW_PROMPT,/exact supporting evidence from every cited source ID/);
+ assert.match(REVIEW_PROMPT,/supporting span from every cited source ID/);
 });
 
 test('a quoted technical term is not mistaken for a source quotation, while multiword quotes stay exact',()=>{
@@ -135,8 +152,8 @@ test('a bad quoted sentence is removed without discarding neighboring verified s
   answer('PART P1\nDu Bois describes a “double life” and painful self-consciousness. [S5] This existence within “double consciousness” forces Black Americans to view themselves through others’ eyes. [S5] He frames double-consciousness as an ongoing historical strife. [S3]'),
   {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
    reason:'The retained claims describe the experience and its place in Du Bois’s account.',
-   evidence:[{sourceId:'S5',quote:'It is a peculiar sensation, this double life, this sense of always looking at one’s self through the eyes of others.'},
-    {sourceId:'S3',quote:'The Negro is a sort of seventh son, born with a veil, and gifted with second-sight in this American world.'}]}]})}
+   evidence:[{sourceId:'S5',spanIds:['S5-Q1']},
+    {sourceId:'S3',spanIds:['S3-Q1']}]}]})}
  ]);
  const result=await composeEvidenceAnswer('How does Du Bois describe the double life and its effects?',
   [source,dubois2],ai,[],{plan,catalog:{454:'The Souls of Black Folk — W. E. B. Du Bois'},trace:true});
@@ -177,7 +194,7 @@ test('a reviewer partial decision is a valid result, not a contract failure',asy
  assert.equal(result.questionParts[0].status,'partial');
 });
 
-test('a reviewer cannot mark an answer supported without an exact quote from a cited page',async()=>{
+test('a reviewer cannot mark an answer supported without selecting a span from its cited page',async()=>{
  const ai=makeAI([answer('PART P1\nKant lists causality among the categories of relation. [S2]'),
   review([['P1','answered']],{includeEvidence:false})]);
  const result=await composeEvidenceAnswer('How does Kant justify causal necessity?',
@@ -188,32 +205,47 @@ test('a reviewer cannot mark an answer supported without an exact quote from a c
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[0].status,'partial');
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
-  {partId:'P1',reason:'no-cited-exact-support-quote'},
+  {partId:'P1',reason:'no-cited-source-span-selected'},
   {partId:'P1',reason:'missing-support-rationale'}]);
  assert.equal(result.evidenceMap.length,0);
 });
 
-test('the active evidence-v2 reviewer verifies a long exact quote before storing a bounded source anchor',async()=>{
+test('invented and cross-source span IDs cannot enter the reviewed evidence map',async()=>{
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],candidateSourceIds:['S1']}]};
+ const ai=makeAI([answer('PART P1\nHume grounds necessity in custom and regularity. [S1]'),
+  {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   reason:'The source explains the custom based inference clearly.',evidence:[
+    {sourceId:'S1',spanIds:['S2-Q1','S1-Q999']},{sourceId:'S99',spanIds:['S99-Q1']}]}]})}]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan,catalog,trace:true});
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.deepEqual(result.trace.reviewContract.supportIssues,[
+  {partId:'P1',reason:'no-cited-source-span-selected'}]);
+ assert.equal(result.evidenceMap.length,0);
+ assert.equal(ai.calls.length,2);
+});
+
+test('the active reviewer resolves a selected span to exact bounded source text',async()=>{
  const longText='A verified passage explains the form and matter relation in detail: '+
   'the soul is the first actuality of a natural body that has life potentially, and this relation is clarified by the comparison between the shape of wax and the wax itself. '.repeat(3);
  const source={...hume,text:longText,preview:longText};
- const exactQuote=longText.slice(0,462);
+ const spans=buildReviewSpans('S1',longText);
  const ai=makeAI([answer('PART P1\nAristotle treats soul as the actuality of a living body. [S1]'),
-  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',quote:exactQuote}]}})]);
+  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',spanIds:[spans[0].spanId]}]}})]);
  const result=await composeEvidenceAnswer('How does Aristotle relate soul and body?',[source],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.coverage,'full');
  assert.ok(result.evidenceMap[0].quote.length<=320);
+ assert.equal(result.evidenceMap[0].quote,spans[0].text);
  assert.ok(longText.includes(result.evidenceMap[0].quote));
  assert.equal(result.trace.reviewContract.supportIssues.length,0);
 });
 
-test('the active reviewer accepts OCR-normalized exact evidence and anchors to original source text',async()=>{
+test('the active reviewer returns OCR text verbatim from the selected source span',async()=>{
  const source={...hume,text:'James writes that faith is jusƟﬁed by works, and this is not an empty formula.',
   preview:'James writes that faith is jusƟﬁed by works, and this is not an empty formula.'};
  const ai=makeAI([answer('PART P1\nJames relates faith to works. [S1]'),
-  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',
-   quote:'James writes that faith is justified by works, and this is not an empty formula.'}]}})]);
+  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',spanIds:['S1-Q1']}]}})]);
  const result=await composeEvidenceAnswer('How does James relate faith and works?',[source],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.coverage,'full');
@@ -223,7 +255,7 @@ test('the active reviewer accepts OCR-normalized exact evidence and anchors to o
 
 test('an answered review must quote every source cited by that part',async()=>{
  const ai=makeAI([answer('PART P1\nHume and Kant give different accounts of causal necessity. [S1, S2]'),
-  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',quote:hume.text}]}})]);
+  review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',spanIds:['S1-Q1']}]}})]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
   [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],
   {plan:{...onePartPlan,intent:'compare',sources:[
@@ -233,7 +265,7 @@ test('an answered review must quote every source cited by that part',async()=>{
     sourceBookIds:['35','40'],searchQueries:['Hume and Kant causal necessity'],candidateSourceIds:['S1','S2']}]},catalog,trace:true});
  assert.equal(result.coverage,'partial');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='missing-cited-source-support-quote'));
+  issue.reason==='missing-cited-source-span'));
 });
 
 test('reviewer contract errors preserve citation-checked text as an explicitly unverified partial draft',async()=>{
@@ -340,12 +372,14 @@ test('verse-restricted answers expose the requested verses as evidence and retai
  const plan={...onePartPlan,scope:'1 John 4:7-12'};
  const ai=makeAI([answer('PART P1\nThe passage grounds mutual love in love from God. [S1]'),
   review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',
-   quote:'Within the requested range, love is from God and believers should love one another.'}]}})]);
+   spanIds:['S1-Q1']}]}})]);
  await composeEvidenceAnswer('According to 1 John 4:7-12, what does love mean?',[source],ai,[],
   {plan,catalog,trace:true});
  const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
  const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
  assert.equal(composePayload.evidence[0].text,source.scopeText);
  assert.equal(composePayload.evidence[0].contextText,source.text);
- assert.equal(reviewPayload.parts[0].evidence[0].text,source.scopeText);
+ assert.equal(reviewPayload.parts[0].evidence[0].spans[0].text,source.scopeText);
+ assert.equal(reviewPayload.parts[0].evidence[0].spans[0].spanId,'S1-Q1');
+ assert.equal(reviewPayload.parts[0].evidence[0].contextText,source.text);
 });
