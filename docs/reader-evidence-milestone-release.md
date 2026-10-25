@@ -357,3 +357,24 @@ My manual scores below are an independent read of the draft and available source
 | Nietzsche and Kierkegaard | 1 | 2 | 1 | 1 | 1 |
 
 The next fix should target reviewer completion reliability without adding a model call: reduce redundant review-payload fields and require a compact decision-only JSON response while retaining per-claim/per-cited-source span checks and provenance context. Add a regression for `finish_reason: length` to preserve the fail-closed behavior and make the incomplete-review reason visible in diagnostics. Do not treat a higher token ceiling alone as proof of reliability. After that change, rerun these same five v48 cases and inspect the exact speaker/page context for Kierkegaard and the Nietzsche p. 578 passage, along with the final inference citation.
+
+## October 25, 2026: run #45 reviewer handoff and page attribution follow-up
+
+Focused all-books with-review workflow [40183728454](https://github.com/jsynon/antilogicalism/actions/runs/40183728454) ran the five focused questions on corpus v48. Four of five cases passed structural checks; the Nietzsche-on-Christianity review failed during formatting. The reviewer reached its 1,800-token output cap (`finish_reason: length`) after echoing the large submitted payload and was cut off inside a span decision. The answer correctly remained an unverified source draft, with no evidence map or highlights. The run used the established 15-call estimate; this failure did not justify a repair call or a higher call budget.
+
+The paired candidate tightens that existing handoff. The reviewer now receives only each claim's ID, text, and cited source IDs, plus exact ranked review spans for those cited pages. It no longer receives repeated candidate-source lists, page book IDs, fingerprints, or unbounded context text. Its output is a compact per-claim decision with span IDs grouped by cited source; free-text rationales are removed because they do not establish evidence. A normalizer accepts the compact shape and the observed legacy evidence-array shape, then performs the same exact-ID and per-cited-source checks against server-held fingerprint-verified spans. The reviewer output cap is 1,200 tokens, while composition stays at 1,800. If the review ends with a length limit, the Worker records `review-output-truncated` at stage `review` and remains fail-closed without an additional model call. Existing public status compatibility is retained as `review-format-failed`; authenticated traces and evaluation artifacts carry the specific failure code.
+
+Source inspection also resolved the page-voice question for the run's Nietzsche material. In *The Portable Nietzsche* (book ID 239), p. 578 is Walter Kaufmann's editorial commentary, while inspected pages 547 and 582 contain direct Nietzsche text. The shared Worker/site reader contract therefore tags only page 578, guarded by the exact v48 book ID and title. The composer and reviewer are told to preserve known pseudonymous work voices, and the site citation label distinguishes Kaufmann's commentary from the work's credited author. This is page-specific metadata, not a claim that all editorial material in the volume has been cataloged.
+
+| Candidate validation | Result |
+|---|---|
+| Focused Worker evidence-answer tests | 43 passed, 0 failed |
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 243 passed, 0 failed |
+| Focused site attribution and live-audit tests | 44 passed, 0 failed |
+| Full site suite: `node --test reading-companion/*.test.mjs` | 180 passed, 0 failed |
+| Shared Worker/site `reader-contract.mjs` | Byte-identical |
+| `git diff --check` | Pending final branch validation |
+| AI-call budget / page packet | Unchanged: 15 baseline calls for five reviewed focused cases; six-page answer packet maximum |
+| Deployed run and semantic review | Pending; offline structure does not establish that cited pages support every answer claim |
+
+This is a paired local candidate and has not been merged or deployed. After both repository checks pass and the changes are deployed, repeat the same five-case focused all-books with-review run. Inspect the exact reviewer output and `finish_reason`, confirm the former truncation is gone without weakening exact-span checks, and review the Nietzsche-on-Christianity source attribution and visible excerpts against the cited page text. Keep the unseen acceptance suite frozen until that source-level review is complete.
