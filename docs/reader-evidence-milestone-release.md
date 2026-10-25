@@ -452,3 +452,5 @@ The change stays inside the Worker answer path. It does not alter retrieval, cor
 | Live workflow / semantic review | Pending merge and Worker deployment |
 
 After this candidate is merged and deployed, rerun the standalone Nietzsche/Kierkegaard focused all-books with-review case first. Confirm that the reviewer returns the flat shape and valid span IDs, the final inference is a standalone sentence with both author groups in one citation group, and the exact selected spans support each premise. Then rerun the established five-case focused set once for collateral effects. Structural completion is necessary but not sufficient; manually inspect the answer's authorship and source passages. Keep the broader unseen acceptance set frozen until those checks pass.
+
+This candidate is open as Worker PR [#237](https://github.com/jsynon/book-chatbot/pull/237). It changes the reviewer, quote-audit contract, Worker tests, public-gateway test fixture, and this report. The remote compare confirms the large test fixture is intact. No GitHub status checks were reported at the time of this update. The PR is not merged or deployed.
