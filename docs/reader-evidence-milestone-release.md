@@ -321,6 +321,7 @@ Worker PR #215 still requires the entire supplied quote to match the same source
 |---|---|
 | Website suite: `node --test reading-companion/*.test.mjs` | 155 passed, 0 failed |
 | Worker suite: `node --test hosting-poc/*.test.mjs` | 215 passed, 0 failed |
+| GitHub required workflows | Worker contracts passed in [run 40147464886](https://github.com/jsynon/book-chatbot/actions/runs/40147464886); website smoke and library evaluation passed in [runs 40147444696](https://github.com/jsynon/antilogicalism/actions/runs/40147444696) and [40147444732](https://github.com/jsynon/antilogicalism/actions/runs/40147444732) |
 | Targeted regressions | Hamlet-style quoted phrase links and reserves the OCR-spaced source page; exact long quote is bounded; altered and non-contiguous quotes remain rejected |
 | `git diff --check` and JavaScript syntax checks | Passed |
 | Fresh production run, new citation trace, unseen acceptance suite | Not yet run against these candidate branches |
