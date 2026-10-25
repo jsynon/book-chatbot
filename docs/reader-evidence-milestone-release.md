@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 37026)
-Total output lines: 859
-
 # Reading Companion evidence milestone: release report
 
 Last updated: October 25, 2026
