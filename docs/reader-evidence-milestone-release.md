@@ -674,3 +674,30 @@ The candidate follows run #54's evidence without changing retrieval scope, model
 | Unseen acceptance set | Frozen until deployed outputs and citations are reviewed |
 
 This candidate is not yet a live quality result. Offline tests show that missing source decisions and known unmediated commentary attribution fail closed, while clean spans remain eligible. They cannot show that Gemma will produce better prose or choose semantically correct passages across the corpus. Keep the release gate focused: review the same five cases and their exact cited pages after deployment, then decide whether the separate Sunyata source audit or broader acceptance run is warranted.
+
+## October 25, 2026: focused run #55 and the next answer-quality candidate
+
+Focused all-books with-review run #55 completed all five cases against corpus v48. The Worker version was `07a3dab9-acdc-4493-9c8b-6e69e0a2e40e`, source build `public-gateway-evidence-selection-v3`, and website revision `0c3171deda81649e793c0724c9dbac35584bbad0`. It estimated 15 calls (one planner plus composition and review per case), completed all five requests, and had no request failures; one planner used its fallback. Structural coverage was 3/5 cases and 5/7 parts. The artifact had no human rubric scores.
+
+| Case | Structural result | Finding |
+|---|---|---|
+| Transcendental idealism | Pass; 1/1 part | The answer covers the requested distinction with two cited books. |
+| Kierkegaard on faith | Pass; 1/1 part | The answer uses three pseudonymous/authored source books and passes the review gate. |
+| Nietzsche on Christianity | Pass; 1/1 part | The source-complete reviewer accepts the answer, but a pronoun-led sentence (“He characterized…”) attributes Walter Kaufmann's p. 578 editorial commentary to Nietzsche after an earlier sentence names Nietzsche. The page-specific attribution guard examines only the current sentence, so this unqualified continuation escaped it. |
+| Sunyata | Partial; 0/1 part | The answer draft cites both p. 17 of *Last Writings* and p. 48 for its final “no Buddha/Buddha” claim. The reviewer found a relevant span on S5, p. 17, but no supporting span on S6, p. 48. The Worker removed that entire multi-source claim, as required by the all-cited-sources rule. The remaining answer gives a basic gloss and comparison, but does not explain emptiness through a supported Buddhist philosophical account. |
+| Nietzsche on Kierkegaard | Partial; 2/3 parts | The synthesis has a standalone cautious inference, but cites all six retrieved pages. The reviewer found relevant Nietzsche evidence on S2 and no premise support in the other five cited pages, so it correctly withheld the inference. The draft should cite the smallest directly relevant pair of premise pages, not every retrieved page. |
+
+The Drive source audit confirms that *Last Writings* p. 17 is page 26 of David A. Dilworth's introduction; the book's contents place the introduction on pp. 1–46 and Nishida's first essay at p. 47. Page 18 is also within that introduction. Page 48 is in Nishida's essay and remains authorial text. The p. 17 discussion presents the “because there is no Buddha, there is Buddha” formulation as Dilworth's account of Nishida's use of the Prajnaparamita tradition. The p. 48 passage makes a related but different statement about absolute nothingness and absolute being in that tradition. This supports adding the missing p. 17 voice metadata, but not treating the two pages as interchangeable evidence or changing retrieval based on this single run.
+
+The next candidate keeps the pipeline and call count unchanged. It carries the cited author's antecedent across up to three preceding supported claims within the same answer part when a later sentence begins with a clear pronoun, so a follow-up sentence cannot bypass a known editorial-page attribution rule. It also tells the composer and reviewer to cite the smallest relevant source set for a hypothetical inference and to treat unrelated extra citations as unsupported. The metadata for *Last Writings*, p. 17, is brought into alignment in the Worker and website reader contracts; p. 48 remains untagged as editorial. The existing source-by-source review gate, span budget, answer schema, and retrieval behavior are unchanged.
+
+| Candidate validation | Result |
+|---|---|
+| Focused Worker regressions | Added: adjacent named-author/pronoun attribution, mediated wording remains eligible, Dilworth p. 17 vs. Nishida p. 48 voice, and a two-page hypothetical that passes with five unused group pages available |
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 261 passed, 0 failed |
+| Website contract suite: `node --test reading-companion/*.test.mjs` | 181 passed, 0 failed |
+| `git diff --check` | Passed in both repositories |
+| Live focused five-case run | Pending merge and Worker deployment; verify Nietzsche attribution, the Sunyata scope and citations, and a minimal two-premise hypothetical citation |
+| Seven-question acceptance workflow | Keep frozen until those live outputs are reviewed and semantically satisfactory |
+
+Run #55 is useful evidence that per-source review is now protecting the answer from unsupported pages; it is not a semantic-quality pass. The immediate candidate closes the attribution-context gap and reduces noisy citations on the inference. The Sunyata answer still needs source-level validation after deployment; the current evidence does not justify broad retrieval changes or a promise of a complete definition. No live model result is claimed for this candidate.

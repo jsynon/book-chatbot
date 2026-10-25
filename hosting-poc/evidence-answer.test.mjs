@@ -44,6 +44,12 @@ test('curated provenance is title-guarded and distinguishes pseudonymous work vo
  const intro=sourceProvenance({bookId:'185',title:'Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida',page:18},
   {sources:[{role:'primary',bookIds:['185']}]},'INTRODUCTION\nA discussion of Nishida follows.');
  assert.deepEqual(intro.pageVoice,{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'});
+ const intro17=sourceProvenance({bookId:'185',title:'Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida',page:17},
+  {sources:[{role:'primary',bookIds:['185']}]},'26\nIntroduction\nNishida describes the logic of soku hi.');
+ assert.deepEqual(intro17.pageVoice,{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'});
+ const NishidaText=sourceProvenance({bookId:'185',title:'Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida',page:48},
+  {sources:[{role:'primary',bookIds:['185']}]},'The religious self is self-determining by transcending the here and now.');
+ assert.equal(NishidaText.pageVoice,undefined,'the main essay remains distinguishable from Dilworth’s introduction');
  const portableTitle='The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)';
  const portablePage=sourceProvenance({bookId:'239',title:portableTitle,page:578},
   {sources:[{role:'primary',bookIds:['239']}]});
@@ -78,6 +84,44 @@ test('editorial commentary cannot be surfaced as the credited author speaking wi
  const mediated=await run('Kaufmann’s commentary presents Nietzsche as viewing the New Testament as a decline. [S1]');
  assert.equal(mediated.coverage,'full');
  assert.match(mediated.answer,/Kaufmann’s commentary/);
+});
+
+test('a pronoun-led claim preserves editorial mediation from the named-author antecedent',async()=>{
+ const portableTitle='The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)';
+ const directTitle='On the Genealogy of Morals — Friedrich Nietzsche';
+ const sources=[
+  {...hume,id:'S1',bookId:'54',title:directTitle,page:46,
+   text:'Nietzsche criticized the moral ideals of Christianity.',
+   preview:'Nietzsche criticized the moral ideals of Christianity.'},
+  {...hume,id:'S2',bookId:'239',title:portableTitle,page:578,
+   text:'Kaufmann discusses Nietzsche’s view of the New Testament in this editorial passage.',
+   preview:'Kaufmann discusses Nietzsche’s view of the New Testament in this editorial passage.'}
+ ];
+ const plan={...onePartPlan,
+  sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['54','239']}],
+  parts:[{...onePartPlan.parts[0],question:'What did Nietzsche think about Christianity?',
+   sourceBookIds:['54','239'],candidateSourceIds:['S1','S2']}]};
+ const run=async(secondSentence)=>{
+  const ai=makeAI([answer('PART P1\nNietzsche argued that Christianity’s moral ideals were life-denying. [S1] '+secondSentence),
+   (_model,{messages})=>{
+    const payload=JSON.parse(messages[1].content);
+    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+     claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+      sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+       spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+   }]);
+  return composeEvidenceAnswer('What did Nietzsche think about Christianity?',sources,ai,[],{
+   plan,catalog:{...catalog,54:directTitle,239:portableTitle},trace:true
+  });
+ };
+ const unmediated=await run('He characterized the New Testament as representing outcasts and sinners. [S2]');
+ assert.equal(unmediated.coverage,'partial');
+ assert.ok(unmediated.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='editorial-source-attribution-unqualified'&&issue.sourceId==='S2'));
+ assert.doesNotMatch(unmediated.answer,/He characterized/);
+ const mediated=await run('According to Kaufmann’s commentary, he characterized the New Testament as representing outcasts and sinners. [S2]');
+ assert.equal(mediated.coverage,'full');
+ assert.match(mediated.answer,/According to Kaufmann’s commentary/);
 });
 
 test('review span IDs map only to exact contiguous source slices and stay within the prompt bound',()=>{
@@ -294,11 +338,14 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
- assert.match(COMPOSER_PROMPT,/End it with one citation group containing relevant evidence from each author’s source group/);
+ assert.match(COMPOSER_PROMPT,/End it with one citation group containing the smallest relevant set of evidence from each author’s source group/);
+ assert.match(COMPOSER_PROMPT,/smallest relevant set of evidence from each author’s source group/);
+ assert.match(COMPOSER_PROMPT,/do not attach every retrieved page or every page from an author group/);
  assert.match(COMPOSER_PROMPT,/A comparison alone does not answer the hypothetical part/);
  assert.match(REVIEW_PROMPT,/source decisions include relevant evidence from every author source group/);
  assert.match(REVIEW_PROMPT,/do not demand a passage documenting the hypothetical response itself/);
  assert.match(REVIEW_PROMPT,/a missing premise, one-sided citation, or conclusion stronger than the premises is partial or unanswered/);
+ assert.match(REVIEW_PROMPT,/A claim need not cite every page available in an author group/);
  assert.match(COMPOSER_PROMPT,/If provenance names a pseudonymous work voice, identify that voice/);
  assert.match(REVIEW_PROMPT,/When provenance identifies a pseudonymous work voice/);
  assert.match(REVIEW_PROMPT,/a first-person narrator's inability or personal experience does not establish a general psychological effect or definition/);
@@ -366,6 +413,44 @@ test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both 
   .map(item=>item.id)),new Set(['S1','S2']));
  assert.equal(result.trace.reviewContract.valid,true);
  assert.deepEqual(result.trace.coverageGaps,[]);
+});
+
+test('a hypothetical can cite one relevant page per author when more group pages are available',async()=>{
+ const catalog={...hypotheticalCatalog,
+  '54':'On the Genealogy of Morals — Friedrich Nietzsche',
+  '144':'Beyond Good and Evil — Friedrich Nietzsche',
+  '192':'Philosophical Fragments — Søren Kierkegaard',
+  '253':'The Sickness Unto Death — Søren Kierkegaard',
+  '436':'Kierkegaard’s Attack Upon “Christendom,” 1854–1855 — Søren Kierkegaard'
+ };
+ const sources=[
+  {...hypotheticalSources[0],candidatePartIds:['P1','P3']},
+  {...hypotheticalSources[1],candidatePartIds:['P2','P3']},
+  ...[['S3','54'],['S4','144'],['S5','192'],['S6','253'],['S7','436']].map(([id,bookId])=>({
+   id,bookId,title:catalog[bookId],page:20,text:'Related source text not used as a premise in this inference.',
+   preview:'Related source text not used as a premise in this inference.',candidatePartIds:['P3']
+  }))
+ ];
+ const plan={...hypotheticalPlan,
+  sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['239','54','144']},
+   {label:'Søren Kierkegaard',role:'primary',bookIds:['140','192','253','436']}],
+  parts:hypotheticalPlan.parts.map(part=>part.id==='P3'?
+   {...part,sourceBookIds:['239','54','144','140','192','253','436']}:part)
+ };
+ let reviewPayload;
+ const reviewer=(_model,{messages})=>{
+  reviewPayload=JSON.parse(messages[1].content);
+  return hypotheticalReview()(_model,{messages});
+ };
+ const ai=makeAI([hypotheticalDraft(
+  'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1, S2]'),
+  reviewer
+ ]);
+ const result=await composeEvidenceAnswer(hypotheticalQuestion,sources,ai,[],{plan,catalog,trace:true});
+ const inference=reviewPayload.claims.find(claim=>claim.partId==='P3');
+ assert.deepEqual(inference.sourceIds,['S1','S2']);
+ assert.equal(result.coverage,'full');
+ assert.equal(ai.calls.length,2);
 });
 
 test('a hypothetical part can give an explicit evidence limitation instead of silently omitting the part',async()=>{

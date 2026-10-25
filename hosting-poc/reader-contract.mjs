@@ -25,7 +25,10 @@ const CURATED_VOICE_IDENTITIES=Object.freeze({
   '192':{title:'Philosophical Fragments — Søren Kierkegaard',workVoice:{kind:'pseudonymous-author',name:'Johannes Climacus',creditedAuthor:'Søren Kierkegaard'}},
   '253':{title:'The Sickness Unto Death — Søren Kierkegaard',workVoice:{kind:'pseudonymous-author',name:'Anti-Climacus',creditedAuthor:'Søren Kierkegaard'}},
   '185':{title:'Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida',
-    editorialPages:{18:{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'}}},
+    editorialPages:{
+      17:{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'},
+      18:{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'}
+    }},
   '239':{title:'The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)',
     editorialPages:{578:{kind:'editorial-commentary',name:'Walter Kaufmann',creditedAuthor:'Friedrich Nietzsche'}}}
 });
