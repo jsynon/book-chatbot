@@ -2247,11 +2247,15 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
 });
 test('public highlights follow inline citation order and include only verified source spans',()=>{
  const citations=['S1','S2','S3','S4','S5','S6'].map(id=>({id,title:id,page:Number(id.slice(1)),url:'https://example.test/'+id}));
- const evidenceMap=citations.map(source=>({id:source.id,quoteVerified:true,quote:'verified anchor '+source.id}));
+ const evidenceMap=citations.map(source=>({id:source.id,quoteVerified:true,
+  quote:`This verified passage states a complete readable claim for source ${source.id}.`}));
  const answer='The definition appears first [S4]. Then context [S1], comparison [S2], detail [S3], source five [S5], source six [S6].';
  const highlights=selectPublicEvidenceHighlights(answer,citations,evidenceMap,3);
  assert.deepEqual(highlights.map(item=>item.source_id),['S4','S1','S2']);
- assert.deepEqual(highlights.map(item=>item.quote),['verified anchor S4','verified anchor S1','verified anchor S2']);
+ assert.deepEqual(highlights.map(item=>item.quote),[
+  'This verified passage states a complete readable claim for source S4.',
+  'This verified passage states a complete readable claim for source S1.',
+  'This verified passage states a complete readable claim for source S2.']);
  const allCited=selectPublicEvidenceHighlights(answer,citations,evidenceMap);
  assert.deepEqual(allCited.map(item=>item.source_id),['S4','S1','S2','S3','S5','S6']);
  assert.equal(allCited.length,6,'the public default exposes verified anchors up to the existing six-page packet limit');
@@ -2259,6 +2263,18 @@ test('public highlights follow inline citation order and include only verified s
   {id:'S1',quoteVerified:false,quote:'unverified excerpt'}]),[]);
  assert.deepEqual(selectPublicEvidenceHighlights('Claim [S1].',citations,[]),[],
   'a missing reviewed anchor does not fall back to a generic preview');
+});
+test('public highlights omit short fragments and OCR running headers without filling a quota',()=>{
+ const citations=[{id:'S6',title:'The Portable Nietzsche',page:66,url:'https://example.test/portable#page=66'}];
+ const short={id:'S6',point:'Faith breaks forth.',quote:'faith can break forth.',quoteVerified:true};
+ const header={id:'S6',point:'Nietzsche applies his own standards.',
+  quote:'54 THE PORTABLE NIETZSCHE The standards they themselves applied.',quoteVerified:true};
+ assert.deepEqual(selectPublicEvidenceHighlights('Faith [S6].',citations,[short]),[]);
+ assert.deepEqual(selectPublicEvidenceHighlights('Nietzsche [S6].',citations,[short,header]),[]);
+ const useful={id:'S6',point:'Nietzsche applies his own standards.',
+  quote:'Nietzsche insists that the standards they themselves applied should govern the judgment.',quoteVerified:true};
+ assert.deepEqual(selectPublicEvidenceHighlights('Nietzsche [S6].',citations,[short,header,useful])
+  .map(item=>item.quote),[useful.quote]);
 });
 test('public highlights prefer the reviewed span most relevant to its linked claim',()=>{
  const citations=[
