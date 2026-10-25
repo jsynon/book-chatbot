@@ -813,7 +813,7 @@ The composer and reviewer now receive structured bibliographic context for credi
 | `git diff --check` | Pending final branch validation |
 | AI call estimate / answer packet | Unchanged: 15 estimated calls for the five reviewed cases; six-page maximum |
 | Run #40 regression fixtures | Kant's complete legacy-shaped review can recover; Sunyata's fenced/trailing-tail JSON parses, but the unselected S5 span remains insufficient and does not enter the evidence map |
-| Current candidate status | Paired branches are committed locally; publication and repository checks are the next gate; not merged or deployed |
+| Current candidate status | Paired PRs [#230](https://github.com/jsynon/book-chatbot/pull/230) and [#196](https://github.com/jsynon/antilogicalism/pull/196) are open; repository checks are pending; neither is merged or deployed |
 | Next release gate | Open paired PRs, pass repository checks, merge/deploy both, and repeat the same five-case run; inspect exact reviewer spans, speaker/section attribution, index exclusion, and visible highlights |
 
 The unseen acceptance suite remains frozen. Even a 5/5 structural run will not complete this milestone until the selected passages support the text, commentary and pseudonymous voices are not presented as an author's direct words, citations avoid index pages, and the user-visible highlights point to the matching reviewed claim.
