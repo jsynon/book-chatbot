@@ -1059,7 +1059,7 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
         '/view?usp=sharing#page='+page,
       // Keep the original hashed page available to the evidence pipeline.
       // `preview` remains the compact browser-facing snippet.
-      text:item.text,sha256:actual,preview:sourceExcerpt(item.text,question),
+      text:stripWebCaptureFooters(item.text),sha256:actual,preview:sourceExcerpt(item.text,question),
       ...(Array.isArray(item.candidatePartIds)?{candidatePartIds:[...new Set(item.candidatePartIds)]}:{}),
       fingerprintBytes:packetBytes});
   }
