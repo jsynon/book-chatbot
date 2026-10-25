@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,stripWebCaptureFooters} from './public-gateway.mjs';
+import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.example.workers.dev';
 const PDF='LegitimatePdfIdentifier0123456789';
@@ -2245,6 +2245,19 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(answerData.workerVersionId,metadata.id);
  assert.equal(answerData.workerVersionTimestamp,metadata.timestamp);
 });
+test('public highlights follow inline citation order and include only verified source spans',()=>{
+ const citations=['S1','S2','S3','S4'].map(id=>({id,title:id,page:Number(id.slice(1)),url:'https://example.test/'+id}));
+ const evidenceMap=citations.map(source=>({id:source.id,quoteVerified:true,quote:'verified anchor '+source.id}));
+ const answer='The definition appears first [S4]. Then context [S1], comparison [S2], detail [S3].';
+ const highlights=selectPublicEvidenceHighlights(answer,citations,evidenceMap,3);
+ assert.deepEqual(highlights.map(item=>item.source_id),['S4','S1','S2']);
+ assert.deepEqual(highlights.map(item=>item.quote),['verified anchor S4','verified anchor S1','verified anchor S2']);
+ assert.deepEqual(selectPublicEvidenceHighlights('Claim [S1].',citations,[
+  {id:'S1',quoteVerified:false,quote:'unverified excerpt'}]),[]);
+ assert.deepEqual(selectPublicEvidenceHighlights('Claim [S1].',citations,[]),[],
+  'a missing reviewed anchor does not fall back to a generic preview');
+});
+
 test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounded AI',async()=>{
  const pilot=await pilotScenario();
  const result=await pilot.post();
@@ -2252,9 +2265,8 @@ test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounde
  const data=await result.json();
  assert.equal(data.outcome,'verified-source-draft');
  assert.equal(data.pilot,true);
- assert.equal(data.evidenceHighlights.length,1);
- assert.equal(data.evidenceHighlights[0].source_id,'S1');
- assert(data.evidenceHighlights[0].quote.includes('growing power'));
+ assert.deepEqual(data.evidenceHighlights,[],
+  'a citation without a reviewer-verified quote anchor is not replaced by its generic preview');
  // The selected page does not name Thucydides' immediate-dispute list or
  // Athens/Sparta specifically, so the reviewer must not surface those prompts.
  assert.deepEqual(data.followUpQuestions,[]);
@@ -2373,7 +2385,8 @@ test('public pilot resolves grouped citation IDs and rejects unknown IDs in a gr
  assert.equal(result.status,200);
  const data=await result.json();
  assert.deepEqual(data.citations.map(item=>item.id),['S1','S3']);
- assert.deepEqual(data.evidenceHighlights.map(item=>item.source_id),['S1','S3']);
+ assert.deepEqual(data.evidenceHighlights,[],
+  'point-only review evidence does not become a visible quote highlight');
 
  const invalid=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===520)

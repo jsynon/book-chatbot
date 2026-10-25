@@ -14,7 +14,7 @@
  * The Free Workers CPU limit (10ms) requires real deployment measurement.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {normalizePlan} from './reader-contract.mjs';
+import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v47/';
 // Keep a generous character ceiling that fits the bounded model output while
@@ -23,6 +23,40 @@ const MAX_ANSWER_CHARACTERS=4800;
 const FRONTEND_ORIGIN = 'https://jsynon.github.io';
 const EXPECTED_TURNSTILE_HOST = 'jsynon.github.io';
 const TURNSTILE_ACTION = 'companion_ask';
+
+export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=3){
+  const byId=new Map(citations.map(source=>[String(source?.id||''),source]));
+  const citationOrder=[...new Set([...citationIds(answer),...citations.map(source=>String(source?.id||''))])]
+    .filter(id=>byId.has(id));
+  const anchors=new Map(citationOrder.map(id=>[id,[...new Set(evidenceMap
+    .filter(item=>item?.id===id&&item.quoteVerified===true&&
+      typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
+    .map(item=>(item.anchorQuote||item.quote).trim()))]]));
+  const highlights=[],used=new Map();
+  const add=(id,quote)=>{
+    const source=byId.get(id);
+    if(!source||!quote||highlights.length>=limit)return false;
+    highlights.push({source_id:id,title:source.title,page:source.page,url:source.url,quote});
+    return true;
+  };
+  // First show one verified passage per cited source in the order the answer
+  // invokes it. If the three-card limit leaves room, show further spans from
+  // those same cited sources. Never synthesize a highlight from a preview.
+  for(const id of citationOrder){
+    const quote=anchors.get(id)?.[0];
+    if(quote&&add(id,quote))used.set(id,new Set([quote]));
+  }
+  for(const id of citationOrder){
+    if(highlights.length>=limit)break;
+    const selected=used.get(id)||new Set();
+    for(const quote of anchors.get(id)||[]){
+      if(selected.has(quote))continue;
+      if(add(id,quote))selected.add(quote);
+      if(highlights.length>=limit)break;
+    }
+  }
+  return highlights;
+}
 // v1.12 full public-catalog coverage; each answer page must still match an
 // owner-published v47 fingerprint before it reaches the model.
 export const PILOT_BOOKS = Object.freeze({
@@ -3725,45 +3759,11 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         ...(typeof diagnostics.reviewFailureReason==='string'?
           {failureDetail:diagnostics.reviewFailureReason}:{})},502,origin);
     }
-    // Highlight original source excerpts, not fabricated model quotations.
-    // The exact page text was independently fingerprint-verified above.
-    const highlightedSources=(output.citations||[]).slice(0,3);
-    const evidenceHighlights=[];
-    const verifiedAnchors=new Map(highlightedSources.map(source=>[source.id,
-      [...new Set((output.evidenceMap||[]).filter(item=>item.id===source.id&&
-        item.quoteVerified===true&&
-        typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
-        .map(item=>(item.anchorQuote||item.quote).trim()))]]));
-    const usedAnchors=new Map();
-    const addHighlight=(source,quote)=>{
-      if(evidenceHighlights.length>=3)return false;
-      const key=source.id+'|'+quote;
-      if(evidenceHighlights.some(item=>item.source_id+'|'+item.quote===key))return false;
-      evidenceHighlights.push({source_id:source.id,title:source.title,
-        page:source.page,url:source.url,quote});
-      return true;
-    };
-    // Give every cited page one visible passage first, then use any remaining
-    // slots for additional distinct verified anchors from those same pages.
-    for(const source of highlightedSources){
-      const anchors=verifiedAnchors.get(source.id)||[];
-      const quote=anchors[0]||sourceExcerpt(
-        source.preview,
-        (output.evidenceMap||[]).filter(item=>item.id===source.id)
-          .map(item=>[item.point,item.speaker,item.qualifier]
-            .filter(Boolean).join(' ')).join(' ')||data.question,320);
-      addHighlight(source,quote);
-      usedAnchors.set(source.id,new Set(anchors.length?[anchors[0]]:[]));
-    }
-    for(const source of highlightedSources){
-      if(evidenceHighlights.length>=3)break;
-      const used=usedAnchors.get(source.id)||new Set();
-      for(const quote of verifiedAnchors.get(source.id)||[]){
-        if(used.has(quote))continue;
-        if(addHighlight(source,quote))used.add(quote);
-        if(evidenceHighlights.length>=3)break;
-      }
-    }
+    // Highlights stay bound to answer-used citations and reviewed, exact spans
+    // from fingerprint-verified source pages. Missing anchors stay missing;
+    // a catalog preview is not evidence for a claim.
+    const evidenceHighlights=selectPublicEvidenceHighlights(output.answer,
+      output.citations||[],output.evidenceMap||[],3);
     // Suggestions only populate the next question; they are not model claims
     // or an implicit extra billable AI call. Fresh retrieval occurs each turn.
     const followUpQuestions=output.outcome==='verified-source-draft'?

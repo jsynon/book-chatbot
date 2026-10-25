@@ -17,6 +17,34 @@ export function catalogIdentity(title){
     translators:translator?[translator]:[],
     aliases:[...new Set(aliases.flatMap(v=>{const clean=v.trim();return [clean,clean.replace(/^(the|a|an)\s+/i,'').trim()];}).filter(v=>v.length>=4))]};
 }
+// Corpus-specific voice notes are deliberately guarded by both the stable v47
+// book ID and its exact title. They describe publication/section context, not
+// proof that every sentence on a page is spoken by that voice.
+const CURATED_VOICE_IDENTITIES=Object.freeze({
+  '140':{title:'Fear and Trembling — Søren Kierkegaard',workVoice:{kind:'pseudonymous-author',name:'Johannes de Silentio',creditedAuthor:'Søren Kierkegaard'}},
+  '192':{title:'Philosophical Fragments — Søren Kierkegaard',workVoice:{kind:'pseudonymous-author',name:'Johannes Climacus',creditedAuthor:'Søren Kierkegaard'}},
+  '253':{title:'The Sickness Unto Death — Søren Kierkegaard',workVoice:{kind:'pseudonymous-author',name:'Anti-Climacus',creditedAuthor:'Søren Kierkegaard'}},
+  '185':{title:'Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida',
+    editorialPages:{18:{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'}}}
+});
+export function sourceProvenance(source,plan,pageText=''){
+  const identity=catalogIdentity(source?.title||'');
+  const role=(plan?.sources||[]).find(item=>(item.bookIds||[]).map(String).includes(String(source?.bookId)))?.role||'unspecified';
+  const heading=String(pageText||'').slice(0,2500).match(/(?:^|\n)\s*(?:the\s+)?(?:(editor|translator|author)['’]s\s+)?(introduction|preface|commentary|notes|index)\b/i);
+  const pageSectionHint=heading?heading[2].toLowerCase():'undetermined';
+  const pageVoiceHint=heading?.[1]?heading[1].toLowerCase()+'-authored section':
+    ['introduction','preface','commentary','notes'].includes(pageSectionHint)?'editorial-or-front-matter; verify against the passage':
+    pageSectionHint==='index'?'reference matter':'undetermined';
+  const curated=CURATED_VOICE_IDENTITIES[String(source?.bookId)];
+  const titleMatches=curated&&String(source?.title||'').trim()===curated.title;
+  const pageVoice=titleMatches?curated.editorialPages?.[Number(source?.page)]:undefined;
+  return {work:identity.work||String(source?.title||''),creditedAuthors:identity.authors||[],
+    creditedEditors:identity.editors||[],creditedTranslators:identity.translators||[],plannerSourceRole:role,
+    pageSectionHint,pageVoiceHint,
+    ...(titleMatches&&curated.workVoice?{workVoice:curated.workVoice}:{}),
+    ...(pageVoice?{pageVoice}:{}),
+    roleMeaning:'The planner role describes intended source selection, not the voice or genre of this individual page.'};
+}
 export function normalizeQuote(text){
   return String(text||'').normalize('NFKC').replace(/[’‘]/g,"'").replace(/[“”]/g,'"')
     .replace(/\s+/g,' ').trim();

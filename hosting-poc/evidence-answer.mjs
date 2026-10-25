@@ -1,4 +1,4 @@
-import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,catalogIdentity} from './reader-contract.mjs';
+import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,sourceProvenance} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
 export const READER_MODEL='@cf/google/gemma-4-26b-a4b-it';
@@ -49,20 +49,6 @@ function parseJson(raw,stage){
     throw new ModelFormatError(stage,'Model response was not valid JSON.');
   try{return JSON.parse(candidate.slice(start,end));}
   catch{throw new ModelFormatError(stage,'Model response was not valid JSON.');}
-}
-
-function sourceProvenance(source,plan,pageText=''){
-  const identity=catalogIdentity(source?.title||'');
-  const role=(plan?.sources||[]).find(item=>(item.bookIds||[]).map(String).includes(String(source?.bookId)))?.role||'unspecified';
-  const heading=String(pageText||'').slice(0,2500).match(/(?:^|\n)\s*(?:the\s+)?(?:(editor|translator|author)['’]s\s+)?(introduction|preface|commentary|notes|index)\b/i);
-  const pageSectionHint=heading?heading[2].toLowerCase():'undetermined';
-  const pageVoiceHint=heading?.[1]?heading[1].toLowerCase()+'-authored section':
-    ['introduction','preface','commentary','notes'].includes(pageSectionHint)?'editorial-or-front-matter; verify against the passage':
-    pageSectionHint==='index'?'reference matter':'undetermined';
-  return {work:identity.work||String(source?.title||''),creditedAuthors:identity.authors||[],
-    creditedEditors:identity.editors||[],creditedTranslators:identity.translators||[],plannerSourceRole:role,
-    pageSectionHint,pageVoiceHint,
-    roleMeaning:'The planner role describes intended source selection, not the voice or genre of this individual page.'};
 }
 
 function linkEvidenceToParts(plan,sources){
@@ -478,7 +464,8 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     answer:noText?(failure?'I could not complete a cited answer from the retrieved pages this time. Please try again shortly.':
       'The retrieved passages did not support a reliable answer to this question. Try a more specific passage or work.'):answer,
     coverage,missing:missing?'Not fully established by the retrieved evidence: '+missing:'',questionParts,
-    citations:sources.filter(source=>used.has(source.id)).map(({text,scopeText,...source})=>source),
+    citations:sources.filter(source=>used.has(source.id)).map(({text,scopeText,...source})=>({...source,
+      provenance:sourceProvenance(source,plan,source.scopeText||source.text||source.preview||'')})),
     evidenceMap,evidenceHighlights,reviewStatus:options.review===false?'answer-draft-unverified':
       reviewFailure?(reviewFailure.code==='model-output-invalid-format'?'review-format-failed':'review-contract-incomplete'):
       failure?(failure.code==='model-output-invalid-format'?'generation-format-failed':'pipeline-failed'):'claim-review',
