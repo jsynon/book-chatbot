@@ -153,9 +153,9 @@ test('trusted corpus provides the page content and PDF link, not untrusted clien
  const sources=await trustedSources(question,payload.sources,fetcher);
  assert.equal(sources.length,1);assert.equal(sources[0].page,38);
  assert(sources[0].preview.includes('real cause'));
- assert.equal(sources[0].text,'The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes. See https://example.org/history for context.\\n');
- assert.match(sources[0].text,/https:\\/\\/example\\.org\\/history/);
- assert.doesNotMatch(sources[0].text,/file:\\/\\/\\/C\\|/);
+ assert.equal(sources[0].text,'The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes. See https://example.org/history for context.\n');
+ assert.match(sources[0].text,/https:\/\/example\.org\/history/);
+ assert.doesNotMatch(sources[0].text,/file:\/\/\/C\|/);
  assert.equal(stripWebCaptureFooters('Read https://example.org/path (not a captured footer).'),'Read https://example.org/path (not a captured footer).');
  assert(sources[0].url.endsWith('#page=38'));
  assert(sources[0].url.includes(PDF));
@@ -1419,7 +1419,7 @@ test('forged packet metadata and duplicate claimed physical pages fail closed',a
 
 
 test('native SHA-256 accepts exact UTF-8 and binds original PDF metadata',async()=>{
- const content='The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes. See https://example.org/history for context.\\nfile:///C|/WINDOWS/Desktop/blahh/i.html (4 of 5) [2/20/2001 3:15:45 AM]';
+ const content='The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes. See https://example.org/history for context.\nfile:////WINDOWS/Desktop/blahh/i.html (4 of 5) [2/20/2001 3:15:45 AM]';
  const raw=new TextEncoder().encode(content);
  const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',raw)),x=>x.toString(16).padStart(2,'0')).join('');
  const canonical={
