@@ -699,8 +699,10 @@ The candidate adds no model calls, does not increase the six-page answer packet,
 | Full website suite (`node --test reading-companion/*.test.mjs`) | 170 passed, 0 failed |
 | Worker/website shared `reader-contract.mjs` | Byte-identical after synchronization |
 | JavaScript syntax checks and `git diff --check` | Passed in both repositories |
+| Worker PR #227 contract workflow | [Run 40168651429](https://github.com/jsynon/book-chatbot/actions/runs/40168651429) passed |
+| Website PR #193 smoke workflow | [Run 40168668807](https://github.com/jsynon/antilogicalism/actions/runs/40168668807) passed |
 | Model-call budget and answer packet | Unchanged: two answer calls with review; six-page maximum |
-| Fresh five-case reviewed holdout after merge and deployment | Pending; required to determine whether the reviewer now selects S5-Q9, the public highlights match the evidence map, and the source-scoped questions improve |
+| Fresh five-case reviewed holdout after merge and deployment | Pending; both PR checks pass, but the fixes are not yet merged/deployed. The rerun must determine whether the reviewer selects S5-Q9, highlights match the evidence map, and source-scoped questions improve |
 | Unseen acceptance suite and final semantic milestone | Reserved until the same focused holdout and cited-passage review support promotion |
 
-Do not interpret a future structural 5/5 alone as semantic acceptance. Inspect the full cited page text and trace for faith, both Nietzsche questions, and the sunyata highlights; then verify that ordinary live questions still retain exact book/page citations and that explicit multi-part questions keep all requested facets.
+PR #227 in `book-chatbot` and paired website PR #193 in `antilogicalism` contain this candidate. Their automated checks passed; neither PR is merged or deployed yet. After both are merged and the Worker deployed, rerun the five-case focused with-review workflow. Do not interpret a future structural 5/5 alone as semantic acceptance. Inspect the full cited page text and trace for faith, both Nietzsche questions, and the sunyata highlights; then verify that ordinary live questions still retain exact book/page citations and that explicit multi-part questions keep all requested facets.
