@@ -94,7 +94,7 @@ def named_author_groups(question, entries):
 def content_terms(question, tokenize, author_groups=(), limit=8):
     """Recover indexed literal content words without the query instructions.
 
-    We retain the reader's actual words (not invented synonyms) because v47
+    We retain the reader's actual words (not invented synonyms) because v48
     partitions store surface word forms. The same tokenizer as passage BM25
     decides whether a word is just a stop word; the query-framing filter then
     removes ordinary search directions. This supports unfamiliar subjects

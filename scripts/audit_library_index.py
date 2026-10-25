@@ -1,7 +1,7 @@
-"""Inspect the public v47 compressed search index without modifying it.
+"""Inspect the public v48 compressed search index without modifying it.
 
 Usage:
-  python scripts/audit_library_index.py path/to/data-v47
+  python scripts/audit_library_index.py path/to/data-v48
   python scripts/audit_library_index.py --remote
 
 Remote mode downloads only the compressed manifest and a few relevant term
@@ -15,7 +15,7 @@ from pathlib import Path
 import urllib.request
 
 BASE = ("https://raw.githubusercontent.com/jsynon/"
-        "antilogicalism-library-data/main/data-v47/")
+        "antilogicalism-library-data/main/data-v48/")
 
 
 def read(root, filename, remote=False):

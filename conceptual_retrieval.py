@@ -5,7 +5,7 @@ For questions like "What would A think about B's philosophy?" the literal
 index query has no real philosophical subject (often only 'thought'). In
 that case the FIRST of the existing two inference calls constructs SEARCH
 HINTS for EACH *catalog-verified* author, not quotations or historical facts.
-The second call composes from actual v47 primary-source passages.
+The second call composes from actual v48 primary-source passages.
 
 Model topic suggestions are NEVER treated as evidence; only indexed passages
 can be cited. Failure or invalid output uses bounded lexical retrieval and
@@ -52,7 +52,7 @@ def needs_concept_plan(question, catalog_entries):
 
 
 def _validated_topic_words(items, tokenize, author_groups):
-    """Sanitize planning HINTS into ordinary v47 index terms, nothing more."""
+    """Sanitize planning HINTS into ordinary v48 index terms, nothing more."""
     if not isinstance(items, list) or len(items) > 10:
         return []
     terms = []

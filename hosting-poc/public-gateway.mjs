@@ -6,7 +6,7 @@
  *
  * Public clients submit a question, a fresh Turnstile token, and numeric
  * book/page locators — NEVER their own passage text, title or PDF URL.
- * The Worker fetches trusted v47 source shards, binds PDF citations to
+ * The Worker fetches trusted v48 source shards, binds PDF citations to
  * manifest metadata, then runs bounded answer generation with a conditional quote repair.
  *
  * Important: authentic source text != a factually supported AI answer.
@@ -16,7 +16,7 @@
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
 import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
-export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v47/';
+export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v48/';
 // Keep a generous character ceiling that fits the bounded model output while
 // allowing detailed, evidence-supported answers without turning them into 502s.
 const MAX_ANSWER_CHARACTERS=4800;
@@ -58,7 +58,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
   return highlights;
 }
 // v1.12 full public-catalog coverage; each answer page must still match an
-// owner-published v47 fingerprint before it reaches the model.
+// owner-published v48 fingerprint before it reaches the model.
 export const PILOT_BOOKS = Object.freeze({
   "2": "Fragments — Anaxagoras",
   "3": "Summa Contra Gentiles — Thomas Aquinas",
@@ -955,7 +955,7 @@ function retrievedPassageFallback(question,sources) {
 }
 export async function trustedSources(question,locators,fetcher=(url,opt)=>globalThis.fetch(url,opt)) {
   const manifest=await corpusJson('manifest.json',fetcher);
-  if (manifest.version!==47 || !manifest.books ||
+  if (manifest.version!==48 || !manifest.books ||
       !Array.isArray(manifest.page_books)) throw new Error('Unexpected library manifest');
   const bookIds=[...new Set(locators.map(s=>String(s.bookId)))];
   const data=new Map();
@@ -987,7 +987,7 @@ export async function trustedSources(question,locators,fetcher=(url,opt)=>global
   return selected;
 }
 // v1.9.2: Consume a small precomputed static packet instead of unpacking
-// the full v47 global manifest and all pages of a book. These packets are
+// the full v48 global manifest and all pages of a book. These packets are
 // built offline from the canonical data repository and hosted on GitHub Pages.
 // This is a CPU experiment, not automatic public enablement.
 export const PACKET_ROOT='https://jsynon.github.io/antilogicalism-library-data/reader-packets-v1/';
@@ -1011,8 +1011,8 @@ export async function trustedPacketSources(question,locators,fetcher=(url,option
       loaded.set(key,{packet:JSON.parse(decoded),byteLength:bytes.byteLength});
     }
     const {packet,byteLength}=loaded.get(key);
-    if(packet.schema!=='antilogicalism-reader-packet-v1'||
-        packet.libraryVersion!==47||packet.bookId!==id||
+    if(packet.schema!=='antilogicalism-reader-packet-v2'||
+        packet.libraryVersion!==48||packet.bookId!==id||
         packet.chunk!==chunk||packet.firstPage!==chunk*32+1||
         packet.lastPage!==chunk*32+32||
         typeof packet.title!=='string'||!packet.title.trim()||
@@ -1038,10 +1038,10 @@ export async function trustedPacketSources(question,locators,fetcher=(url,option
 }
 
 // v1.9.3 private pilot: verify the *exact* UTF-8 source page text supplied
-// by the browser against a small, owner-published v47 fingerprint packet.
+// by the browser against a small, owner-published v48 fingerprint packet.
 // The SHA-256 is calculated in the Worker using native WebCrypto; no mutable
 // browser-provided title, excerpt, page ID or PDF link is trusted.
-export const FINGERPRINT_ROOT='https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v1/';
+export const FINGERPRINT_ROOT='https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v2/';
 export async function verifiedFingerprintSources(question,items,fetcher=(url,opts)=>globalThis.fetch(url,opts)) {
   if(!Array.isArray(items)||!items.length||items.length>6)
     throw new Error('Invalid source count');
@@ -1075,8 +1075,8 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
         packetBytes:raw.byteLength});
     }
     const {fingerprint:p,packetBytes}=packets.get(key);
-    if(p.schema!=='antilogicalism-reader-fingerprints-v1'||
-       p.hashAlgorithm!=='SHA-256-utf8-exact'||p.libraryVersion!==47||
+    if(p.schema!=='antilogicalism-reader-fingerprints-v2'||
+       p.hashAlgorithm!=='SHA-256-utf8-exact'||p.libraryVersion!==48||
        p.bookId!==bookId||p.chunk!==chunk||
        p.firstPage!==chunk*32+1||p.lastPage!==chunk*32+32||
        typeof p.title!=='string'||!p.title.trim()||
@@ -3257,7 +3257,7 @@ function applyExplicitBibleVerseScope(question,sources){
 }
 
 // AI-assisted SOURCE DISCOVERY ONLY. No facts, page numbers, citations or
-// book excerpts here: the website still retrieves the original v47 text and
+// book excerpts here: the website still retrieves the original v48 text and
 // the existing answer endpoint must independently verify exact SHA-256 pages.
 function namedGroupQueryTargets(question,bookTitle){
   // For a hypothetical response, preserve the planner's semantic query terms
@@ -3577,7 +3577,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       publicEnabled:env.PUBLIC_ENABLED==='true',mode:'public-foundation'},200,origin);
   }
   // v1.11 public, staged interdisciplinary alpha. All accepted pages MUST
-  // pass original v47 hashes; availability is limited to books with published v47 fingerprints.
+  // pass original v48 hashes; availability is limited to books with published v48 fingerprints.
   // Public enablement requires explicit opt-in AND every safety binding.
   const pilotReady=env.PUBLIC_PILOT_ENABLED==='true' &&
     env.PUBLIC_ENABLED!=='true' && typeof env.TURNSTILE_SITE_KEY==='string' &&
@@ -3821,7 +3821,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           fingerprintBytes:s.fingerprintBytes,
         })),
         wallElapsedMs:Math.round(performance.now()-started),cpuTimeMs:null,
-        note:'Exact page text SHA-256 matched trusted v47 fingerprints; this does not verify AI claims. No AI was run.'});
+        note:'Exact page text SHA-256 matched trusted v48 fingerprints; this does not verify AI claims. No AI was run.'});
     }catch(error){
       const reason=String(error?.message||error);
       const clientMismatch=/SHA-256 mismatch|length mismatch|Invalid source claim|Duplicate source claim|Unacceptable page text size|Too much text submitted/.test(reason);
@@ -3832,7 +3832,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     }
   }
   // Protected end-to-end milestone: private client provides full canonical
-  // v47 page text, which MUST match a trusted SHA-256 before any AI inference.
+  // v48 page text, which MUST match a trusted SHA-256 before any AI inference.
   // This is separate from /api/answer and remains off for public visitors.
   if(url.pathname==='/internal/verified-answer'){
     const permitted=['http://127.0.0.1:8766','http://localhost:8766'];
@@ -3893,7 +3893,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
   }
   // Compare CPU time against /internal/source-probe with the same protected
   // token and source locator. No AI, no public access, no need to enable
-  // Turnstile or billing; packet built offline from canonical v47 sources.
+  // Turnstile or billing; packet built offline from canonical v48 sources.
   if(url.pathname==='/internal/packet-probe') {
     if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
     if(origin)return json({error:'Browser requests not supported'},403,origin);
@@ -4051,7 +4051,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     invalidCitations:invalid,
     finishReason:second?.choices?.[0]?.finish_reason||'unknown',
     usage:{neurons:firstNeurons+secondNeurons},model:MODEL,
-    notice:'Source provenance checked against v47; individual AI claims are not independently verified.',
+    notice:'Source provenance checked against v48; individual AI claims are not independently verified.',
   },200,origin);
 }
 // Cloudflare calls fetch(request, env, ctx): ctx is an execution-context

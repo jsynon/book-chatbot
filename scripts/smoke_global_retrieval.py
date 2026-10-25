@@ -1,4 +1,4 @@
-"""Optional real-v47 smoke test for the existing full-text partitions.
+"""Optional real-v48 smoke test for the existing full-text partitions.
 
 This is separate from deterministic CI tests because it downloads public
 corpus data. It DOES NOT call Ollama or modify the site's source repositories.
@@ -20,7 +20,7 @@ from whole_library import WholeLibraryLocator
 
 
 BASE = ("https://raw.githubusercontent.com/jsynon/"
-        "antilogicalism-library-data/main/data-v47/")
+        "antilogicalism-library-data/main/data-v48/")
 CATALOG = ("https://raw.githubusercontent.com/jsynon/"
            "antilogicalism/main/digital-library/library-catalog.json")
 
@@ -33,9 +33,9 @@ def download(url, dest):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="reading-companion-v47-") as temp:
+    with tempfile.TemporaryDirectory(prefix="reading-companion-v48-") as temp:
         root = Path(temp)
-        corpus = root / "antilogicalism-library-data" / "data-v47"
+        corpus = root / "antilogicalism-library-data" / "data-v48"
         cat = root / "antilogicalism" / "digital-library" / "library-catalog.json"
         size = download(CATALOG, cat)
         print("Catalog bytes:", size, flush=True)
@@ -49,7 +49,7 @@ def main():
         default = {
             "book_id": "7", "title": "Nicomachean Ethics — Aristotle",
             "pdf_file_id": "1XVInAFS2zutV8PDp8A3DirUrW6nLLfvY",
-            "corpus_version": "v47",
+            "corpus_version": "v48",
         }
         index = app.PassageIndex(
             [(default, [{"page": 1,
@@ -58,7 +58,7 @@ def main():
             app.tokenize,
         )
         registry = LibraryIndexRegistry(
-            cat, root / "antilogicalism-library-data", "v47", default,
+            cat, root / "antilogicalism-library-data", "v48", default,
             index, corpus / "book-7.json.gz", app.tokenize,
             app.likely_page_continuation,
         )
@@ -89,7 +89,7 @@ def main():
                 "1XVInAFS2zutV8PDp8A3DirUrW6nLLfvY",
                 "1L6LzGc2IDOPLPhYOKZGF4yx2m-cBxoiD",
             } for p in hits)
-        print("REAL V47 CROSS-BOOK SMOKE OK")
+        print("REAL V48 CROSS-BOOK SMOKE OK")
 
 
 if __name__ == "__main__":

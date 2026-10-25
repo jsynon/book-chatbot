@@ -38,10 +38,10 @@ form.addEventListener('submit',async event=>{
   const question=document.getElementById('question').value.trim();
   const token=document.getElementById('token').value;
   const altered=document.getElementById('tamper').checked;
-  status.textContent='Loading original v47 Thucydides page 38…';
+  status.textContent='Loading original v48 Thucydides page 38…';
   const book=await library.jsonGzip('book-152.json');
   const page=book.pages.find(p=>p.id===34403&&p.page===38);
-  if(!page||typeof page.text!=='string')throw Error('Canonical v47 page 38 was not found.');
+  if(!page||typeof page.text!=='string')throw Error('Canonical v48 page 38 was not found.');
   const text=altered?page.text+'x':page.text;
   status.textContent='Verifying SHA-256 on Cloudflare, then reviewing evidence with hosted AI…';
   const endpoint=document.getElementById('endpoint').value.replace(/\/+$/,'');
@@ -75,7 +75,7 @@ form.addEventListener('submit',async event=>{
   line(out,'Workers AI neurons',data.usage?.neurons??'not reported');
   line(out,'Wall time (not CPU)',(data.wallElapsedMs??'?')+' ms');
   const warning=document.createElement('p');warning.className='note';warning.textContent=
-    'The page text was cryptographically verified against v47. Individual AI claims are not independently proved by the citations.';
+    'The page text was cryptographically verified against v48. Individual AI claims are not independently proved by the citations.';
   out.append(warning);
   status.textContent='Test complete: '+data.verifiedPages+' page(s) source-verified before AI.';
  }catch(error){status.textContent='Test failed: '+error.message;}

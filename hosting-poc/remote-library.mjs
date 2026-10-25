@@ -1,8 +1,8 @@
-/* v1.8.1: Read-only browser proof of concept for the published v47 corpus.
+/* v1.8.1: Read-only browser proof of concept for the published v48 corpus.
  * This does not call an LLM or replace Python's evidence pipeline.
  * Original shard IDs, physical PDF pages and manifest PDF URLs are preserved.
  */
-export const DEFAULT_INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v47/';
+export const DEFAULT_INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v48/';
 const STOP = new Set('a an and are as at be by can do does for from how i in is it of on or our the their these this to was were what when where who why with would'.split(' '));
 const PDF = /^https:\/\/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]{10,})\/(?:view|preview)/;
 export function queryTerms(question) {
@@ -152,11 +152,11 @@ export class RemoteLibrary {
   async manifest() {
     if (!this.manifestPromise) {
       this.manifestPromise = this.jsonGzip('manifest.json').then(value => {
-        if (value.version !== 47 || value.postings_encoding !== 'delta-json-v1' ||
+        if (value.version !== 48 || value.postings_encoding !== 'delta-json-v1' ||
             value.prefix_length !== 2 || !Array.isArray(value.page_books) ||
             value.page_books.length !== value.pages ||
             !Array.isArray(value.partitions) || typeof value.books !== 'object') {
-          throw new Error('Incompatible v47 manifest.');
+          throw new Error('Incompatible v48 manifest.');
         }
         return value;
       }).catch(error => { this.manifestPromise = null; throw error; });

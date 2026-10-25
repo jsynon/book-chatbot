@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
 import {RemoteLibrary,decodeDeltas,previewAtWordBoundary,queryTerms,isNavigationPage} from './remote-library.mjs';
 const pdfId='SomeRealFormatPdfId1234567';
-const manifest={version:47,postings_encoding:'delta-json-v1',prefix_length:2,pages:5,page_books:[7,7,152,152,152],partitions:['pe','wa','ca'],books:{
+const manifest={version:48,postings_encoding:'delta-json-v1',prefix_length:2,pages:5,page_books:[7,7,152,152,152],partitions:['pe','wa','ca'],books:{
   7:{title:'Ethics — Aristotle',drive_url:`https://drive.google.com/file/d/${pdfId}/view`},
   152:{title:'History — Thucydides',drive_url:`https://drive.google.com/file/d/${pdfId}/view`}
 }};
@@ -15,7 +15,7 @@ test('query terms exclude framing without hardcoding an answer',()=>{assert.deep
 test('delta decoding checks page bounds and corruption',()=>{assert.deepEqual(decodeDeltas([1,2,1],5),[1,3,4]);assert.throws(()=>decodeDeltas([8],5),/exceeds/);assert.throws(()=>decodeDeltas([-1],5),/Corrupt/);});
 test('clip is not misrepresented as a whole page and avoids midword truncation',()=>{const t=previewAtWordBoundary('The long words support a claim involving historical causes and consequences.',28);assert.equal(t,'The long words support a…');});
 test('retrieves exact physical pages and manifest-matched book PDF from public corpus schema', async()=>{
- const retriever=new RemoteLibrary('https://example.test/data-v47/',fakeFetch);
+ const retriever=new RemoteLibrary('https://example.test/data-v48/',fakeFetch);
  const out=await retriever.search('What caused the Peloponnesian War?',{maxBooks:2});
  assert.equal(out.sources.length,2);assert.deepEqual(out.terms,['caused','peloponnesian','war']);
  assert.deepEqual(out.sources.map(x=>x.page),[27,28]);
@@ -24,7 +24,7 @@ test('retrieves exact physical pages and manifest-matched book PDF from public c
  assert.equal(out.sources[0].bookId,'152');
 });
 test('optional book selection and no random nonmatching book retention',async()=>{
- const library=new RemoteLibrary('https://example.test/data-v47/',fakeFetch);
+ const library=new RemoteLibrary('https://example.test/data-v48/',fakeFetch);
  const out=await library.search('What caused the Peloponnesian War?',{bookId:'7'});
  assert.equal(out.sources.length,0);
 });
@@ -37,7 +37,7 @@ test('default browser fetch preserves its global receiver',async()=>{
    return fakeFetch(url,options);
  };
  try{
-   const retriever=new RemoteLibrary('https://example.test/data-v47/');
+   const retriever=new RemoteLibrary('https://example.test/data-v48/');
    const result=await retriever.search('What caused the Peloponnesian War?');
    assert.equal(result.sources.length,2);
    assert(calls.some(url=>url.endsWith('/manifest.json.gz')));
@@ -70,7 +70,7 @@ test('does not rank unrelated single-word matches over a multi-term history book
  ];
  data['book-89.json']={pages:[{id:5,page:12,text:'The warriors gathered for war. Ancient heroes exchanged words and fought their enemies.'}]};
  const fetcher=url=>{const filename=String(url).split('/').pop().replace(/\.gz$/,'');return Promise.resolve(filename in data ? new Response(gzipSync(JSON.stringify(data[filename])),{status:200}) : new Response('',{status:404}));};
- const result=await new RemoteLibrary('https://example.test/v47/',fetcher).search('What caused the Peloponnesian War?');
+ const result=await new RemoteLibrary('https://example.test/v48/',fetcher).search('What caused the Peloponnesian War?');
  assert(result.sources.length>0);
  assert(result.sources.every(source=>source.bookId==='152'));
  assert(result.sources.every(source=>source.page!==656));
@@ -109,7 +109,7 @@ test('third evidence slot preserves adjacent-page narrative over a distant scatt
  {id:5,page:622,text:'The Peloponnesian War was caused by the escalation of local warfare in several territories. Ships gathered near the coast.'}
  ];
  const fetcher=url=>{const file=String(url).split('/').pop().replace(/\.gz$/,'');return Promise.resolve(file in data ? new Response(gzipSync(JSON.stringify(data[file])),{status:200}) : new Response('',{status:404}));};
- const result=await new RemoteLibrary('https://example.test/v47/',fetcher).search('What caused the Peloponnesian War?',{maxBooks:1,pagesPerBook:3});
+ const result=await new RemoteLibrary('https://example.test/v48/',fetcher).search('What caused the Peloponnesian War?',{maxBooks:1,pagesPerBook:3});
  assert.equal(result.sources.length,3);
  // This asserts that contiguous page 39 is reserved when page 38 is a top hit.
  // Exact ordering can depend on scoring, so sort the physical pages to verify.
@@ -118,11 +118,11 @@ test('third evidence slot preserves adjacent-page narrative over a distant scatt
 
 
 test('v1.10 search only returns sources from fingerprint-ready book allowlist',async()=>{
- const result=await new RemoteLibrary('https://example.test/v47/',fakeFetch)
+ const result=await new RemoteLibrary('https://example.test/v48/',fakeFetch)
    .search('What caused the Peloponnesian War?',{
       allowedBookIds:new Set(['7']),maxBooks:2,pagesPerBook:1});
  assert.equal(result.sources.length,0);
- const accepted=await new RemoteLibrary('https://example.test/v47/',fakeFetch)
+ const accepted=await new RemoteLibrary('https://example.test/v48/',fakeFetch)
    .search('What caused the Peloponnesian War?',{
       allowedBookIds:new Set(['152']),maxBooks:2,pagesPerBook:1});
  assert(accepted.sources.length>0);

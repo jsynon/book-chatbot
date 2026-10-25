@@ -1,6 +1,6 @@
 """Read-only source availability and lexical retrieval audit for benchmark works.
 
-Optionally downloads the real public v47 book shards for the one-book cases,
+Optionally downloads the real public v48 book shards for the one-book cases,
 checks catalog/PDF identity and reports original passages that the current
 local selected-book index would find. No Ollama calls and no corpus edits.
 
@@ -21,7 +21,7 @@ from grounded_pipeline import PassageIndex
 from library_catalog import DRIVE_FILE
 
 DATA = ("https://raw.githubusercontent.com/jsynon/"
-        "antilogicalism-library-data/main/data-v47/")
+        "antilogicalism-library-data/main/data-v48/")
 CATALOG = ("https://raw.githubusercontent.com/jsynon/"
            "antilogicalism/main/digital-library/library-catalog.json")
 
@@ -60,7 +60,7 @@ def main():
                 "book_id": book_id, "title": info["title"],
                 "author": info.get("author", ""),
                 "subjects": info.get("subjects", []),
-                "pdf_file_id": matched.group(1), "corpus_version": "v47",
+                "pdf_file_id": matched.group(1), "corpus_version": "v48",
             }
             index = PassageIndex(
                 [(meta, pages)], app.tokenize,
@@ -81,7 +81,7 @@ def main():
                       repr(hit["text"][:230]), flush=True)
             analyzed += 1
         assert analyzed == 7
-        print("REAL V47 CROSS-DISCIPLINARY SOURCE AUDIT OK", flush=True)
+        print("REAL V48 CROSS-DISCIPLINARY SOURCE AUDIT OK", flush=True)
 
 
 if __name__ == "__main__":
