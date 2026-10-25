@@ -829,4 +829,31 @@ Run #41 identified a presentation defect distinct from retrieval and answer vali
 - The Worker selects up to three highlights in the answer's inline citation order, then fills remaining slots with additional distinct verified spans. A citation with no verified reviewer span receives no fabricated preview highlight. The site and source reader expose that absence clearly rather than presenting an arbitrary excerpt as a key passage.
 - The live evaluation artifact serializes bounded provenance fields so future runs can be audited without relying on prompt-only traces.
 
-The candidate preserves source fingerprint checks, reviewer strictness, retrieval/page limits, and the 15-call estimate. Local validation passes: Worker 238/238, website 176/176, shared contract byte equality, syntax checks, and `git diff --check`. Paired PRs [#231](https://github.com/jsynon/book-chatbot/pull/231) and [#197](https://github.com/jsynon/antilogicalism/pull/197) are open. Their GitHub checks are running: Worker contract run [40178784774](https://github.com/jsynon/book-chatbot/actions/runs/40178784774) and website smoke run [40178790921](https://github.com/jsynon/antilogicalism/actions/runs/40178790921). After both checks pass and the PRs are merged/deployed, repeat the same focused five-case run and inspect exact page text, attribution, inline highlight order, and the still-partial Kierkegaard/faith case. Keep the unseen acceptance suite frozen until those checks hold. The candidate has not yet been merged, deployed, or evaluated with a new model run.
+The candidate preserved source fingerprint checks, reviewer strictness, retrieval/page limits, and the 15-call estimate. Paired PRs [#231](https://github.com/jsynon/book-chatbot/pull/231) and [#197](https://github.com/jsynon/antilogicalism/pull/197) were merged and deployed before run #42. That run and the follow-up are recorded below. The unseen acceptance suite remains frozen until the deployed five-case results and cited passages are reviewed.
+
+## October 25, 2026: run #42 and review/retrieval follow-up
+
+After Worker PR #231 and website PR #197 were merged, the user ran focused, all-books, with-review workflow [40179065982](https://github.com/jsynon/antilogicalism/actions/runs/40179065982). The artifact records site revision `0d614bdb82bcfaf3ad17ea1d116fd6ca160da57b`, Worker version `7d036e8c-e02a-449a-9e22-7e0d786c9449` (`public-gateway-evidence-selection-v3`), and corpus v47. All five cases completed; there were no request failures, planner fallbacks, or skipped cases. The expected baseline remained 15 AI calls. Structural checks passed 3/5; all human rubric fields remain pending, so this is not a semantic answer-quality score.
+
+The two failures were distinct:
+
+- **Nietzsche on Christianity:** Composition produced a cited draft, but the reviewer returned invalid JSON. The outer Markdown fence was not the cause—the current parser already removes a complete fence. Inside it, the reviewer put unescaped quotation marks around the phrase `denial of the self` in a JSON `reason` string. The Worker correctly marked the review as `model-output-invalid-format` and withheld verified status and evidence highlights.
+- **Nietzsche and Kierkegaard:** The Nietzsche-specific query returned no indexed pages. The broad question search did return an incidental Nietzsche-book hit, but it did not become a candidate linked to Nietzsche's answer part. That unrelated hit tripped an existing `alreadyFound` guard, suppressing the bounded retry with Kierkegaard's topic terms restricted to Nietzsche's planned books. The six-page submitted packet therefore contained only Kierkegaard pages. The reviewer also emitted a duplicate top-level `parts` property; ordinary JSON parsing retained the later list, dropping Nietzsche's decision, and the Worker correctly rejected the incomplete review contract.
+
+The paired follow-up changes only the two existing handoff points:
+
+- The reviewer prompt now requires one unfenced JSON object and tells the model not to use quotation marks in free-text reasons; span IDs already carry the exact evidence reference. The current Gemma model is not listed among Cloudflare Workers AI's documented JSON Mode models, so the Worker does not send an unsupported `response_format` option. There is no repair-model call or new dependency. Existing parsing and contract checks remain authoritative: malformed JSON stays unverified, and a duplicate `parts` key that loses a planned decision remains contract-incomplete.
+- The website now performs its existing one-time, source-scoped comparison retry whenever a named side's own facet is empty and the counterpart facet has results, even if the broad question facet contains an incidental hit from that side. This lets a relevant Nietzsche candidate reach the already part-aware, author-balanced six-page selector. The retry stays restricted to the planned Nietzsche books; if no qualifying page is found, the answer remains safely partial. It adds one local index search only in that case, with no AI call, page-cap increase, or citation-validation relaxation.
+
+| Validation | Result |
+|---|---|
+| Worker focused evidence-answer tests | 40 passed, including malformed-quote fail-closed and duplicate-`parts` contract regressions |
+| Website focused evidence-search tests | 58 passed, including an incidental broad-hit retry regression that verifies both authors reach the bounded answer packet |
+| Full Worker suite: `node --test --test-reporter=dot hosting-poc/*.test.mjs` | 240 passed, 0 failed |
+| Full website suite: `node --test --test-reporter=dot reading-companion/*.test.mjs` | 177 passed, 0 failed |
+| Shared Worker/site `reader-contract.mjs` | Byte-identical |
+| `git diff --check` | Passed in both repositories |
+| Model-call budget / packet limit | Unchanged: 15 baseline calls across five reviewed cases; six submitted pages maximum |
+| Semantic answer review | Pending; structural tests do not prove that a recovered Nietzsche passage supports the comparison |
+
+The next live gate is the same five-case focused, all-books, with-review run after both follow-up PRs merge and deploy. Inspect the exact Nietzsche passages in `retrievalCandidates` and `submittedSources`, verify the review response remains contract-valid, and check all cited page text against the answer. Keep the unseen acceptance suite frozen until that source-level review is satisfactory.
