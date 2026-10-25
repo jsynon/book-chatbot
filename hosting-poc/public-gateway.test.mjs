@@ -2269,7 +2269,7 @@ test('public highlights follow inline citation order and include only verified s
  assert.deepEqual(selectPublicEvidenceHighlights('Claim [S1].',citations,[]),[],
   'a missing reviewed anchor does not fall back to a generic preview');
 });
-test('public highlights omit short fragments and OCR running headers without filling a quota',()=>{
+test('public highlights omit short fragments and remove only exact OCR running-header prefixes',()=>{
  const citations=[{id:'S6',title:'The Portable Nietzsche',page:66,url:'https://example.test/portable#page=66'}];
  const short={id:'S6',point:'Faith breaks forth.',quote:'faith can break forth.',quoteVerified:true};
  const header={id:'S6',point:'Nietzsche applies his own standards.',
@@ -2280,6 +2280,21 @@ test('public highlights omit short fragments and OCR running headers without fil
   quote:'Nietzsche insists that the standards they themselves applied should govern the judgment.',quoteVerified:true};
  assert.deepEqual(selectPublicEvidenceHighlights('Nietzsche [S6].',citations,[short,header,useful])
   .map(item=>item.quote),[useful.quote]);
+});
+test('public highlights retain readable line-wrapped verified passages and trim a source-exact running header',()=>{
+ const citations=['S2','S5','S4'].map((id,index)=>({id,title:'Verified source '+id,page:index+40,url:'https://example.test/'+id}));
+ const faithS2='Faith believes what it does not see; it does not believe that the star is there, for\nthat it sees, but it believes that the star has come into existence. The same holds true of an\nevent.';
+ const faithS5='The Christianity of the New Testament is to love God in opposition\n to men, to suffer at the hands of men for one’s faith, for the sake of the\n doctrine to suffer at the hands of men.';
+ const sunyata='THE LEVELS OF REALITY   /  55\n\nthe Infinite is nir-guna, without any attribute, and yet is the ground of all attributes.';
+ const evidenceMap=[faithS2,faithS5,sunyata].map((quote,index)=>({id:citations[index].id,
+  point:'The passage directly explains the concept asked about.',quote,quoteVerified:true}));
+ const result=selectPublicEvidenceHighlights('Faith [S2]. Further context [S5]. Sunyata [S4].',citations,evidenceMap);
+ assert.deepEqual(result.map(item=>item.source_id),['S2','S5','S4']);
+ assert.deepEqual(result.map(item=>item.quote),[
+  faithS2,faithS5,'the Infinite is nir-guna, without any attribute, and yet is the ground of all attributes.'
+ ]);
+ assert.ok(result.every(item=>evidenceMap.some(source=>source.id===item.source_id&&source.quote.includes(item.quote))),
+  'every displayed excerpt must remain an exact substring of its reviewer-verified quote');
 });
 test('public highlights prefer the reviewed span most relevant to its linked claim',()=>{
  const citations=[

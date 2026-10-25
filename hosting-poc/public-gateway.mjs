@@ -37,21 +37,26 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     if(!quote)return 0;
     const letters=[...quote].filter(char=>/[\p{L}\p{N}]/u.test(char)).length;
     const suspicious=[...quote].filter(char=>/[�¤ᤄ]/u.test(char)).length;
-    return letters/quote.length-suspicious/quote.length;
+    const visible=[...quote].filter(char=>!/\s/u.test(char)).length;
+    return visible?letters/visible-suspicious/visible:0;
+  };
+  const removeLeadingRunningHeader=value=>{
+    const quote=String(value||'');
+    // Keep only an exact suffix of the verified span. This handles common
+    // OCR page furniture without rewriting or synthesizing source wording.
+    const header=/^(?:(?:[A-Z][A-Z0-9'’:-]*\s+){2,}[A-Z][A-Z0-9'’:-]*\s*\/\s*\d{1,4}|\d{1,4}\s+(?:[A-Z][A-Z0-9'’:-]*\s+){2,})\s*/u.exec(quote);
+    return header?quote.slice(header[0].length).trim():quote.trim();
   };
   const usefulQuote=value=>{
-    const quote=String(value||'').trim();
+    const quote=removeLeadingRunningHeader(value);
     const words=quote.match(/[\p{L}\p{N}]{2,}/gu)||[];
     // Short fragments may be exact but provide too little reading context.
-    // A page number followed by an all-caps running title is likely OCR header
-    // material, even when body text was joined to it on the same line.
-    const runningHeader=/^\s*\d{1,4}\s+(?:[A-Z][A-Z0-9'’:-]*\s+){2,}/u.test(quote);
-    return quote.length>=32&&words.length>=5&&readableQuote(quote)>=0.78&&!runningHeader;
+    return quote.length>=32&&words.length>=6&&readableQuote(quote)>=0.78;
   };
   const anchors=new Map(citationOrder.map(id=>{
     const candidates=evidenceMap.filter(item=>item?.id===id&&item.quoteVerified===true&&
       typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
-      .map((item,index)=>({quote:(item.anchorQuote||item.quote).trim(),point:item.point||'',index}))
+      .map((item,index)=>({quote:removeLeadingRunningHeader(item.anchorQuote||item.quote),point:item.point||'',index}))
       .filter(item=>usefulQuote(item.quote))
       .filter((item,index,all)=>all.findIndex(other=>other.quote===item.quote)===index);
     // Reviewer-approved spans are already exact and source-verified. When a

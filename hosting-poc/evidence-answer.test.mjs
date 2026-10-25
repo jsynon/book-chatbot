@@ -254,7 +254,7 @@ test('claim-level review removes a sentence when its cited quote supports only a
  const text='The movement of infinity is the last stage preceding faith, so that he who has not made the movement of infinity cannot have faith.';
  const source={...hume,id:'S5',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',text,preview:text};
  const ai=makeAI([
-  answer('PART P1\nFaith follows the movement of infinity and the absurd. [S5] Faith is inwardness higher than outwardness. [S5]'),
+  answer('PART P1\nJohannes de Silentio presents faith as following the movement of infinity. [S5] Faith is inwardness higher than outwardness. [S5]'),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content),part=payload.parts[0],partClaims=payload.claims.filter(claim=>claim.partId===part.partId),quote=part.evidence[0].spans[0].spanId;
    return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:[
@@ -268,10 +268,10 @@ test('claim-level review removes a sentence when its cited quote supports only a
    parts:[{id:'P1',question:'What does Kierkegaard say about faith?',sourceBookIds:['140']}],queries:['Kierkegaard faith']},trace:true
  });
  assert.equal(result.coverage,'partial');
- assert.match(result.answer,/movement of infinity and the absurd/);
+ assert.match(result.answer,/Johannes de Silentio presents faith as following the movement of infinity/);
  assert.doesNotMatch(result.answer,/inwardness higher than outwardness/);
  assert.deepEqual(result.evidenceMap.map(item=>({claimId:item.claimId,point:item.point})),[
-  {claimId:'P1-C1',point:'Faith follows the movement of infinity and the absurd.'}
+  {claimId:'P1-C1',point:'Johannes de Silentio presents faith as following the movement of infinity.'}
  ]);
  assert.equal(result.evidenceMap[0].quote,text);
 });
@@ -284,7 +284,7 @@ test('an answered part can retain a supported single-author claim after an expli
   text:'The opposite of sin is faith.',preview:'The opposite of sin is faith.'};
  const plan={intent:'explain',sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
   parts:[{id:'P1',question:'What is the Christian opposite of sin?',sourceBookIds:['140']}]};
- const ai=makeAI([answer('PART P1\nThe Christian opposite of sin is faith. [S2, S1]'),(_model,{messages})=>{
+ const ai=makeAI([answer('PART P1\nJohannes de Silentio states that the Christian opposite of sin is faith. [S2, S1]'),(_model,{messages})=>{
   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
   const spanFor=sourceId=>claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
@@ -298,7 +298,7 @@ test('an answered part can retain a supported single-author claim after an expli
  });
  assert.equal(ai.calls.length,2);
  assert.equal(result.coverage,'full');
- assert.match(result.answer,/The Christian opposite of sin is faith\. \[S2\]/);
+ assert.match(result.answer,/Johannes de Silentio states that the Christian opposite of sin is faith\. \[S2\]/);
  assert.doesNotMatch(result.answer,/S1/);
  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
  assert.deepEqual(result.evidenceMap.map(item=>item.id),['S2']);
@@ -552,6 +552,73 @@ test('a hypothetical part can give an explicit evidence limitation instead of si
  assert.equal(result.questionParts[2].status,'supported');
  assert.match(result.answer,/do not warrant a reliable inference/);
  assert.deepEqual(result.trace.coverageGaps,[]);
+});
+
+test('the run-58 comparison limitation is accepted while a positive inference still needs both voices',async()=>{
+ const limitation='Because Nietzsche characterizes faith as a psychological misunderstanding or a tool of priestly mastery [S1] and Kierkegaard describes faith as a transcendent, absurd movement of the self toward God [S2], the passages support a comparison but not a reliable inference about Nietzsche’s specific response to Kierkegaard’s thought.';
+ const ai=makeAI([hypotheticalDraft(limitation),hypotheticalReview()]);
+ const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
+  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[2].status,'supported');
+ assert.match(result.answer,/support a comparison but not a reliable inference/);
+ assert.deepEqual(result.trace.coverageGaps,[]);
+});
+
+test('known editorial and pseudonymous source voices must be named or mediated',async()=>{
+ const run=async({source,title,bookId,question,draft,catalog,sourceLabel})=>{
+  let composePayload,reviewPayload;
+  const plan={...onePartPlan,sources:[{label:sourceLabel,role:'primary',bookIds:[bookId]}],
+   parts:[{...onePartPlan.parts[0],question,sourceBookIds:[bookId],candidateSourceIds:['S1']}]};
+  const ai=makeAI([(_model,{messages})=>{
+   composePayload=JSON.parse(messages[1].content);
+   return answer('PART P1\n'+draft+' [S1]');
+  },(_model,{messages})=>{
+   reviewPayload=JSON.parse(messages[1].content);
+   const claim=reviewPayload.claims[0],evidence=claim.sourceEvidence[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:[evidence.spanIds[0]]}]
+   }]})};
+  }]);
+  const result=await composeEvidenceAnswer(question,[source],ai,[],{
+   plan,catalog:{...catalog,[bookId]:title},trace:true
+  });
+  return {result,composePayload,reviewPayload};
+ };
+ const introTitle='Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida';
+ const introSource={...hume,id:'S1',bookId:'185',title:introTitle,page:18,
+  text:'David A. Dilworth introduces Nishida’s discussion of religious nothingness.',
+  preview:'David A. Dilworth introduces Nishida’s discussion of religious nothingness.'};
+ const editorial=await run({source:introSource,title:introTitle,bookId:'185',
+  question:'What is sunyata?',sourceLabel:'Kitarō Nishida',
+  draft:'Sunyata is the central concept in this discussion'});
+ assert.equal(editorial.result.coverage,'none');
+ assert.ok(editorial.result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='editorial-source-attribution-unqualified'));
+ assert.match(editorial.composePayload.evidence[0].attributionRequirement,/David A\. Dilworth/);
+ assert.match(editorial.reviewPayload.parts[0].evidence[0].attributionRequirement,/David A\. Dilworth/);
+ const mediated=await run({source:introSource,title:introTitle,bookId:'185',
+  question:'What is sunyata?',sourceLabel:'Kitarō Nishida',
+  draft:'Dilworth’s introduction describes sunyata as the central concept in this discussion'});
+ assert.equal(mediated.result.coverage,'full');
+
+ const pseudonymTitle='Fear and Trembling — Søren Kierkegaard';
+ const pseudonymSource={...hume,id:'S1',bookId:'140',title:pseudonymTitle,page:32,
+  text:'Johannes de Silentio describes faith as a relation to God.',
+  preview:'Johannes de Silentio describes faith as a relation to God.'};
+ const unnamed=await run({source:pseudonymSource,title:pseudonymTitle,bookId:'140',
+  question:'What does Fear and Trembling say about faith?',sourceLabel:'Søren Kierkegaard',
+  draft:'Kierkegaard describes faith as a relation to God'});
+ assert.equal(unnamed.result.coverage,'none');
+ assert.ok(unnamed.result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='pseudonymous-voice-unidentified'));
+ assert.match(unnamed.composePayload.evidence[0].attributionRequirement,/Johannes de Silentio/);
+ const named=await run({source:pseudonymSource,title:pseudonymTitle,bookId:'140',
+  question:'What does Fear and Trembling say about faith?',sourceLabel:'Søren Kierkegaard',
+  draft:'Johannes de Silentio describes faith as a relation to God'});
+ assert.equal(named.result.coverage,'full');
 });
 
 test('flat reviewer input keeps multi-part claims linked once and duplicate claims keys fail closed',async()=>{
