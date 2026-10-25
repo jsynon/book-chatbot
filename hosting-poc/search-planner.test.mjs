@@ -209,9 +209,26 @@ test('comparative planning keeps each source on the exact disputed concept',asyn
  );
  assert.deepEqual(result.queries,queries);
  assert.match(systemPrompt,/specific disputed concept/i);
+ assert.match(systemPrompt,/Kant on causal necessity, search the Second Analogy/i);
+ assert.match(systemPrompt,/regulative or absolute necessity alone is not a direct answer/i);
  assert.match(systemPrompt,/that source’s own definition, criterion, or explanation/i);
  assert.match(systemPrompt,/merely reports the other thinker’s position/i);
 });
+test('dependent part questions retain the parent subject and quoted passage in retrieval queries',async()=>{
+ const question='In Hamlet’s “To be, or not to be” soliloquy, what alternatives does he weigh, and how does uncertainty about what follows death affect his reasoning?';
+ const planned={resolvedQuestion:question,intent:'explain',sources:[],
+  parts:['What alternatives does Hamlet weigh in his “To be, or not to be” soliloquy?',
+   'How does uncertainty about the afterlife affect his reasoning in this soliloquy?'],
+  scope:'',queries:['Hamlet Shakespeare To be or not to be alternatives suffering',
+   'Hamlet Shakespeare To be or not to be death uncertainty afterlife']};
+ const result=await planSearchQueries(question,'',{
+  run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]})
+ });
+ const p2=result.plan.parts[1];
+ assert.ok(p2.searchQueries.some(query=>/Hamlet/i.test(query)&&/To be, or not to be/i.test(query)&&/afterlife/i.test(query)));
+ assert.ok(p2.searchQueries.every(query=>query.length<=400));
+});
+
 test('literary passage planning prefers the canonical primary work',async()=>{
  let systemPrompt='';
  const queries=[
