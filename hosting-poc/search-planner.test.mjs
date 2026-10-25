@@ -61,7 +61,7 @@ test('planner returns a bounded structured plan with canonical source IDs and qu
  assert.match(result.queries[0],/causal necessity|necessary connection/i);
  assert.match(result.queries[1],/causal necessity|causality/i);
 });
-test('hypothetical thinker questions keep both authors and each part scoped to both works',async()=>{
+test('hypothetical thinker questions bind side searches to each author and reserve a two-source inference part',async()=>{
  const question='What would Nietzsche think about the thought of Kierkegaard?';
  const planned={resolvedQuestion:question,intent:'compare',sources:[],
   parts:[
@@ -84,13 +84,21 @@ test('hypothetical thinker questions keep both authors and each part scoped to b
  assert.ok(kierkegaard?.bookIds.includes('140'));
  assert.deepEqual(result.plan.sources.map(source=>source.role),['primary','primary']);
  assert.equal(result.plan.intent,'compare');
- const twoSourceParts=result.plan.parts.filter(part=>part.sourceBookIds?.includes('239')&&
-  part.sourceBookIds?.includes('140'));
- assert.ok(twoSourceParts.length>=1);
- assert.match(twoSourceParts.at(-1).question,/compare in response to this question/i);
- assert.ok(result.plan.parts.some(part=>part.sourceBookIds?.includes('140')&&
-  !part.sourceBookIds.includes('239')));
- assert.deepEqual(result.queries,planned.queries);
+ const stanceIds=result.plan.sources.find(source=>/Nietzsche/.test(source.label)).bookIds;
+ const objectIds=result.plan.sources.find(source=>/Kierkegaard/.test(source.label)).bookIds;
+ assert.deepEqual(result.plan.parts.map(part=>part.sourceBookIds),
+  [stanceIds,objectIds,[...stanceIds,...objectIds]]);
+ assert.match(result.plan.parts[2].question,/positions compare.*cautiously be inferred/i);
+ assert.match(result.queries[0],/Nietzsche/i);
+ assert.doesNotMatch(result.queries[0],/Kierkegaard/i);
+ assert.match(result.queries[1],/Kierkegaard/i);
+ assert.doesNotMatch(result.queries[1],/Nietzsche/i);
+ assert.ok(result.plan.parts[0].searchQueries.length>0);
+ assert.ok(result.plan.parts[0].searchQueries.every(query=>/Nietzsche/i.test(query)&&!/Kierkegaard/i.test(query)));
+ assert.ok(result.plan.parts[1].searchQueries.length>0);
+ assert.ok(result.plan.parts[1].searchQueries.every(query=>/Kierkegaard/i.test(query)&&!/Nietzsche/i.test(query)));
+ assert.deepEqual(result.plan.parts[2].searchQueries,result.queries,
+  'the synthesis reuses the two source-side queries instead of creating an unscoped third facet');
  assert.match(systemPrompt,/hypothetical question about what author A would think of author B/i);
 });
 test('search planner retains explicitly named authors and works for source scoping',async()=>{

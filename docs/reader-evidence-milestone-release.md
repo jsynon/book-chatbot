@@ -668,4 +668,39 @@ These changes reuse the existing planner, composition, and review calls; they ad
 | Fresh live five-case focused run after merge/deploy | Pending |
 | Semantic review of the five saved answers and cited passages | Pending |
 
-The next live run should use the same five cases together in focused mode with-review. Check that the faith parts can cite the author's relevant works, the Nietzsche/Kierkegaard answer includes both thinkers and a clearly marked inference, and the Christianity plan does not impose an unrelated extra subquestion. Treat 5/5 structural coverage as necessary evidence-handoff progress; still review the exact cited passages for semantic support before calling the milestone complete.
+That combined run is recorded in the next section.
+
+## October 25, 2026: five-case focused run and end-to-end handoff findings
+
+After PR #226 (Worker) and PR #192 (website) merged, the user ran the five-case all-books, with-review suite together in focused mode: [run 40167280477](https://github.com/jsynon/antilogicalism/actions/runs/40167280477). All five requests completed with no request failures, planner fallbacks, or skipped cases. The run estimated 15 Worker calls (one planner plus composition and review per case) and 696.5 neurons. The structural gate passed 2/5: Kant and sunyata passed; Kierkegaard/faith, Nietzsche/Christianity, and Nietzsche/Kierkegaard were partial. Artifact human-rubric fields were not populated, so this is structural and trace evidence, not a scored semantic evaluation.
+
+This run confirms that the author-scope and two-author planning changes from PR #226 are active in the saved trace: Kierkegaard's author-wide source group was retained across books 140, 192, 253, and 436, and the hypothetical Nietzsche/Kierkegaard plan retained both named authors. The earlier single-case diagnosis that those source groups were being dropped no longer describes this run. The remaining failures occur later in the pipeline:
+
+| Case | Result | Trace finding |
+|---|---|---|
+| Kant: transcendental idealism | Pass | The answer's two planned parts have source citations and aligned highlights. |
+| Kierkegaard: faith | Partial, 2/3 parts | The planner still promotes “specific examples or conditions” into a required third part. For the part about the transition from probability to faith, the reviewer receives S5-Q9 from *Philosophical Fragments*, p. 55, whose text directly addresses that relation, but returns no S5 span and reports no evidence. This is a reviewer selection miss, not missing retrieved text. |
+| Nietzsche: Christianity | Partial | The planner still makes will-to-power/slave-revolt discussion a separate required part and the answer overstates a connection among will to power, freedom, and herd formation. These themes are context for the broad Christianity question unless the reader separately asks for them; the cited text must not be made to prove a stronger relation than it states. |
+| Sunyata | Structural pass | The evidence map contains relevant approved spans from Nishitani, p. 224, and Nishida, p. 48, but the public highlights show different snippets from those same pages. The gateway reads `anchorQuote`, while evidence-v2 writes the exact approved span under `quote`; it therefore falls back to a topical preview. |
+| Nietzsche on Kierkegaard | Partial | Both author groups survive planning, but one Nietzsche query mixes both names and returns no usable Nietzsche passage; the other query retrieves Kierkegaard only. The plan also attaches both author groups to side parts, so query ownership and part scope are not yet aligned. A hypothetical response needs Nietzsche's own relevant position, Kierkegaard's own position, and a two-source synthesis; if either side is absent, the answer must label the inference as ungrounded rather than imply an historical response. |
+
+The current paired Worker/website candidate fixes these connected contracts as one milestone:
+
+- `reader-contract.mjs` now normalizes a broad one-author question such as “What did Nietzsche think about Christianity?” to one central coverage part, while retaining distinct planner search queries as retrieval leads. Explicitly requested multiple facets remain separate parts.
+- A counterfactual two-author question is normalized into a stance-author part, an object-author part, and one synthesis/inference part. Query names are sanitized so each source-side query targets its corresponding author's catalog group only. The website's `partQuestions` source IDs then restrict candidate eligibility to those same groups; the synthesis can reuse the two side searches without a new generic search.
+- Reviewer spans remain exact, stable, and all present in the prompt, but deterministic term overlap puts spans most relevant to the cited answer sentence and part question first. The review prompt explicitly asks the model to inspect those spans before declaring evidence absent. This addresses the faith trace without changing the reviewer's authority or converting lexical overlap into a support decision.
+- Public highlights now accept the evidence-v2 `quote` field (while retaining the legacy `anchorQuote` shape) and continue requiring `quoteVerified === true`. The selected exact reviewer span can therefore be displayed instead of a fallback excerpt.
+
+The candidate adds no model calls, does not increase the six-page answer packet, and does not relax citation, source-scope, fingerprint, reviewer-span, or comparison-source checks. It changes interpretation normalization, search ownership, reviewer evidence ordering, and response rendering together so the same evidence identity stays connected from question part through visible highlight.
+
+| Candidate validation | Result |
+|---|---|
+| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | 229 passed, 0 failed |
+| Full website suite (`node --test reading-companion/*.test.mjs`) | 170 passed, 0 failed |
+| Worker/website shared `reader-contract.mjs` | Byte-identical after synchronization |
+| JavaScript syntax checks and `git diff --check` | Passed in both repositories |
+| Model-call budget and answer packet | Unchanged: two answer calls with review; six-page maximum |
+| Fresh five-case reviewed holdout after merge and deployment | Pending; required to determine whether the reviewer now selects S5-Q9, the public highlights match the evidence map, and the source-scoped questions improve |
+| Unseen acceptance suite and final semantic milestone | Reserved until the same focused holdout and cited-passage review support promotion |
+
+Do not interpret a future structural 5/5 alone as semantic acceptance. Inspect the full cited page text and trace for faith, both Nietzsche questions, and the sunyata highlights; then verify that ordinary live questions still retain exact book/page citations and that explicit multi-part questions keep all requested facets.

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan} from './reader-contract.mjs';
-import {buildReviewSpans} from './review-spans.mjs';
+import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
 const catalog={35:'An Enquiry Concerning Human Understanding — David Hume',40:'Critique of Pure Reason — Immanuel Kant'};
 const hume={id:'S1',bookId:'35',title:catalog[35],page:42,url:'https://example.test/hume#page=42',
@@ -38,6 +38,37 @@ test('review span IDs map only to exact contiguous source slices and stay within
  }
  assert.ok(spans.every(span=>/^S7-Q[1-9]\d*$/.test(span.spanId)));
  assert.deepEqual(buildReviewSpans('not-a-source',text),[]);
+});
+test('review spans put direct paraphrase evidence first without discarding other spans',()=>{
+ const text='A historical introduction recounts debates about institutions, books, readers, editions, publication, libraries, translations, commentaries, editors, authors, scholars, chronology, archives, and the long development of literary criticism across several generations. No immediate transition from a proof of probability to faith is possible. The author then considers another example.';
+ const spans=buildReviewSpans('S5',text);
+ const ranked=rankReviewSpans(spans,{question:'What does faith require?',
+  answer:'There is no immediate transition from proof of probability to faith.'});
+ assert.match(ranked[0].text,/^No immediate transition from a proof of probability to faith is possible\./);
+ assert.deepEqual(new Set(ranked.map(span=>span.spanId)),new Set(spans.map(span=>span.spanId)));
+ assert.ok(ranked.every(span=>text.includes(span.text)));
+});
+test('review request orders the cited page by the answer sentence while preserving span IDs',async()=>{
+ const text='A historical introduction recounts debates about institutions, books, readers, editions, publication, libraries, translations, commentaries, editors, authors, scholars, chronology, archives, and the long development of literary criticism across several generations. No immediate transition from a proof of probability to faith is possible. The author then considers another example.';
+ const source={...hume,text,preview:text};
+ let reviewPayload;
+ const ai={run:async(_model,{messages})=>{
+  const system=messages[0].content;
+  if(system.startsWith('Answer the reader'))return answer('PART P1\nNo transition from proof of probability to faith is possible. [S1]');
+  reviewPayload=JSON.parse(messages[1].content);
+  const selected=reviewPayload.parts[0].evidence[0].spans[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    reason:'The cited passage directly states this relation and qualification.',
+    evidence:[{sourceId:'S1',spanIds:[selected.spanId]}]}]})};
+ }};
+ const result=await composeEvidenceAnswer('What is the relation between faith and probability?',[source],ai,[],{
+  catalog,plan:{intent:'explain',sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
+   parts:[{id:'P1',question:'How does the text relate probability and faith?',sourceBookIds:['35']}],
+   queries:['Hume probability faith']}
+ });
+ assert.match(reviewPayload.parts[0].evidence[0].spans[0].text,/^No immediate transition/);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.evidenceMap[0].quote,reviewPayload.parts[0].evidence[0].spans[0].text);
 });
 const onePartPlan={version:'reader-evidence-v2',intent:'explain',
  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
@@ -76,7 +107,12 @@ test('author-wide questions retain the author works unless the reader names a di
  const raw={intent:'explain',sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:Object.keys(catalog)}],
   parts:["How does Kierkegaard describe faith?"],queries:['Kierkegaard faith movement']};
  const broad=normalizePlan(raw,question,catalog);
+ assert.equal(broad.parts.length,1,'a broad author-topic question must not acquire optional model-generated coverage requirements');
+ assert.equal(broad.parts[0].question,question);
  assert.deepEqual(broad.parts[0].sourceBookIds,['140','192','253','436']);
+ const explicitFacets=normalizePlan({...raw,parts:['What does Kierkegaard say about faith?','How does he relate faith to the individual?']},
+  'What did Kierkegaard say about faith and the individual?',catalog);
+ assert.equal(explicitFacets.parts.length,2,'explicitly requested facets remain separate coverage parts');
  const scoped=normalizePlan(raw,'What did Kierkegaard say about faith in Fear and Trembling?',catalog);
  assert.deepEqual(scoped.parts[0].sourceBookIds,['140']);
 });
