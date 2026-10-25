@@ -132,9 +132,9 @@ test('a bad quoted sentence is removed without discarding neighboring verified s
    searchQueries:['Du Bois double life consciousness'],candidateSourceIds:['S5','S3']}],
   queries:['Du Bois double life consciousness']};
  const ai=makeAI([
-  answer('PART P1\nDu Bois describes a “double life” and painful self-consciousness. [S5] This existence within “double consciousness” forces Black Americans to view themselves through others’ eyes. [S5] The racial barrier works through reciprocal influence and causes discouragement and retrogression. [S3]'),
+  answer('PART P1\nDu Bois describes a “double life” and painful self-consciousness. [S5] This existence within “double consciousness” forces Black Americans to view themselves through others’ eyes. [S5] He frames double-consciousness as an ongoing historical strife. [S3]'),
   {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   reason:'The retained claims explain the described experience and its effect.',
+   reason:'The retained claims describe the experience and its place in Du Bois’s account.',
    evidence:[{sourceId:'S5',quote:'It is a peculiar sensation, this double life, this sense of always looking at one’s self through the eyes of others.'},
     {sourceId:'S3',quote:'The Negro is a sort of seventh son, born with a veil, and gifted with second-sight in this American world.'}]}]})}
  ]);
@@ -144,7 +144,7 @@ test('a bad quoted sentence is removed without discarding neighboring verified s
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.questionParts[0].status,'supported');
  assert.match(result.answer,/“double life” and painful self-consciousness\. \[S5\]/);
- assert.match(result.answer,/reciprocal influence and causes discouragement and retrogression\. \[S3\]/);
+ assert.match(result.answer,/ongoing historical strife\. \[S3\]/);
  assert.doesNotMatch(result.answer,/double consciousness/);
  assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'quotation-citation-mismatch',sentenceIndex:2}]);
  assert.deepEqual(result.citations.map(item=>item.id),['S5','S3']);
