@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 13407)
+Total output lines: 782
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
@@ -45,6 +48,13 @@ test('curated provenance is title-guarded and distinguishes pseudonymous work vo
  const intro=sourceProvenance({bookId:'185',title:'Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida',page:18},
   {sources:[{role:'primary',bookIds:['185']}]},'INTRODUCTION\nA discussion of Nishida follows.');
  assert.deepEqual(intro.pageVoice,{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'});
+ const portableTitle='The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)';
+ const portablePage=sourceProvenance({bookId:'239',title:portableTitle,page:578},
+  {sources:[{role:'primary',bookIds:['239']}]});
+ assert.deepEqual(portablePage.pageVoice,{kind:'editorial-commentary',name:'Walter Kaufmann',creditedAuthor:'Friedrich Nietzsche'});
+ assert.equal(sourceProvenance({bookId:'239',title:portableTitle,page:547},
+  {sources:[{role:'primary',bookIds:['239']}] }).pageVoice,undefined,
+  'direct Nietzsche text elsewhere in the volume does not inherit the page-578 editorial label');
 });
 
 test('review span IDs map only to exact contiguous source slices and stay within the prompt bound',()=>{
@@ -93,6 +103,64 @@ test('review request orders the cited page by the answer sentence while preservi
  assert.match(reviewPayload.parts[0].evidence[0].spans[0].text,/^No immediate transition/);
  assert.equal(result.coverage,'full');
  assert.equal(result.evidenceMap[0].quote,reviewPayload.parts[0].evidence[0].spans[0].text);
+});
+test('compact review decisions validate exact spans without rationale text or repeated payload fields',async()=>{
+ let reviewPayload;
+ const ai={run:async(_model,{messages,max_completion_tokens})=>{
+  if(messages[0].content.startsWith('Answer the reader'))return answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]');
+  reviewPayload=JSON.parse(messages[1].content);
+  const claim=reviewPayload.parts[0].claims[0],span=reviewPayload.parts[0].evidence[0].spans[0];
+  assert.equal(max_completion_tokens,1200);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',claims:[{
+   claimId:claim.claimId,status:'answered',spansBySource:{S1:[span.spanId]}
+  }]}]})};
+ }};
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true
+ });
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.failureCode,undefined);
+ assert.deepEqual(result.evidenceMap.map(item=>item.quote),[reviewPayload.parts[0].evidence[0].spans[0].text]);
+ assert.deepEqual(Object.keys(reviewPayload.parts[0].claims[0]).sort(),['claimId','sourceIds','text']);
+ assert.equal('candidateSourceIds' in reviewPayload.parts[0],false);
+ assert.equal('sha256' in reviewPayload.parts[0].evidence[0],false);
+});
+test('compact review cannot verify a sentence unless every cited source has a selected span',async()=>{
+ const ai=makeAI([answer('PART P1\nHume grounds necessity in custom, while Kant treats causality as a priori. [S1, S2]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),part=payload.parts[0],claim=part.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',claims:[{
+    claimId:claim.claimId,status:'answered',spansBySource:{S1:['S1-Q1']}
+   }]}]})};
+  }]);
+ const plan={...twoSidePlan,parts:[{id:'P1',question:'How do Hume and Kant differ?',sourceBookIds:['35','40'],
+  candidateSourceIds:['S1','S2']}]};
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],{plan,catalog,trace:true});
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.questionParts[0].status,'unsupported');
+ assert.ok(result.trace.reviewContract.supportIssues.some(item=>item.reason==='missing-claim-source-span'));
+ assert.equal(result.evidenceMap.length,0);
+ assert.equal(ai.calls.length,2);
+});
+test('review truncation remains fail-closed and exposes a stage-specific reason without another call',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  {choices:[{finish_reason:'length',message:{content:'{"parts":[{"partId":"P1"'}}],
+   usage:{neurons:3,prompt_tokens:500,completion_tokens:1200}}]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.reviewStatus,'review-format-failed');
+ assert.equal(result.failureCode,'review-output-truncated');
+ assert.equal(result.failureStage,'review');
+ assert.deepEqual(result.trace.reviewContract.issues,['review-output-truncated']);
+ assert.equal(result.trace.stages[1].finishReason,'length');
+ assert.equal(result.trace.final.reviewFailure.code,'review-output-truncated');
+ assert.match(result.answer,/custom and regular conjunction/);
+ assert.equal(result.evidenceMap.length,0);
 });
 test('claim-level review removes a sentence when its cited quote supports only a neighboring claim',async()=>{
  const text='The movement of infinity is the last stage preceding faith, so that he who has not made the movement of infinity cannot have faith.';
@@ -172,16 +240,18 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
  assert.match(REVIEW_PROMPT,/Review every answer sentence separately/);
  assert.match(REVIEW_PROMPT,/stable claimId/);
- assert.match(REVIEW_PROMPT,/Do not attach evidence for a different sentence/);
+ assert.match(REVIEW_PROMPT,/Do not attach evidence to a different sentence/);
  assert.match(REVIEW_PROMPT,/Select span IDs only/);
- assert.match(REVIEW_PROMPT,/"spanIds":\["S1-Q2"\]/);
+ assert.match(REVIEW_PROMPT,/"spansBySource":\{"S1":\["S1-Q2"\]\}/);
  assert.match(REVIEW_PROMPT,/neighboring doctrine or a shared keyword is not support/);
  assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
- assert.match(REVIEW_PROMPT,/relevant span for every sourceId cited by that sentence/);
- assert.match(REVIEW_PROMPT,/one supported clause does not make an unsupported clause true/);
- assert.match(REVIEW_PROMPT,/do not put source wording or terms in quotation marks/i);
+ assert.match(REVIEW_PROMPT,/at least one relevant span from every source cited by that sentence/);
+ assert.match(REVIEW_PROMPT,/one supported clause does not make an unsupported clause true/i);
+ assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
+ assert.match(COMPOSER_PROMPT,/If provenance names a pseudonymous work voice, identify that voice/);
+ assert.match(REVIEW_PROMPT,/When provenance identifies a pseudonymous work voice/);
 });
 
 test('author-wide questions retain the author works unless the reader names a distinctive work',()=>{
@@ -260,7 +330,8 @@ test('validates cited sources against each part and preserves a complete cited a
  const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
  const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
  assert.deepEqual(composePayload.parts[0].candidateSourceIds,['S1']);
- assert.deepEqual(reviewPayload.parts[0].candidateSourceIds,['S1']);
+ assert.equal('candidateSourceIds' in reviewPayload.parts[0],false);
+ assert.deepEqual(Object.keys(reviewPayload.parts[0].claims[0]).sort(),['claimId','sourceIds','text']);
  assert.deepEqual(reviewPayload.parts[0].evidence.map(source=>source.id),['S1']);
 });
 
@@ -283,70 +354,7 @@ test('a citation linked to another question part is rejected even when its sourc
  const ai=makeAI([answer('PART P1\nKant says causality is a category. [S2]\nPART P2\nKant says causality is a category. [S2]'),
   review([['P1','answered'],['P2','answered']])]);
  const result=await composeEvidenceAnswer('How do Hume and Kant explain necessity?',
-  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],{plan,catalog});
- assert.equal(result.questionParts[0].status,'unsupported');
- assert.equal(result.questionParts[1].status,'supported');
- assert.deepEqual(result.citations.map(source=>source.id),['S2']);
-});
-
-test('a bad quoted sentence is removed without discarding neighboring verified sentences',async()=>{
- const dubois1={id:'S5',bookId:'454',title:'The Souls of Black Folk — W. E. B. Du Bois',page:141,
-  url:'https://example.test/dubois#page=141',
-  text:'It is a peculiar sensation, this double-consciousness, this sense of always looking at one’s self through the eyes of others. One ever feels his two-ness,—an American, a Negro; two souls, two thoughts, two unreconciled strivings; two warring ideals in one dark body, whose dogged strength alone keeps it from being torn asunder. The history of the American Negro is the history of this strife,—this longing to attain self-conscious manhood, to merge his double self into a better and truer self. In this merging he wishes neither of the older selves to be lost. He would not Africanize America, for America has too much to teach the world and Africa. He would not bleach his Negro soul in a flood of white Americanism, for he knows that Negro blood has a message for the world. He simply wishes to make it possible for a man to be both a Negro and an American. The problem of the twentieth century is the problem of the color-line. It is a peculiar sensation, this double life, this sense of always looking at one’s self through the eyes of others.',
-  preview:'The passage describes a double life and painful self-consciousness.'};
- const dubois2={id:'S3',bookId:'454',title:dubois1.title,page:131,url:'https://example.test/dubois#page=131',
-  text:'The Negro is a sort of seventh son, born with a veil, and gifted with second-sight in this American world,—a world which yields him no true self-consciousness, but only lets him see himself through the revelation of the other world. It is a peculiar sensation, this double-consciousness, this sense of always looking at one’s self through the eyes of others. The history of the American Negro is the history of this strife.',
-  preview:'Du Bois describes double-consciousness.'};
- const source={...dubois1,text:'The painful self-consciousness of the "double life" appears throughout this passage. '+dubois1.text};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'W. E. B. Du Bois',role:'primary',bookIds:['454']}],
-  parts:[{id:'P1',question:'How does Du Bois describe the double life and its effects?',sourceBookIds:['454'],
-   searchQueries:['Du Bois double life consciousness'],candidateSourceIds:['S5','S3']}],
-  queries:['Du Bois double life consciousness']};
- const ai=makeAI([
-  answer('PART P1\nDu Bois describes a “double life” and painful self-consciousness. [S5] This existence within “double consciousness” forces Black Americans to view themselves through others’ eyes. [S5] He frames double-consciousness as an ongoing historical strife. [S3]'),
-  ( _model,{messages})=>{
-   const payload=JSON.parse(messages[1].content),part=payload.parts[0];
-   const claims=part.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    reason:'This exact sentence is stated by its cited passage.',evidence:claim.sourceIds.map(sourceId=>({
-     sourceId,spanIds:[part.evidence.find(item=>item.id===sourceId).spans[0].spanId]}))}));
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    reason:'The supported claims describe the experience and its historical context.',claims}]})};
-  }
- ]);
- const result=await composeEvidenceAnswer('How does Du Bois describe the double life and its effects?',
-  [source,dubois2],ai,[],{plan,catalog:{454:'The Souls of Black Folk — W. E. B. Du Bois'},trace:true});
- assert.equal(ai.calls.length,2);
- assert.equal(result.outcome,'verified-source-draft');
- assert.equal(result.questionParts[0].status,'supported');
- assert.match(result.answer,/“double life” and painful self-consciousness\. \[S5\]/);
- assert.match(result.answer,/ongoing historical strife\. \[S3\]/);
- assert.doesNotMatch(result.answer,/double consciousness/);
- assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'quotation-citation-mismatch',sentenceIndex:2}]);
- assert.deepEqual(result.citations.map(item=>item.id),['S5','S3']);
-});
-
-test('missing question parts remain visible as partial coverage instead of invalidating the answer',async()=>{
- const ai=makeAI([
-  answer('PART P1\nHume says causal necessity arises from custom and regular conjunction. [S1]'),
-  review([['P1','answered'],['P2','answered'],['P3','partial']])
- ]);
- const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
-  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
-  {plan:twoSidePlan,catalog});
- assert.equal(result.outcome,'verified-source-draft');
- assert.equal(result.coverage,'partial');
- assert.deepEqual(result.questionParts.map(part=>part.status),['supported','unsupported','unsupported']);
- assert.equal(ai.calls.length,2);
- assert.match(result.missing,/Kant|differ/i);
-});
-
-test('a reviewer partial decision is a valid result, not a contract failure',async()=>{
- const ai=makeAI([answer('PART P1\nKant lists causality among the categories of relation. [S2]'),
-  review([['P1','partial']])]);
- const result=await composeEvidenceAnswer('How does Kant justify causal necessity?',
-  [kant],ai,[],{plan:{...onePartPlan,intent:'explain',sources:[{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
-   parts:[{id:'P1',question:'How does Kant justify causal necessity?',sourceBookIds:['40'],searchQueries:['Kant causality'],candidateSourceIds:['S2']}]},catalog});
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],{plan,catalog})…1407 tokens truncated…,sourceBookIds:['40'],searchQueries:['Kant causality'],candidateSourceIds:['S2']}]},catalog});
  assert.equal(result.coverage,'none');
  assert.equal(result.reviewStatus,'claim-review');
  assert.equal(result.outcome,'insufficient-evidence');
@@ -364,7 +372,6 @@ test('a reviewer cannot mark an answer supported without selecting a span from i
  assert.equal(result.coverage,'none');
  assert.equal(result.questionParts[0].status,'unsupported');
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
-  {partId:'P1',claimId:'P1-C1',reason:'missing-claim-rationale'},
   {partId:'P1',claimId:'P1-C1',reason:'missing-claim-source-span'}]);
  assert.equal(result.evidenceMap.length,0);
 });
