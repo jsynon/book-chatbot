@@ -13,11 +13,21 @@ const kant={id:'S2',bookId:'40',title:catalog[40],page:53,url:'https://example.t
  preview:'Causality is one of the categories of relation.'};
 function answer(text){return {response:text,usage:{neurons:8,prompt_tokens:100,completion_tokens:60}};}
 function review(statuses,{evidenceByPart={},includeEvidence=true}={}){
- return {response:JSON.stringify({parts:statuses.map(([partId,status])=>({partId,status,
-  reason:includeEvidence?'The cited passage directly supports this part.':'',
-  evidence:!includeEvidence||status==='unanswered'?[]:evidenceByPart[partId]||
-   (partId==='P3'?[{sourceId:'S1',spanIds:['S1-Q1']},{sourceId:'S2',spanIds:['S2-Q1']}]:
-    [{sourceId:partId==='P2'?'S2':'S1',spanIds:[(partId==='P2'?'S2':'S1')+'-Q1']}])}))})};
+ return (_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const statusByPart=new Map(statuses);
+  const parts=payload.parts.map(part=>{
+   const status=statusByPart.get(part.partId)||'partial';
+   const claims=part.answers.map(claim=>{
+    const defaultEvidence=claim.sourceIds.map(sourceId=>({sourceId,spanIds:[sourceId+'-Q1']}));
+    const evidence=!includeEvidence||status==='unanswered'?[]:
+     (evidenceByPart[part.partId]||defaultEvidence).filter(item=>claim.sourceIds.includes(item.sourceId));
+    return {claimId:claim.claimId,status,reason:includeEvidence?'This exact sentence is supported by its cited passage.':'',evidence};
+   });
+   return {partId:part.partId,status,reason:includeEvidence?'The cited passage directly supports this part.':'',claims};
+  });
+  return {response:JSON.stringify({parts})};
+ };
 }
 function makeAI(responses){
  const calls=[];
@@ -57,9 +67,11 @@ test('review request orders the cited page by the answer sentence while preservi
   if(system.startsWith('Answer the reader'))return answer('PART P1\nNo transition from proof of probability to faith is possible. [S1]');
   reviewPayload=JSON.parse(messages[1].content);
   const selected=reviewPayload.parts[0].evidence[0].spans[0];
+  const claim=reviewPayload.parts[0].answers[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
     reason:'The cited passage directly states this relation and qualification.',
-    evidence:[{sourceId:'S1',spanIds:[selected.spanId]}]}]})};
+    claims:[{claimId:claim.claimId,status:'answered',reason:'This passage directly states the faith relation.',
+     evidence:[{sourceId:'S1',spanIds:[selected.spanId]}]}]}]})};
  }};
  const result=await composeEvidenceAnswer('What is the relation between faith and probability?',[source],ai,[],{
   catalog,plan:{intent:'explain',sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
@@ -69,6 +81,34 @@ test('review request orders the cited page by the answer sentence while preservi
  assert.match(reviewPayload.parts[0].evidence[0].spans[0].text,/^No immediate transition/);
  assert.equal(result.coverage,'full');
  assert.equal(result.evidenceMap[0].quote,reviewPayload.parts[0].evidence[0].spans[0].text);
+});
+test('claim-level review removes a sentence when its cited quote supports only a neighboring claim',async()=>{
+ const text='The movement of infinity is the last stage preceding faith, so that he who has not made the movement of infinity cannot have faith.';
+ const source={...hume,id:'S5',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',text,preview:text};
+ const ai=makeAI([
+  answer('PART P1\nFaith follows the movement of infinity and the absurd. [S5] Faith is inwardness higher than outwardness. [S5]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),part=payload.parts[0],quote=part.evidence[0].spans[0].spanId;
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+    reason:'The first sentence is supported, but the second claim is absent from the cited passage.',
+    claims:[
+     {claimId:part.answers[0].claimId,status:'answered',reason:'The passage directly describes the movement preceding faith.',
+      evidence:[{sourceId:'S5',spanIds:[quote]}]},
+     {claimId:part.answers[1].claimId,status:'partial',reason:'The cited passage does not establish inwardness over outwardness.',evidence:[]}
+    ]}]})};
+  }
+ ]);
+ const result=await composeEvidenceAnswer('What does Kierkegaard say about faith?',[source],ai,[],{
+  catalog,plan:{intent:'explain',sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
+   parts:[{id:'P1',question:'What does Kierkegaard say about faith?',sourceBookIds:['140']}],queries:['Kierkegaard faith']},trace:true
+ });
+ assert.equal(result.coverage,'partial');
+ assert.match(result.answer,/movement of infinity and the absurd/);
+ assert.doesNotMatch(result.answer,/inwardness higher than outwardness/);
+ assert.deepEqual(result.evidenceMap.map(item=>({claimId:item.claimId,point:item.point})),[
+  {claimId:'P1-C1',point:'Faith follows the movement of infinity and the absurd.'}
+ ]);
+ assert.equal(result.evidenceMap[0].quote,text);
 });
 const onePartPlan={version:'reader-evidence-v2',intent:'explain',
  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
@@ -82,17 +122,19 @@ const twoSidePlan={version:'reader-evidence-v2',resolvedQuestion:'How do Hume an
   {id:'P3',question:'How do Hume and Kant differ?',sourceBookIds:['35','40'],searchQueries:['Hume custom','Kant a priori']}
  ],queries:['Hume custom','Kant a priori']};
 
-test('the composer uses a short per-part answer contract without claim IDs or quote extraction',()=>{
+test('the composer uses a short per-part answer contract and the reviewer links exact quotes to claims',()=>{
  assert.match(COMPOSER_PROMPT,/one heading and one short answer paragraph for each supplied part/);
  assert.match(COMPOSER_PROMPT,/Cite every factual sentence/);
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
- assert.doesNotMatch(REVIEW_PROMPT,/claimIds|verdict/);
+ assert.match(REVIEW_PROMPT,/Review every answer sentence separately/);
+ assert.match(REVIEW_PROMPT,/stable claimId/);
+ assert.match(REVIEW_PROMPT,/Do not attach evidence for a different sentence/);
  assert.match(REVIEW_PROMPT,/Select span IDs only/);
  assert.match(REVIEW_PROMPT,/"spanIds":\["S1-Q2"\]/);
  assert.match(REVIEW_PROMPT,/neighboring doctrine or a shared keyword is not support/);
  assert.match(REVIEW_PROMPT,/reversed negation or attribution as a material contradiction/);
- assert.match(REVIEW_PROMPT,/relevant span for every requiredSourceId/);
+ assert.match(REVIEW_PROMPT,/relevant span for every sourceId cited by that sentence/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
 });
 
@@ -115,6 +157,20 @@ test('author-wide questions retain the author works unless the reader names a di
  assert.equal(explicitFacets.parts.length,2,'explicitly requested facets remain separate coverage parts');
  const scoped=normalizePlan(raw,'What did Kierkegaard say about faith in Fear and Trembling?',catalog);
  assert.deepEqual(scoped.parts[0].sourceBookIds,['140']);
+});
+
+test('simple definition questions stay one coverage part while explicit facets remain separate',()=>{
+ const raw={intent:'explain',sources:[],queries:['definition of Sunyata and its operation',
+  'how Sunyata functions in Buddhist doctrine'],parts:[
+  'What is the definition and essential nature of sunyata?',
+  'How does sunyata function or operate within Buddhist doctrine?']};
+ const simple=normalizePlan(raw,'What is sunyata?',{});
+ assert.equal(simple.parts.length,1);
+ assert.equal(simple.parts[0].question,'What is sunyata?');
+ const explicit=normalizePlan({...raw,parts:['What is sunyata?',
+  'How does sunyata function within Buddhist doctrine?']},
+  'What is sunyata and how does it function within Buddhist doctrine?',{});
+ assert.equal(explicit.parts.length,2);
 });
 
 test('a quoted technical term is not mistaken for a source quotation, while multiword quotes stay exact',()=>{
@@ -203,10 +259,14 @@ test('a bad quoted sentence is removed without discarding neighboring verified s
   queries:['Du Bois double life consciousness']};
  const ai=makeAI([
   answer('PART P1\nDu Bois describes a “double life” and painful self-consciousness. [S5] This existence within “double consciousness” forces Black Americans to view themselves through others’ eyes. [S5] He frames double-consciousness as an ongoing historical strife. [S3]'),
-  {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   reason:'The retained claims describe the experience and its place in Du Bois’s account.',
-   evidence:[{sourceId:'S5',spanIds:['S5-Q1']},
-    {sourceId:'S3',spanIds:['S3-Q1']}]}]})}
+  ( _model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),part=payload.parts[0];
+   const claims=part.answers.map(claim=>({claimId:claim.claimId,status:'answered',
+    reason:'This exact sentence is stated by its cited passage.',evidence:claim.sourceIds.map(sourceId=>({
+     sourceId,spanIds:[part.evidence.find(item=>item.id===sourceId).spans[0].spanId]}))}));
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    reason:'The supported claims describe the experience and its historical context.',claims}]})};
+  }
  ]);
  const result=await composeEvidenceAnswer('How does Du Bois describe the double life and its effects?',
   [source,dubois2],ai,[],{plan,catalog:{454:'The Souls of Black Folk — W. E. B. Du Bois'},trace:true});
@@ -241,10 +301,10 @@ test('a reviewer partial decision is a valid result, not a contract failure',asy
  const result=await composeEvidenceAnswer('How does Kant justify causal necessity?',
   [kant],ai,[],{plan:{...onePartPlan,intent:'explain',sources:[{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
    parts:[{id:'P1',question:'How does Kant justify causal necessity?',sourceBookIds:['40'],searchQueries:['Kant causality'],candidateSourceIds:['S2']}]},catalog});
- assert.equal(result.coverage,'partial');
+ assert.equal(result.coverage,'none');
  assert.equal(result.reviewStatus,'claim-review');
- assert.equal(result.outcome,'verified-source-draft');
- assert.equal(result.questionParts[0].status,'partial');
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.questionParts[0].status,'unsupported');
 });
 
 test('a reviewer cannot mark an answer supported without selecting a span from its cited page',async()=>{
@@ -255,25 +315,29 @@ test('a reviewer cannot mark an answer supported without selecting a span from i
    sources:[{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
    parts:[{id:'P1',question:'How does Kant justify causal necessity?',sourceBookIds:['40'],
     searchQueries:['Kant causality'],candidateSourceIds:['S2']}]},catalog,trace:true});
- assert.equal(result.coverage,'partial');
- assert.equal(result.questionParts[0].status,'partial');
+ assert.equal(result.coverage,'none');
+ assert.equal(result.questionParts[0].status,'unsupported');
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
-  {partId:'P1',reason:'no-cited-source-span-selected'},
-  {partId:'P1',reason:'missing-support-rationale'}]);
+  {partId:'P1',claimId:'P1-C1',reason:'missing-claim-rationale'},
+  {partId:'P1',claimId:'P1-C1',reason:'missing-claim-source-span'}]);
  assert.equal(result.evidenceMap.length,0);
 });
 
 test('invented and cross-source span IDs cannot enter the reviewed evidence map',async()=>{
  const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],candidateSourceIds:['S1']}]};
  const ai=makeAI([answer('PART P1\nHume grounds necessity in custom and regularity. [S1]'),
-  {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   reason:'The source explains the custom based inference clearly.',evidence:[
-    {sourceId:'S1',spanIds:['S2-Q1','S1-Q999']},{sourceId:'S99',spanIds:['S99-Q1']}]}]})}]);
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.parts[0].answers[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    reason:'The source explains the custom based inference clearly.',claims:[{claimId:claim.claimId,
+     status:'answered',reason:'This source explains the custom based inference.',evidence:[
+      {sourceId:'S1',spanIds:['S2-Q1','S1-Q999']},{sourceId:'S99',spanIds:['S99-Q1']}]}]}]})};
+  }]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan,catalog,trace:true});
- assert.equal(result.questionParts[0].status,'partial');
+ assert.equal(result.questionParts[0].status,'unsupported');
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
-  {partId:'P1',reason:'no-cited-source-span-selected'}]);
+  {partId:'P1',claimId:'P1-C1',reason:'missing-claim-source-span'}]);
  assert.equal(result.evidenceMap.length,0);
  assert.equal(ai.calls.length,2);
 });
@@ -306,7 +370,7 @@ test('the active reviewer returns OCR text verbatim from the selected source spa
  assert.equal(result.trace.reviewContract.supportIssues.length,0);
 });
 
-test('an answered review must quote every source cited by that part',async()=>{
+test('an answered claim must quote every source cited by that sentence',async()=>{
  const ai=makeAI([answer('PART P1\nHume and Kant give different accounts of causal necessity. [S1, S2]'),
   review([['P1','answered']],{evidenceByPart:{P1:[{sourceId:'S1',spanIds:['S1-Q1']}]}})]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
@@ -316,9 +380,9 @@ test('an answered review must quote every source cited by that part',async()=>{
    {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
    parts:[{id:'P1',question:'How do Hume and Kant differ over causal necessity?',
     sourceBookIds:['35','40'],searchQueries:['Hume and Kant causal necessity'],candidateSourceIds:['S1','S2']}]},catalog,trace:true});
- assert.equal(result.coverage,'partial');
+ assert.equal(result.coverage,'none');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='missing-cited-source-span'));
+  issue.reason==='missing-claim-source-span'));
 });
 
 test('the reviewer receives an explicit source checklist and missing synthesis evidence stays partial',async()=>{
@@ -340,24 +404,24 @@ test('the reviewer receives an explicit source checklist and missing synthesis e
   answer('PART P1\nHume grounds necessity in custom and regular conjunction. [S1] External objects do not reveal power directly. [S2]\n'+
    'PART P2\nKant treats causal connection as a priori and necessary. [S3, S6]\n'+
    'PART P3\nHume explains necessity through custom, while Kant grounds causal connection in a priori categories. [S1, S2, S3, S6]'),
-  {response:JSON.stringify({parts:[
-   {partId:'P1',status:'answered',reason:'The cited Hume pages explain custom and limits of direct perception.',
-    evidence:[{sourceId:'S1',spanIds:['S1-Q1']},{sourceId:'S2',spanIds:['S2-Q1']}]},
-   {partId:'P2',status:'answered',reason:'The cited Kant pages explain categories and a priori necessity.',
-    evidence:[{sourceId:'S3',spanIds:['S3-Q1']},{sourceId:'S6',spanIds:['S6-Q1']}]},
-   {partId:'P3',status:'answered',reason:'The comparison combines Hume custom with Kant categories and necessity.',
-    evidence:[{sourceId:'S1',spanIds:['S1-Q1']},{sourceId:'S3',spanIds:['S3-Q1']},
-     {sourceId:'S6',spanIds:['S6-Q1']}]}
-  ]})}
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const supported={P1:['S1','S2'],P2:['S3','S6'],P3:['S1','S3','S6']};
+   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
+    reason:'The cited passages establish the requested claims.',claims:part.answers.map(claim=>({
+     claimId:claim.claimId,status:'answered',reason:'These spans support this exact answer sentence.',
+     evidence:claim.sourceIds.filter(id=>supported[part.partId].includes(id)).map(sourceId=>({sourceId,
+      spanIds:[sourceId+'-Q1']}))}))}))})};
+  }
  ]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',sources,ai,[],
   {plan,catalog,trace:true});
  const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
  const synthesis=reviewPayload.parts.find(part=>part.partId==='P3');
- assert.deepEqual(synthesis.requiredSourceIds,['S1','S2','S3','S6']);
- assert.equal(result.questionParts[2].status,'partial');
+ assert.deepEqual([...new Set(synthesis.answers.flatMap(item=>item.sourceIds))],['S1','S2','S3','S6']);
+ assert.equal(result.questionParts[2].status,'unsupported');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.partId==='P3'&&issue.reason==='missing-cited-source-span'));
+  issue.partId==='P3'&&issue.reason==='missing-claim-source-span'));
  assert.equal(result.evidenceMap.some(item=>item.partId==='P3'&&item.id==='S2'),false);
  assert.equal(ai.calls.length,2);
 });
@@ -432,7 +496,7 @@ test('a comparison with cited evidence from both named source groups may be revi
  assert.equal(result.coverage,'full');
  assert.equal(result.questionParts[0].status,'supported');
  const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
- assert.deepEqual(reviewPayload.parts.find(part=>part.partId==='P3').requiredSourceIds,['S1','S2']);
+ assert.deepEqual(reviewPayload.parts.find(part=>part.partId==='P3').answers[0].sourceIds,['S1','S2']);
  assert.deepEqual([...new Set(result.evidenceMap.filter(item=>item.partId==='P3').map(item=>item.id))],['S1','S2']);
 });
 

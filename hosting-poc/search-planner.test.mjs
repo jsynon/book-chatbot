@@ -68,8 +68,8 @@ test('hypothetical thinker questions bind side searches to each author and reser
    "How does Nietzsche evaluate Kierkegaard's account of faith and the individual?",
    "What is Kierkegaard's account of faith and the individual?"
   ],scope:'',queries:[
-   'Nietzsche critique of Kierkegaard religious individual and leap of faith',
-   'Nietzsche views on Kierkegaard Christian morality and asceticism'
+   'Friedrich Nietzsche s critique or assessment of s religious existentialism',
+   'Søren Kierkegaard s definition of faith and the individual s relationship to God'
   ]};
  let systemPrompt='';
  const result=await planSearchQueries(question,'',{
@@ -93,6 +93,10 @@ test('hypothetical thinker questions bind side searches to each author and reser
  assert.doesNotMatch(result.queries[0],/Kierkegaard/i);
  assert.match(result.queries[1],/Kierkegaard/i);
  assert.doesNotMatch(result.queries[1],/Nietzsche/i);
+ assert.doesNotMatch(result.queries.join(' '),/(?:^|\s)s(?:$|\s)/i,
+  'detached possessive suffixes must not survive author-scoped query cleanup');
+ assert.match(result.queries[0],/critique or assessment of religious existentialism/i);
+ assert.match(result.queries[1],/definition of faith and the individual relationship to God/i);
  assert.ok(result.plan.parts[0].searchQueries.length>0);
  assert.ok(result.plan.parts[0].searchQueries.every(query=>/Nietzsche/i.test(query)&&!/Kierkegaard/i.test(query)));
  assert.ok(result.plan.parts[1].searchQueries.length>0);

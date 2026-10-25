@@ -62,6 +62,16 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     const normalized=identityText(phrase);
     return normalized.length>=4&&(' '+identityText(haystack)+' ').includes(' '+normalized+' ');
   };
+  const simpleDefinition=/^\s*(?:what\s+is|what['’]s|define)\s+.+?\??\s*$/i.test(resolvedQuestion)||
+    /^\s*what\s+does\s+.+?\s+mean\s*\??\s*$/i.test(resolvedQuestion);
+  const asksAnotherFacet=/\b(?:and|or)\s+(?:(?:what|how|why|whether|when|where|who|does|do|did|is|are|can|could|would|should|will|must)\b|(?:its|their|his|her)\s+(?:role|function|importance|effect|impact|origin|history|example|implication|operation)\b|(?:the\s+)?(?:role|function|importance|effect|impact|origin|history|example|implication|operation)\b)|[,;]\s*(?:and\s+)?(?:how|why|what|whether|when|where|who|does|do|did|is|are|can|could|would|should)\b/i
+    .test(resolvedQuestion);
+  // The planner may expand a direct definition into adjacent topics that the
+  // reader did not ask for. Keep the requested definition as one coverage
+  // part, while preserving explicitly coordinated questions such as "what is
+  // X and how does it work?".
+  if(simpleDefinition&&!asksAnotherFacet)
+    normalizedParts=[{id:'P1',question:resolvedQuestion}];
   const hypotheticalAuthorResponse=/\b(?:what|how)\s+would\b[^?!.]{0,120}\b(?:think|say|respond|react|view|regard)\b[^?!.]{0,100}\b(?:about|of|on|regarding|concerning|to)\b/i.test(resolvedQuestion);
   const comparisonPattern=/\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|versus|vs\.?|similar(?:ity)?|alike)\b/i;
   const sourcePhrases=source=>{
