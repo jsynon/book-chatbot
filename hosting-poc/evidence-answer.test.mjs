@@ -1011,6 +1011,12 @@ test('a reviewer cannot mark an answer supported without selecting a span from i
  assert.equal(result.questionParts[0].status,'unsupported');
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
   {partId:'P1',claimId:'P1-C1',sourceId:'S2',reason:'missing-claim-source-span'}]);
+ assert.deepEqual(result.trace.reviewContract.reviewDecisions,[{
+  partId:'P1',claimId:'P1-C1',sourceId:'S2',claimText:'Kant lists causality among the categories of relation.',
+  claimStatus:'answered',sourceStatus:'partial',
+  candidateSpanIds:['S2-Q1'],reviewerSpanIds:[],acceptedSpanIds:[],acceptedQuote:'',accepted:false,
+  validationReason:'missing-claim-source-span'
+ }]);
  assert.equal(result.evidenceMap.length,0);
 });
 
@@ -1045,6 +1051,13 @@ test('the active reviewer resolves a selected span to exact bounded source text'
  assert.equal(result.evidenceMap[0].quote,spans[0].text);
  assert.ok(longText.includes(result.evidenceMap[0].quote));
  assert.equal(result.trace.reviewContract.supportIssues.length,0);
+ assert.deepEqual(result.trace.reviewContract.reviewDecisions,[{
+  partId:'P1',claimId:'P1-C1',sourceId:'S1',claimText:'Aristotle treats soul as the actuality of a living body.',
+  claimStatus:'answered',sourceStatus:'answered',
+  candidateSpanIds:result.trace.reviewContract.reviewDecisions[0].candidateSpanIds,
+  reviewerSpanIds:[spans[0].spanId],acceptedSpanIds:[spans[0].spanId],
+  acceptedQuote:spans[0].text.slice(0,280),accepted:true,validationReason:null
+ }]);
 });
 
 test('the active reviewer returns OCR text verbatim from the selected source span',async()=>{
