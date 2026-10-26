@@ -1,7 +1,7 @@
 # Reading Companion evidence milestone: release report
-
 Last updated: October 26, 2026
-Status: The latest focused all-books with-review workflow is run #61, [40245464263](https://github.com/jsynon/antilogicalism/actions/runs/40245464263), against library v48 and website revision `ee94ba1779d07847345fabc96db38fa560d60225` (website PR #209). The request completed without planner fallback or request failure, but its one answer was partial and failed the structural gate. The run had no human-entered rubric scores. It shows the threshold change alone did not recover the needed Nagarjuna page because the live planner facet used different, broader vocabulary. Worker PR #249's speaker-attribution change is merged; report updates are pending in this repository's PR #250. The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
+Status: The latest focused all-books with-review workflow is run #62, [40247761530](https://github.com/jsynon/antilogicalism/actions/runs/40247761530), against library v48 and website revision `ce1a6741a2fd25a6363dd227c06f226be3804e86` (website PR #210; Pages deployment succeeded). All five requests completed with no request failures, planner fallbacks, or skipped cases, but only 3/5 cases and 4/7 parts passed the structural gate. Sunyata still missed the v48 Nagarjuna page because the live planner used “dependent origination” while the indexed passage says “dependent arising”; Nietzsche-on-Kierkegaard still lacked the requested explicit hypothetical synthesis. The other three answers passed structural checks, but citation alignment does not prove semantic accuracy. The artifact has no human-entered rubric scores. Worker PR #251 and website PR #210 are merged; the Worker was deployed before the run through the user's normal workflow. The report update is in PR #252.
+The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -563,3 +563,53 @@ I checked the original v48 PDF in Drive. Its title page credits David J. Kalupah
 | Live planner and answer quality | Pending; the fixture tests use controlled queries and do not establish model behavior or semantic sufficiency of the final answer |
 
 After merging and deploying the Worker and website PRs, rerun only the focused Sunyata question in all-books with-review mode against v48. Confirm the live planner supplies indexed source vocabulary, page 88 reaches the submitted packet and stays linked to the definition part, and any use of it is attributed to Kalupahana’s introduction. Inspect the actual reviewed claims and citations for semantic support; a retrieval pass alone is insufficient. Keep the seven-question acceptance suite frozen until this targeted trace is satisfactory.
+
+
+## October 26, 2026: focused five-question run #62
+
+The all-books with-review workflow [#62](https://github.com/jsynon/antilogicalism/actions/runs/40247761530) completed all five cases against library v48. Its artifact is [12619846350](https://github.com/jsynon/antilogicalism/actions/runs/40247761530). There were no request failures, planner fallbacks, or skipped cases. Each case used one planner call and two answer-stage calls (composition and review), for 15 estimated Worker AI calls total. The run failed its structural evaluation gate, not because GitHub Actions or the Worker request path was unavailable. It passed 3/5 cases and 4/7 question parts; the prior focused five-case run #59 passed 3/5 and 5/7 parts, so this is no case-level gain and one fewer supported part. The artifact has no human rubric ratings.
+
+The website used revision `ce1a6741a2fd25a6363dd227c06f226be3804e86`, the merge of website PR #210, and its Pages deployment succeeded. The user merged, pulled, and deployed the Worker before the run as usual.
+
+| Question | Structural result | What the artifact establishes |
+|---|---|---|
+| What is transcendental idealism? | Pass; full | Kant’s *Critique of Pure Reason* and *Prolegomena* were cited, with located highlights. The answer explains appearances and things-in-themselves, but its final clause garbles the relation between appearances and things-in-themselves and becomes contradictory. The reviewer’s structural pass did not catch this semantic defect. |
+| What did Kierkegaard say about faith? | Pass; full | Six source pages across four works support a broad account of faith, inwardness, paradox, and Kierkegaard’s critique of Christendom. The answer is evidence-rich but reads as a list of claims more than a synthesized explanation. |
+| What did Nietzsche think about Christianity? | Pass; full | The answer uses Nietzsche’s critique of Christian morality and slave morality. However, the review trace flags an unsupported source relation, and the final wording that calls pity and self-denial “poison” goes beyond the mapped passage. This is another example of a structural pass that needs semantic checking. |
+| What is sunyata? | Fail; partial | The answer cites Huston Smith and D. T. Suzuki for a narrow gloss and Mahayana/Zen context, with all cited highlights located. It does not reach v48 book 178, page 88, and does not explain the concept through dependent arising or a primary Nagarjuna discussion. The live second planner facet said “dependent origination” rather than the indexed “dependent arising”; the prior controlled-query regression therefore did not reproduce the live planner. A reviewer support issue also rejected an extra claim drawn from Dilworth’s editorial introduction, showing the voice safeguard worked. |
+| What would Nietzsche think about Kierkegaard’s thought? | Fail; partial | Evidence from both authors reached the packet and the answer compares their positions, but it never gives the requested cautious inference about what Nietzsche would think. The missing item is synthesis/answer coverage, not retrieval of both sides. |
+
+The highlights and cited-source identity checks passed for the selected passages, and all final cited source IDs mapped correctly. These are useful provenance checks, but they did not prevent the Kant contradiction or the Nietzsche unsupported relation, and they do not measure whether the answer fully addresses the reader’s question. Three structural passes should therefore not be treated as three verified high-quality answers.
+
+The following provisional 0–2 scores are my review of the saved drafts and their cited evidence, not workflow-entered human scores. Dimensions are accuracy, question coverage, explanation, citation support, and citation completeness.
+
+| Question | Accuracy | Coverage | Explanation | Citation support | Citation completeness |
+|---|---:|---:|---:|---:|---:|
+| Transcendental idealism | 1 | 2 | 1 | 1 | 2 |
+| Kierkegaard on faith | 2 | 2 | 1 | 2 | 2 |
+| Nietzsche on Christianity | 1 | 2 | 1 | 1 | 2 |
+| Sunyata | 1 | 1 | 1 | 1 | 1 |
+| Nietzsche on Kierkegaard | 1 | 1 | 1 | 1 | 1 |
+
+This run validates workflow liveness and passage/citation plumbing, but not answer quality. It also shows that structural checks can accept semantically flawed wording. The immediate retrieval question is whether the live planner’s alternate terminology can reach source-native passages without lowering relevance or creating false part links. The separate Nietzsche-on-Kierkegaard synthesis gap and the questionable Kant and Nietzsche-on-Christianity passes remain answer-quality work; they should not be claimed as fixed by a retrieval change. Keep the unseen acceptance suite frozen until the focused traces and source-level review support broader validation.
+
+## October 26, 2026: run #62 source-phrase retrieval candidate
+
+The run #62 Sunyata facet used the valid phrase “dependent origination,” while the relevant v48 book 178 page-88 passage uses “dependent arising.” The retrieval candidate adds a small, explicit phrase-equivalence registry in the shared browser/evaluator index search. It applies to search text across books rather than branching on the Sunyata question. Both phrases expand to the same relevance concept; its words do not count as separate evidence matches. The existing minimum relevance threshold, result limits, page limits, answer packet size, and Worker call count are unchanged. No new model call, stage, or broad synonym generation was added. The registry currently contains this single source-attested translation pair; this run does not justify claiming a general semantic synonym engine.
+
+The end-to-end regression uses the exact run #62 facet and a v48 OCR fixture. It confirms book 178 page 88 reaches the same bounded answer packet and remains linked to the definition part. The candidate also retains a negative control where a page contains only “dependent arising” without an independent matching concept; that page remains below the existing local evidence floor. The prior run #61 facet still misses page 88, and the four non-Sunyata planner facets from run #62 do not gain the new variant. To preserve the link through composition, one-part plans may associate a planner facet with their sole part when it shares one distinctive subject term after generic search framing is removed. Multi-part plans retain the two-term association rule, and named-source scoping is unchanged. These links indicate eligibility only; the Worker still validates sources and semantic support.
+
+Page 88 remains Kalupahana’s editorial introduction discussing Nāgārjuna, not Nāgārjuna’s translated text. Existing page-specific provenance continues to require that attribution. Retrieving this page improves relevant contextual evidence but does not, by itself, establish a primary-source definition of śūnyatā or prove that the final answer is semantically complete.
+
+| Candidate validation | Result |
+|---|---|
+| Exact run #62 facet through v48 retrieval fixture | Pass; page 88 enters retrieval and the bounded answer packet |
+| Question-part handoff | Pass; page 88 stays linked to the single definition part through the actual part query |
+| Phrase-only negative control | Pass; “dependent arising” alone is one concept and does not meet the existing evidence floor |
+| Existing run #61 facet | Still misses page 88, as expected; it lacks the indexed relation rather than using an alternate translation |
+| Other four run #62 planner facets | No “dependent arising” expansion is added |
+| Website/evaluator suite: `node --test reading-companion/*.test.mjs` | 184 passed, 0 failed |
+| Whitespace validation | `git diff --check` passes |
+| Live answer quality | Pending; the fixture verifies retrieval and part linkage, not a live planner choice, source sufficiency, or final-answer accuracy |
+
+The site implementation is under review in website PR [#211](https://github.com/jsynon/antilogicalism/pull/211). After the PR is merged and Pages publishes it, rerun the full focused five-question all-books with-review workflow once. Confirm page 88 reaches the submitted packet, its editorial voice is attributed correctly, and no false positives or part-link regressions appear across the other four questions. Score and inspect the final drafts separately: the run #62 retrieval fix does not resolve the missing hypothetical synthesis or the questionable wording in the Kant and Nietzsche-on-Christianity answers. Keep the unseen acceptance suite frozen until those answer-quality checks are satisfactory.
