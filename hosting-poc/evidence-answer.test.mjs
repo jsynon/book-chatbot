@@ -62,6 +62,16 @@ test('curated provenance is title-guarded and distinguishes pseudonymous work vo
   'THE PHILOSOPHY OF THE MIDDLE WAY\nWith that analysis, Nagarjuna was ready to defend the four noble truths.');
  assert.deepEqual(kalupahana.pageVoice,
   {kind:'editorial-introduction',name:'David J. Kalupahana',creditedAuthor:'Nāgārjuna'});
+ for(const page of [104,164]){
+  const commentary=sourceProvenance({bookId:'178',title:'Mūlamadhyamakakārikā — Nāgārjuna',page},
+   {sources:[{role:'primary',bookIds:['178']}]},
+   page===104?'These two verses show that the Madhyamikas have a positive thesis.':
+    'Nāgārjuna used the middle path to avoid the extremes described above.');
+  assert.deepEqual(commentary.pageVoice,
+   {kind:'editorial-commentary',name:'David J. Kalupahana',creditedAuthor:'Nāgārjuna'});
+  assert.equal(commentary.pageSectionHint,'commentary');
+  assert.match(commentary.pageVoiceHint,/commentary by David J\. Kalupahana/);
+ }
  assert.equal(sourceProvenance({bookId:'178',title:'Mūlamadhyamakakārikā — Nāgārjuna',page:100},
   {sources:[{role:'primary',bookIds:['178']}] }).pageVoice,undefined,
   'the introduction attribution does not spill over to Nagarjuna’s translated text');
@@ -92,6 +102,29 @@ test('editorial commentary cannot be surfaced as the credited author speaking wi
  const mediated=await run('Kaufmann’s commentary presents Nietzsche as viewing the New Testament as a decline. [S1]');
  assert.equal(mediated.coverage,'full');
  assert.match(mediated.answer,/Kaufmann’s commentary/);
+});
+
+test('known Kalupahana commentary pages cannot be stated as Nagarjuna speaking directly',async()=>{
+ const title='Mūlamadhyamakakārikā — Nāgārjuna';
+ const source={id:'S1',bookId:'178',title,page:164,url:'https://example.test/nagarjuna#page=164',
+  text:'These two verses explain that the Madhyamikas have a positive thesis about the middle path.',
+  preview:'These two verses explain that the Madhyamikas have a positive thesis about the middle path.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Nāgārjuna',role:'primary',bookIds:['178']}],
+  parts:[{id:'P1',question:'What is sunyata?',sourceBookIds:['178'],searchQueries:['sunyata'],candidateSourceIds:['S1']}]};
+ const ai=makeAI([answer('PART P1\nNagarjuna intended to establish a positive thesis about the middle path. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer('What is sunyata?',[source],ai,[],
+  {plan,catalog:{178:title},trace:true});
+ assert.equal(result.coverage,'none');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='editorial-source-attribution-unqualified'&&issue.sourceId==='S1'));
+ assert.doesNotMatch(result.answer,/Nagarjuna intended/);
 });
 
 test('a pronoun-led claim preserves editorial mediation from the named-author antecedent',async()=>{
@@ -387,8 +420,9 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/one flat top-level claims array/);
  assert.match(REVIEW_PROMPT,/There must be only one claims property/);
  assert.match(REVIEW_PROMPT,/one source decision for every source ID/);
- assert.match(REVIEW_PROMPT,/exactly one best matching span ID for each answered cited source/);
- assert.match(REVIEW_PROMPT,/Do not select multiple spans from one source/);
+ assert.match(REVIEW_PROMPT,/smallest set of up to 3 distinct relevant spans/);
+ assert.match(REVIEW_PROMPT,/support every material clause or premise/);
+ assert.doesNotMatch(REVIEW_PROMPT,/Return exactly one best matching span ID/);
  assert.match(COMPOSER_PROMPT,/attribute claims about that page to the commentator or the commentary/);
  assert.match(COMPOSER_PROMPT,/Cite every factual sentence/);
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
@@ -1014,7 +1048,7 @@ test('a reviewer cannot mark an answer supported without selecting a span from i
  assert.deepEqual(result.trace.reviewContract.reviewDecisions,[{
   partId:'P1',claimId:'P1-C1',sourceId:'S2',claimText:'Kant lists causality among the categories of relation.',
   claimStatus:'answered',sourceStatus:'partial',
-  candidateSpanIds:['S2-Q1'],reviewerSpanIds:[],acceptedSpanIds:[],acceptedQuote:'',accepted:false,
+  candidateSpanIds:['S2-Q1'],reviewerSpanIds:[],acceptedSpanIds:[],acceptedQuote:'',acceptedQuotes:[],accepted:false,
   validationReason:'missing-claim-source-span'
  }]);
  assert.equal(result.evidenceMap.length,0);
@@ -1056,8 +1090,33 @@ test('the active reviewer resolves a selected span to exact bounded source text'
   claimStatus:'answered',sourceStatus:'answered',
   candidateSpanIds:result.trace.reviewContract.reviewDecisions[0].candidateSpanIds,
   reviewerSpanIds:[spans[0].spanId],acceptedSpanIds:[spans[0].spanId],
-  acceptedQuote:spans[0].text.slice(0,280),accepted:true,validationReason:null
+  acceptedQuote:spans[0].text.slice(0,280),acceptedQuotes:[spans[0].text.slice(0,280)],
+  accepted:true,validationReason:null
  }]);
+});
+
+test('the reviewer can retain several exact spans from one source for one fully supported claim',async()=>{
+ const source={...hume,
+  text:'Repeated conjunctions are observed between similar events.\n\n\nThe mind is determined by custom to infer one event from another.\n\n\nThe idea of necessary connection arises from this transition of thought.',
+  preview:'Repeated conjunctions are observed between similar events.\n\n\nThe mind is determined by custom to infer one event from another.\n\n\nThe idea of necessary connection arises from this transition of thought.'};
+ const spans=buildReviewSpans('S1',source.text);
+ assert.equal(spans.length,3);
+ const ai=makeAI([answer('PART P1\nHume links repeated conjunctions, custom, and the mind’s inference to our idea of necessary connection. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   const offered=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds;
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:offered}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer('How does Hume explain the idea of necessary connection?',[source],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.coverage,'full');
+ assert.equal(result.evidenceMap.length,3);
+ assert.deepEqual(result.evidenceMap.map(item=>item.quote).sort(),spans.map(item=>item.text).sort());
+ const decision=result.trace.reviewContract.reviewDecisions[0];
+ assert.deepEqual(decision.acceptedSpanIds.sort(),spans.map(item=>item.spanId).sort());
+ assert.deepEqual(decision.acceptedQuotes.sort(),spans.map(item=>item.text.slice(0,280)).sort());
+ assert.equal(ai.calls.length,2,'multi-span handoff uses the existing compose and review calls');
 });
 
 test('the active reviewer returns OCR text verbatim from the selected source span',async()=>{
@@ -1126,12 +1185,12 @@ test('the reviewer receives an explicit source checklist and missing synthesis e
  assert.equal(ai.calls.length,2);
 });
 
-test('reviewer uses one exact span per cited source',async()=>{
+test('reviewer preserves a separate exact span from each cited source when each supports the claim',async()=>{
  const passage='Wollstonecraft explains how education and social position shape judgment and character. '.repeat(12);
  const sources=['S1','S4','S6'].map((id,index)=>({id,bookId:'87',title:'A Vindication of the Rights of Woman — Mary Wollstonecraft',
   page:48+index,url:`https://example.test/wollstonecraft#page=${48+index}`,text:passage,preview:passage}));
  const evidence=sources.map(source=>({sourceId:source.id,
-  spanIds:buildReviewSpans(source.id,passage).slice(0,3).map(span=>span.spanId)}));
+  spanIds:buildReviewSpans(source.id,passage).slice(0,1).map(span=>span.spanId)}));
  const plan={version:'reader-evidence-v2',intent:'explain',
   sources:[{label:'Mary Wollstonecraft',role:'primary',bookIds:['87']}],
   parts:[{id:'P1',question:'How does Wollstonecraft describe social conditions?',sourceBookIds:['87'],
