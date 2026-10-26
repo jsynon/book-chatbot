@@ -367,7 +367,7 @@ The change reuses the existing planner/composer/reviewer calls and page packet. 
 | Focused Worker regression | Pass: 72 tests, including preservation of earlier missing-span and cross-group failure guards. |
 | Focused website evaluator regressions | Pass: 51 tests, including offline recheck using the saved all-books planner eligibility set. |
 | Full offline suites | Pass: Worker `node --test hosting-poc/*.test.mjs`, 277 tests; website `node --test reading-companion/*.test.mjs`, 194 tests. Changed modules pass `node --check`; both candidate diffs pass `git diff --check`. |
-| PR/deployment | Not yet merged or deployed. Separate Worker and website PRs will carry the coordinated changes. |
+| PR/deployment | Open and unmerged: [Worker #262](https://github.com/jsynon/book-chatbot/pull/262) and [website #217](https://github.com/jsynon/antilogicalism/pull/217). Neither is deployed. |
 | Live validation | Pending. After both candidates are merged and deployed, rerun the same paired scope workflow. Inspect Hume book 276's actual cited page and the Boethius accepted span next to the claim; manually review all `additionalEligibleBookIds`. |
 | Quality conclusion | No answer-quality improvement is established by this artifact or these structural regressions. The evaluator now separates planner eligibility from semantic relevance, while the Worker can preserve a claim supported by a valid source from its planned group. |
 | Unseen acceptance suite | Keep frozen until the paired artifact is re-run and cited page text is reviewed. |
