@@ -281,30 +281,6 @@ function hasRecognizedStatus(value){
   return ['answered','supported','complete','partial','incomplete','unanswered','unsupported','none']
     .includes(String(value||'').toLowerCase());
 }
-function canPruneUnsupportedCitations(plan,question){
-  if(plan.intent==='compare'||asksForHypotheticalAuthorResponse(question))return false;
-  // For a direct claim, a citation group can safely lose an explicitly
-  // unsupported extra source when another cited page independently supports
-  // the whole claim. The number of unrelated planner groups in an all-books
-  // plan must not disable this claim-local repair. Comparisons and
-  // hypothetical inferences remain fail-closed above.
-  return true;
-}
-function pruneUnsupportedCitationIds(renderedText,unsupportedIds,supportedIds){
-  const unsupported=new Set(unsupportedIds),supported=new Set(supportedIds);
-  const groups=citationGroups(renderedText);
-  if(!groups.length||!groups.some(group=>group.ids.some(id=>unsupported.has(id))))return null;
-  let output=String(renderedText);
-  for(const group of [...groups].reverse()){
-    if(!group.ids.some(id=>unsupported.has(id)))continue;
-    const kept=[...new Set(group.ids.filter(id=>!unsupported.has(id)))];
-    // Only repair an explicitly over-broad group. A separate unsupported
-    // group may support a distinct clause, so that sentence must stay partial.
-    if(!kept.length||!kept.some(id=>supported.has(id)))return null;
-    output=output.slice(0,group.start)+'['+kept.join(', ')+']'+output.slice(group.end);
-  }
-  return output;
-}
 function reviewSpanSourceId(spanId){
   return String(spanId||'').match(/^(S[1-9]\d*)-Q[1-9]\d*$/)?.[1]||'';
 }
@@ -448,7 +424,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       const selectedBySource=selectReviewSpansBySource(
         spanIdsBySource,citedIds,sources,reviewSpanMaps);
       const sourceById=new Map(sources.map(source=>[source.id,source]));
-      const supportedSourceIds=new Set(),explicitlyUnsupportedSourceIds=new Set();
+      const supportedSourceIds=new Set();
       for(const sourceId of citedIds){
         const sourceDecision=sourceDecisions.get(sourceId);
         const selected=selectedBySource.get(sourceId)||[];
@@ -462,9 +438,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             reason:attributionIssue});
         }
         if(!sourceDecision||sourceDecision.status!=='answered'||!selected.length){
-          if(sourceDecision&&sourceDecision.legacyMissingSpan!==true&&
-             ['partial','unanswered'].includes(sourceDecision.status))
-            explicitlyUnsupportedSourceIds.add(sourceId);
           claimStatus=claimStatus==='unanswered'?'unanswered':'partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:!sourceDecision?'missing-claim-source-decision':sourceDecision.legacyMissingSpan?'missing-claim-source-span':
@@ -491,32 +464,14 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           accepted:supportedSourceIds.has(sourceId)&&!attributionIssue,
           validationReason:validationReason||null});
       }
-      let acceptedAnswer=answer;
-      if(['answered','partial'].includes(decision.status)&&
-          claimStatus!=='unanswered'&&canPruneUnsupportedCitations(plan,question)&&supportedSourceIds.size&&
-         explicitlyUnsupportedSourceIds.size&&
-         [...citedIds].every(sourceId=>supportedSourceIds.has(sourceId)||
-           explicitlyUnsupportedSourceIds.has(sourceId))){
-        const renderedText=pruneUnsupportedCitationIds(answer.renderedText,
-          explicitlyUnsupportedSourceIds,supportedSourceIds);
-        if(renderedText){
-          const retainedIds=[...new Set(citationGroups(renderedText).flatMap(group=>group.ids))];
-          if(retainedIds.length&&retainedIds.every(sourceId=>supportedSourceIds.has(sourceId))){
-            acceptedAnswer={...answer,renderedText,sourceIds:retainedIds};
-            claimStatus='answered';
-            recovered.push({partId:part.id,claimId:answer.claimId,
-              sourceIds:[...explicitlyUnsupportedSourceIds],reason:'unsupported-extra-citations-pruned'});
-          }
-        }
-      }
       for(const selections of selectedBySource.values())for(const selection of selections){
         selection.claimId=answer.claimId;
         selection.point=answer.text;
       }
-      const claimEvidence=acceptedAnswer.sourceIds
+      const claimEvidence=answer.sourceIds
         .flatMap(sourceId=>selectedBySource.get(sourceId)?.slice(0,MAX_REVIEW_SPANS_PER_SOURCE)||[]);
       if(claimStatus==='answered'){
-        acceptedAnswers.push(acceptedAnswer);evidence.push(...claimEvidence);precedingAnswers.push(acceptedAnswer);
+        acceptedAnswers.push(answer);evidence.push(...claimEvidence);precedingAnswers.push(answer);
       }
     }
     let status=reviewerPart?.status||'unanswered';
