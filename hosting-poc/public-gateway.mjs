@@ -3394,17 +3394,16 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'corrects it, use separate queries for the proposition and the reply, '+
         'counterpoint, or correction. Do not substitute motive or aftermath for '+
         'the correction unless the question requests those topics. '+
-        'For questions asking what role or function a named concept plays, keep '+
-        'the exact concept in its query and add likely source-native operational '+
-        'wording: who acts, what the concept does, and what result it produces. '+
-        'Do not rely on generic words such as “role,” “function,” or “meaning” '+
-        'when a concrete action or outcome can locate the passage. Treat source-'+
-        'native wording as a search lead, not as evidence. '+
-        'For questions asking what something is or how it works, seek a direct '+
-        'definition, boundary, or essential operation, not only its origins or '+
-        'consequences. When the reader asks what a phrase or expression means, '+
-        'preserve that exact phrase in one search query and search for its direct '+
-        'explanation in the other; do not replace it with a broad abstract theme. '+
+        'When asked what a technical, traditional, or translated concept means, '+
+        'what it is, or what role or function a named concept plays, preserve the reader’s '+
+        'exact term in one query. Use another query slot for a likely gloss and '+
+        'the source’s own definition or operation: the relation it names, who '+
+        'acts, what it does, or what follows, using vocabulary likely to appear '+
+        'in the text. For a phrase or expression, keep that exact phrase in one '+
+        'query. Do not replace the requested concept with a nearby theme or turn '+
+        'search vocabulary into extra answer parts. Treat source-native wording '+
+        'as a retrieval lead, not evidence; seek the direct explanation rather '+
+        'than only origins or consequences. '+
         'When a question gives an explicit chapter-and-verse range, keep the full '+
         'book, chapter, and verse range in BOTH queries. Search for distinct details '+
         'inside that range, and do not use a repeated phrase from a nearby verse as '+
