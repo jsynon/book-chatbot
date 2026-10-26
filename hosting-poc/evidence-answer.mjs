@@ -1,4 +1,4 @@
-import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,sourceProvenance} from './reader-contract.mjs';
+import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,sourceProvenance,catalogIdentity} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
 export const READER_MODEL='@cf/google/gemma-4-26b-a4b-it';
@@ -369,6 +369,30 @@ function sourceVoiceGuidance(provenance){
     return `This page is ${editorial.name||'an editorial'}'s ${editorial.kind.replace(/^editorial-/u,'')} about ${editorial.creditedAuthor||'the credited author'}; attribute its interpretation to the commentator or introduction, not directly to the credited author.`;
   return '';
 }
+function inferSelectedHypotheticalPlan(question,sources){
+  if(!/\b(?:what|how)\s+would\b[^?!.]{0,120}\b(?:think|say|respond|react|view|regard)\b[^?!.]{0,100}\b(?:about|of|on|regarding|concerning|to)\b/i.test(String(question||'')))return null;
+  const groups=new Map();
+  for(const source of Array.isArray(sources)?sources:[]){
+    const identity=catalogIdentity(source?.title||'');
+    for(const author of identity.authors){
+      const key=author.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+      if(!key)continue;
+      if(!groups.has(key))groups.set(key,{label:author,bookIds:new Set()});
+      groups.get(key).bookIds.add(String(source.bookId));
+    }
+  }
+  const text=String(question||'').normalize('NFKC').toLocaleLowerCase();
+  const mentioned=[...groups.values()].filter(group=>{
+    const full=group.label.normalize('NFKC').toLocaleLowerCase();
+    const surname=full.split(/\s+/u).at(-1)||'';
+    const has=(phrase)=>phrase.length>=3&&new RegExp('(?:^|[^\\p{L}\\p{N}])'+phrase.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\$&')+'(?=$|[^\\p{L}\\p{N}])','iu').test(text);
+    return has(full)||has(surname);
+  }).map(group=>({group,index:text.indexOf(
+    group.label.normalize('NFKC').toLocaleLowerCase().split(/\s+/u).at(-1)||'')}))
+   .sort((left,right)=>left.index-right.index).map(item=>item.group);
+  if(mentioned.length!==2)return null;
+  return {intent:'compare',sources:mentioned.map(group=>({label:group.label,role:'primary',bookIds:[...group.bookIds]}))};
+}
 const POLARITY_STOP_WORDS=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
 function polarityTerms(value){
   return new Set((String(value||'').normalize('NFKC').toLocaleLowerCase()
@@ -567,7 +591,8 @@ function comparisonEvidenceComplete(part,plan,sources,answers){
 }
 
 export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
-  const normalized=normalizePlan(options.plan,question,options.catalog||{},options.selectedBookId||'');
+  const rawPlan=options.plan||inferSelectedHypotheticalPlan(question,sources);
+  const normalized=normalizePlan(rawPlan,question,options.catalog||{},options.selectedBookId||'');
   const plan=linkEvidenceToParts(normalized,sources);
   const trace={version:CONTRACT_VERSION,model:READER_MODEL,plan,stages:[],rejected:[]};
   const usage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
