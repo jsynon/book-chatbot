@@ -375,7 +375,7 @@ function sourceVoiceGuidance(provenance){
     return `This page is ${editorial.name||'an editorial'}'s ${editorial.kind.replace(/^editorial-/u,'')} about ${editorial.creditedAuthor||'the credited author'}; attribute its interpretation to the commentator or introduction, not directly to the credited author.`;
   return '';
 }
-function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question){
+function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question,reviewClaims=[]){
   const suppliedParts=new Map(),suppliedClaims=new Map(),issues=[];
   if(!Array.isArray(review?.parts))issues.push('missing-parts');
   else for(const item of review.parts){
@@ -409,7 +409,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     if(suppliedClaims.has(id)){issues.push('duplicate-claim');continue;}
     suppliedClaims.set(id,{status:normalizeStatus(item.status),sources:sourceDecisions});
   }
-  const supportIssues=[],recovered=[],answerContext=[];
+  const supportIssues=[],recovered=[],answerContext=[],reviewDecisions=[];
+  const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
+    String(claim?.claimId||''),new Map((Array.isArray(claim?.sourceEvidence)?claim.sourceEvidence:[])
+      .map(item=>[String(item?.sourceId||''),Array.isArray(item?.spanIds)?item.spanIds:[]]))
+  ]));
   const parts=plan.parts.map(part=>{
     const answerPart=answerParts.find(item=>item.partId===part.id);
     const reviewerPart=suppliedParts.get(part.id);
@@ -440,6 +444,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       for(const sourceId of citedIds){
         const sourceDecision=sourceDecisions.get(sourceId);
         const selected=selectedBySource.get(sourceId)||[];
+        const rawDecision=decision.sources.find(item=>String(item?.sourceId||'')===sourceId);
         const attributionIssue=sourceDecision?.status==='answered'?
           sourceVoiceAttributionIssue(answer.text,sourceById.get(sourceId),plan,
             precedingAnswers,sourceById):'';
@@ -459,6 +464,22 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         }else{
           supportedSourceIds.add(sourceId);
         }
+        const validationReason=attributionIssue||(!sourceDecision?'missing-claim-source-decision':
+          sourceDecision.legacyMissingSpan?'missing-claim-source-span':
+          sourceDecision.status!=='answered'?'claim-source-not-supported':
+          !selected.length?'missing-claim-source-span':'');
+        reviewDecisions.push({partId:part.id,claimId:answer.claimId,sourceId,
+          claimText:String(answer.text||'').slice(0,320),
+          claimStatus:decision.status,
+          sourceStatus:sourceDecision?.status||null,
+          candidateSpanIds:(claimEvidenceById.get(answer.claimId)?.get(sourceId)||[])
+            .slice(0,3).map(spanId=>String(spanId).slice(0,48)),
+          reviewerSpanIds:(Array.isArray(rawDecision?.spanIds)?rawDecision.spanIds:[])
+            .slice(0,6).map(spanId=>String(spanId).slice(0,48)),
+          acceptedSpanIds:selected.slice(0,1).map(item=>item.spanId),
+          acceptedQuote:selected[0]?.quote?String(selected[0].quote).slice(0,280):'',
+          accepted:supportedSourceIds.has(sourceId)&&!attributionIssue,
+          validationReason:validationReason||null});
       }
       let acceptedAnswer=answer;
       if(['answered','partial'].includes(decision.status)&&reviewerPart?.status==='answered'&&
@@ -499,7 +520,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     answerContext.push(...acceptedAnswers);
     return {partId:part.id,status,evidence,answers:acceptedAnswers,reason:''};
   });
-  return {parts,issues:[...new Set(issues)],supportIssues,recovered};
+  return {parts,issues:[...new Set(issues)],supportIssues,recovered,reviewDecisions};
 }
 
 function comparisonReviewEvidenceComplete(part,plan,sources,evidence){
@@ -610,9 +631,10 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       const reviewPayload={question,parts:reviewParts,claims:reviewClaims};
       try{
         const rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseJson);
-        review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMaps,question);
+        review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMaps,question,reviewClaims);
         trace.reviewContract={valid:review.issues.length===0,issues:review.issues,
-          supportIssues:review.supportIssues,recovered:review.recovered};
+          supportIssues:review.supportIssues,recovered:review.recovered,
+          reviewDecisions:review.reviewDecisions};
         if(review.issues.length)reviewFailure={stage:'review',code:'review-contract-incomplete',
           message:'Review omitted or changed one or more question-part decisions.'};
       }catch(error){
