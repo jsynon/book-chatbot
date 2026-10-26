@@ -320,3 +320,33 @@ Known editorial and pseudonymous speaker checks, source-by-source citation gates
 | Live validation | Pending; after this candidate is merged and deployed, rerun the same five-question with-review workflows in both all-books and selected-books modes. Inspect the Kierkegaard faith trace for the polarity reason; inspect Nietzsche/Kierkegaard span relevance and Sunyata attribution/coverage separately. |
 | Quality claims | None yet. The new test proves the deterministic guard catches this explicit polarity pattern; it does not prove that the shortened model instructions improve broader answer quality. |
 | Remaining answer-quality work | Sunyata's substantive explanation and weak hypothetical inference still need source-level evaluation. Keep the unseen acceptance suite frozen until both live scopes are reviewed. |
+
+
+## October 26, 2026: post-PR #259 all-books run #74 and selected-books run #75
+
+After Worker PR [#259](https://github.com/jsynon/book-chatbot/pull/259) merged, the user ran the focused five-question with-review workflow in both scopes. All-books run [#74](https://github.com/jsynon/antilogicalism/actions/runs/40374307054) used artifact [12674642071](https://github.com/jsynon/antilogicalism/actions/runs/40374307054/artifacts/12674642071); selected-books run [#75](https://github.com/jsynon/antilogicalism/actions/runs/40375155798) used artifact [12673987671](https://github.com/jsynon/antilogicalism/actions/runs/40375155798/artifacts/12673987671). Both artifacts identify Worker revision `21cea08f0b37e1018e64cd38f624ae4ddfd8cce7`, PR #259's merge commit, and website revision `aeba93e8c7b5ea5f41547871da986f5e027fe349`.
+
+Both GitHub jobs ended with failure because the evaluation's structural gate found misses, not because the workflow runner failed to produce results. All ten cases completed and neither run had a Worker request failure. All-books estimated 15 Worker calls, passed 4/5 cases, and recorded 5/7 parts supported plus 2 unsupported. It had one planner network failure for Kierkegaard-on-faith; the exact-question fallback recovered and that answer passed. Selected-books estimated 10 calls, skipped planning in all five cases, passed 3/5 cases, and recorded 3/5 parts supported plus 2 partial. It had no planner fallback. All 19/19 cited highlights in all-books and 16/16 in selected-books were located; every human rubric remained pending.
+
+| Case | All-books #74 | Selected-books #75 | Assessment |
+|---|---|---|---|
+| Kant: transcendental idealism | Full | Full | Both explain appearances/representations and things-in-themselves. These structural results do not independently establish every philosophical detail. |
+| Kierkegaard on faith | Full | Full | Both answers identify Johannes de Silentio and avoid the prior claim that he could plunge confidently into the absurd. The polarity guard did not fire in either artifact; the bad claim did not recur, so this pair does not show a live guard activation. |
+| Nietzsche on Christianity | Full | Full | Both produce direct, cited accounts of Nietzsche's criticism. |
+| Sunyata | Full | Partial | All-books now includes Kalupahana's account connecting emptiness with dependent arising, but also equates sunyata with Smith's comparative “Infinite” framing, which needs source-level scrutiny. Selected-books keeps a supported emptiness/dependent-arising explanation but withholds a further “middle path” sentence because cited S5 commentary was not attributed to its commentator. |
+| Nietzsche on Kierkegaard | Partial | Partial | All-books planning produced three parts, but the answer supplied only Kierkegaard's position; the Nietzsche-position and synthesis/inference parts were unsupported. Selected-books supplied two Nietzsche premises, but the only Kierkegaard claim was withheld because cited S1 was unsupported; no Kierkegaard premise or requested inference remained. |
+
+Compared with the immediately prior pair (#72/#73), all-books rose from 2/5 to 4/5 while selected-books remained 3/5. This is encouraging for the all-books output but is not a controlled estimate of the code change's effect: the model responses vary, the all-books run had a planner fallback, and the scopes use different planning routes. The traces contain no `source-contradicts-claim-polarity` validation reason. The artifacts therefore show that the reversed faith claim was absent, but do not show the deterministic polarity guard activating.
+
+The new evidence points to the next bounded answer-quality issue: the cross-author hypothetical fails in both modes for different reasons. All-books planning asks for separate author positions and a synthesis, but composition leaves two parts empty. Selected-books mode forms one answer part but does not preserve a supported Kierkegaard premise alongside Nietzsche's critique, so the hypothetical has nothing to synthesize. The next investigation should compare each route's prepared parts, cited source groups, and final per-part draft, then target this repeated missing-inference behavior without weakening the citation gate. Keep Sunyata's conceptual completeness and secondary-source framing as a separate evaluation target; a structural pass there still does not show that the definition is sufficiently explanatory.
+
+| Follow-up validation | Result |
+|---|---|
+| PR #259 polarity change reached the live runs | Confirmed by Worker source revision `21cea08f0b37e1018e64cd38f624ae4ddfd8cce7` |
+| Structural live results | 4/5 all-books; 3/5 selected-books; both workflows correctly report the structural misses |
+| Planner reliability | One recovered planner network error in #74; none in #75 |
+| Citation highlight location | All cited highlights located; semantic best-span accuracy remains unscored |
+| Human review | 0/5 reviewed in each artifact; no five-dimension quality score is available |
+| Next development focus | Diagnose missing evidence-linked cross-author inference across planner and fixed selected-books routes; do not relax fail-closed source review |
+| Sunyata | Still needs substantive source-level evaluation; do not treat the all-books structural pass as a quality pass |
+| Unseen acceptance suite | Keep frozen until the hypothetical answers and cited passages receive semantic review |
