@@ -318,7 +318,7 @@ test('claim-level review removes a sentence when its cited quote supports only a
  assert.equal(result.evidenceMap[0].quote,text);
 });
 
-test('an answered part can retain a supported single-author claim after an explicit extra citation is rejected',async()=>{
+test('a partially reviewed sentence is not promoted by dropping its unsupported citation',async()=>{
  const unrelated={...hume,id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:17,
   text:'The knight of faith lives an ordinary life after making the movement of infinity.',
   preview:'The knight of faith lives an ordinary life after making the movement of infinity.'};
@@ -339,19 +339,17 @@ test('an answered part can retain a supported single-author claim after an expli
   catalog:{...catalog,140:unrelated.title},plan,trace:true
  });
  assert.equal(ai.calls.length,2);
- assert.equal(result.coverage,'full');
- assert.match(result.answer,/Johannes de Silentio states that the Christian opposite of sin is faith\. \[S2\]/);
- assert.doesNotMatch(result.answer,/S1/);
- assert.deepEqual(result.citations.map(source=>source.id),['S2']);
- assert.deepEqual(result.evidenceMap.map(item=>item.id),['S2']);
- assert.deepEqual(result.trace.reviewContract.recovered,[{
-  partId:'P1',claimId:'P1-C1',sourceIds:['S1'],reason:'unsupported-extra-citations-pruned'
- }]);
+ assert.equal(result.coverage,'none');
+ assert.match(result.answer,/did not support a reliable answer/i);
+ assert.equal(result.questionParts[0].status,'unsupported');
+ assert.deepEqual(result.citations,[]);
+ assert.deepEqual(result.evidenceMap,[]);
+ assert.deepEqual(result.trace.reviewContract.recovered,[]);
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.claimId==='P1-C1'&&issue.sourceId==='S1'&&issue.reason==='claim-source-not-supported'));
 });
 
-test('direct claims can prune an unsupported extra citation in an all-books plan even when the part review is partial',async()=>{
+test('an all-books plan does not promote a partial claim after removing a failed source',async()=>{
  const unrelated={...hume,id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:17,
   text:'The knight of faith lives an ordinary life after making the movement of infinity.',
   preview:'The knight of faith lives an ordinary life after making the movement of infinity.'};
@@ -373,14 +371,54 @@ test('direct claims can prune an unsupported extra citation in an all-books plan
  const result=await composeEvidenceAnswer('What guides human life?',[unrelated,supporting],ai,[],{
   catalog,plan,trace:true
  });
- assert.match(result.answer,/custom is the great guide of human life\. \[S2\]/);
- assert.doesNotMatch(result.answer,/S1/);
+ assert.match(result.answer,/did not support a reliable answer/i);
+ assert.equal(result.questionParts[0].status,'unsupported');
+ assert.deepEqual(result.citations,[]);
+ assert.deepEqual(result.evidenceMap,[]);
+ assert.deepEqual(result.trace.reviewContract.recovered,[]);
+});
+
+test('the Sunyata review handoff omits a compound sentence when one of its cited pages fails review',async()=>{
+ const supported={...hume,id:'S2',bookId:'178',page:88,
+  text:'Dependent arising shows that things do not exist by themselves; emptiness is not absolute nonexistence.',
+  preview:'Dependent arising shows that things do not exist by themselves; emptiness is not absolute nonexistence.'};
+ const rejected={...hume,id:'S5',bookId:'185',page:18,
+  text:'A commentary discusses avoiding dogmatism.',preview:'A commentary discusses avoiding dogmatism.'};
+ const plan={intent:'explain',sources:[
+  {label:'Nāgārjuna',role:'primary',bookIds:['178']},
+  {label:'Commentary',role:'commentary',bookIds:['185']}
+ ],parts:[{id:'P1',question:'What is sunyata?',sourceBookIds:['178','185']}]};
+ const ai=makeAI([
+  answer('PART P1\nEmptiness describes dependent arising and warns against dogmatism. [S2, S5] Emptiness is not absolute nonexistence. [S2]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const [compound,definition]=payload.claims;
+   const spanFor=(claim,sourceId)=>claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[
+    {claimId:compound.claimId,status:'answered',sources:[
+     {sourceId:'S2',status:'answered',spanIds:[spanFor(compound,'S2')]},
+     {sourceId:'S5',status:'partial',spanIds:[]}
+    ]},
+    {claimId:definition.claimId,status:'answered',sources:[
+     {sourceId:'S2',status:'answered',spanIds:[spanFor(definition,'S2')]}
+    ]}
+   ]})};
+  }
+ ]);
+ const result=await composeEvidenceAnswer('What is sunyata?',[supported,rejected],ai,[],{
+  catalog,plan,trace:true
+ });
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.doesNotMatch(result.answer,/warns against dogmatism/);
+ assert.match(result.answer,/Emptiness is not absolute nonexistence/);
  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
- assert.equal(result.questionParts[0].status,'partial',
-  'citation repair retains the supported claim but does not upgrade the reviewer’s part-level coverage decision');
- assert.deepEqual(result.trace.reviewContract.recovered,[{
-  partId:'P1',claimId:'P1-C1',sourceIds:['S1'],reason:'unsupported-extra-citations-pruned'
- }]);
+ assert.deepEqual(result.evidenceMap.map(item=>item.point),[
+  'Emptiness is not absolute nonexistence.'
+ ]);
+ assert.deepEqual(result.trace.reviewContract.recovered,[]);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.claimId==='P1-C1'&&issue.sourceId==='S5'&&issue.reason==='claim-source-not-supported'));
 });
 
 test('a failed author-side premise cannot be pruned from a hypothetical inference citation',async()=>{
