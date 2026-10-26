@@ -2222,13 +2222,16 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
  assert.equal(JSON.stringify(details).includes(pilotBaseEnv.TURNSTILE_SECRET),false);
 });
 test('version diagnostics expose the Cloudflare Worker version on planner and answer responses',async()=>{
- const metadata={id:'version-0123456789abcdef',tag:'quality-pilot',timestamp:'2026-10-21T00:00:00.000Z'};
+ const revision='abcdef0123456789abcdef0123456789abcdef01';
+ const metadata={id:'version-0123456789abcdef',tag:revision,timestamp:'2026-10-21T00:00:00.000Z'};
  assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
   workerSourceBuild:'public-gateway-evidence-selection-v3',
   workerVersionId:metadata.id,workerVersionTag:metadata.tag,
+  workerSourceRevision:revision,
   workerVersionTimestamp:metadata.timestamp
  });
  assert.equal(workerVersionDiagnostics({}).workerVersionId,null);
+ assert.equal(workerVersionDiagnostics({CF_VERSION_METADATA:{tag:'quality-pilot'}}).workerSourceRevision,null);
  const plannerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata},
   model:async()=>({choices:[{finish_reason:'stop',message:{content:
    '{"queries":["specific first event cause","distinct second event cause"]}'}}]})});
@@ -2237,6 +2240,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(planned.status,200);
  assert.equal(planData.workerVersionId,metadata.id);
  assert.equal(planData.workerVersionTag,metadata.tag);
+ assert.equal(planData.workerSourceRevision,revision);
  assert.equal(planData.workerSourceBuild,'public-gateway-evidence-selection-v3');
  const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
  const answered=await answerPilot.post();
@@ -2244,14 +2248,19 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(answered.status,200);
  assert.equal(answerData.workerVersionId,metadata.id);
  assert.equal(answerData.workerVersionTimestamp,metadata.timestamp);
+ assert.equal(answerData.workerSourceRevision,revision);
 });
 test('public highlights follow inline citation order and include only verified source spans',()=>{
  const citations=['S1','S2','S3','S4','S5','S6'].map(id=>({id,title:id,page:Number(id.slice(1)),url:'https://example.test/'+id}));
- const evidenceMap=citations.map(source=>({id:source.id,quoteVerified:true,quote:'verified anchor '+source.id}));
+ const evidenceMap=citations.map(source=>({id:source.id,quoteVerified:true,
+  quote:`This verified passage states a complete readable claim for source ${source.id}.`}));
  const answer='The definition appears first [S4]. Then context [S1], comparison [S2], detail [S3], source five [S5], source six [S6].';
  const highlights=selectPublicEvidenceHighlights(answer,citations,evidenceMap,3);
  assert.deepEqual(highlights.map(item=>item.source_id),['S4','S1','S2']);
- assert.deepEqual(highlights.map(item=>item.quote),['verified anchor S4','verified anchor S1','verified anchor S2']);
+ assert.deepEqual(highlights.map(item=>item.quote),[
+  'This verified passage states a complete readable claim for source S4.',
+  'This verified passage states a complete readable claim for source S1.',
+  'This verified passage states a complete readable claim for source S2.']);
  const allCited=selectPublicEvidenceHighlights(answer,citations,evidenceMap);
  assert.deepEqual(allCited.map(item=>item.source_id),['S4','S1','S2','S3','S5','S6']);
  assert.equal(allCited.length,6,'the public default exposes verified anchors up to the existing six-page packet limit');
@@ -2259,6 +2268,33 @@ test('public highlights follow inline citation order and include only verified s
   {id:'S1',quoteVerified:false,quote:'unverified excerpt'}]),[]);
  assert.deepEqual(selectPublicEvidenceHighlights('Claim [S1].',citations,[]),[],
   'a missing reviewed anchor does not fall back to a generic preview');
+});
+test('public highlights omit short fragments and remove only exact OCR running-header prefixes',()=>{
+ const citations=[{id:'S6',title:'The Portable Nietzsche',page:66,url:'https://example.test/portable#page=66'}];
+ const short={id:'S6',point:'Faith breaks forth.',quote:'faith can break forth.',quoteVerified:true};
+ const header={id:'S6',point:'Nietzsche applies his own standards.',
+  quote:'54 THE PORTABLE NIETZSCHE The standards they themselves applied.',quoteVerified:true};
+ assert.deepEqual(selectPublicEvidenceHighlights('Faith [S6].',citations,[short]),[]);
+ assert.deepEqual(selectPublicEvidenceHighlights('Nietzsche [S6].',citations,[short,header]),[]);
+ const useful={id:'S6',point:'Nietzsche applies his own standards.',
+  quote:'Nietzsche insists that the standards they themselves applied should govern the judgment.',quoteVerified:true};
+ assert.deepEqual(selectPublicEvidenceHighlights('Nietzsche [S6].',citations,[short,header,useful])
+  .map(item=>item.quote),[useful.quote]);
+});
+test('public highlights retain readable line-wrapped verified passages and trim a source-exact running header',()=>{
+ const citations=['S2','S5','S4'].map((id,index)=>({id,title:'Verified source '+id,page:index+40,url:'https://example.test/'+id}));
+ const faithS2='Faith believes what it does not see; it does not believe that the star is there, for\nthat it sees, but it believes that the star has come into existence. The same holds true of an\nevent.';
+ const faithS5='The Christianity of the New Testament is to love God in opposition\n to men, to suffer at the hands of men for one’s faith, for the sake of the\n doctrine to suffer at the hands of men.';
+ const sunyata='THE LEVELS OF REALITY   /  55\n\nthe Infinite is nir-guna, without any attribute, and yet is the ground of all attributes.';
+ const evidenceMap=[faithS2,faithS5,sunyata].map((quote,index)=>({id:citations[index].id,
+  point:'The passage directly explains the concept asked about.',quote,quoteVerified:true}));
+ const result=selectPublicEvidenceHighlights('Faith [S2]. Further context [S5]. Sunyata [S4].',citations,evidenceMap);
+ assert.deepEqual(result.map(item=>item.source_id),['S2','S5','S4']);
+ assert.deepEqual(result.map(item=>item.quote),[
+  faithS2,faithS5,'the Infinite is nir-guna, without any attribute, and yet is the ground of all attributes.'
+ ]);
+ assert.ok(result.every(item=>evidenceMap.some(source=>source.id===item.source_id&&source.quote.includes(item.quote))),
+  'every displayed excerpt must remain an exact substring of its reviewer-verified quote');
 });
 test('public highlights prefer the reviewed span most relevant to its linked claim',()=>{
  const citations=[
@@ -2277,6 +2313,11 @@ test('public highlights prefer the reviewed span most relevant to its linked cla
  ];
  const result=selectPublicEvidenceHighlights('Nietzsche on Christianity [S3]. Sunyata [S2].',citations,evidenceMap,2);
  assert.deepEqual(result.map(item=>item.quote),[resentment,sokuHi]);
+ assert.deepEqual(result.map(item=>item.quotes.map(quote=>quote.quote)),[
+  [resentment,irrelevant],[sokuHi,editorial]
+ ]);
+ assert.equal(result[0].quotes[0].point,
+  'Christianity is a destructive, life-hostile principle that emerged from resentment.');
 });
 
 test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounded AI',async()=>{
@@ -2339,8 +2380,13 @@ test('public highlights show multiple distinct verified passages from one cited 
  const data=await response.json();
  assert.equal(data.citations.length,1);
  assert.equal(data.evidenceMap.filter(item=>item.quoteVerified).length,2);
- assert.deepEqual(data.evidenceHighlights.map(item=>item.quote),[second,first],
-  'the most claim-relevant reviewed passage leads the source card');
+ assert.equal(data.evidenceHighlights.length,1,
+  'the public six-item ceiling applies to distinct source pages');
+ assert.deepEqual(data.evidenceHighlights[0].quotes.map(item=>item.quote),[second,first],
+  'the most claim-relevant reviewed passage leads a page group while both approved spans survive');
+ assert.deepEqual(data.evidenceHighlights[0].quotes.map(item=>item.point),[
+  'The deeper cause was anxiety over political change.',
+  'The public disputes involved an agreement and fear.']);
  assert.equal(data.evidenceHighlights.every(item=>item.source_id==='S1'&&item.page===38),true);
  assert.equal(pilot.stats().calls,2);
 });

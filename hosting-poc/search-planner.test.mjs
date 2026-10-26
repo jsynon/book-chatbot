@@ -153,8 +153,8 @@ test('process-focused planning requires source-level actions as well as topic la
  assert.match(systemPrompt,/source-level descriptions of what people or things do over abstract labels alone/i);
  assert.match(systemPrompt,/repeated actions or doing just acts/i);
  assert.match(systemPrompt,/what role or function a named concept plays/i);
- assert.match(systemPrompt,/who acts, what the concept does, and what result it produces/i);
- assert.match(systemPrompt,/Treat source-native wording as a search lead, not as evidence/i);
+ assert.match(systemPrompt,/who acts, what it does, or what follows/i);
+ assert.match(systemPrompt,/Treat source-native wording as a retrieval lead, not evidence/i);
  assert.match(systemPrompt,/reserve a query for the source’s general explanation or causal rule/i);
  assert.match(systemPrompt,/do not spend every query on a memorable or narrow example/i);
 });
@@ -306,7 +306,27 @@ test('definition questions preserve the exact phrase instead of broad planner pa
  });
  assert.equal(answer.queries[0],'God is love meaning');
  assert.equal(answer.queries[1],'love through human experience and action');
- assert.match(systemPrompt,/preserve that exact phrase in one search query/i);
+ assert.match(systemPrompt,/For a phrase or expression, keep that exact phrase in one query/i);
+});
+test('technical concept definitions preserve the reader term and add source-native search vocabulary',async()=>{
+ const question='What is sunyata?';
+ const expected=['definition of sunyata in Buddhist philosophy',
+  'Nagarjuna dependent arising emptiness'];
+ let systemPrompt='';
+ const result=await planSearchQueries(question,'',{
+  run:async(_model,{messages})=>{
+   systemPrompt=messages[0].content;
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    resolvedQuestion:question,intent:'explain',parts:['What is sunyata?'],queries:expected
+   })}}]};
+  }
+ });
+ assert.match(systemPrompt,/what a technical, traditional, or translated concept means/);
+ assert.match(systemPrompt,/preserve the reader’s exact term in one query/);
+ assert.match(systemPrompt,/the source’s own definition or operation: the relation it names/);
+ assert.deepEqual(result.queries,expected);
+ assert.equal(result.plan.parts.length,1,
+  'source-native search vocabulary must not become extra requested answer parts');
 });
 test('malformed, duplicate or truncated AI planning fails without invented sources',async()=>{
  for(const raw of ['I cannot help','{"queries":["the same phrase","the same phrase"]}',

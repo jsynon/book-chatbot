@@ -25,7 +25,16 @@ const CURATED_VOICE_IDENTITIES=Object.freeze({
   '192':{title:'Philosophical Fragments — Søren Kierkegaard',workVoice:{kind:'pseudonymous-author',name:'Johannes Climacus',creditedAuthor:'Søren Kierkegaard'}},
   '253':{title:'The Sickness Unto Death — Søren Kierkegaard',workVoice:{kind:'pseudonymous-author',name:'Anti-Climacus',creditedAuthor:'Søren Kierkegaard'}},
   '185':{title:'Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida',
-    editorialPages:{18:{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'}}},
+    editorialPages:{
+      17:{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'},
+      18:{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'}
+    }},
+  '178':{title:'Mūlamadhyamakakārikā — Nāgārjuna',
+    editorialPages:{
+      88:{kind:'editorial-introduction',name:'David J. Kalupahana',creditedAuthor:'Nāgārjuna'},
+      104:{kind:'editorial-commentary',name:'David J. Kalupahana',creditedAuthor:'Nāgārjuna'},
+      164:{kind:'editorial-commentary',name:'David J. Kalupahana',creditedAuthor:'Nāgārjuna'}
+    }},
   '239':{title:'The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)',
     editorialPages:{578:{kind:'editorial-commentary',name:'Walter Kaufmann',creditedAuthor:'Friedrich Nietzsche'}}}
 });
@@ -40,9 +49,13 @@ export function sourceProvenance(source,plan,pageText=''){
   const curated=CURATED_VOICE_IDENTITIES[String(source?.bookId)];
   const titleMatches=curated&&String(source?.title||'').trim()===curated.title;
   const pageVoice=titleMatches?curated.editorialPages?.[Number(source?.page)]:undefined;
+  const effectiveSectionHint=pageVoice?.kind?.includes('commentary')?'commentary':
+    pageVoice?.kind?.includes('introduction')?'introduction':pageSectionHint;
+  const effectiveVoiceHint=pageVoice?
+    `${pageVoice.kind.replace(/^editorial-/u,'')} by ${pageVoice.name}`:pageVoiceHint;
   return {work:identity.work||String(source?.title||''),creditedAuthors:identity.authors||[],
     creditedEditors:identity.editors||[],creditedTranslators:identity.translators||[],plannerSourceRole:role,
-    pageSectionHint,pageVoiceHint,
+    pageSectionHint:effectiveSectionHint,pageVoiceHint:effectiveVoiceHint,
     ...(titleMatches&&curated.workVoice?{workVoice:curated.workVoice}:{}),
     ...(pageVoice?{pageVoice}:{}),
     roleMeaning:'The planner role describes intended source selection, not the voice or genre of this individual page.'};

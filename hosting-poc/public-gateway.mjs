@@ -37,13 +37,30 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     if(!quote)return 0;
     const letters=[...quote].filter(char=>/[\p{L}\p{N}]/u.test(char)).length;
     const suspicious=[...quote].filter(char=>/[�¤ᤄ]/u.test(char)).length;
-    return letters/quote.length-suspicious/quote.length;
+    const visible=[...quote].filter(char=>!/\s/u.test(char)).length;
+    return visible?letters/visible-suspicious/visible:0;
+  };
+  const removeLeadingRunningHeader=value=>{
+    const quote=String(value||'');
+    // Keep only an exact suffix of the verified span. This handles common
+    // OCR page furniture without rewriting or synthesizing source wording.
+    const header=/^(?:(?:[A-Z][A-Z0-9'’:-]*\s+){2,}[A-Z][A-Z0-9'’:-]*\s*\/\s*\d{1,4}|\d{1,4}\s+(?:[A-Z][A-Z0-9'’:-]*\s+){2,})\s*/u.exec(quote);
+    return header?quote.slice(header[0].length).trim():quote.trim();
+  };
+  const usefulQuote=value=>{
+    const quote=removeLeadingRunningHeader(value);
+    const words=quote.match(/[\p{L}\p{N}]{2,}/gu)||[];
+    // Short fragments may be exact but provide too little reading context.
+    return quote.length>=32&&words.length>=6&&readableQuote(quote)>=0.78;
   };
   const anchors=new Map(citationOrder.map(id=>{
     const candidates=evidenceMap.filter(item=>item?.id===id&&item.quoteVerified===true&&
       typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
-      .map((item,index)=>({quote:(item.anchorQuote||item.quote).trim(),point:item.point||'',index}))
-      .filter((item,index,all)=>all.findIndex(other=>other.quote===item.quote)===index);
+      .map((item,index)=>({quote:removeLeadingRunningHeader(item.anchorQuote||item.quote),
+        point:String(item.point||''),claimId:String(item.claimId||''),partId:String(item.partId||''),index}))
+      .filter(item=>usefulQuote(item.quote))
+      .filter((item,index,all)=>all.findIndex(other=>other.quote===item.quote&&
+        other.claimId===item.claimId&&other.point===item.point)===index);
     // Reviewer-approved spans are already exact and source-verified. When a
     // page has several, prefer the span whose vocabulary best matches its
     // linked claim; stable input order breaks ties and remains the fallback
@@ -57,32 +74,21 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       };
       return score(right)-score(left)||readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
     });
-    return [id,candidates.map(item=>item.quote)];
+    return [id,candidates.slice(0,3)];
   }));
-  const highlights=[],used=new Map();
-  const add=(id,quote)=>{
-    const source=byId.get(id);
-    if(!source||!quote||highlights.length>=limit)return false;
-    highlights.push({source_id:id,title:source.title,page:source.page,url:source.url,quote});
-    return true;
-  };
-  // First show one verified passage per cited source in the order the answer
-  // invokes it. If the six-source limit leaves room, show further spans from
-  // those same cited sources. Never synthesize a highlight from a preview.
-  for(const id of citationOrder){
-    const quote=anchors.get(id)?.[0];
-    if(quote&&add(id,quote))used.set(id,new Set([quote]));
-  }
-  for(const id of citationOrder){
-    if(highlights.length>=limit)break;
-    const selected=used.get(id)||new Set();
-    for(const quote of anchors.get(id)||[]){
-      if(selected.has(quote))continue;
-      if(add(id,quote))selected.add(quote);
-      if(highlights.length>=limit)break;
-    }
-  }
-  return highlights;
+  // The six-item cap applies to cited pages, not to individual approved
+  // excerpts. Keep up to three exact spans per page so one citation can
+  // expose complementary support for the same claim. The legacy `quote`
+  // field remains the best-ranked excerpt; `quotes` preserves claim links.
+  return citationOrder.flatMap(id=>{
+    const source=byId.get(id),quotes=anchors.get(id)||[];
+    if(!source||!quotes.length)return [];
+    const primary=quotes[0];
+    return [{source_id:id,title:source.title,page:source.page,url:source.url,
+      quote:primary.quote,claim_id:primary.claimId,point:primary.point,
+      quotes:quotes.map(item=>({claim_id:item.claimId,part_id:item.partId,
+        point:item.point,quote:item.quote}))}];
+  }).slice(0,limit);
 }
 // v1.12 full public-catalog coverage; each answer page must still match an
 // owner-published v48 fingerprint before it reaches the model.
@@ -754,10 +760,12 @@ function json(body,status=200,origin='') {
 export function workerVersionDiagnostics(env={}) {
   const metadata=env?.CF_VERSION_METADATA;
   const safe=(value,limit=128)=>typeof value==='string'&&value.length>0&&value.length<=limit?value:null;
+  const tag=safe(metadata?.tag);
   return {
     workerSourceBuild:'public-gateway-evidence-selection-v3',
     workerVersionId:safe(metadata?.id),
-    workerVersionTag:safe(metadata?.tag),
+    workerVersionTag:tag,
+    workerSourceRevision:tag&&/^[a-f0-9]{40}$/i.test(tag)?tag.toLowerCase():null,
     workerVersionTimestamp:safe(metadata?.timestamp,64),
   };
 }
@@ -3377,17 +3385,16 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'corrects it, use separate queries for the proposition and the reply, '+
         'counterpoint, or correction. Do not substitute motive or aftermath for '+
         'the correction unless the question requests those topics. '+
-        'For questions asking what role or function a named concept plays, keep '+
-        'the exact concept in its query and add likely source-native operational '+
-        'wording: who acts, what the concept does, and what result it produces. '+
-        'Do not rely on generic words such as “role,” “function,” or “meaning” '+
-        'when a concrete action or outcome can locate the passage. Treat source-'+
-        'native wording as a search lead, not as evidence. '+
-        'For questions asking what something is or how it works, seek a direct '+
-        'definition, boundary, or essential operation, not only its origins or '+
-        'consequences. When the reader asks what a phrase or expression means, '+
-        'preserve that exact phrase in one search query and search for its direct '+
-        'explanation in the other; do not replace it with a broad abstract theme. '+
+        'When asked what a technical, traditional, or translated concept means, '+
+        'what it is, or what role or function a named concept plays, preserve the reader’s '+
+        'exact term in one query. Use another query slot for a likely gloss and '+
+        'the source’s own definition or operation: the relation it names, who '+
+        'acts, what it does, or what follows, using vocabulary likely to appear '+
+        'in the text. For a phrase or expression, keep that exact phrase in one '+
+        'query. Do not replace the requested concept with a nearby theme or turn '+
+        'search vocabulary into extra answer parts. Treat source-native wording '+
+        'as a retrieval lead, not evidence; seek the direct explanation rather '+
+        'than only origins or consequences. '+
         'When a question gives an explicit chapter-and-verse range, keep the full '+
         'book, chapter, and verse range in BOTH queries. Search for distinct details '+
         'inside that range, and do not use a repeated phrase from a nearby verse as '+
