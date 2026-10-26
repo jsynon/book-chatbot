@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 40365)
-Total output lines: 814
+Warning: truncated output (original token count: 40397)
+Total output lines: 815
 
 # Reading Companion evidence milestone: release report
 Last updated: October 26, 2026
@@ -162,33 +162,7 @@ This fixes the reproduced contract and query-linking failures in deterministic t
 | Evaluation records exact model context and code/data identities | Implemented for authenticated v2 runs; unit- and route-tested |
 | Declared model-call budget | Current: 1 planner + 2 answer calls per with-review case; 1 planner + 1 answer call per compose-only case; paired mode uses one planner and three answer calls per case |
 | Per-part response structure and pre-composition evidence links | Paragraph contract and source-to-part checks pass offline; latest live run linked pages for all cases but only 7 of 18 parts were marked supported, and no case passed the structural gate |
-| Public pilot answer pipeline | PR #208/#209 and follow-up PRs #183/#210 are merged; Pages deployment succeeded and the user reports the Worker was pulled and deployed |
-| Human-scored quality improves on development and unseen questions | Not yet measured |
-
-## Remaining validation before describing this as a quality release
-
-1. Re-run the same seven-question with-review diagnostic after merging and deploying this citation-placement correction. The old review response cannot validate an answer paragraph it never received, so a fresh review is needed to measure the restored Aristotle and Du Bois parts.
-2. Keep the seven-question set labeled diagnostic/regression: its prompts guided the fixes and a repeat cannot establish generalization. Run the separate unseen acceptance suite only after the candidate is frozen, with All Books and review enabled.
-3. Recheck the liv…22026 tokens truncated…ged: two answer calls with review; six-page maximum |
-| Fresh five-case reviewed holdout after merge and deployment | Pending; both PR checks pass, but the fixes are not yet merged/deployed. The rerun must determine whether the reviewer selects S5-Q9, highlights match the evidence map, and source-scoped questions improve |
-| Unseen acceptance suite and final semantic milestone | Reserved until the same focused holdout and cited-passage review support promotion |
-
-At the time this candidate was prepared, PR #227 in `book-chatbot` and paired website PR #193 in `antilogicalism` had passed checks but had not yet been merged or deployed. The following section records the user's merge, deployment, and live validation.
-
-## October 25, 2026: post-merge five-case run and claim-level evidence handoff
-
-After PR #227 and website PR #193 merged, the user ran the five-question all-books with-review workflow [40168960976](https://github.com/jsynon/antilogicalism/actions/runs/40168960976). The website source revision was `a67b9b5eb2d3f9d102169ece41693c3b75f679da`; the Worker build was `public-gateway-evidence-selection-v3`. All five requests completed with no request failures, planner fallbacks, or skipped cases. The run used the existing 15-call…24365 tokens truncated…-books with-review diagnostic. Inspect the Sunyata planner queries and submitted pages, then compare reviewer candidate/returned/accepted spans against the corresponding Kierkegaard and Nietzsche claims. Review the page text before changing retrieval or reviewer behavior. Keep this as a cross-case diagnostic; do not expand into another Sunyata-only fix or run the unseen acceptance suite yet.
-
-
-## October 26, 2026: focused five-question run #64 and evidence handoff fix
-
-The all-books with-review workflow [#64](https://github.com/jsynon/antilogicalism/actions/runs/40254509391) completed all five cases against library v48; its artifact is [12622340794](https://github.com/jsynon/antilogicalism/actions/runs/40254509391/artifacts/12622340794). It made the existing estimated 15 Worker AI calls (one planner plus composition and review per case), with no request failures, planner fallbacks, or skipped cases. The workflow failed its structural gate at 3/5 cases and 5/7 parts. This is not an infrastructure failure. The artifact has no independent human ratings. Its `workerSourceRevisions` value, `e0d05d4d1b25e5fd4e7feed1a6254cfa287ecec3`, confirms that the Worker was deployed with the SHA tag for merged PR #253.
-
-The trace adds useful detail to the cross-case findings:
-
-- **Kierkegaard on faith:** the reviewer returned spans for claims from *Fear and Trembling* and *The Sickness Unto Death*, but the deterministic voice guard rejected claims that did not identify the relevant pseudonymous speaker. The safeguard worked; the answer lost coverage because composition did not preserve attribution.
-- **Nietzsche on Christianity:** the reviewer returned three exact spans from one cited source for a sentence combining several related claims. The Worker normalized that decision to one span per source, so the final evidence map retained only part of the support. This is a handoff cap, not missing retrieval.
-- **Sunyata:** the planner now asks about dependent origination, and *Mūlamadhyamakakārikā* pages 104 and 164 reached the packet. Those selections are Kalupahana commentary, while the answer attributes interpretations directly to Nāgārjuna. The existing title/page voice map only identified page 88, so the accepted excerpts had no known editorial voice. The planner/retrieval change is useful but does not yet produce reliable attribution.
+| Public pilot answer pipeline | PR #208/#209 and follow-up PRs #183/#210 are merged; Pages deployment succeeded and the user reports the Worker was pulled …25397 tokens truncated…retations directly to Nāgārjuna. The existing title/page voice map only identified page 88, so the accepted excerpts had no known editorial voice. The planner/retrieval change is useful but does not yet produce reliable attribution.
 - **Nietzsche on Kierkegaard:** both sides were answered, but the requested hypothetical conclusion was absent. The evidence trace identified the missing synthesis part; it remained partial.
 - **Kant:** the structure passed, but the answer appears to confuse transcendental idealism with subjective idealism. The reviewer did not catch this conceptual distortion, confirming that structurally valid claims can still be wrong.
 
@@ -342,6 +316,7 @@ Known editorial and pseudonymous speaker checks, source-by-source citation gates
 | Faithful paraphrase of the same passage preserving inability | Pass; source remains accepted and the answer is retained |
 | Existing editorial, pseudonymous, inference, citation, and scope regressions | Pass in the full Worker suite |
 | Worker suite: `node --test hosting-poc/*.test.mjs` | Pass; 275 tests, 0 failures |
+| GitHub Worker contract workflow | Pass; [run #784](https://github.com/jsynon/book-chatbot/actions/runs/40371944343) succeeded |
 | Live validation | Pending; after this candidate is merged and deployed, rerun the same five-question with-review workflows in both all-books and selected-books modes. Inspect the Kierkegaard faith trace for the polarity reason; inspect Nietzsche/Kierkegaard span relevance and Sunyata attribution/coverage separately. |
 | Quality claims | None yet. The new test proves the deterministic guard catches this explicit polarity pattern; it does not prove that the shortened model instructions improve broader answer quality. |
 | Remaining answer-quality work | Sunyata's substantive explanation and weak hypothetical inference still need source-level evaluation. Keep the unseen acceptance suite frozen until both live scopes are reviewed. |
