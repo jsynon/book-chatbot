@@ -29,6 +29,8 @@ const CURATED_VOICE_IDENTITIES=Object.freeze({
       17:{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'},
       18:{kind:'editorial-introduction',name:'David A. Dilworth',creditedAuthor:'Kitarō Nishida'}
     }},
+  '178':{title:'Mūlamadhyamakakārikā — Nāgārjuna',
+    editorialPages:{88:{kind:'editorial-introduction',name:'David J. Kalupahana',creditedAuthor:'Nāgārjuna'}}},
   '239':{title:'The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)',
     editorialPages:{578:{kind:'editorial-commentary',name:'Walter Kaufmann',creditedAuthor:'Friedrich Nietzsche'}}}
 });

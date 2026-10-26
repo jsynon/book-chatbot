@@ -57,6 +57,14 @@ test('curated provenance is title-guarded and distinguishes pseudonymous work vo
  assert.equal(sourceProvenance({bookId:'239',title:portableTitle,page:547},
   {sources:[{role:'primary',bookIds:['239']}] }).pageVoice,undefined,
   'direct Nietzsche text elsewhere in the volume does not inherit the page-578 editorial label');
+ const kalupahana=sourceProvenance({bookId:'178',title:'Mūlamadhyamakakārikā — Nāgārjuna',page:88},
+  {sources:[{role:'primary',bookIds:['178']}]},
+  'THE PHILOSOPHY OF THE MIDDLE WAY\nWith that analysis, Nagarjuna was ready to defend the four noble truths.');
+ assert.deepEqual(kalupahana.pageVoice,
+  {kind:'editorial-introduction',name:'David J. Kalupahana',creditedAuthor:'Nāgārjuna'});
+ assert.equal(sourceProvenance({bookId:'178',title:'Mūlamadhyamakakārikā — Nāgārjuna',page:100},
+  {sources:[{role:'primary',bookIds:['178']}] }).pageVoice,undefined,
+  'the introduction attribution does not spill over to Nagarjuna’s translated text');
 });
 
 test('editorial commentary cannot be surfaced as the credited author speaking without mediation',async()=>{
