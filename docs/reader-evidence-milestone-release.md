@@ -649,6 +649,7 @@ This candidate improves citation completeness for claims that need multiple exce
 | Mūlamadhyamakakārikā page voice | Added title-guarded tests for commentary pages 104 and 164 and a negative control for an unmarked page |
 | Pseudonymous voice, editorial attribution, unsupported/cross-source spans, missing hypothetical inference | Existing regressions retained |
 | Full Worker test suite: `node --test hosting-poc/*.test.mjs` | 271 passed, 0 failed |
+| GitHub PR contract workflow | Pass; [run #764](https://github.com/jsynon/book-chatbot/actions/runs/40256305731) succeeded |
 | Syntax and whitespace checks | `node --check` for both changed modules and `git diff --check` pass |
 | Live five-question answer quality | Pending; must rerun after merge/deployment and review the actual claims and source passages |
 | Unseen acceptance suite | Keep frozen until the full diagnostic shows improved evidence handoff and attribution, and the Kant-style conceptual distortion is assessed |
