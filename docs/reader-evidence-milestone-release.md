@@ -1,13 +1,7 @@
-Warning: truncated output (original token count: 20063)
-Total output lines: 424
-
-Warning: truncated output (original token count: 32426)
-Total output lines: 705
-
 # Reading Companion evidence milestone: release report
 
-Last updated: October 25, 2026
-Status: The latest deployed five-question, all-books with-review workflow is run #58, [40237692626](https://github.com/jsynon/antilogicalism/actions/runs/40237692626). It completed all five requests with no planner fallback, skipped planner, or request failure, and passed 4/5 structural cases with 6/7 parts supported. The single miss was the Nietzsche/Kierkegaard synthesis: the composer explicitly said the passages support a comparison but not a reliable inference, but a wording detector failed to recognize this as a valid evidence limitation. The artifact has no human-entered rubric scores. An independent provisional review of the drafts is recorded below and is not represented as artifact data. Run #58 is the current deployed baseline; the bounded code candidate below is not yet deployed. The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
+Last updated: October 26, 2026
+Status: The latest focused all-books with-review workflow is run #61, [40245464263](https://github.com/jsynon/antilogicalism/actions/runs/40245464263), against library v48 and website revision `ee94ba1779d07847345fabc96db38fa560d60225` (website PR #209). The request completed without planner fallback or request failure, but its one answer was partial and failed the structural gate. The run had no human-entered rubric scores. It shows the threshold change alone did not recover the needed Nagarjuna page because the live planner facet used different, broader vocabulary. Worker PR #249's speaker-attribution change is merged; report updates are pending in this repository's PR #250. The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
 ## Goal
@@ -521,3 +515,51 @@ The bounded Worker change removes that three-claim cap for prior attribution che
 | Live validation | Pending; rerun the focused five-case with-review workflow after deploying this Worker change and verify that the Nietzsche/Kierkegaard synthesis remains supported. Sunyata needs a separate retrieval change and trace |
 
 This closes the bounded speaker-attribution defect reproduced in #59, but does not establish improved answer quality or resolve Sunyata retrieval. Keep the unseen acceptance suite frozen until the separate Sunyata retrieval correction is tested and the cited pages are checked for source voice and semantic support.
+
+## October 25, 2026: bounded Sunyata retrieval-threshold correction
+
+The website retrieval candidate lowers the generic all-books evidence threshold for four- and five-term search facets from three local matching terms to two. The threshold now requires roughly half the facet's searchable terms in one passage, with a minimum of two and maximum of three. Comparison and named-author searches retain their existing two-term threshold; one-term queries retain their existing behavior; six-or-more-term unscoped facets still require three local terms. The local evidence window, phrase matching, ranking, book/page limits, source packet budget, and model-call count are unchanged. No Sunyata-only alias or question-specific branch was added.
+
+The regression reproduces the run #59 planner wording and uses an OCR excerpt from v48 book 178, *Mūlamadhyamakakārikā — Nāgārjuna*, page 88. It verifies that the page's local “dependent arising” plus “emptiness” evidence passes retrieval, remains linked to the Sunyata question part, and survives the existing answer-source selector. The excerpt is in Kalupahana's introduction discussing Nagarjuna, not a Nagarjuna verse, so it tests passage reachability without treating it as direct author testimony. Negative controls verify that a page matching only one topic term stays out and two matching terms separated by more than the existing local evidence window do not qualify.
+
+| Candidate validation | Result |
+|---|---|
+| Regression before threshold change | Fails as expected: book 178 page 88 is absent from retrieved candidates |
+| Sunyata retrieval regression after change | Pass; page reaches the shared candidate pool and bounded answer packet with its question-part link |
+| Negative controls | Pass; one-term overlap and terms outside the local window do not qualify |
+| Full website/evaluator suite: `node --test reading-companion/*.test.mjs` | 183 passed, 0 failed |
+| Whitespace validation | `git diff --check` passes |
+| Live answer quality | Pending; this verifies passage reachability and handoff, not whether the retrieved page semantically answers the question or whether the final answer attributes its editorial voice correctly |
+
+Run #61 below tested the merged website change against v48. It did not retrieve page 88 because the live planner facet no longer included the page's dependent-arising vocabulary; the initial five-term regression therefore did not represent the current live facet. The retrieval milestone remains open, and the report below records the revised next step.
+
+## October 25, 2026: post-merge Sunyata run #61
+
+After website PR #209 merged, the user ran the focused Sunyata case in all-books with-review mode. Run [#61](https://github.com/jsynon/antilogicalism/actions/runs/40245464263) completed one case against library v48 and website revision `ee94ba1779d07847345fabc96db38fa560d60225`. It had zero request failures, planner fallbacks, or skipped cases; it used the expected three Worker calls (one planner, composition, and review). The artifact reports two answer-stage calls and 135.99 neurons, one failed structural case, and no human rubric score. Worker source revision remains unavailable because the deployment has no Git-SHA version tag.
+
+This run did not retrieve *Mūlamadhyamakakārikā*, book 178, page 88. Its two planner facets were `definition and essential nature of sunyata in Buddhist texts` and `how sunyata functions as emptiness or lack of inherent existence`; neither contains `dependent` or `arising`. `queryTerms` yields six terms for the second facet, so the shared threshold correctly remains three for that facet. The v48 page's relevant OCR contains “dependent arising” and “emptiness,” only one of which appears in the live facet. The direct question `What is sunyata?` supplies only the unmatched ASCII spelling. Book 178 page 88 was absent from every search result, the retrieval candidate pool, and the six-page composition packet. The passing regression had used #59's earlier five-term facet, so it exercised the lowered two-term threshold but did not match the planner wording generated in #61. This is the decisive limit exposed by the run: a threshold adjustment cannot recover a passage when the planner does not supply enough of that passage's searchable vocabulary.
+
+The resulting answer cited three books/pages and displayed four exact, located highlights. Its surviving claims were that sunyata means “emptiness or a void,” that it is prominent in Mahayana/Prajnaparamita texts, and that it is discussed in Madhyamika and Zen contexts. The core gloss came from Huston Smith's comparative *Forgotten Truth*, while the Suzuki pages supplied Mahayana and Zen context. No retrieved passage established the concept through dependent arising or a primary Nagarjuna discussion, so the response remained shallow and the part was correctly marked partial. Highlight and citation identity checks passed; they do not establish that the passages fully answer the question.
+
+The composer also offered an extra *soku-hi* explanation and verse using *Last Writings*, p. 17. The page is David A. Dilworth's editorial introduction, not Nishida's prose. Although the model reviewer returned “answered,” the deterministic voice gate rejected that claim because “a commentator” did not identify the editorial speaker (`editorial-source-attribution-unqualified`). The unsupported claim was removed. This is the intended source-voice safeguard working; it also contributed to the partial draft. Keep that safeguard. The next answer should either name Dilworth's introduction accurately or omit the commentary claim.
+
+The next bounded retrieval work should address planner vocabulary, not lower this shared threshold again. Build a regression from #61's exact six-term planner query and real v48 page-88 OCR; ensure a source-native facet includes the indexed relation “dependent arising” alongside “emptiness” (and Nagarjuna where appropriate), then verify the page is linked to P1 and survives the same six-page packet without promoting unrelated one-term results. Rerun the focused case with review after that change. Keep the seven-question acceptance workflow frozen until the targeted run retrieves this page and the final answer attributes editorial evidence correctly.
+## October 26, 2026: planner-vocabulary and page-voice candidate
+
+The next candidate addresses the run #61 failure at the planner-to-search handoff. The Worker planner prompt now consolidates the overlapping definition, expression, and role/function guidance: keep the reader’s exact technical or traditional term in one query, and use another query slot for a likely gloss plus the source’s own defining relation or operation in vocabulary likely to occur in the text. The query remains a retrieval lead, not another requested answer part or proof. This adds no model call, stage, schema field, question-specific alias, or further threshold reduction.
+
+Implementation review is in Worker PR [#251](https://github.com/jsynon/book-chatbot/pull/251) and website PR [#210](https://github.com/jsynon/antilogicalism/pull/210); this report update remains in PR [#250](https://github.com/jsynon/book-chatbot/pull/250).
+
+The Worker regression captures the prompt contract for “What is sunyata?” and keeps the normalized plan to one requested part. The website v48 fixture reproduces run #61's exact second facet, `how sunyata functions as emptiness or lack of inherent existence`, and confirms page 88 is still absent under that wording. With the controlled source-native facet `Nagarjuna dependent arising emptiness`, the existing retrieval and packet-selection path finds book 178, page 88, links it to P1, and keeps it inside the six-page source packet. Existing one-term and distant-term negative controls remain. This verifies that suitable planner vocabulary can traverse the current retrieval handoff; the controlled query does not prove that a live planner will choose it.
+
+I checked the original v48 PDF in Drive. Its title page credits David J. Kalupahana with the introduction, and the contents place the introduction through page 98; the indexed page 88 passage is therefore introductory commentary discussing Nagarjuna, not Nagarjuna’s translated verse. The page-voice contract now marks only book 178 with the exact catalog title and page 88 as an editorial introduction by Kalupahana, credited to Nāgārjuna. This existing metadata path gives the composer and reviewer the speaker context needed to avoid presenting Kalupahana’s interpretation as direct author testimony. The corresponding Worker and browser contract files had drifted in their quote-to-citation matching expression despite the shared-file comment requiring byte identity; the copies are synchronized in this candidate.
+
+| Candidate validation | Result |
+|---|---|
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 269 passed, 0 failed |
+| Full website/evaluator suite: `node --test reading-companion/*.test.mjs` | 184 passed, 0 failed |
+| Contract-copy synchronization | Pass; Worker and browser `reader-contract.mjs` files are byte-identical |
+| Whitespace validation | `git diff --check` passes in both repositories |
+| Live planner and answer quality | Pending; the fixture tests use controlled queries and do not establish model behavior or semantic sufficiency of the final answer |
+
+After merging and deploying the Worker and website PRs, rerun only the focused Sunyata question in all-books with-review mode against v48. Confirm the live planner supplies indexed source vocabulary, page 88 reaches the submitted packet and stays linked to the definition part, and any use of it is attributed to Kalupahana’s introduction. Inspect the actual reviewed claims and citations for semantic support; a retrieval pass alone is insufficient. Keep the seven-question acceptance suite frozen until this targeted trace is satisfactory.
