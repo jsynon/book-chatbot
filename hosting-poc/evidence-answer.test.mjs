@@ -473,11 +473,13 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
- assert.match(COMPOSER_PROMPT,/anchor it to the specific point of contact established by both cited passages/);
- assert.match(COMPOSER_PROMPT,/End it with one citation group containing the smallest relevant set of evidence from each author’s source group/);
- assert.match(COMPOSER_PROMPT,/smallest relevant set of evidence from each author’s source group/);
+ assert.match(COMPOSER_PROMPT,/When both authors' passages establish the same specific concept/);
+ assert.match(COMPOSER_PROMPT,/End the inference sentence with one citation group containing the smallest relevant evidence from each author's source group/);
+ assert.match(COMPOSER_PROMPT,/smallest relevant evidence from each author's source group/);
  assert.match(COMPOSER_PROMPT,/do not attach every retrieved page or every page from an author group/);
  assert.match(COMPOSER_PROMPT,/A comparison alone does not answer the hypothetical part/);
+ assert.match(COMPOSER_PROMPT,/a narrow conditional reader inference applying one author's documented view of that concept/);
+ assert.match(REVIEW_PROMPT,/A limitation saying that no reliable inference is possible does not complete a question part/);
  assert.match(REVIEW_PROMPT,/source decisions include relevant evidence from every author source group/);
  assert.match(REVIEW_PROMPT,/do not demand a passage documenting the hypothetical response itself/);
  assert.match(REVIEW_PROMPT,/a missing premise, one-sided citation, or conclusion stronger than the premises is partial or unanswered/);
@@ -487,7 +489,7 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/When provenance identifies a pseudonymous work voice/);
  assert.match(REVIEW_PROMPT,/a first-person narrator's inability or personal experience does not establish a general psychological effect or definition/);
  assert.match(REVIEW_PROMPT,/do not treat them as the credited author's doctrine or as a tradition-wide definition/);
- assert.match(REVIEW_PROMPT,/A broad criticism of Christianity does not by itself establish how an author would judge a specific thinker or doctrine/);
+ assert.match(REVIEW_PROMPT,/A broad criticism alone does not establish a recorded judgment of a specific thinker/);
  assert.match(COMPOSER_PROMPT,/Do not narrate the retrieval process, inventory unrelated passages/);
  assert.match(REVIEW_PROMPT,/sourceGroup identifies the planner's author\/source group/);
  assert.match(REVIEW_PROMPT,/Do not narrate the retrieval process, inventory unrelated passages/);
@@ -540,7 +542,7 @@ function hypotheticalDraft(inference){
 test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both authors’ reviewed evidence',async()=>{
  let reviewPayload;
  const ai=makeAI([hypotheticalDraft(
-  'From these passages, one cautious inference is that Nietzsche might have challenged Kierkegaard’s grounding of faith in God and the absurd as a basis for belief; they do not establish his view of Kierkegaard’s whole philosophy. [S1, S2]'),
+  'As a cautious reader inference, if Nietzsche applied his criticism of Christian faith to Johannes de Silentio’s account of faith, he might question whether that account establishes truth about God. [S1, S2]'),
   (_model,{messages})=>{reviewPayload=JSON.parse(messages[1].content);return hypotheticalReview()(_model,{messages});}
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
@@ -549,8 +551,10 @@ test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both 
  assert.equal(ai.calls.length,2,'the fix must stay within the existing compose + review budget');
  assert.equal(result.coverage,'full');
  assert.equal(result.questionParts[2].status,'supported');
- assert.match(result.answer,/one cautious inference/i);
- assert.match(result.answer,/grounding of faith in God and the absurd/);
+ assert.match(result.answer,/cautious reader inference/i);
+ assert.match(result.answer,/applied his criticism of Christian faith/);
+ assert.match(result.answer,/Johannes de Silentio/);
+ assert.match(result.answer,/establishes truth about God/);
  assert.match(result.answer,/\[S1, S2\]/);
  assert.deepEqual(reviewPayload.claims.find(claim=>claim.partId==='P3').sourceEvidence.map(item=>item.sourceGroup),[
   {label:'Friedrich Nietzsche',role:'primary'},
@@ -625,30 +629,40 @@ test('a hypothetical can cite one relevant page per author when more group pages
  assert.equal(ai.calls.length,2);
 });
 
-test('a hypothetical part can give an explicit evidence limitation instead of silently omitting the part',async()=>{
+test('an evidence limitation stays visible but cannot complete the requested hypothetical inference',async()=>{
  const limitation='The supplied passages do not warrant a reliable inference about how Nietzsche would respond to Kierkegaard. [S1, S2]';
- const ai=makeAI([hypotheticalDraft(limitation),hypotheticalReview()]);
+ const reviewer=(_model,{messages})=>{
+  const result=JSON.parse(hypotheticalReview()(_model,{messages}).response);
+  result.parts.find(part=>part.partId==='P3').status='partial';
+  return {response:JSON.stringify(result)};
+ };
+ const ai=makeAI([hypotheticalDraft(limitation),reviewer]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
  assert.equal(ai.calls.length,2);
- assert.equal(result.coverage,'full');
- assert.equal(result.questionParts[2].status,'supported');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[2].status,'partial');
  assert.match(result.answer,/do not warrant a reliable inference/);
- assert.deepEqual(result.trace.coverageGaps,[]);
+ assert.deepEqual(result.trace.coverageGaps,[{partId:'P3',reason:'hypothetical-inference-missing'}]);
 });
 
-test('the run-58 comparison limitation is accepted while a positive inference still needs both voices',async()=>{
+test('the run-58 comparison limitation remains partial while a positive inference needs both voices',async()=>{
  const limitation='Because Nietzsche characterizes faith as a psychological misunderstanding or a tool of priestly mastery [S1] and Kierkegaard describes faith as a transcendent, absurd movement of the self toward God [S2], the passages support a comparison but not a reliable inference about Nietzsche’s specific response to Kierkegaard’s thought.';
- const ai=makeAI([hypotheticalDraft(limitation),hypotheticalReview()]);
+ const reviewer=(_model,{messages})=>{
+  const result=JSON.parse(hypotheticalReview()(_model,{messages}).response);
+  result.parts.find(part=>part.partId==='P3').status='partial';
+  return {response:JSON.stringify(result)};
+ };
+ const ai=makeAI([hypotheticalDraft(limitation),reviewer]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
  assert.equal(ai.calls.length,2);
- assert.equal(result.coverage,'full');
- assert.equal(result.questionParts[2].status,'supported');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[2].status,'partial');
  assert.match(result.answer,/support a comparison but not a reliable inference/);
- assert.deepEqual(result.trace.coverageGaps,[]);
+ assert.deepEqual(result.trace.coverageGaps,[{partId:'P3',reason:'hypothetical-inference-missing'}]);
 });
 
 test('known editorial and pseudonymous source voices must be named or mediated',async()=>{
