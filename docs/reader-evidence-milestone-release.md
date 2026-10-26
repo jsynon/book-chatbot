@@ -700,7 +700,7 @@ The bounded Worker candidate keeps the existing planner, retrieval, composition/
 | Hypothetical source-group handoff | Pass; review input maps Nietzsche and Kierkegaard pages to their respective author groups; positive inference still needs both reviewed sources |
 | Failed hypothetical premise | Pass; a missing source group remains unsupported and cannot be pruned |
 | Worker suite: `node --test hosting-poc/*.test.mjs` | 273 passed, 0 failed |
-| Live five-question validation | Pending; merge/deploy this candidate, then rerun the focused all-books with-review workflow and inspect the Sunyata sentence, the Nietzsche/Kierkegaard reviewer spans, and whether the simulation-style irrelevant source inventory disappears |
+| Live five-question validation | Pending; merge/deploy this candidate, rerun the focused five-case all-books with-review workflow to inspect Sunyata and the Nietzsche/Kierkegaard reviewer spans, then separately repeat the live simulation question to check whether the irrelevant source inventory disappears |
 | Answer quality | Not established by unit tests; check actual cited page text and attribution in the next artifact |
 
 The screenshot still shows the previous “Read highlighted passages” wording. Website PR [#214](https://github.com/jsynon/antilogicalism/pull/214) has since merged the copy change to “Read passages” for both excerpt and fallback states; verify the published page after its site deployment. This interface change does not alter evidence selection or answer quality, and this Worker candidate does not resolve whether the displayed highlights are the best semantic matches. Keep the unseen acceptance suite frozen until the next focused run confirms the changed citation handoff and relevance behavior.
