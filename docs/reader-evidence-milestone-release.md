@@ -678,3 +678,29 @@ No planner, search, source selection, answer composition, review count, citation
 | Syntax and whitespace checks | Website changed modules pass `node --check`; both repository diffs pass `git diff --check` |
 | Live check after Worker and site deployment | Pending; rerun the focused five-question all-books with-review workflow and inspect whether the previously omitted source span reaches review and whether exact claim-linked excerpts are reported and highlighted |
 | Live answer quality and unseen acceptance suite | Still pending; review actual text and cited passages separately before unfreezing acceptance |
+
+## October 26, 2026: run #66 evidence review and bounded claim handoff correction
+
+The focused all-books with-review workflow [#66](https://github.com/jsynon/antilogicalism/actions/runs/40260668277) completed against library v48 and Worker revision `bfd2901da9b0a81b026e58cd3481df79694c57e9`. It passed 3/5 structural cases and 5/7 question parts. The trace showed that the two clearest misses were handoff/review failures after relevant evidence had reached composition:
+
+- **Sunyata:** the composer drafted the dependent-arising/emptiness relationship and cited S4 and S6. S6's selected span supported the relationship, while S4 was marked partial; normalization dropped the sentence because one extra citation failed. The existing cleanup guard disabled pruning when an all-books plan contained multiple source groups, even though this was a direct, non-comparison claim with one independently supporting cited page.
+- **Nietzsche on Kierkegaard:** the composer included an explicitly cautious inference. The reviewer marked the author-side pages partial without selecting spans, so the deterministic source gate correctly withheld the inference. The review input identified page provenance, but its claim-specific source index did not explicitly map each cited page to the planner's author group. The trace does not prove that metadata alone will correct model judgment; the change makes the premise-to-author relationship explicit while keeping both source decisions mandatory.
+
+The user's live screenshot adds a general answer-relevance defect: in response to “are we in a simulation?”, the answer included a list of unrelated retrieved topics (Kuhn on scientific theory, Anscombe on reasoning, Hull on behavior, and an Ante-Nicene Fathers passage) as a sentence about why those passages did not answer the question. The citations therefore cluttered the answer without helping answer it. This is separate live evidence from the #66 artifact; it does not identify a Worker revision or prove which stage produced the wording. The composer and reviewer now explicitly omit retrieval inventories and unrelated passages. This remains a model-behavior change that must be checked live.
+
+The bounded Worker candidate keeps the existing planner, retrieval, composition/review stages, source-span checks, response contract, and call count:
+
+- Direct, non-comparison claims may now remove an explicitly partial or unanswered extra citation when another cited page has a valid reviewed span for the claim and every cited source received an explicit decision. The repair remains citation-group-local; comparisons and hypothetical inferences are still excluded. If the reviewer marks the question part partial, retaining a supported claim does not upgrade the part's coverage status.
+- The existing review payload now labels each cited page with its planner author/source-group label and role. Reviewer instructions clarify that for a hypothetical inference, each author page supports its own premise; the inference still requires relevant evidence from both groups and must stay within their shared point of contact. No reviewer decision or source span is relaxed.
+- Composer and reviewer instructions tell the system to omit unrelated retrieved-topic lists and retrieval-process narration. No deterministic semantic classifier or third model call was added.
+
+| Candidate validation | Result |
+|---|---|
+| Sunyata-like direct claim with an unsupported extra citation in a multi-group plan | Pass; supported claim and citation retained, unsupported citation removed, and partial part status remains partial |
+| Hypothetical source-group handoff | Pass; review input maps Nietzsche and Kierkegaard pages to their respective author groups; positive inference still needs both reviewed sources |
+| Failed hypothetical premise | Pass; a missing source group remains unsupported and cannot be pruned |
+| Worker suite: `node --test hosting-poc/*.test.mjs` | 273 passed, 0 failed |
+| Live five-question validation | Pending; merge/deploy this candidate, rerun the focused five-case all-books with-review workflow to inspect Sunyata and the Nietzsche/Kierkegaard reviewer spans, then separately repeat the live simulation question to check whether the irrelevant source inventory disappears |
+| Answer quality | Not established by unit tests; check actual cited page text and attribution in the next artifact |
+
+The screenshot still shows the previous “Read highlighted passages” wording. Website PR [#214](https://github.com/jsynon/antilogicalism/pull/214) has since merged the copy change to “Read passages” for both excerpt and fallback states; verify the published page after its site deployment. This interface change does not alter evidence selection or answer quality, and this Worker candidate does not resolve whether the displayed highlights are the best semantic matches. Keep the unseen acceptance suite frozen until the next focused run confirms the changed citation handoff and relevance behavior.

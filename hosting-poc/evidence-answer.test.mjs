@@ -230,6 +230,7 @@ test('compact review decisions validate exact spans without rationale text or re
  assert.equal(result.failureCode,undefined);
  assert.deepEqual(result.evidenceMap.map(item=>item.quote),[reviewPayload.parts[0].evidence[0].spans[0].text]);
  assert.deepEqual(Object.keys(reviewPayload.claims[0]).sort(),['claimId','partId','sourceEvidence','sourceIds','text']);
+ assert.deepEqual(reviewPayload.claims[0].sourceEvidence[0].sourceGroup,{label:'David Hume',role:'primary'});
  assert.equal('candidateSourceIds' in reviewPayload.parts[0],false);
  assert.equal('sha256' in reviewPayload.parts[0].evidence[0],false);
 });
@@ -350,6 +351,38 @@ test('an answered part can retain a supported single-author claim after an expli
   issue.claimId==='P1-C1'&&issue.sourceId==='S1'&&issue.reason==='claim-source-not-supported'));
 });
 
+test('direct claims can prune an unsupported extra citation in an all-books plan even when the part review is partial',async()=>{
+ const unrelated={...hume,id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:17,
+  text:'The knight of faith lives an ordinary life after making the movement of infinity.',
+  preview:'The knight of faith lives an ordinary life after making the movement of infinity.'};
+ const supporting={...hume,id:'S2',bookId:'35',page:93,
+  text:'Custom is the great guide of human life.',preview:'Custom is the great guide of human life.'};
+ const plan={intent:'explain',sources:[
+  {label:'David Hume',role:'primary',bookIds:['35']},
+  {label:'Søren Kierkegaard',role:'primary',bookIds:['140']}
+ ],parts:[{id:'P1',question:'What guides human life?',sourceBookIds:['35','140']}]};
+ const ai=makeAI([answer('PART P1\nHume says custom is the great guide of human life. [S2, S1]'),(_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+  const spanFor=sourceId=>claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:[{
+   claimId:claim.claimId,status:'partial',sources:[
+    {sourceId:'S2',status:'answered',spanIds:[spanFor('S2')]},
+    {sourceId:'S1',status:'unanswered',spanIds:[]}
+   ]}]})};
+ }]);
+ const result=await composeEvidenceAnswer('What guides human life?',[unrelated,supporting],ai,[],{
+  catalog,plan,trace:true
+ });
+ assert.match(result.answer,/custom is the great guide of human life\. \[S2\]/);
+ assert.doesNotMatch(result.answer,/S1/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S2']);
+ assert.equal(result.questionParts[0].status,'partial',
+  'citation repair retains the supported claim but does not upgrade the reviewer’s part-level coverage decision');
+ assert.deepEqual(result.trace.reviewContract.recovered,[{
+  partId:'P1',claimId:'P1-C1',sourceIds:['S1'],reason:'unsupported-extra-citations-pruned'
+ }]);
+});
+
 test('a failed author-side premise cannot be pruned from a hypothetical inference citation',async()=>{
  const ai=makeAI([hypotheticalDraft(
   'From these passages, one cautious inference is that Nietzsche might reject Kierkegaard’s account of faith. [S1, S2]'),
@@ -455,6 +488,10 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/a first-person narrator's inability or personal experience does not establish a general psychological effect or definition/);
  assert.match(REVIEW_PROMPT,/do not treat them as the credited author's doctrine or as a tradition-wide definition/);
  assert.match(REVIEW_PROMPT,/A broad criticism of Christianity does not by itself establish how an author would judge a specific thinker or doctrine/);
+ assert.match(COMPOSER_PROMPT,/Do not narrate the retrieval process, inventory unrelated passages/);
+ assert.match(REVIEW_PROMPT,/sourceGroup identifies the planner's author\/source group/);
+ assert.match(REVIEW_PROMPT,/Do not narrate the retrieval process, inventory unrelated passages/);
+ assert.match(REVIEW_PROMPT,/assess the premise assigned to its sourceGroup/);
 });
 
 const hypotheticalQuestion='What would Nietzsche think about the thought of Kierkegaard?';
@@ -501,9 +538,10 @@ function hypotheticalDraft(inference){
 }
 
 test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both authors’ reviewed evidence',async()=>{
+ let reviewPayload;
  const ai=makeAI([hypotheticalDraft(
   'From these passages, one cautious inference is that Nietzsche might have challenged Kierkegaard’s grounding of faith in God and the absurd as a basis for belief; they do not establish his view of Kierkegaard’s whole philosophy. [S1, S2]'),
-  hypotheticalReview()
+  (_model,{messages})=>{reviewPayload=JSON.parse(messages[1].content);return hypotheticalReview()(_model,{messages});}
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
@@ -514,6 +552,10 @@ test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both 
  assert.match(result.answer,/one cautious inference/i);
  assert.match(result.answer,/grounding of faith in God and the absurd/);
  assert.match(result.answer,/\[S1, S2\]/);
+ assert.deepEqual(reviewPayload.claims.find(claim=>claim.partId==='P3').sourceEvidence.map(item=>item.sourceGroup),[
+  {label:'Friedrich Nietzsche',role:'primary'},
+  {label:'Søren Kierkegaard',role:'primary'}
+ ]);
  assert.deepEqual(new Set(result.evidenceMap.filter(item=>item.claimId.startsWith('P3-'))
   .map(item=>item.id)),new Set(['S1','S2']));
  assert.equal(result.trace.reviewContract.valid,true);
