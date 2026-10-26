@@ -27,4 +27,50 @@ The Worker path in `hosting-poc/public-gateway.mjs` and `hosting-poc/evidence-an
 5. **Validate citations and review.** Deterministic checks reject unknown, out-of-scope, wrong-book, or wrong-part source IDs. Multiword text presented as a quotation is checked against a cited page; short single-word terms are treated as terminology. With review enabled, a second model call assesses every cited answer sentence separately. The review input has per-part question and page evidence plus one flat root `claims` array; each claim carries its `partId` and a compact `sourceEvidence` index with up to four claim-ranked span IDs per cited page. Each source entry also carries its planner author/source-group label and role, so hypothetical claims can be reviewed against the premise assigned to that author's evidence. The exact page spans appear once in the evidence list. The reviewer returns one source decision for every source cited by a claim and may select up to three exact spans per answered cited page (six per claim total) when several passages are needed to support its material clauses. The extra candidate widens choice only; it does not change the three-span acceptance cap. The Worker checks every source/span relationship against the fingerprint-verified page. A claim normally requires every cited source to be marked supported with a valid span. For a direct, non-comparison factual claim, citation cleanup can remove an explicitly partial or unanswered extra citation when another cited page has an exact approved span for the claim and all cited pages received explicit decisions. This repair is claim-local and does not upgrade a reviewer-partial coverage status; missing decisions or spans do not qualify, and comparisons and hypothetical inferences remain strict. Final citations and evidence maps use only retained source IDs, and the trace records this bounded recovery. The prompt caps total spans at six per claim, and normalization accepts at most three spans per source. Older flat span responses are normalized by source ID and pass the same all-cited-sources gate. Known title/page-guarded editorial pages must be attributed to the commentator or introduction; known pseudonymous work voices must be identified. An accepted, reviewed attribution can carry across later answer parts, but an unsupported claim cannot establish that context. Direct author pages do not inherit an editorial label. Unknown, duplicate, or missing decisions and source spans remain incomplete. One supported clause does not validate a different clause in the same sentence. For explicit hypothetical questions about one author responding to another, the answer must include a standalone, cautious reader inference in the synthesis part. When both authors' pages establish the same specific concept, a narrow conditional application of one author's documented view to the other's evidenced account is allowed; it must stay within that shared point, cite the smallest relevant evidence from both author groups, and never imply a recorded historical judgment. A comparison alone leaves the hypothetical part incomplete. The deterministic coverage guard requires a non-limitation inference sentence for a part that asks what one author would think; if the pages do not establish a shared point or premise, the answer may state that limitation, but the part remains partial. Composer and reviewer instructions suppress lists of unrelated retrieved topics and retrieval-process narration. Unsupported sentences are omitted; supported neighboring sentences can remain with partial coverage. If review output is cut off, the trace reports `review-output-truncated` and the answer remains unverified without another model call.
 6. **Return readable evidence.** The Worker groups up to three reviewer-approved excerpts per cited page and returns at most six distinct cited pages. Each excerpt retains its claim and question-part links; a legacy primary `quote` remains for compatibility. The site matches the answer sentence before an inline citation to those claim points and opens the matching excerpt set in the page reader. The reader highlights every exact, unambiguous excerpt it locates and leaves unmatched text unhighlighted. The source card can show each approved excerpt for that page. Readability ranking, OCR normalization, and exact substring matching do not establish semantic support; only reviewer-approved spans are eligible, and model review can still be wrong.
 
-The public pilot uses the evidence pipeline unless `READER_PIPELINE=legacy` selects the rollback path. Public requests remain behind the Worker’s o
+The public pilot uses the evidence pipeline unless `READER_PIPELINE=legacy` selects the rollback path. Public requests remain behind the Worker’s origin, Turnstile, visitor-rate, global-rate, and source-fingerprint checks. Full prompts, full source pages, and raw model responses are available only through the authenticated evaluation trace, not the ordinary public answer.
+
+### Model calls
+
+The Worker uses Cloudflare Workers AI with Gemma 4 26B A4B for answer composition and review. The planner is a separate call. A reviewed question normally uses one planning call, one composition call, and one review call. Compose-only skips review, so it uses one planning call and one composition call. The review is a fallible model judgment, not a truth certificate. Review output is bounded to 1,800 completion tokens; any truncation remains fail-closed and does not trigger a retry. Worker responses include the Cloudflare version ID and, when deployed with a 40-character Git SHA as the version tag, a validated `workerSourceRevision`. Deploy with the checked-out source SHA as the version tag. From the repository root in PowerShell, run `npx.cmd wrangler deploy --config .\hosting-poc\wrangler.public-pilot.jsonc --tag $sha`, where `$sha` is the 40-character SHA of the checked-out commit. Use the production config in your checkout; `wrangler.public.example.jsonc` is example-only. The live evaluator records the SHA in each case and the artifact's `workerSourceRevisions` list, independently of Cloudflare's deployment-generated version ID. A missing revision means the run cannot establish which Worker source was tested.
+
+The authenticated review trace now records each claim/source handoff: a bounded answer-claim excerpt, candidate span IDs sent to the reviewer, IDs it returned, the exact source span retained by deterministic validation, and any validation reason. Public highlights preserve this claim-to-quote relationship through the browser and bounded diagnostic summaries. This makes it possible to distinguish “the reviewer chose an unrelated span and the Worker accepted it” from “the reviewer chose valid evidence that still does not semantically support the claim.” The additional candidate and display grouping add no model call and do not expose the authenticated trace in public answers.
+
+## Evaluation and quality limits
+
+The website repository contains the live holdout and acceptance workflows. They report planner, retrieval, answer, and review progress while a run is underway. Authenticated runs can save the exact prompts, model outputs, source pages, rejection reasons, usage, and final answer for diagnosis. The saved answer audit also reports citation-to-highlight coverage and cited source IDs without a page-located highlight; this is diagnostic context, not a structural gate.
+
+Use the [evidence milestone release report](reader-evidence-milestone-release.md) for the project history, decisions, workflow findings, current fixes, and remaining validation. The seven-question development set is diagnostic; it is not evidence of general performance because it has informed changes. Reserve the unseen acceptance set for a frozen candidate.
+
+The pipeline can still miss a passage because retrieval is limited and language in a question may differ from the book's wording. OCR damage can make a verified page hard to interpret. Fingerprints prove that submitted text matches the published page text; they do not prove that the OCR is correct or that a claim follows from the page. Model review can miss errors or downgrade supported prose. Structural tests check contracts such as source IDs, scope, and part links; they cannot establish philosophical, historical, or literary accuracy. Inspect cited passages whenever the interpretation matters.
+
+## Code map
+
+| Path | Purpose |
+| --- | --- |
+| `hosting-poc/public-gateway.mjs` | Worker routes, public pilot gates, page fingerprint verification, and response handling. |
+| `hosting-poc/evidence-answer.mjs` | Question-part linking, composition and review prompts, citation checks, coverage status, and answer assembly. |
+| `hosting-poc/reader-contract.mjs` | Worker planner, citation, and source contract, including separate editor and translator bylines. The website has a corresponding `antilogicalism/reading-companion/reader-contract.mjs`; keep shared behavior aligned when either copy changes. |
+| `hosting-poc/*.test.mjs` | Offline Worker and pipeline regression tests. |
+| `docs/reader-evidence-milestone-release.md` | Ongoing evidence and release record. |
+
+Run the Worker checks from this repository:
+
+```sh
+node --test hosting-poc/*.test.mjs
+```
+
+Run browser search, interface, and evaluator checks from the `antilogicalism` repository:
+
+```sh
+node --test reading-companion/*.test.mjs
+```
+
+These suites use offline fixtures. They do not replace a live model run or source-based answer review.
+
+## Separate local workbench
+
+The repository also contains a Python application for local experimentation. It runs a local model through Ollama and does not call the Cloudflare Worker. On Windows, run `start.bat`; otherwise start it with `python app.py` and open `http://127.0.0.1:8765/`. Its developer view is at `http://127.0.0.1:8765/developer`.
+
+For full-library local retrieval, the workbench needs local checkouts of `antilogicalism` and `antilogicalism-library-data` beside this repository. Follow the root [README](../README.md) for its setup. Local-model output tests the local pipeline only; use the website's authenticated workflow to test the public Worker.
+
+**Guiding principle:** use AI to help readers find and understand the books while keeping the source text accessible and open to inspection.
