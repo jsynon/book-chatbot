@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 24638)
+Total output lines: 1490
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
@@ -587,309 +590,7 @@ test('a hypothetical part can give an explicit evidence limitation instead of si
  const limitation='The supplied passages do not warrant a reliable inference about how Nietzsche would respond to Kierkegaard. [S1, S2]';
  const ai=makeAI([hypotheticalDraft(limitation),hypotheticalReview()]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
-  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
- });
- assert.equal(ai.calls.length,2);
- assert.equal(result.coverage,'full');
- assert.equal(result.questionParts[2].status,'supported');
- assert.match(result.answer,/do not warrant a reliable inference/);
- assert.deepEqual(result.trace.coverageGaps,[]);
-});
-
-test('the run-58 comparison limitation is accepted while a positive inference still needs both voices',async()=>{
- const limitation='Because Nietzsche characterizes faith as a psychological misunderstanding or a tool of priestly mastery [S1] and Kierkegaard describes faith as a transcendent, absurd movement of the self toward God [S2], the passages support a comparison but not a reliable inference about Nietzsche’s specific response to Kierkegaard’s thought.';
- const ai=makeAI([hypotheticalDraft(limitation),hypotheticalReview()]);
- const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
-  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
- });
- assert.equal(ai.calls.length,2);
- assert.equal(result.coverage,'full');
- assert.equal(result.questionParts[2].status,'supported');
- assert.match(result.answer,/support a comparison but not a reliable inference/);
- assert.deepEqual(result.trace.coverageGaps,[]);
-});
-
-test('known editorial and pseudonymous source voices must be named or mediated',async()=>{
- const run=async({source,title,bookId,question,draft,catalog,sourceLabel})=>{
-  let composePayload,reviewPayload;
-  const plan={...onePartPlan,sources:[{label:sourceLabel,role:'primary',bookIds:[bookId]}],
-   parts:[{...onePartPlan.parts[0],question,sourceBookIds:[bookId],candidateSourceIds:['S1']}]};
-  const ai=makeAI([(_model,{messages})=>{
-   composePayload=JSON.parse(messages[1].content);
-   return answer('PART P1\n'+draft+' [S1]');
-  },(_model,{messages})=>{
-   reviewPayload=JSON.parse(messages[1].content);
-   const claim=reviewPayload.claims[0],evidence=claim.sourceEvidence[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
-    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:[evidence.spanIds[0]]}]
-   }]})};
-  }]);
-  const result=await composeEvidenceAnswer(question,[source],ai,[],{
-   plan,catalog:{...catalog,[bookId]:title},trace:true
-  });
-  return {result,composePayload,reviewPayload};
- };
- const introTitle='Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida';
- const introSource={...hume,id:'S1',bookId:'185',title:introTitle,page:18,
-  text:'David A. Dilworth introduces Nishida’s discussion of religious nothingness.',
-  preview:'David A. Dilworth introduces Nishida’s discussion of religious nothingness.'};
- const editorial=await run({source:introSource,title:introTitle,bookId:'185',
-  question:'What is sunyata?',sourceLabel:'Kitarō Nishida',
-  draft:'Sunyata is the central concept in this discussion'});
- assert.equal(editorial.result.coverage,'none');
- assert.ok(editorial.result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='editorial-source-attribution-unqualified'));
- assert.match(editorial.composePayload.evidence[0].attributionRequirement,/David A\. Dilworth/);
- assert.match(editorial.reviewPayload.parts[0].evidence[0].attributionRequirement,/David A\. Dilworth/);
- const mediated=await run({source:introSource,title:introTitle,bookId:'185',
-  question:'What is sunyata?',sourceLabel:'Kitarō Nishida',
-  draft:'Dilworth’s introduction describes sunyata as the central concept in this discussion'});
- assert.equal(mediated.result.coverage,'full');
-
- const pseudonymTitle='Fear and Trembling — Søren Kierkegaard';
- const pseudonymSource={...hume,id:'S1',bookId:'140',title:pseudonymTitle,page:32,
-  text:'Johannes de Silentio describes faith as a relation to God.',
-  preview:'Johannes de Silentio describes faith as a relation to God.'};
- const unnamed=await run({source:pseudonymSource,title:pseudonymTitle,bookId:'140',
-  question:'What does Fear and Trembling say about faith?',sourceLabel:'Søren Kierkegaard',
-  draft:'Kierkegaard describes faith as a relation to God'});
- assert.equal(unnamed.result.coverage,'none');
- assert.ok(unnamed.result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='pseudonymous-voice-unidentified'));
- assert.match(unnamed.composePayload.evidence[0].attributionRequirement,/Johannes de Silentio/);
- const named=await run({source:pseudonymSource,title:pseudonymTitle,bookId:'140',
-  question:'What does Fear and Trembling say about faith?',sourceLabel:'Søren Kierkegaard',
-  draft:'Johannes de Silentio describes faith as a relation to God'});
- assert.equal(named.result.coverage,'full');
-});
-
-test('prior speaker attribution carries across accepted claims without crossing to another pseudonymous voice',async()=>{
- const silentioTitle='Fear and Trembling — Søren Kierkegaard';
- const climacusTitle='Philosophical Fragments — Søren Kierkegaard';
- const sources=[
-  {...hume,id:'S1',bookId:'140',title:silentioTitle,page:32,
-   text:'Johannes de Silentio describes faith as a relation to God.',
-   preview:'Johannes de Silentio describes faith as a relation to God.'},
-  {...hume,id:'S2',bookId:'192',title:climacusTitle,page:24,
-   text:'Johannes Climacus discusses a philosophical lesson about faith.',
-   preview:'Johannes Climacus discusses a philosophical lesson about faith.'}
- ];
- const question='What does Kierkegaard say about faith?';
- const plan={...onePartPlan,
-  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140','192']}],
-  parts:[{...onePartPlan.parts[0],question,sourceBookIds:['140','192'],
-   candidateSourceIds:['S1','S2']}]};
- const draft=[
-  'Johannes de Silentio describes faith as a relation to God. [S1]',
-  'He presents faith as an inward relation. [S1]',
-  'He distinguishes faith from ordinary belief. [S1]',
-  'He emphasizes the paradox of faith. [S1]',
-  'He frames faith as requiring an absolute relation to God. [S1]',
-  'Kierkegaard describes faith as a philosophical lesson. [S2]'
- ].join(' ');
- const ai=makeAI([answer('PART P1\n'+draft),(_model,{messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- }]);
- const result=await composeEvidenceAnswer(question,sources,ai,[],{
-  plan,catalog:{...catalog,140:silentioTitle,192:climacusTitle},trace:true
- });
- assert.equal(ai.calls.length,2);
- assert.equal(result.coverage,'partial');
- assert.match(result.answer,/Johannes de Silentio describes faith/);
- assert.match(result.answer,/He frames faith as requiring an absolute relation to God/);
- assert.doesNotMatch(result.answer,/Kierkegaard describes faith as a philosophical lesson/);
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.sourceId==='S2'&&issue.reason==='pseudonymous-voice-unidentified'));
-});
-
-test('flat reviewer input keeps multi-part claims linked once and duplicate claims keys fail closed',async()=>{
- let reviewPayload;
- const draft=hypotheticalDraft(
-  'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1, S2]');
- const ai=makeAI([draft,(_model,{messages})=>{
-  reviewPayload=JSON.parse(messages[1].content);
-  assert.deepEqual(reviewPayload.parts.map(part=>part.partId),['P1','P2','P3']);
-  assert.ok(reviewPayload.parts.every(part=>!('claims' in part)));
-  assert.deepEqual(reviewPayload.claims.map(claim=>[claim.partId,claim.claimId]),[
-   ['P1','P1-C1'],['P2','P2-C1'],['P3','P3-C1']
-  ]);
-  assert.equal(reviewPayload.parts[0].evidence[0].id,'S1');
-  assert.equal(reviewPayload.parts[1].evidence[0].id,'S2');
-  const decisions=reviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-   spanIds:claim.sourceIds.map(sourceId=>sourceId+'-Q1')}));
-  const parts=reviewPayload.parts.map(part=>({partId:part.partId,status:'answered'}));
-  return {response:'{"parts":'+JSON.stringify(parts)+
-   ',"claims":['+JSON.stringify(decisions[0])+']'+
-   ',"claims":['+JSON.stringify(decisions[1])+']'+
-   ',"claims":['+JSON.stringify(decisions[2])+']}'};
- }]);
- const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
-  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
- });
- assert.equal(ai.calls.length,2);
- assert.equal(result.outcome,'unverified-source-draft');
- assert.equal(result.coverage,'partial');
- assert.equal(result.reviewStatus,'review-contract-incomplete');
- assert.deepEqual(result.trace.reviewContract.issues,['missing-claim-decision']);
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.partId==='P1'&&issue.claimId==='P1-C1'&&issue.reason==='missing-claim-decision'));
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.partId==='P2'&&issue.claimId==='P2-C1'&&issue.reason==='missing-claim-decision'));
- assert.equal(result.evidenceMap.some(item=>item.partId==='P1'||item.partId==='P2'),false);
-});
-
-test('a reviewed comparison cannot satisfy a hypothetical synthesis part without an inference',async()=>{
- const ai=makeAI([hypotheticalDraft(
-  'Nietzsche criticizes Christian morality, whereas Johannes de Silentio centers faith. [S1, S2]'),
-  hypotheticalReview()
- ]);
- const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
-  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
- });
- assert.equal(ai.calls.length,2);
- assert.equal(result.outcome,'verified-source-draft');
- assert.equal(result.questionParts[0].status,'supported');
- assert.equal(result.questionParts[1].status,'supported');
- assert.equal(result.questionParts[2].status,'partial');
- assert.equal(result.coverage,'partial');
- assert.match(result.answer,/Nietzsche criticizes Christian morality, whereas Johannes de Silentio centers faith/);
- assert.deepEqual(result.trace.coverageGaps,[{partId:'P3',reason:'hypothetical-inference-missing'}]);
- assert.equal(result.trace.reviewContract.valid,true);
-});
-
-test('a one-sided hypothetical inference is rejected and the part remains visibly incomplete',async()=>{
- const ai=makeAI([hypotheticalDraft(
-  'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1]'),
-  hypotheticalReview()
- ]);
- const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
-  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
- });
- assert.equal(ai.calls.length,2);
- assert.equal(result.coverage,'partial');
- assert.equal(result.questionParts[2].status,'unsupported');
- assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
-  item.reason==='hypothetical-inference-missing-source-group-citation'));
- assert.doesNotMatch(result.answer,/one cautious inference/i);
- assert.match(result.missing,/what response can cautiously be inferred/i);
-});
-
-test('a neighboring comparison clause cannot lend its citation group to a hypothetical inference',async()=>{
- const ai=makeAI([hypotheticalDraft(
-  'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1], whereas Kierkegaard’s own position is expressed by Johannes de Silentio. [S2]'),
-  hypotheticalReview()
- ]);
- const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
-  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
- });
- assert.equal(result.coverage,'partial');
- assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
-  item.reason==='hypothetical-inference-missing-source-group-citation'));
- assert.doesNotMatch(result.answer,/one cautious inference/i);
- assert.equal(ai.calls.length,2);
-});
-
-test('an unqualified hypothetical author claim is rejected even when both source groups are cited',async()=>{
- const ai=makeAI([hypotheticalDraft(
-  'Nietzsche would have regarded Kierkegaard’s emphasis on religious inwardness as a form of the decadent outlook he attacks. [S1, S2]'),
-  hypotheticalReview()
- ]);
- const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
-  plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
- });
- assert.equal(ai.calls.length,2);
- assert.equal(result.coverage,'partial');
- assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
-  item.reason==='hypothetical-inference-not-explicitly-qualified'));
- assert.doesNotMatch(result.answer,/Nietzsche would have regarded/);
-});
-
-test('author-wide questions retain the author works unless the reader names a distinctive work',()=>{
- const question='What did Kierkegaard have to say about faith?';
- const catalog={
-  '140':'Fear and Trembling — Søren Kierkegaard',
-  '192':'Philosophical Fragments — Søren Kierkegaard',
-  '253':'The Sickness Unto Death — Søren Kierkegaard',
-  '436':'Kierkegaard’s Attack Upon “Christendom,” 1854–1855 — Søren Kierkegaard'
- };
- const raw={intent:'explain',sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:Object.keys(catalog)}],
-  parts:["How does Kierkegaard describe faith?"],queries:['Kierkegaard faith movement']};
- const broad=normalizePlan(raw,question,catalog);
- assert.equal(broad.parts.length,1,'a broad author-topic question must not acquire optional model-generated coverage requirements');
- assert.equal(broad.parts[0].question,question);
- assert.deepEqual(broad.parts[0].sourceBookIds,['140','192','253','436']);
- const explicitFacets=normalizePlan({...raw,parts:['What does Kierkegaard say about faith?','How does he relate faith to the individual?']},
-  'What did Kierkegaard say about faith and the individual?',catalog);
- assert.equal(explicitFacets.parts.length,2,'explicitly requested facets remain separate coverage parts');
- const scoped=normalizePlan(raw,'What did Kierkegaard say about faith in Fear and Trembling?',catalog);
- assert.deepEqual(scoped.parts[0].sourceBookIds,['140']);
-});
-
-test('simple definition questions stay one coverage part while explicit facets remain separate',()=>{
- const raw={intent:'explain',sources:[],queries:['definition of Sunyata and its operation',
-  'how Sunyata functions in Buddhist doctrine'],parts:[
-  'What is the definition and essential nature of sunyata?',
-  'How does sunyata function or operate within Buddhist doctrine?']};
- const simple=normalizePlan(raw,'What is sunyata?',{});
- assert.equal(simple.parts.length,1);
- assert.equal(simple.parts[0].question,'What is sunyata?');
- const explicit=normalizePlan({...raw,parts:['What is sunyata?',
-  'How does sunyata function within Buddhist doctrine?']},
-  'What is sunyata and how does it function within Buddhist doctrine?',{});
- assert.equal(explicit.parts.length,2);
-});
-
-test('a quoted technical term is not mistaken for a source quotation, while multiword quotes stay exact',()=>{
- assert.equal(auditFinalAnswer('The account turns on “whatness.” [S1]',[hume]).ok,true);
- assert.equal(auditFinalAnswer('The source says “custom and habit.” [S1]',[hume]).ok,false);
- assert.equal(auditFinalAnswer('The source says “mind is determined by custom.” [S1]',[hume]).ok,true);
-});
-
-test('a quote binds to the first following citation, not a later comparison citation',()=>{
- const nietzsche={id:'S4',text:'Nietzsche attacks the cause of this fictitious morality and religion.'};
- const kantSource={id:'S2',text:'Kant discusses appearances and things in themselves.'};
- const humeSource={id:'S3',text:'Hume describes custom and habit.'};
- const answer='A cautious reader might infer that Nietzsche rejects the “fictitious morality” [S4], whereas Kierkegaard takes a different view. [S2, S3]';
- assert.equal(auditFinalAnswer(answer,[nietzsche,kantSource,humeSource]).ok,true);
- assert.equal(auditFinalAnswer('The passage describes “double life” and painful self-consciousness. [S4]',[
-  {...nietzsche,text:'The passage describes "double life" and painful self-consciousness.'}
- ]).ok,true,'a quote earlier in a sentence binds to its citation after the sentence-ending punctuation');
-});
-
-test('part linking preserves evidence discovered by each side for a synthesis part',()=>{
- const plan={...twoSidePlan,parts:twoSidePlan.parts.map(part=>({...part,candidateSourceIds:[]}))};
- const linked=linkEvidenceToParts(plan,[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}]);
- assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2'],['S1','S2']]);
-});
-
-test('comparison evidence linking follows the planned source groups even when the part avoids comparison keywords',()=>{
- const plan={...twoSidePlan,parts:[
-  {...twoSidePlan.parts[0],candidateSourceIds:[]},
-  {...twoSidePlan.parts[1],candidateSourceIds:[]},
-  {id:'P3',question:'What relationship do their accounts bear to one another?',sourceBookIds:['35','40']}
- ]};
- const linked=linkEvidenceToParts(plan,[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}]);
- assert.deepEqual(linked.parts[2].candidateSourceIds,['S1','S2']);
-});
-
-test('run 49 claim-specific source pointers expose each passage and retain the per-source review gate',async()=>{
- const source4={...hume,id:'S4',bookId:'239',title:'The Portable Nietzsche — Friedrich Nietzsche',page:502,
-  text:'No to both the lowest and highest desires of life.',preview:'No to both the lowest and highest desires of life.'};
- const source5={...hume,id:'S5',bookId:'239',title:'The Portable Nietzsche — Friedrich Nietzsche',page:607,
-  text:'Christian morality is a systematic degradation of the imagination.',
-  preview:'Christian morality is a systematic degradation of the imagination.'};
- const sources=[source4,source5];
- const plan={...onePartPlan,sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['239']}],
-  parts:[{...onePartPlan.parts[0],question:'What did Nietzsche say about Christianity?',sourceBookIds:['239'],
-   candidateSourceIds:['S4','S5']}]};
- const draft='PART P1\nThis moral system is described as a systematic degradation of imagination and a rejection of the highest and lowest desires of life. [S4, S5]';
- let reviewPayload;
- const missingSourceAI=makeAI([answer(draft),(_model,{messages})=>{
-  reviewPayload=JSON.parse(messages[1].content);
+  plan…4638 tokens truncated…messages[1].content);
   const claim=reviewPayload.claims[0];
   const s5=claim.sourceEvidence.find(item=>item.sourceId==='S5').spanIds[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
@@ -1093,6 +794,37 @@ test('the active reviewer resolves a selected span to exact bounded source text'
   acceptedQuote:spans[0].text.slice(0,280),acceptedQuotes:[spans[0].text.slice(0,280)],
   accepted:true,validationReason:null
  }]);
+});
+
+test('review sees one spare candidate while verified acceptance stays capped at three',async()=>{
+ const text=[
+  'A short introductory passage describes a topic without defining the requested doctrine.',
+  'A second passage discusses historical context and the surrounding debate in detail.',
+  'A third passage mentions related concepts but does not explain their central relation.',
+  'The fourth passage directly explains the doctrine through its core operation and distinction.'
+ ].join('\n\n\n');
+ const source={...hume,text,preview:text};
+ const spans=buildReviewSpans('S1',text);
+ assert.equal(spans.length,4);
+ let reviewPayload;
+ const ai=makeAI([answer('PART P1\nThe doctrine works through its core operation and distinction. [S1]'),
+  (_model,{messages})=>{
+   reviewPayload=JSON.parse(messages[1].content);
+   const claim=reviewPayload.claims[0];
+   const offered=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds;
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:offered}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer('How does the doctrine work?',[source],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions[0];
+ assert.equal(reviewPayload.claims[0].sourceEvidence[0].spanIds.length,4,
+  'the reviewer receives the fourth-ranked candidate that the run 65 case omitted');
+ assert.equal(decision.candidateSpanIds.length,4);
+ assert.equal(decision.acceptedSpanIds.length,3,
+  'the spare candidate does not raise the existing three-span acceptance limit');
+ assert.equal(result.evidenceMap.length,3);
+ assert.equal(ai.calls.length,2,'the wider candidate list adds no model call');
 });
 
 test('the reviewer can retain several exact spans from one source for one fully supported claim',async()=>{
