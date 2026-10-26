@@ -283,6 +283,43 @@ test('source-grouped review makes each cited source decision explicit and keeps 
  assert.equal(result.evidenceMap.length,0);
  assert.equal(ai.calls.length,2);
 });
+test('a supported source in the same planned group keeps a claim when an alternate citation is weak',async()=>{
+ const title='The Consolation of Philosophy — Boethius';
+ const sources=[
+  {id:'S1',bookId:'21',title,page:11,candidatePartIds:['P1'],
+   text:'I turn my wheel and delight to make the lowest turn to the top, the highest to the bottom.',
+   preview:'I turn my wheel and delight to make the lowest turn to the top.'},
+  {id:'S2',bookId:'21',title,page:10,candidatePartIds:['P1'],
+   text:'If Fortune begin to stay still, she is no longer Fortune. Her changing nature is her constant way.',
+   preview:'If Fortune begin to stay still, she is no longer Fortune.'}
+ ];
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
+  parts:[{id:'P1',question:'Why can Fortune not remain still?',sourceBookIds:['21'],
+   searchQueries:['Fortune cannot remain still'],candidateSourceIds:['S1','S2']}]};
+ const ai=makeAI([answer('PART P1\nFortune cannot be stayed; if she remained still, she would no longer be Fortune. [S1, S2]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   const span=sourceId=>claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[
+     {sourceId:'S1',status:'partial',spanIds:[span('S1')]},
+     {sourceId:'S2',status:'answered',spanIds:[span('S2')]}
+    ]}]})};
+  }]);
+ const result=await composeEvidenceAnswer('Why can Fortune not remain still?',sources,ai,[],
+  {plan,catalog:{...catalog,21:title},trace:true});
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.match(result.answer,/\[S2\]$/);
+ assert.doesNotMatch(result.answer,/\[S1, S2\]/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S2']);
+ assert.deepEqual(result.evidenceMap.map(item=>item.id),['S2']);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S1'&&issue.reason==='claim-source-not-supported'));
+ assert.equal(result.trace.reviewContract.reviewDecisions.find(item=>item.sourceId==='S1').accepted,false);
+ assert.equal(result.trace.reviewContract.reviewDecisions.find(item=>item.sourceId==='S2').accepted,true);
+});
 test('compact review cannot verify a sentence unless every cited source has a selected span',async()=>{
  const ai=makeAI([answer('PART P1\nHume grounds necessity in custom, while Kant treats causality as a priori. [S1, S2]'),
   (_model,{messages})=>{
