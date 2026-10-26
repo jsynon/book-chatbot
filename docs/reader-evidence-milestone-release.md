@@ -653,3 +653,28 @@ This candidate improves citation completeness for claims that need multiple exce
 | Syntax and whitespace checks | `node --check` for both changed modules and `git diff --check` pass |
 | Live five-question answer quality | Pending; must rerun after merge/deployment and review the actual claims and source passages |
 | Unseen acceptance suite | Keep frozen until the full diagnostic shows improved evidence handoff and attribution, and the Kant-style conceptual distortion is assessed |
+
+## October 26, 2026: focused five-question run #65 and claim-linked highlights
+
+The all-books focused with-review workflow [#65](https://github.com/jsynon/antilogicalism/actions/runs/40256572608) tested library v48 and saved artifact [12622449865](https://github.com/jsynon/antilogicalism/actions/runs/40256572608/artifacts/12622449865). It completed all five questions with no request failures, planner fallbacks, or skipped cases. It recorded 4/5 structural passes and 6/7 supported question parts, with 15 estimated Worker AI calls and no human ratings. The trace identifies the deployed Worker revision. This run was useful evidence, not a release-quality answer score: structural checks cannot establish whether a highlight is the best passage for a claim.
+
+The highlight symptom has two concrete causes in this trace and the existing browser code. For the Kierkegaard faith answer, claim P1-C6 said that true belief requires passion in opposition to receiving honor from men. The source page contained the direct “Only that is to believe…” passage as span S6-Q6, but the claim's review index supplied only S6-Q9, S6-Q5, and S6-Q8; the useful span ranked fourth and could not be selected. Separately, the public response flattened approved spans to one highlight per cited page, and the site reader opened only that first quote. So the issue was both a narrow candidate handoff and a lossy display contract. The source text was present in retrieval; a UI-only selector change could not have recovered the span review never saw.
+
+This bounded implementation changes the connected stages together:
+
+- The reviewer receives up to four ranked candidate spans per cited page, while deterministic validation and the review prompt still cap acceptance at three per page and six per claim. This widens choice without a new model call or a larger retrieved-page packet.
+- The public Worker response groups up to three accepted excerpts per cited page and carries each excerpt's claim, question-part, and point links. The existing six-item ceiling continues to mean six distinct cited pages; the legacy primary `quote` field remains available.
+- The live page entry point loads `companion-v111.mjs` for v48. That active client matches the sentence before an inline citation to the group’s claim points, then opens the excerpts for that matching claim. The page reader locates each excerpt independently and highlights only exact, unambiguous matches. The source card can show all accepted excerpts on that page; regression checks target the v48 entry point rather than relying on the older v110 client.
+- Authenticated diagnostic and workflow audit summaries preserve the bounded nested claim/excerpt links and per-excerpt location status, so the next artifact can show which text was offered and which text the reader can actually highlight.
+
+No planner, search, source selection, answer composition, review count, citation identity, or source text behavior changes. There are no added AI calls. This fix improves highlight relevance and testability; it does not make weak model-approved spans semantically correct. The separate run #65 answer-quality findings still stand: Kant has a conceptually distorted explanation, the Sunyata answer needs the Buddhist account beyond a generic gloss, and cross-work/hypothetical claims still require semantic inspection. Keep the unseen acceptance set frozen until this candidate has been checked live and the answer-quality issues are assessed.
+
+| Validation | Result |
+|---|---|
+| Worker candidate/acceptance regression | Pass; reviewer sees four candidates, only three exact spans can be retained, and the answer uses the existing two calls |
+| Worker public highlight contract | Pass; claim-linked excerpts group by page while the six-distinct-page cap and legacy primary quote remain |
+| Website/evaluator suite: `node --test reading-companion/*.test.mjs` | 185 passed, 0 failed |
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | 272 passed, 0 failed |
+| Syntax and whitespace checks | Website changed modules pass `node --check`; both repository diffs pass `git diff --check` |
+| Live check after Worker and site deployment | Pending; rerun the focused five-question all-books with-review workflow and inspect whether the previously omitted source span reaches review and whether exact claim-linked excerpts are reported and highlighted |
+| Live answer quality and unseen acceptance suite | Still pending; review actual text and cited passages separately before unfreezing acceptance |

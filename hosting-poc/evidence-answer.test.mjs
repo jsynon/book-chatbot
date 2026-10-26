@@ -1095,6 +1095,37 @@ test('the active reviewer resolves a selected span to exact bounded source text'
  }]);
 });
 
+test('review sees one spare candidate while verified acceptance stays capped at three',async()=>{
+ const text=[
+  'A short introductory passage describes a topic without defining the requested doctrine.',
+  'A second passage discusses historical context and the surrounding debate in detail.',
+  'A third passage mentions related concepts but does not explain their central relation.',
+  'The fourth passage directly explains the doctrine through its core operation and distinction.'
+ ].join('\n\n\n');
+ const source={...hume,text,preview:text};
+ const spans=buildReviewSpans('S1',text);
+ assert.equal(spans.length,4);
+ let reviewPayload;
+ const ai=makeAI([answer('PART P1\nThe doctrine works through its core operation and distinction. [S1]'),
+  (_model,{messages})=>{
+   reviewPayload=JSON.parse(messages[1].content);
+   const claim=reviewPayload.claims[0];
+   const offered=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds;
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:offered}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer('How does the doctrine work?',[source],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions[0];
+ assert.equal(reviewPayload.claims[0].sourceEvidence[0].spanIds.length,4,
+  'the reviewer receives the fourth-ranked candidate that the run 65 case omitted');
+ assert.equal(decision.candidateSpanIds.length,4);
+ assert.equal(decision.acceptedSpanIds.length,3,
+  'the spare candidate does not raise the existing three-span acceptance limit');
+ assert.equal(result.evidenceMap.length,3);
+ assert.equal(ai.calls.length,2,'the wider candidate list adds no model call');
+});
+
 test('the reviewer can retain several exact spans from one source for one fully supported claim',async()=>{
  const source={...hume,
   text:'Repeated conjunctions are observed between similar events.\n\n\nThe mind is determined by custom to infer one event from another.\n\n\nThe idea of necessary connection arises from this transition of thought.',

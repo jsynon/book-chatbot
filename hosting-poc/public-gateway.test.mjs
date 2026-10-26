@@ -2313,6 +2313,11 @@ test('public highlights prefer the reviewed span most relevant to its linked cla
  ];
  const result=selectPublicEvidenceHighlights('Nietzsche on Christianity [S3]. Sunyata [S2].',citations,evidenceMap,2);
  assert.deepEqual(result.map(item=>item.quote),[resentment,sokuHi]);
+ assert.deepEqual(result.map(item=>item.quotes.map(quote=>quote.quote)),[
+  [resentment,irrelevant],[sokuHi,editorial]
+ ]);
+ assert.equal(result[0].quotes[0].point,
+  'Christianity is a destructive, life-hostile principle that emerged from resentment.');
 });
 
 test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounded AI',async()=>{
@@ -2375,8 +2380,13 @@ test('public highlights show multiple distinct verified passages from one cited 
  const data=await response.json();
  assert.equal(data.citations.length,1);
  assert.equal(data.evidenceMap.filter(item=>item.quoteVerified).length,2);
- assert.deepEqual(data.evidenceHighlights.map(item=>item.quote),[second,first],
-  'the most claim-relevant reviewed passage leads the source card');
+ assert.equal(data.evidenceHighlights.length,1,
+  'the public six-item ceiling applies to distinct source pages');
+ assert.deepEqual(data.evidenceHighlights[0].quotes.map(item=>item.quote),[second,first],
+  'the most claim-relevant reviewed passage leads a page group while both approved spans survive');
+ assert.deepEqual(data.evidenceHighlights[0].quotes.map(item=>item.point),[
+  'The deeper cause was anxiety over political change.',
+  'The public disputes involved an agreement and fear.']);
  assert.equal(data.evidenceHighlights.every(item=>item.source_id==='S1'&&item.page===38),true);
  assert.equal(pilot.stats().calls,2);
 });

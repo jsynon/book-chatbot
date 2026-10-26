@@ -56,9 +56,11 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
   const anchors=new Map(citationOrder.map(id=>{
     const candidates=evidenceMap.filter(item=>item?.id===id&&item.quoteVerified===true&&
       typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
-      .map((item,index)=>({quote:removeLeadingRunningHeader(item.anchorQuote||item.quote),point:item.point||'',index}))
+      .map((item,index)=>({quote:removeLeadingRunningHeader(item.anchorQuote||item.quote),
+        point:String(item.point||''),claimId:String(item.claimId||''),partId:String(item.partId||''),index}))
       .filter(item=>usefulQuote(item.quote))
-      .filter((item,index,all)=>all.findIndex(other=>other.quote===item.quote)===index);
+      .filter((item,index,all)=>all.findIndex(other=>other.quote===item.quote&&
+        other.claimId===item.claimId&&other.point===item.point)===index);
     // Reviewer-approved spans are already exact and source-verified. When a
     // page has several, prefer the span whose vocabulary best matches its
     // linked claim; stable input order breaks ties and remains the fallback
@@ -72,32 +74,21 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       };
       return score(right)-score(left)||readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
     });
-    return [id,candidates.map(item=>item.quote)];
+    return [id,candidates.slice(0,3)];
   }));
-  const highlights=[],used=new Map();
-  const add=(id,quote)=>{
-    const source=byId.get(id);
-    if(!source||!quote||highlights.length>=limit)return false;
-    highlights.push({source_id:id,title:source.title,page:source.page,url:source.url,quote});
-    return true;
-  };
-  // First show one verified passage per cited source in the order the answer
-  // invokes it. If the six-source limit leaves room, show further spans from
-  // those same cited sources. Never synthesize a highlight from a preview.
-  for(const id of citationOrder){
-    const quote=anchors.get(id)?.[0];
-    if(quote&&add(id,quote))used.set(id,new Set([quote]));
-  }
-  for(const id of citationOrder){
-    if(highlights.length>=limit)break;
-    const selected=used.get(id)||new Set();
-    for(const quote of anchors.get(id)||[]){
-      if(selected.has(quote))continue;
-      if(add(id,quote))selected.add(quote);
-      if(highlights.length>=limit)break;
-    }
-  }
-  return highlights;
+  // The six-item cap applies to cited pages, not to individual approved
+  // excerpts. Keep up to three exact spans per page so one citation can
+  // expose complementary support for the same claim. The legacy `quote`
+  // field remains the best-ranked excerpt; `quotes` preserves claim links.
+  return citationOrder.flatMap(id=>{
+    const source=byId.get(id),quotes=anchors.get(id)||[];
+    if(!source||!quotes.length)return [];
+    const primary=quotes[0];
+    return [{source_id:id,title:source.title,page:source.page,url:source.url,
+      quote:primary.quote,claim_id:primary.claimId,point:primary.point,
+      quotes:quotes.map(item=>({claim_id:item.claimId,part_id:item.partId,
+        point:item.point,quote:item.quote}))}];
+  }).slice(0,limit);
 }
 // v1.12 full public-catalog coverage; each answer page must still match an
 // owner-published v48 fingerprint before it reaches the model.
