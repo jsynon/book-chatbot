@@ -16,9 +16,19 @@ The passage explains the author's position and the reason for it. [S1]
 PART P2
 The two accounts differ in the role they assign to experience. [S1, S2]`;
 
-export const REVIEW_PROMPT=`Review every answer sentence separately against only its cited, fingerprint-verified source pages. The input has question parts with their page evidence and one flat top-level claims array. Each claim has a partId, stable claimId, exact sentence text, cited sourceIds, and a sourceEvidence index that lists claim-specific candidate span IDs for each cited source. For each sourceEvidence entry, sourceGroup identifies the planner's author/source group for that page; use it to keep an author's premise attached to that author's evidence. Use partId to connect a claim to its question and that part's evidence. Use sourceEvidence to locate evidence for this claim within the matching page's supplied spans; it is a navigation aid, not evidence by itself. Each page supplies deterministic evidence spans with IDs and exact source text, ordered with likely answer-bearing spans first; inspect the supplied span text rather than assuming no support from a missed keyword. Select span IDs only; do not copy or rewrite quotations. The supplied spans are the only evidence that may support the answer. Check attribution, qualifications, negation, and whether the answer explains the requested reasoning. For a definition, require the defining operation or contrast when the cited pages provide it. For a broad author question, check that each known pseudonymous or editorial voice is identified and that a work-specific claim is not generalized into the author’s whole doctrine. The page metadata gives cataloged authors, editors/translators, planner source role, and any known work voice; these are context, not proof of who is speaking on that page. Use the supplied page text/context to distinguish authorial text, pseudonymous voice, quoted or reported speaker, narrator, editor's introduction, translator's note, and commentary. A title's credited author is not automatically the passage's speaker, and a planner role of "primary" does not guarantee every page is primary text. When provenance identifies a pseudonymous work voice, require the first claim using that work in the answer part to name the voice in that sentence, unless the page establishes another speaker; later claims may rely on an unambiguous attribution already established for that same source voice. For editorial introductions and commentary, allow claims about what that commentator says, but do not treat them as the credited author's doctrine or as a tradition-wide definition unless independent primary-text evidence establishes that scope. Reject or qualify a sentence that presents commentary or a reported view as the author's own. Keep claims within the passage's scope: a first-person narrator's inability or personal experience does not establish a general psychological effect or definition (for example, "I cannot make the movement of faith" does not establish what faith generally does to a person's mind). A broad criticism alone does not establish a recorded judgment of a specific thinker or a verdict on that thinker's whole doctrine. For an explicitly hypothetical question, however, a conditional reader inference is allowed when both cited pages establish the same specific concept: assess each author's documented premise against that author's own spans, then decide whether the narrow, conditional application follows. Do not require a source to record the hypothetical response itself, and never present the reader's inference as historical fact. If the premises do not establish a shared point of contact, the inference is unsupported. A limitation saying that no reliable inference is possible does not complete a question part that explicitly asks what one author would think; mark that part partial. A category name alone is incomplete when the question asks how something is justified or known; require the source's grounds, argument, or conditions of validity. For ordinary comparisons, require directly relevant support from each named source. For a clearly labeled hypothetical author-to-author inference, do not demand a passage documenting the hypothetical response itself: assess each cited premise against its own author's spans, then decide whether the explicitly cautious conclusion follows modestly from those supported premises. For each source in that inference, assess the premise assigned to its sourceGroup; do not require it to support the other author's premise or the reader's inferential conclusion by itself. The claim as a whole still requires relevant evidence from every author source group and a modest conclusion tied to the shared point of contact. A claim need not cite every page available in an author group; require at least one directly relevant page for each premise, and treat unrelated extra citations as unsupported. Require evidence spans from every cited source group; a missing premise, one-sided citation, or conclusion stronger than the premises is partial or unanswered. For the hypothetical conclusion, require the cited pages to establish the same specific point of contact the conclusion draws; separate support for two general positions is not enough to support a broader conclusion about their relationship. Treat the inference as a reader's reasoning, never as a reported historical view. Do not narrate the retrieval process, inventory unrelated passages, or present a list of retrieved topics that do not help answer the reader's question. A citation's presence or topical overlap alone does not establish support. Check whether the selected spans establish the same requested concept, actor, action, polarity, and qualification as that exact sentence; a passage about a neighboring doctrine or a shared keyword is not support. Treat a reversed negation or attribution as a material contradiction. If a supplied span states the same relationship or qualification as an answer sentence in different words, select that span rather than reporting that the source has no evidence.
-For each answer claim, review each cited source separately. Return one source decision for every source ID in that claim's sourceIds, in the same order. A source is answered only if its own exact spans support every material clause or premise attributed to that source; otherwise mark that source partial or unanswered and return no unsupported spans. If one exact span does not support the whole claim, return the smallest set of up to ${MAX_REVIEW_SPANS_PER_SOURCE} distinct relevant spans from that same source that together support it. Never add a span merely because it is topically related. The claim can be answered only when every cited source decision is answered and has at least one relevant span. Return no more than ${MAX_REVIEW_SPANS_PER_CLAIM} span IDs total per claim. If the supplied spans cannot support all parts of a compound claim, mark it partial so the unsupported claim is not presented as verified. If a cited source has no relevant span, mark it partial or unanswered. Do not omit a source decision to avoid reporting that its page does not support the claim. A hypothetical inference must be a standalone claim whose source decisions include relevant evidence from every author source group. Do not use citations attached to a neighboring clause as support for that inference. The part status summarizes whether the answer covers the requested question, not only whether its listed claims have support.
-Return one valid JSON object only, with no Markdown or explanation. Do not copy source wording into the response. Use exactly this flat shape: {"parts":[{"partId":"P1","status":"answered|partial|unanswered"}],"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q2"]},{"sourceId":"S2","status":"answered|partial|unanswered","spanIds":["S2-Q1"]}]}]}. Include every supplied part exactly once and every supplied claim exactly once in the single top-level claims array. There must be only one claims property. Include each cited source ID exactly once in every claim's sources array. An unanswered claim or source decision uses an empty spanIds array. For other decisions, return only supplied span IDs from that source's sourceEvidence list that are relevant to the claim. The Worker checks source/span relationships against exact source text. Do not include nested claim arrays, rationales, answer text, page text, or extra fields. Never invent an ID or omit a claim, part, or cited source.`
+export const REVIEW_PROMPT=`Review every answer sentence separately against the exact supplied spans from each cited, fingerprint-verified source. Use the stable claimId for each decision. Your primary task is to decide whether the evidence supports the claim as written, not whether the page shares its topic words. The input has question parts, evidence spans, and one flat top-level claims array. Each claim has its exact text, partId, cited sourceIds, and a sourceEvidence index that helps locate relevant spans. A source's sourceGroup identifies the planner's author/source group; it is context for assigning premises, not proof.
+
+For every claim, review every cited source ID separately and inspect the exact text of the spans you select. Check the same concept, actor, action, polarity, qualification, and scope. A reversed negation or attribution is a material contradiction: a speaker saying they cannot do X does not support a sentence saying that speaker can do X, or a general claim that the author or everyone can do X. First-person inability or experience does not establish a general rule. A neighboring doctrine, shared keyword, or citation alone is not support. Select span IDs only; do not copy or rewrite quotations. If one supplied span does not support every material clause, select the smallest set of up to ${MAX_REVIEW_SPANS_PER_SOURCE} distinct relevant spans from that same source that does; otherwise mark that source partial or unanswered and return no unsupported spans.
+
+Attribute each passage to the voice supported by its text and context. Metadata about credited authors, editors, translators, planner roles, or known work voices is context, not proof of who speaks on a page. Distinguish authorial text from a pseudonymous voice, quoted or reported speaker, narrator, editor's introduction, translator's note, and commentary. Name a known pseudonymous voice in the first answer claim using that work. Attribute editorial interpretation to the commentator or introduction, not to the credited author. Do not turn a work-specific claim into the author's general doctrine without evidence for that scope. If the speaker is unclear, the cited source does not support a claim that assigns the words to a particular person.
+
+For definitions, check whether the answer gives the defining operation or contrast when the passages provide it. For questions about justification, knowledge, or necessity, a category name alone is incomplete; assess the stated grounds or argument. Keep broad author answers focused on the requested view, not a list of retrieved topics.
+
+For an explicit hypothetical question about one author responding to another, require a standalone, clearly labeled, cautious reader inference. Assess each cited author source against its own premise; do not demand that a source record the hypothetical response itself. The premises must establish the same specific point of contact, and the conclusion must follow modestly from it. The inference claim must include relevant evidence from every author source group; a broad comparison, unrelated quotation, one-sided citation, or citation attached to a neighboring clause does not support it. Never present the inference as historical fact. If a needed premise or shared point is missing, mark it partial or unanswered. A limitation saying that no reliable inference is possible does not complete a part that asks what one author would think.
+
+Return one source decision for every source cited by every claim, in the same order. A source is answered only when its selected exact spans support every material clause or premise attributed to that source. Return at most ${MAX_REVIEW_SPANS_PER_SOURCE} distinct spans per source and ${MAX_REVIEW_SPANS_PER_CLAIM} spans total per claim. The claim is answered only when every cited source is answered and has a relevant span. Do not omit a cited source to avoid reporting a support problem. Part status reflects whether the answer covers the requested part, not just whether its listed claims have citations.
+
+Return one valid JSON object only, without Markdown or explanation. Use exactly this shape: {"parts":[{"partId":"P1","status":"answered|partial|unanswered"}],"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q2"]},{"sourceId":"S2","status":"answered|partial|unanswered","spanIds":["S2-Q1"]}]}]}. Include every supplied part and claim exactly once, with only one top-level claims property. Include every cited source exactly once in its claim. Unanswered claims or sources use an empty spanIds array. Use only supplied span IDs from that source's sourceEvidence list; the Worker validates the IDs against exact text. Do not copy source wording into the response. Do not include rationales, answer text, page text, nested claim arrays, or extra fields.`
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -359,6 +369,47 @@ function sourceVoiceGuidance(provenance){
     return `This page is ${editorial.name||'an editorial'}'s ${editorial.kind.replace(/^editorial-/u,'')} about ${editorial.creditedAuthor||'the credited author'}; attribute its interpretation to the commentator or introduction, not directly to the credited author.`;
   return '';
 }
+const POLARITY_STOP_WORDS=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
+function polarityTerms(value){
+  return new Set((String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .replace(/[’]/gu,"'").match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>{
+      let normalized=term.replace(/(?:ing|ed|es|s)$/u,'');
+      normalized=normalized.replace(/e$/u,'');
+      return normalized.length>=3?normalized:term;
+    }).filter(term=>!POLARITY_STOP_WORDS.has(term)));
+}
+function phraseOverlap(left,right){
+  if(!left.size||!right.size)return 0;
+  let shared=0;
+  for(const term of left)if(right.has(term))shared++;
+  return shared/Math.min(left.size,right.size);
+}
+function hasDirectPolarityContradiction(claimText,sourceText){
+  const sentenceParts=value=>String(value||'').split(/[.!?…]+/u).filter(Boolean);
+  const negativeClauses=sentenceParts(sourceText).flatMap(sentence=>
+    [...sentence.matchAll(/\b(?:cannot|can't|could not|couldn't|unable to|not able to|impossible to)\b([^;]*)/giu)]
+      .map(match=>match[1]));
+  if(!negativeClauses.length)return false;
+  const positiveClauses=sentenceParts(claimText).flatMap(sentence=>
+    [...sentence.matchAll(/\b(?:can|could|able to|ability to|capable of|possible to)\b([^;]*)/giu)]
+      .map(match=>match[1]));
+  if(!positiveClauses.length)return false;
+  const claimPhrases=positiveClauses.map(polarityTerms).filter(terms=>terms.size>=3);
+  if(!claimPhrases.length)return false;
+  const matchingPositiveSource=sentenceParts(sourceText).flatMap(sentence=>
+    [...sentence.matchAll(/\b(?:can|could|able to|ability to|capable of|possible to)\b([^;]*)/giu)]
+      .map(match=>match[1])).map(polarityTerms);
+  for(const claimTerms of claimPhrases){
+    const conflicting=negativeClauses.some(clause=>{
+      const sourceTerms=polarityTerms(clause);
+      return sourceTerms.size>=3&&phraseOverlap(claimTerms,sourceTerms)>=0.6;
+    });
+    const sourceAlsoAffirms=matchingPositiveSource.some(clause=>
+      phraseOverlap(claimTerms,clause)>=0.6);
+    if(conflicting&&!sourceAlsoAffirms)return true;
+  }
+  return false;
+}
 function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question,reviewClaims=[]){
   const suppliedParts=new Map(),suppliedClaims=new Map(),issues=[];
   if(!Array.isArray(review?.parts))issues.push('missing-parts');
@@ -432,10 +483,18 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const attributionIssue=sourceDecision?.status==='answered'?
           sourceVoiceAttributionIssue(answer.text,sourceById.get(sourceId),plan,
             precedingAnswers,sourceById):'';
+        const polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
+          hasDirectPolarityContradiction(answer.text,selected.map(item=>item.quote).join(' '))?
+          'source-contradicts-claim-polarity':'';
         if(attributionIssue){
           sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:attributionIssue});
+        }
+        if(polarityIssue){
+          sourceDecision.status='partial';
+          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
+            reason:polarityIssue});
         }
         if(!sourceDecision||sourceDecision.status!=='answered'||!selected.length){
           claimStatus=claimStatus==='unanswered'?'unanswered':'partial';
@@ -445,7 +504,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         }else{
           supportedSourceIds.add(sourceId);
         }
-        const validationReason=attributionIssue||(!sourceDecision?'missing-claim-source-decision':
+        const validationReason=attributionIssue||polarityIssue||(!sourceDecision?'missing-claim-source-decision':
           sourceDecision.legacyMissingSpan?'missing-claim-source-span':
           sourceDecision.status!=='answered'?'claim-source-not-supported':
           !selected.length?'missing-claim-source-span':'');
