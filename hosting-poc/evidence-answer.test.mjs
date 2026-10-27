@@ -762,6 +762,11 @@ test('comparison handoff rejects the uncited opening and unrequested might-sugge
  assert.doesNotMatch(result.answer,/differ in their accounts|might suggest/);
  assert.equal(result.questionParts.find(part=>part.part.includes('differ')).status,'partial',
   'later cited propositions cannot silently replace the rejected required opening sentence');
+ const comparisonDecision=result.trace.reviewContract.partDecisions.find(item=>item.partId==='P3');
+ assert.equal(comparisonDecision.finalStatus,'answered',
+  'the trace preserves the reviewer-stage status after exact-span checks');
+ assert.equal(comparisonDecision.outputStatus,'partial',
+  'the trace also records the incomplete status actually returned after the uncited required sentence was removed');
  assert.ok(result.trace.coverageGaps.some(item=>item.partId==='P3'&&
   item.reason==='required-direct-answer-rejected'));
  assert.equal(ai.calls.length,2,'the handoff stays within one compose and one review call');
@@ -790,7 +795,7 @@ test('a consequence-only sentence cannot pass a phrase-meaning part as a direct 
   issue.partId==='P1'&&issue.reason==='direct-answer-claim-missing'));
  assert.deepEqual(result.trace.reviewContract.partDecisions,[{
   partId:'P1',reviewerStatus:'answered',finalStatus:'partial',directAnswerClaimIds:[],
-  acceptedDirectAnswerClaimIds:[],directAnswerCovered:false
+  acceptedDirectAnswerClaimIds:[],directAnswerCovered:false,outputStatus:'partial'
  }]);
  assert.equal(ai.calls.length,2,'the direct-answer check uses the existing compose and review calls');
 });
@@ -804,7 +809,7 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.trace.reviewContract.partDecisions,[{
   partId:'P1',reviewerStatus:'answered',finalStatus:'answered',directAnswerClaimIds:['P1-C1'],
-  acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true
+  acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true,outputStatus:'supported'
  }]);
 });
 

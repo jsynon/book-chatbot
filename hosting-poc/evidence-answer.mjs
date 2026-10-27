@@ -950,6 +950,16 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     status:item.status==='answered'&&!unreviewed?'supported':item.status==='unanswered'?'unsupported':'partial',
     answerText:item.answers.map(value=>value.text).join(' '),
     evidenceIds:[...new Set(item.answers.flatMap(value=>value.sourceIds))]}));
+  // Preserve the review-stage outcome while recording the status returned
+  // after final citation validation and required-answer checks. These can
+  // differ when composition removes a required sentence after review.
+  if(Array.isArray(trace.reviewContract?.partDecisions)){
+    for(const decision of trace.reviewContract.partDecisions){
+      const returned=parts.find(item=>item.part.id===decision.partId);
+      decision.outputStatus=!returned||returned.status==='unanswered'?'unsupported':
+        returned.status==='answered'&&!unreviewed?'supported':'partial';
+    }
+  }
   const coverage=questionParts.every(part=>part.status==='supported')?'full':
     questionParts.some(part=>part.status!=='unsupported')?'partial':'none';
   const missing=questionParts.filter(part=>part.status!=='supported').map(part=>part.part).join('; ');
