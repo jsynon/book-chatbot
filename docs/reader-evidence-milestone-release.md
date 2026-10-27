@@ -1,6 +1,6 @@
 # Reading Companion evidence milestone: release report
 Last updated: October 27, 2026
-Status: The latest paired-scope run is [#14](https://github.com/jsynon/antilogicalism/actions/runs/40466618327), using Worker merge revision `0e9305d04a4638eb2c3c7c83e64598e64fb42895` for PR #275 (Cloudflare version `7049a47b-c2ee-49f6-b9db-c29d35232d32`): 6/10 structural cases passed (16/20 parts supported, four partial, none unsupported), with no request failures, planner fallbacks, or skipped cases. The composer evidence filter was active and Hamlet passed in both scopes; the full run still had partials in All Books Wollstonecraft, All Books Du Bois, and Boethius P1 in both scopes. All 33 cited highlights were located, but their semantic relevance and answer quality remain unscored by the workflow. The run used the 25-call estimate and leaves all ten human rubric entries pending. A bounded reviewer-prompt fix now allows relevant same-source spans outside the ranked claim hints, with offline Worker validation complete; live paired validation remains pending. Keep the unseen acceptance set frozen.
+Status: The latest paired-scope run is [#15](https://github.com/jsynon/antilogicalism/actions/runs/40471529785), using Worker merge revision `1a360225b27012f467206c8aa59992e58c371c2f` (Cloudflare version `b185b039-bd3f-40b0-8158-27fb32b6e47b`): 9/10 structural cases passed (19/20 parts supported, one partial, none unsupported), with no request failures, planner fallbacks, or skipped cases. All Books passed 5/5; Selected Books passed 4/5. All 37 cited highlights were text-located, but semantic relevance and answer quality remain unscored; all ten human rubric entries are blank. This is a promising paired result, not evidence that the Worker change caused the improvement. The bounded citation-ID and direct-answer-lineage candidate passes its offline Worker suite; live paired validation remains pending. Keep the unseen acceptance set frozen.
 
 ## Goal
 
@@ -656,3 +656,34 @@ The run #14 reviewer marked P1 partial even though it listed other claims as dir
 | Model calls and evidence packet | No additional call or page; exact span text is already supplied once in the part evidence. The prompt instruction grows slightly. |
 | Live paired-scope validation | Pending merge and Worker deployment; inspect whether S1-Q11 is selected for P1-C1 and whether the reviewer marks the answer complete. |
 | Answer-quality conclusion | No broad quality gain claimed. This targets one demonstrated reviewer handoff failure; the other run #14 misses and semantic answer quality remain separate work. |
+
+## October 27, 2026: paired-scope run #15 and citation/coverage handoff fix
+
+Paired-scope run [#40471529785](https://github.com/jsynon/antilogicalism/actions/runs/40471529785) completed all ten cases on library v48 in with-review mode. The artifact is `reading-companion-paired-scope-evaluation-all` (artifact ID `12718906841`). The website source revision was `d04d70cb4b2b2f0a6fb04ac519a8d43c94154147`; the Worker revision was `1a360225b27012f467206c8aa59992e58c371c2f` (Cloudflare version `b185b039-bd3f-40b0-8158-27fb32b6e47b`). No request failures, planner fallbacks, or skipped cases were recorded. The run used the existing 25-call estimate: five shared planner calls and twenty answer-stage calls.
+
+The structural result was 9/10: All Books passed 5/5, Selected Books passed 4/5, and 19/20 parts were supported with one partial and none unsupported. Run #14 scored 6/10 and 16/20 parts, so the pair improved on this run. Planner output, retrieved pages, and model composition differed; this is not enough to attribute the gain to a code change. All 37 citations had text-located highlights. The artifact does not score semantic highlight relevance or answer quality, and its five-dimension human rubric remains blank for all ten cases.
+
+The two actionable traces expose different handoff failures:
+
+- **Selected Books Boethius P1:** The relevant causal passage is present as S5 on page 12. The composer cited `[S5, S12]` for the answer's first, causal sentence. S12 is not a supplied source ID; confusing page 12 with citation ID S12 is a plausible explanation, but the trace cannot prove the model's intent. Deterministic validation rejected that sentence for `unknown-source-id`. A later sentence about injustice, citing S1, survived; the reviewer accepted and nominated it as the direct answer, so P1 appeared supported while its causal answer had been removed. This is a citation-ID integrity issue followed by a gap in required-answer lineage, not a retrieval or reviewer-span-selection failure.
+- **Selected Books Wollstonecraft P2:** Relevant text appears in the part evidence on both S1 (p. 2, denied rights/immurement) and S4 (p. 116, “enlightened citizens”). The composer cited S1 alone for a sentence linking denied rights to becoming enlightened citizens. The reviewer only received the cited S1 page and marked the claim partial. It should not attach S4 on its own: the composer must cite the passage that supports that part of the sentence, or split the claims. This is a composition/source-linking issue, not missing retrieval.
+
+The bounded Worker change keeps the existing compose and review calls, source packet, and strict boundaries:
+
+1. The composer prompt now says to use only supplied source IDs, never turn a printed page number into a source ID, and cite both pages when a sentence links a reason on one page to an outcome established on another. It also reminds the composer to split claims when that makes support clearer.
+2. Citation validation may remove a syntactically valid but unknown ID only when the same citation group also contains a known source ID. The remaining known ID must still pass the existing part allowlist, named-book scope, and exact quote/citation audit. Unknown-only citations remain rejected, as do malformed, out-of-part, and out-of-scope IDs. The authenticated trace records which IDs were removed and retained; no source is added by the reviewer or Worker.
+3. The Worker carries the composer-required first answer sentence through validation into the review input. If citation validation drops that sentence, or review does not retain it as an accepted answer, the part cannot be marked supported. Any later supported examples may remain visible, but the part is capped at partial. This closes the observed path where an example alone concealed loss of the requested causal answer.
+4. The regression fixtures reproduce the Boethius page-12/S12 collision and the unknown-only case with a later surviving example. Prompt checks cover cross-page causal citations. These tests establish the Worker contract, not model compliance or semantic answer quality.
+
+| Validation | Result |
+|---|---|
+| Mixed known/unknown citation | Run-shaped fixture removes S12, retains S5, sends only S5 to review, records the repair, and adds no model call. |
+| Unknown-only required answer | Remains rejected; a later supported example leaves the part partial and records `required-direct-answer-rejected`. |
+| Source/part and exact citation checks | Still fail closed for unknown-only, malformed, out-of-part, out-of-scope, and text-mismatched citations. |
+| Focused Worker suite (`node --test hosting-poc/evidence-answer.test.mjs`) | 91 passed, 0 failed. |
+| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | 300 passed, 0 failed. |
+| Syntax and whitespace | `node --check hosting-poc/evidence-answer.mjs` and `git diff --check` passed. |
+| Live paired-scope validation | Pending merge and Worker deployment. On the next run, inspect Boethius P1 for sanitized S5 and accepted direct-answer coverage; inspect Wollstonecraft Selected P2 to see whether its answer cites S4 where needed. |
+| Answer-quality conclusion | No broad gain claimed. The run improved structurally, but semantic scoring and highlight relevance remain unmeasured. Keep the acceptance set frozen. |
+
+This change does not widen retrieval, add an AI call, add a repair stage, or relax source identity, part-scope, quote, reviewer-span, or final-render checks. It addresses the observed citation/coverage handoff and provides better trace visibility. The Wollstonecraft issue remains a model-compliance question for live validation, and the run's blank rubric prevents a quality claim.

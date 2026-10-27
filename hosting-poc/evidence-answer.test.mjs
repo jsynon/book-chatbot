@@ -894,6 +894,9 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/use the smallest set of pages that directly supports that claim/);
  assert.match(COMPOSER_PROMPT,/Do not add a page just because it was retrieved or belongs to the same author/);
  assert.match(COMPOSER_PROMPT,/If distinct claims rely on different passages, write separate sentences/);
+ assert.match(COMPOSER_PROMPT,/Never convert a printed page number into a source ID/);
+ assert.match(COMPOSER_PROMPT,/When one sentence links a reason from one page to an outcome established on another, cite both pages/);
+ assert.match(COMPOSER_PROMPT,/include each passage that supports a material clause/);
  assert.match(REVIEW_PROMPT,/sourceEvidence list of the highest-ranked same-source span IDs/);
  assert.match(REVIEW_PROMPT,/one flat top-level claims array/);
  assert.match(REVIEW_PROMPT,/only one top-level claims property/);
@@ -928,6 +931,8 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/A consequence, example, or related fact alone is not a direct answer/);
  assert.match(REVIEW_PROMPT,/smallest sufficient set of claims/);
  assert.match(REVIEW_PROMPT,/First finish the claim and source decisions/);
+ assert.match(REVIEW_PROMPT,/requiredAnswerClaimId/);
+ assert.match(REVIEW_PROMPT,/even if an example or consequence remains/);
  assert.match(REVIEW_PROMPT,/Do not nominate a claim you marked partial or unanswered/);
  assert.match(REVIEW_PROMPT,/Do not list every claim by default/);
  assert.match(REVIEW_PROMPT,/unsupported non-direct claim can be omitted without downgrading/);
@@ -1482,9 +1487,9 @@ test('validates cited sources against each part and preserves a complete cited a
  assert.deepEqual(reviewPayload.parts[0].evidence.map(source=>source.id),['S1']);
 });
 
-test('per-part citation checking rejects unknown, malformed, and cross-linked IDs without losing other parts',async()=>{
+test('unknown-only and cross-linked citation IDs fail closed without losing the part trace',async()=>{
  const ai=makeAI([
-  answer('PART P1\nHume links necessity to custom. [S1, S99]\n\nPART P2\nKant describes causality as a priori. [S1]'),
+  answer('PART P1\nHume links necessity to custom. [S99]\n\nPART P2\nKant describes causality as a priori. [S1]'),
   review([['P1','answered'],['P2','answered']])
  ]);
  const result=await composeEvidenceAnswer('How do Hume and Kant explain necessity?',
@@ -1497,6 +1502,59 @@ test('per-part citation checking rejects unknown, malformed, and cross-linked ID
  assert.deepEqual(result.trace.final.failure.validationReasons,
   ['source-not-linked-to-question-part','unknown-source-id']);
  assert.equal('validationReasons' in result,false,'validation diagnostics stay inside the authenticated trace');
+});
+
+test('Boethius page-number collision drops only the unknown ID and reviews the exact source citation',async()=>{
+ const title='The Consolation of Philosophy — Boethius';
+ const cause={id:'S5',bookId:'21',title,page:12,candidatePartIds:['P1'],
+  text:'The world itself is subject to change, for nothing which is born remains constant.',
+  preview:'Nothing which is born remains constant.'};
+ const example={id:'S1',bookId:'21',title,page:7,candidatePartIds:['P1'],
+  text:'The speaker describes an earlier injustice and the pain it caused.',
+  preview:'The speaker describes an earlier injustice.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
+  parts:[{id:'P1',question:'Why is Fortune not constant?',sourceBookIds:['21'],
+   candidateSourceIds:['S5','S1']}]};
+ const ai=makeAI([
+  answer('PART P1\nFortune changes because nothing born remains constant, so her instability follows the law of change. [S5, S12] The speaker also recalls an earlier injustice. [S1]'),
+  review([['P1','answered']])
+ ]);
+ const result=await composeEvidenceAnswer('Why is Fortune not constant?',[cause,example],ai,[],
+  {plan,catalog:{...catalog,21:title},trace:true});
+ assert.equal(ai.calls.length,2,'the correction uses the existing compose and review calls');
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/law of change\. \[S5\]/);
+ assert.doesNotMatch(result.answer,/S12/);
+ assert.deepEqual(result.trace.citationRepairs,[{partId:'P1',claimId:'P1-C1',sentenceIndex:1,
+  removedSourceIds:['S12'],retainedSourceIds:['S5']}]);
+ const reviewed=JSON.parse(ai.calls[1].request.messages[1].content);
+ assert.deepEqual(reviewed.claims[0].sourceIds,['S5']);
+ assert.equal(reviewed.parts[0].requiredAnswerClaimId,'P1-C1');
+});
+
+test('unknown-only required answer citation stays rejected and cannot be replaced by a surviving example',async()=>{
+ const title='The Consolation of Philosophy — Boethius';
+ const source={id:'S1',bookId:'21',title,page:7,candidatePartIds:['P1'],
+  text:'The speaker describes an earlier injustice and the pain it caused.',
+  preview:'The speaker describes an earlier injustice.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
+  parts:[{id:'P1',question:'Why is Fortune not constant?',sourceBookIds:['21'],candidateSourceIds:['S1']}]};
+ const ai=makeAI([
+  answer('PART P1\nFortune changes because nothing born remains constant. [S12] The speaker also recalls an earlier injustice. [S1]'),
+  review([['P1','answered']])
+ ]);
+ const result=await composeEvidenceAnswer('Why is Fortune not constant?',[source],ai,[],
+  {plan,catalog:{...catalog,21:title},trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.match(result.answer,/earlier injustice\. \[S1\]/);
+ assert.doesNotMatch(result.answer,/nothing born remains constant/);
+ assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'unknown-source-id',sentenceIndex:1}]);
+ assert.deepEqual(result.trace.coverageGaps,[{partId:'P1',reason:'required-direct-answer-rejected'}]);
+ assert.deepEqual(result.trace.citationRepairs,[]);
 });
 
 test('a citation linked to another question part is rejected even when its source ID exists',async()=>{
