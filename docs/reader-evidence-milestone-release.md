@@ -1,6 +1,6 @@
 # Reading Companion evidence milestone: release report
 Last updated: October 27, 2026
-Status: The latest paired-scope run is [#15](https://github.com/jsynon/antilogicalism/actions/runs/40471529785), using Worker merge revision `1a360225b27012f467206c8aa59992e58c371c2f` (Cloudflare version `b185b039-bd3f-40b0-8158-27fb32b6e47b`): 9/10 structural cases passed (19/20 parts supported, one partial, none unsupported), with no request failures, planner fallbacks, or skipped cases. All Books passed 5/5; Selected Books passed 4/5. All 37 cited highlights were text-located, but semantic relevance and answer quality remain unscored; all ten human rubric entries are blank. This is a promising paired result, not evidence that the Worker change caused the improvement. The bounded citation-ID and direct-answer-lineage candidate passes its offline Worker suite; live paired validation remains pending. Keep the unseen acceptance set frozen.
+Status: The latest paired-scope run is [#16](https://github.com/jsynon/antilogicalism/actions/runs/40507788437), using Worker merge revision `a5585c6964b1bcbb1b36c5ac9ded64d7aa696b6e` (Cloudflare version `dfc0d3e4-21c9-4fc4-b3c8-0dd1d918bfe9`): 5/10 structural cases passed (15/20 parts supported, five partial, none unsupported), with no request failures, planner fallbacks, or skipped cases. All Books passed 3/5; Selected Books passed 2/5. Trace review found that both Du Bois partials are false negatives caused by `Intl.Segmenter` splitting the initials in “W.E.B.” into a citationless fragment; the final cited definition and accepted review evidence remain present. A local sentence-boundary correction now passes the focused and full Worker suites; live paired validation is pending merge/deployment. Correcting the evaluator bug would make the trace-supported run result 7/10, but that is an audit interpretation, not the workflow score. Three genuine partials remain: Selected Books Hume/Kant comparison, Selected Books Wollstonecraft P1, and All Books Hamlet. All 34 cited highlights were text-located; semantic highlight relevance remains unscored. The workflow's human rubric is blank for all ten cases; this report adds a separate, explicitly independent answer-quality assessment. Keep the unseen acceptance set frozen.
 
 ## Goal
 
@@ -683,7 +683,75 @@ The bounded Worker change keeps the existing compose and review calls, source pa
 | Focused Worker suite (`node --test hosting-poc/evidence-answer.test.mjs`) | 91 passed, 0 failed. |
 | Full Worker suite (`node --test hosting-poc/*.test.mjs`) | 300 passed, 0 failed. |
 | Syntax and whitespace | `node --check hosting-poc/evidence-answer.mjs` and `git diff --check` passed. |
-| Live paired-scope validation | Pending merge and Worker deployment. On the next run, inspect Boethius P1 for sanitized S5 and accepted direct-answer coverage; inspect Wollstonecraft Selected P2 to see whether its answer cites S4 where needed. |
-| Answer-quality conclusion | No broad gain claimed. The run improved structurally, but semantic scoring and highlight relevance remain unmeasured. Keep the acceptance set frozen. |
+| Live paired-scope validation | Completed in run #16 after PR #277 merged and deployed. Selected Boethius now has a complete supported answer and passes; no citation-ID repair was recorded, so this run does not exercise the mixed-known/unknown-ID sanitizer. Selected Wollstonecraft P2 is supported, while its P1 remains partial for a separate unsupported opening claim. |
+| Answer-quality conclusion | Mixed. The corrected trace supports seven full answers and three genuine partials; no broad quality change can be attributed to one stochastic run. Semantic highlight relevance remains unmeasured. Keep the acceptance set frozen. |
 
-This change does not widen retrieval, add an AI call, add a repair stage, or relax source identity, part-scope, quote, reviewer-span, or final-render checks. It addresses the observed citation/coverage handoff and provides better trace visibility. The Wollstonecraft issue remains a model-compliance question for live validation, and the run's blank rubric prevents a quality claim.
+This change does not widen retrieval, add an AI call, add a repair stage, or relax source identity, part-scope, quote, reviewer-span, or final-render checks. Run #16 confirms Selected Wollstonecraft P2 is supported, while a different P1 claim remains partial; it also exposes two Du Bois sentence-boundary false negatives. The artifact's rubric is still blank, so its structural score does not provide semantic answer-quality scoring.
+
+## October 27, 2026: paired-scope run #16 and first-answer lineage validation
+
+Paired-scope run [#40507788437](https://github.com/jsynon/antilogicalism/actions/runs/40507788437) completed all ten cases in with-review mode using library v48. The artifact is `reading-companion-paired-scope-evaluation-all` (artifact ID `12735728454`). The website revision was `d04d70cb4b2b2f0a6fb04ac519a8d43c94154147`; the Worker revision was `a5585c6964b1bcbb1b36c5ac9ded64d7aa696b6e`, the verified merge commit for PR #277, and Cloudflare reports version `dfc0d3e4-21c9-4fc4-b3c8-0dd1d918bfe9`. The run used the existing 25-call estimate: five shared planner calls and twenty answer-stage calls. All cases completed; there were no request failures, planner fallbacks, or skipped cases.
+
+The official structural result was 5/10: All Books passed 3/5 and Selected Books passed 2/5. The artifact reports 15/20 parts supported and five partial, with none unsupported. This is four fewer passing cases and four fewer supported parts than run #15. It should not be read as a clean four-case answer-quality regression: the new first-answer guard exposed two evaluator false negatives, and run #15 had incorrectly counted a Boethius answer as supported after its causal answer sentence was rejected.
+
+| Case | Official structural result | Independent answer-quality score | Trace finding |
+|---|---:|---:|---|
+| Hume/Kant, All Books | Pass | 9/10 | Clear causal contrast with page-linked citations. One unrequested cross-author inference was removed; the requested comparison remained. |
+| Hume/Kant, Selected Books | Partial | 7/10 | The prose states the habit-versus-necessary-condition contrast, but review found no accepted direct-answer claims for P3. The comparison's source-to-claim linkage still needs work. |
+| Wollstonecraft, All Books | Pass | 9/10 | Gives a substantive explanation of education, reason, and social position; all requested parts passed. |
+| Wollstonecraft, Selected Books | Partial | 8/10 | P2 is supported. The first P1 sentence claimed equality of reason and injustice of subjugation without support from the cited span and was removed; the remaining explanation is useful but the reviewer kept P1 partial. |
+| Du Bois, All Books | Partial | 9/10 | The final definition and color-line discussion are well supported. The trace nevertheless marks the required direct answer rejected. |
+| Du Bois, Selected Books | Partial | 9/10 | Same validator issue as All Books; the final definition and color-line answer are cited and accepted by review. |
+| Boethius, All Books | Pass | 9/10 | Explains instability and why Fortune's gifts cannot constitute lasting happiness. |
+| Boethius, Selected Books | Pass | 9/10 | Gives a complete supported causal explanation. The run #15 causal-answer loss did not recur, but no citation repair was recorded. |
+| Hamlet, All Books | Partial | 5/10 | The composer’s direct interpretation was rejected as `quotation-citation-mismatch`; the final answer starts with “This occurs because” and explains the cause and consequence without a clean plain-language answer to what the phrase means. |
+| Hamlet, Selected Books | Pass | 9/10 | Directly interprets the phrase and explains the fear-of-death mechanism using the cited Shakespeare page. |
+
+The independent scores above use the artifact's five 0–2 dimensions (accuracy, question coverage, explanation quality, citation support, and citation completeness), scored against final prose and accepted source spans. They are my assessment, not values in the workflow artifact. The artifact itself records 0/10 human-scored entries. My totals are 83/100 (8.3/10 average); the score is a useful read of this run, not a claim that semantic quality is fully automated or that run-to-run model variation has been controlled.
+
+Two trace findings change how the structural score should be interpreted:
+
+- **Du Bois All Books and Selected Books, P1:** Both composer responses begin `W.E.B. Du Bois defines... [S3]`. Node's `Intl.Segmenter` splits that text into a first segment `W.E.B.` and a following segment beginning `Du Bois defines...`. The citation-preserving sentence splitter therefore treats the initials as a standalone, citationless first sentence, records `sentence-missing-citation`, and marks the required direct answer rejected. The final answer drops the initials but retains the cited definition; reviewer decisions accept P1-C1 against S3-Q15, and the remaining P1 claims are supported. PR #277's coverage guard correctly enforces its contract given that split, but the sentence boundary is wrong. These two cases should be treated as evaluator false negatives, not evidence that the model failed to provide or cite the definition. A targeted regression test should preserve abbreviations/initials while retaining the required-answer guard.
+- **Hamlet All Books, P1:** Unlike Du Bois, this is a real answer-contract failure. The exact first sentence is rejected as `quotation-citation-mismatch`; it is absent from the final answer, and the coverage guard marks the part partial even though the reviewer accepts later causal and consequence claims. The artifact does not identify which quote check failed. Selected Books answers the same question cleanly, so inspect the All Books source packet and quote-audit input before changing the prompt or relaxing exact-text checks.
+
+Other paired observations:
+
+- **Selected Hume/Kant P3** remains incomplete at evidence handoff. The prose makes the requested contrast, but the reviewer returns no direct-answer claim IDs and lists claim/source support issues. Compare the exact P3 composer claims, planned source groups, and accepted spans; do not infer that the passage search itself failed.
+- **Selected Wollstonecraft** improved on the earlier P2 problem: P2 now passes with the companions-of-men/social-progress relation. P1 has a different unsupported opening sentence, which is removed while the part remains partial.
+- **Boethius Selected** gives a supported answer in this run, unlike run #15's trace where the causal first answer was rejected. The `citationRepairs` array is empty, so the run does not demonstrate that PR #277's S5/S12 cleanup branch was exercised.
+- All 34 cited sources had text-located highlights (34/34). This proves that highlights locate on the cited pages, not that they are the most relevant sentences. The artifact does not evaluate semantic highlight relevance. Its five-dimension rubric is still blank for all ten rows.
+
+| Run #16 check | Result |
+|---|---|
+| Structural result | 5/10 official passes; 15 supported, 5 partial, 0 unsupported parts. Trace audit identifies two Du Bois false negatives; three genuine partial answers remain. |
+| Scope comparison | All Books 3/5 official (4/5 after accounting for the Du Bois segmentation defect); Selected Books 2/5 official (3/5 after that correction). Neither scope wins consistently across questions. |
+| Request and planner health | 10/10 completed; 0 request failures, planner fallbacks, or skips. |
+| Estimated/actual answer calls | 25 estimated total calls; 20 answer calls recorded, plus five shared planner calls. |
+| Worker provenance | PR #277 merge revision `a5585c6964b1bcbb1b36c5ac9ded64d7aa696b6e`; Cloudflare version `dfc0d3e4-21c9-4fc4-b3c8-0dd1d918bfe9`. |
+| Citation/highlight location | 34/34 located; semantic highlight relevance not evaluated. |
+| Citation sanitizer live evidence | No `citationRepairs` entries; the mixed-known/unknown-ID cleanup remains untested live. |
+| Independent answer-quality review | 8.3/10 average across the five requested dimensions; automated artifact rubric remains 0/10 reviewed. |
+| Next bounded target | The Worker sentence-boundary fix and regression tests are implemented locally and pass 93 focused / 302 full Worker tests. Merge and deploy this bounded change, then rerun the same paired set once. Afterward, address the three genuine trace misses together as an answer-quality review if they persist; do not add retrieval stages or widen source packets. |
+
+This run gives mixed evidence for PR #277: it closes the false-support path by keeping dropped required answers partial, and the Boethius answer is complete in this run. However, a punctuation boundary in the validator misidentified an initialism as a separate sentence, creating two false failures. The follow-up local fix addresses that boundary while preserving the strict coverage rule. No broad quality regression or improvement should be claimed from this single stochastic run.
+
+## October 27, 2026: protect author initials during sentence splitting
+
+The run #16 trace showed that `Intl.Segmenter` split the composer sentence `W.E.B. Du Bois defines... [S3]` after the initials. The required-answer validator then treated `W.E.B.` as a separate uncited sentence, while the final answer retained the cited definition without the initials. This is a sentence-boundary defect in the citation validator, not a missing citation in the composed sentence.
+
+The bounded Worker correction protects periods inside a compact uppercase initialism when it precedes a capitalized name, only for the duration of sentence segmentation. It restores the periods and citation markers unchanged before validating/rendering each sentence. The original sentence therefore remains the first required answer, while later cited sentences remain separate claims. No prompt, retrieval, evidence selection, reviewer contract, model-call count, or direct-answer rule changed.
+
+Two integration tests cover the boundary and its safety condition:
+
+- A valid `W.E.B. Du Bois ... [S3]` first sentence reaches review as required claim P1-C1; a following cited sentence remains P1-C2 and is not merged into it.
+- An unknown citation on the initialism-bearing first sentence is still rejected. A later cited sentence may remain visible, but the part stays partial and records `required-direct-answer-rejected`.
+
+| Validation | Result |
+|---|---|
+| Focused Worker suite (`node --test hosting-poc/evidence-answer.test.mjs`) | 93 passed, 0 failed. |
+| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | 302 passed, 0 failed. |
+| Syntax and whitespace | `node --check hosting-poc/evidence-answer.mjs` and `git diff --check` passed. |
+| Pipeline/cost impact | Sentence parsing only; no retrieval changes, source packet changes, stages, prompts, or AI calls added. |
+| Live paired validation | Pending merge and Worker deployment. Rerun the same ten-case paired set; confirm both Du Bois P1 cases pass without changing the other cases. |
+
+This fixes the evaluator false negative without weakening fail-closed answer coverage. The three genuine run #16 partials remain separate answer-quality evidence and should be revisited after the paired validation.
