@@ -1,5 +1,5 @@
 import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,sourceProvenance,catalogIdentity} from './reader-contract.mjs';
-import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
+import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans} from './review-spans.mjs';
 
 export const READER_MODEL='@cf/google/gemma-4-26b-a4b-it';
 const MAX_REVIEW_SPANS_PER_CLAIM=6;
@@ -867,11 +867,12 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           const spanText=source?.scopeText||page.text||'';
           if(!reviewSpanMaps.has(page.id))reviewSpanMaps.set(page.id,
             new Map(buildReviewSpans(page.id,spanText).map(span=>[span.spanId,span])));
-          const citedAnswerText=part.answers.filter(answer=>answer.sourceIds.includes(page.id))
-            .map(answer=>answer.text).join(' ');
-          const orderedSpans=rankReviewSpans([...reviewSpanMaps.get(page.id).values()],
-            {question:part.question,answer:citedAnswerText})
-            .slice(0,MAX_REVIEW_PACKET_SPANS_PER_SOURCE);
+          const citedAnswers=part.answers.filter(answer=>answer.sourceIds.includes(page.id));
+          const citedAnswerText=citedAnswers.map(answer=>answer.text).join(' ');
+          const requiredAnswer=citedAnswers.find(answer=>answer.claimId===part.requiredAnswerClaimId);
+          const orderedSpans=selectReviewPacketSpans([...reviewSpanMaps.get(page.id).values()],{
+            question:part.question,answer:citedAnswerText,requiredAnswer:requiredAnswer?.text,
+            limit:MAX_REVIEW_PACKET_SPANS_PER_SOURCE});
           // The reviewer may choose any span in this bounded packet, but the
           // server rejects span IDs that were not actually sent for this part.
           partSpanMaps.set(page.id,new Map(orderedSpans.map(span=>[span.spanId,span])));
