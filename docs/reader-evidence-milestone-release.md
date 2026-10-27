@@ -3,7 +3,7 @@ Total output lines: 815
 
 # Reading Companion evidence milestone: release report
 Last updated: October 26, 2026
-Status: The focused runs #69 and #71 passed 5/5 structural cases but were not a controlled scope comparison. Runs #74/#75 exposed separate retrieval and selected-plan handoff gaps; those fixes were implemented and tested. The first paired-scope run #1 ([40383267079](https://github.com/jsynon/antilogicalism/actions/runs/40383267079)) completed all ten cases and passed 8/10: Selected Books passed 5/5; All Books passed 3/5. Its traces exposed a strict all-books source-alignment mismatch and a same-group alternate-citation downgrade. A bounded follow-up is now implemented in local Worker and website branches with offline regressions passing; it is not merged or deployed. Fresh live validation remains pending. Keep the unseen acceptance suite frozen.
+Status: Paired-scope run #3 ([40429747671](https://github.com/jsynon/antilogicalism/actions/runs/40429747671)) completed all ten rows on library v48 and passed 9/10 structural cases: All Books 4/5 and Selected Books 5/5. All 20 question parts were marked supported, with no request failures or planner fallbacks. The remaining structural miss is Hume/Kant All Books source-work alignment; the same trace exposed a separate reviewer acceptance of a weakly aligned Kant span. Both Hamlet answers passed structure but did not directly interpret the phrase in the question. A bounded Worker prompt refinement is underway in the existing composer and reviewer calls; no quality improvement is established until the paired run is repeated and reviewed. Keep the unseen acceptance suite frozen.
 The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
@@ -398,3 +398,30 @@ These are local index searches; they add no Worker AI call, no model stage, and 
 | Saved-plan retrieval replay | Pass; replayed the Hume/Kant and Hamlet All Books plans from run #2 against the published v48 index with no AI calls. Kant pages entered candidates and the packet; Hamlet page 454 entered both. This replay does not test composition/review or independently verify fingerprints. |
 | Live validation | Pending. After website publication, rerun the same paired scope workflow. Confirm these evidence pages survive in the authenticated artifact and check the other cases for regressions. Inspect cited page text and review traces; a structural score alone is not a quality judgment. |
 | Unseen acceptance suite | Keep frozen until the paired rerun has been reviewed. |
+
+## October 26, 2026: paired-scope run #3 and answer-quality handoff
+
+Paired-scope run [#40429747671](https://github.com/jsynon/antilogicalism/actions/runs/40429747671) used website source `e18be04314083fdfe6bdbfce1e8930e0e2b33bc3`, Worker source `bbdef1c373d15931bfce025ac33b156cc813bde3`, and library v48. All ten scope rows completed with no request failures, planner fallbacks, or skipped cases. Structural results improved to 9/10: All Books 4/5 and Selected Books 5/5. The artifact marked all 20 question parts supported. It ran with the existing 25-call paired baseline. The workflow used Worker version `d2efe248-e578-489d-bcfd-0a125d5c4df4`.
+
+This structural score does not establish answer quality. The artifact’s own quality note says its automated checks do not judge factual truth or semantic citation support, and `humanReview.reviewed` is 0/10. A separate provisional rubric review in this conversation rated the drafts 42/50 for All Books and 43/50 for Selected Books; these are not scores stored by the workflow and are based on answer text and artifact excerpts, not a full independent reading of every PDF page. All 33 cited sources had a located highlight; that verifies location, not whether the chosen span is the best or whether it supports the interpretation.
+
+The Hume/Kant All Books miss is a source-work alignment issue, distinct from the answer-stage issue. The evaluation expects Hume’s *Enquiry* (book 35), while the answer cites Hume’s *Treatise* (book 276), a primary Hume source permitted by the author-wide Worker plan. The packet included an *Enquiry* page 69 that was not relevant to the question, and a relevant-looking *Enquiry* candidate page 30 did not reach the six-page packet. This candidate does not change retrieval, the packet selector, or the evaluator’s expected-work rule; the 9/10 result therefore remains an honest unresolved structural miss.
+
+The answer-stage trace gives a narrower target for the current change. In the All Books comparison, one sentence combined Hume’s and Kant’s positions under a shared citation group. The existing reviewer accepted Hume’s *Treatise* span and Kant’s *Fundamental Principles* span for that claim, while marking the Kant *Critique of Pure Reason* span partial. This indicates that author-side premises and the causal concept were not separated clearly enough for a reliable claim-level judgment. In both Hamlet scopes, the reviewer accepted short answers that explained the consequences of uncertainty but did not plainly state what Hamlet means by “conscience” in this passage.
+
+The bounded Worker candidate edits only the existing `COMPOSER_PROMPT` and `REVIEW_PROMPT` in `hosting-poc/evidence-answer.mjs`:
+
+- The composer must answer each part in its opening sentence. For a phrase-meaning question, it interprets the phrase before describing consequences. For a comparison, it gives each author’s position in a separate sentence, then states a synthesis only when both sides support the relationship.
+- The existing reviewer must require an explicit interpretation for phrase-meaning questions and check each comparative premise against that author’s evidence. A topical or adjacent passage does not establish the requested concept.
+- No Worker call, reviewer stage, source schema, retrieval behavior, citation rule, page cap, or public response contract is added or changed. The same paired with-review workflow still estimates 25 calls. Prompt inputs are slightly longer; there is no additional call.
+
+| Candidate validation | Result |
+|---|---|
+| Composer/reviewer prompt contract regressions | Pass; assertions cover direct part answers, explicit phrase interpretation, separate author premises, and supported synthesis. |
+| Focused answer suite | Pass: `node --test hosting-poc/evidence-answer.test.mjs`, 72 tests, 0 failures. |
+| Full Worker suite | Pass; `node --test hosting-poc/*.test.mjs`, 277 tests, 0 failures. |
+| Syntax and whitespace | Pass; changed JavaScript files pass `node --check`; `git diff --check` passes. |
+| Website suite | No website runtime or evaluator code changed in this candidate. |
+| Live quality validation | Pending. After merge and Worker deployment, rerun the same paired with-review workflow and inspect the Hume/Kant P3 claim/source decisions and both Hamlet answers. Re-score all ten answers with the same five dimensions; the eight stronger drafts should not regress. |
+| Unresolved structural issue | Hume/Kant All Books still needs the expected *Enquiry* work alignment or an explicit test decision about an author-wide alternate source. This prompt-only candidate does not claim to fix it. |
+| Unseen acceptance suite | Keep frozen until paired answers are reviewed. |
