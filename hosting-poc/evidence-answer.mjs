@@ -26,11 +26,13 @@ Attribute each passage to the voice supported by its text and context. Metadata 
 
 For definitions, check whether the answer gives the defining operation or contrast when the passages provide it. For phrase-meaning questions, assess whether the answer interprets the phrase itself before describing its effects. For questions about justification, knowledge, or necessity, a category name alone is incomplete; assess the stated grounds or argument. Keep broad author answers focused on the requested view, not a list of retrieved topics.
 
+For every part, include the directAnswerClaimIds field: one or more claim IDs that directly answer the part and together cover its explicitly requested facets. A consequence, example, or related fact alone is not a direct answer when the part asks for a meaning, definition, reason, or relationship. Use an empty array when none of the claims directly answers the part. Each ID must belong to that same part; the Worker checks that the selected claims survive exact quote review.
+
 For an explicit hypothetical question about one author responding to another, require a standalone, clearly labeled, cautious reader inference. Assess each cited author source against its own premise; do not demand that a source record the hypothetical response itself. The premises must establish the same specific point of contact, and the conclusion must follow modestly from it. The inference claim must include relevant evidence from every author source group; a broad comparison, unrelated quotation, one-sided citation, or citation attached to a neighboring clause does not support it. Never present the inference as historical fact. If a needed premise or shared point is missing, mark it partial or unanswered. A limitation saying that no reliable inference is possible does not complete a part that asks what one author would think.
 
 Return one source decision for every source cited by every claim, in the same order. A source is answered only when its selected exact spans support every material clause or premise attributed to that source. Return at most ${MAX_REVIEW_SPANS_PER_SOURCE} distinct spans per source and ${MAX_REVIEW_SPANS_PER_CLAIM} spans total per claim. Assess whether the claim remains fully supported by a subset of its cited sources: an additional weak or redundant citation may be omitted from the final answer only when the remaining accepted source or sources support every material clause and every required premise. Do not let a rejected alternate page downgrade a claim when an accepted page from the same planned source group supports it. Do not drop a source group needed for a comparison or synthesis; if a required premise has no accepted source, the claim or part is partial. Part status reflects whether the answer covers the requested part, not just whether its listed claims have citations.
 
-Return one valid JSON object only, without Markdown or explanation. Use exactly this shape: {"parts":[{"partId":"P1","status":"answered|partial|unanswered"}],"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q2"]},{"sourceId":"S2","status":"answered|partial|unanswered","spanIds":["S2-Q1"]}]}]}. Include every supplied part and claim exactly once, with only one top-level claims property. Include every cited source exactly once in its claim. Unanswered claims or sources use an empty spanIds array. Use only supplied span IDs from that source's sourceEvidence list; the Worker validates the IDs against exact text. Do not copy source wording into the response. Do not include rationales, answer text, page text, nested claim arrays, or extra fields.`
+Return one valid JSON object only, without Markdown or explanation. Use exactly this shape: {"parts":[{"partId":"P1","status":"answered|partial|unanswered","directAnswerClaimIds":["P1-C1"]}],"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q2"]},{"sourceId":"S2","status":"answered|partial|unanswered","spanIds":["S2-Q1"]}]}]}. Include every supplied part and claim exactly once, with only one top-level claims property. Each part's directAnswerClaimIds must include only claims for that part, and must be empty if none directly answers it. Include every cited source exactly once in its claim. Unanswered claims or sources use an empty spanIds array. Use only supplied span IDs from that source's sourceEvidence list; the Worker validates the IDs against exact text. Do not copy source wording into the response. Do not include rationales, answer text, page text, nested claim arrays, or extra fields.`
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -444,7 +446,15 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     if(!plan.parts.some(part=>part.id===id)){issues.push('unknown-part');continue;}
     if(!hasRecognizedStatus(item?.status)){issues.push('invalid-status');continue;}
     if(suppliedParts.has(id)){issues.push('duplicate-part');continue;}
-    suppliedParts.set(id,{status:normalizeStatus(item.status)});
+    const rawDirectAnswerIds=item?.directAnswerClaimIds;
+    const directAnswerClaimIds=Array.isArray(rawDirectAnswerIds)?
+      rawDirectAnswerIds.filter(value=>typeof value==='string')
+        .map(value=>value.trim()).filter(Boolean):[];
+    suppliedParts.set(id,{status:normalizeStatus(item.status),directAnswerClaimIds,
+      directAnswerFieldPresent:Array.isArray(rawDirectAnswerIds),
+      directAnswerFieldMalformed:Array.isArray(rawDirectAnswerIds)&&
+        (directAnswerClaimIds.length!==rawDirectAnswerIds.length||
+          new Set(directAnswerClaimIds).size!==directAnswerClaimIds.length)});
   }
   const expectedClaims=new Map(answerParts.flatMap(part=>(part.answers||[]).map(answer=>[answer.claimId,part.partId])));
   if(!Array.isArray(review?.claims))issues.push('missing-claims');
@@ -470,7 +480,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     if(suppliedClaims.has(id)){issues.push('duplicate-claim');continue;}
     suppliedClaims.set(id,{status:normalizeStatus(item.status),sources:sourceDecisions});
   }
-  const supportIssues=[],recovered=[],answerContext=[],reviewDecisions=[];
+  const supportIssues=[],recovered=[],answerContext=[],reviewDecisions=[],partDecisions=[];
   const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
     String(claim?.claimId||''),new Map((Array.isArray(claim?.sourceEvidence)?claim.sourceEvidence:[])
       .map(item=>[String(item?.sourceId||''),Array.isArray(item?.spanIds)?item.spanIds:[]]))
@@ -583,16 +593,40 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     }
     let status=reviewerPart?.status||'unanswered';
     const allClaimsSupported=(answerPart?.answers.length||0)>0&&acceptedAnswers.length===answerPart.answers.length;
+    const partClaimIds=new Set((answerPart?.answers||[]).map(answer=>answer.claimId));
+    const acceptedClaimIds=new Set(acceptedAnswers.map(answer=>answer.claimId));
+    const directAnswerIds=reviewerPart?.directAnswerClaimIds||[];
+    const unknownDirectAnswerIds=directAnswerIds.filter(id=>!partClaimIds.has(id));
+    const acceptedDirectAnswerIds=directAnswerIds.filter(id=>acceptedClaimIds.has(id));
+    // The reviewer identifies the direct answer; this deterministic check
+    // ensures it belongs to this part and survived exact quote validation.
+    const directAnswerCovered=Boolean(reviewerPart?.directAnswerFieldPresent)&&
+      !reviewerPart?.directAnswerFieldMalformed&&directAnswerIds.length>0&&
+      unknownDirectAnswerIds.length===0&&acceptedDirectAnswerIds.length===directAnswerIds.length;
+    if(!directAnswerCovered&&acceptedAnswers.length){
+      const reason=!reviewerPart?.directAnswerFieldPresent?'direct-answer-claims-missing':
+        reviewerPart?.directAnswerFieldMalformed||unknownDirectAnswerIds.length?
+          'direct-answer-claim-id-invalid':acceptedDirectAnswerIds.length!==directAnswerIds.length?
+            'direct-answer-claim-not-supported':'direct-answer-claim-missing';
+      supportIssues.push({partId:part.id,reason});
+    }
+    partDecisions.push({partId:part.id,
+      directAnswerClaimIds:directAnswerIds,
+      acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
+      directAnswerCovered});
     if(!acceptedAnswers.length)status='unanswered';
-    else if(status!=='answered'||!allClaimsSupported)status='partial';
+    else if(status!=='answered'||!allClaimsSupported||!directAnswerCovered)status='partial';
     if(status==='answered'&&plan.intent==='compare'&&
        !comparisonReviewEvidenceComplete(part,plan,sources,evidence)){
       status='partial';supportIssues.push({partId:part.id,reason:'comparison-support-missing-source-group'});
     }
     answerContext.push(...acceptedAnswers);
-    return {partId:part.id,status,evidence,answers:acceptedAnswers,reason:''};
+    return {partId:part.id,status,evidence,answers:acceptedAnswers,
+      directAnswerClaimIds:directAnswerIds,
+      acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
+      directAnswerCovered,reason:''};
   });
-  return {parts,issues:[...new Set(issues)],supportIssues,recovered,reviewDecisions};
+  return {parts,issues:[...new Set(issues)],supportIssues,recovered,reviewDecisions,partDecisions};
 }
 
 function comparisonReviewEvidenceComplete(part,plan,sources,evidence){
@@ -709,7 +743,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMaps,question,reviewClaims);
         trace.reviewContract={valid:review.issues.length===0,issues:review.issues,
           supportIssues:review.supportIssues,recovered:review.recovered,
-          reviewDecisions:review.reviewDecisions};
+          reviewDecisions:review.reviewDecisions,partDecisions:review.partDecisions};
         if(review.issues.length)reviewFailure={stage:'review',code:'review-contract-incomplete',
           message:'Review omitted or changed one or more question-part decisions.'};
       }catch(error){
