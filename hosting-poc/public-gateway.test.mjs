@@ -3089,6 +3089,16 @@ test('keeps both requested works when one is named by a shortened author referen
  assert.deepEqual(scoped.map(source=>source.id),['S1','S2']);
 });
 
+test('an explicitly named play inside Shakespeare’s collected works scopes out unrelated sources',()=>{
+ const question='In Hamlet’s “To be, or not to be” soliloquy, what does he mean by conscience?';
+ const sources=[
+  {id:'S1',bookId:'212',title:PILOT_BOOKS['212']},
+  {id:'S2',bookId:'230',title:'The Courage to Be — Paul Tillich'}
+ ];
+ const scoped=applyExplicitWorkScope(question,sources);
+ assert.deepEqual(scoped.map(source=>source.id),['S1']);
+});
+
 test('a partial cross-work comparison cannot substitute an author attack for the missing position',()=>{
  const sources=[
   {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle'},

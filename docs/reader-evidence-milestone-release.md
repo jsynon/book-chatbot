@@ -2,8 +2,8 @@ Warning: truncated output (original token count: 40397)
 Total output lines: 815
 
 # Reading Companion evidence milestone: release report
-Last updated: October 26, 2026
-Status: Paired-scope run #3 ([40429747671](https://github.com/jsynon/antilogicalism/actions/runs/40429747671)) completed all ten rows on library v48 and passed 9/10 structural cases: All Books 4/5 and Selected Books 5/5. All 20 question parts were marked supported, with no request failures or planner fallbacks. The remaining structural miss is Hume/Kant All Books source-work alignment; the same trace exposed a separate reviewer acceptance of a weakly aligned Kant span. Both Hamlet answers passed structure but did not directly interpret the phrase in the question. A bounded Worker prompt refinement is underway in the existing composer and reviewer calls; no quality improvement is established until the paired run is repeated and reviewed. Keep the unseen acceptance suite frozen.
+Last updated: October 27, 2026
+Status: Paired-scope run #5 ([40432440170](https://github.com/jsynon/antilogicalism/actions/runs/40432440170)) completed all ten rows on library v48 and passed 6/10 structural cases: All Books 2/5 and Selected Books 4/5. Seventeen of 20 parts were supported; three remained partial. All 34 citations had located highlights, which verifies text location but not semantic support. The trace exposed a Hume test-scope mismatch and a Hamlet primary-source handoff failure. The bounded correction is implemented in local Worker and website branches: name the exact Hume and Kant works in the paired question, and resolve the named play Hamlet to Shakespeare’s verified primary collection so the existing per-part source gate can exclude commentary as a substitute. Offline suites pass; no live quality improvement is claimed until the same paired workflow is rerun after merge and deployment. Keep fail-closed partial coverage for Wollstonecraft and Boethius, and keep the unseen acceptance suite frozen.
 The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
@@ -425,3 +425,26 @@ The bounded Worker candidate edits only the existing `COMPOSER_PROMPT` and `REVI
 | Live quality validation | Pending. After merge and Worker deployment, rerun the same paired with-review workflow and inspect the Hume/Kant P3 claim/source decisions and both Hamlet answers. Re-score all ten answers with the same five dimensions; the eight stronger drafts should not regress. |
 | Unresolved structural issue | Hume/Kant All Books still needs the expected *Enquiry* work alignment or an explicit test decision about an author-wide alternate source. This prompt-only candidate does not claim to fix it. |
 | Unseen acceptance suite | Keep frozen until paired answers are reviewed. |
+
+## October 27, 2026: paired-scope run #5 and bounded source-resolution correction
+
+Paired-scope run [#40432440170](https://github.com/jsynon/antilogicalism/actions/runs/40432440170) completed all ten rows with no planner fallback, skipped case, or request failure. It used website source `e18be04314083fdfe6bdbfce1e8930e0e2b33bc3`, Worker source `fa871b19c1f4091cc4b8262359a6cf86871dbef4`, library v48, and the existing estimated 25-call baseline. Structural results fell from run #4’s 9/10 to 6/10: All Books 2/5 and Selected Books 4/5. Seventeen parts were supported and three were partial. All 34 citation highlights were located; this does not establish that the cited text supports the attached claim.
+
+The two most actionable failures point to source resolution rather than a need for another general prompt rule:
+
+- **Hume/Kant, All Books:** the test question asked about Hume generally, while its required-source fixture demanded Hume’s *Enquiry* (book 35). The answer used a relevant passage from Hume’s *Treatise* (book 276), which the all-books plan allowed. The trace also showed a relevant-looking *Enquiry* page 30 in retrieval candidates but not in the six-page composition packet; an irrelevant *Enquiry* page 69 was submitted. Make the paired question explicitly name both *An Enquiry Concerning Human Understanding* and Kant’s *Critique of Pure Reason*. That makes the existing deterministic title-to-book source grouping and part-level packet ranking test the work scope the fixture claims to test. Do not weaken the all-books source gate to accept any author text when the benchmark intends a controlled work comparison.
+- **Hamlet, All Books:** Shakespeare’s primary passage was in the submitted packet, but the plan left the Hamlet part unscoped (`sourceBookIds: null`) and the final answer cited commentary by Paul Tillich instead of interpreting the line. The catalog has Shakespeare’s collected works but no standalone Hamlet record, so the existing title matcher did not connect “Hamlet” to a primary source. Add a small verified alias from the explicitly named play to book 212 (*The Complete Works of William Shakespeare*). The normal planner normalization then attaches that source ID to the part, and the existing `linkEvidenceToParts` contract prevents commentary from standing in for the named text. The alias does not claim the Shakespeare passage is semantically sufficient; review still decides that.
+- **Wollstonecraft Selected and Boethius All Books:** reviewer-rejected claims remained partial. Preserve that fail-closed status. Their current traces do not justify relaxing coverage or citation gates, and they are not being folded into this bounded source-resolution change.
+
+No planner/composer/reviewer call, answer packet size, review decision, citation rule, or public response field is added. Hume’s prompt change repairs the benchmark’s source definition; the Hamlet alias affects only explicitly named Hamlet questions and links to a title-validated primary catalog record. The evidence-milestone site patch that adds scoped part-query recovery was already included in the site revision used by run #5, so this change does not repeat it.
+
+| Candidate validation | Result |
+|---|---|
+| Planner regression: named Hamlet resolves to book 212 and the normalized part carries that ID | Pass |
+| Evidence handoff regression: Hamlet part admits the Shakespeare page and excludes an unrelated commentary page | Pass |
+| Site/evaluator regression: paired Hume/Kant case names both required works while retaining selected IDs 35 and 40 | Pass |
+| Website/evaluator suite: `node --test reading-companion/*.test.mjs` | Pass; 197 tests, 0 failures |
+| Full Worker suite: `node --test hosting-poc/*.test.mjs` | Pass; 280 tests, 0 failures |
+| Syntax and whitespace checks | Pass; changed JavaScript modules pass `node --check`; both repository diffs pass `git diff --check` |
+| Live paired-scope validation | Pending merge/deployment; rerun the same ten rows and check Hume *Enquiry* page 30 in submitted sources, Hamlet part source IDs and cited Shakespeare passage, plus all other rows for regressions |
+| Unseen acceptance suite | Keep frozen until the live source text and answers are reviewed |

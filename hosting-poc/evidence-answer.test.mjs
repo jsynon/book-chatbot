@@ -1046,6 +1046,21 @@ test('part linking preserves evidence discovered by each side for a synthesis pa
  assert.deepEqual(linked.parts.map(part=>part.candidateSourceIds),[['S1'],['S2'],['S1','S2']]);
 });
 
+test('a named Hamlet part admits the primary collected text and excludes unrelated commentary',()=>{
+ const question='In Hamlet’s “To be, or not to be” soliloquy, what does he mean by conscience?';
+ const catalog={212:'The Complete Works of William Shakespeare — William Shakespeare'};
+ const plan=normalizePlan({intent:'interpret',sources:[
+  {label:'Hamlet',role:'primary',bookIds:['212']}
+ ],parts:['What does Hamlet mean by conscience in this soliloquy?']},question,catalog);
+ const linked=linkEvidenceToParts(plan,[
+  {id:'S1',bookId:'212',candidatePartIds:['P1']},
+  {id:'S2',bookId:'230',candidatePartIds:['P1']},
+ ]);
+ assert.deepEqual(linked.parts[0].sourceBookIds,['212']);
+ assert.deepEqual(linked.parts[0].candidateSourceIds,['S1'],
+  'an editor or commentator may remain available elsewhere, but cannot replace the named play as this part’s evidence');
+});
+
 test('comparison evidence linking follows the planned source groups even when the part avoids comparison keywords',()=>{
  const plan={...twoSidePlan,parts:[
   {...twoSidePlan.parts[0],candidateSourceIds:[]},
