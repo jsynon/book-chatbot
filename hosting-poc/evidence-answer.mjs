@@ -213,7 +213,20 @@ function splitCitedSentenceUnits(paragraph){
     marker:'ZXQREADERCITATION'+index+'ZXQ'}));
   let marked=paragraph;
   for(const item of [...markers].reverse())marked=marked.replace(item.raw,item.marker);
-  const segments=[...new Intl.Segmenter('en',{granularity:'sentence'}).segment(marked)]
+  // Intl.Segmenter may treat an author's initials such as “W.E.B.” as a
+  // sentence boundary before the cited claim. Hide those periods only while
+  // segmenting, then restore them below so the required-answer check sees the
+  // original first sentence and citation.
+  const initialismDots=[];
+  let initialismMarkerPrefix='ZXQREADERINITIALISMDOT';
+  while(marked.includes(initialismMarkerPrefix))initialismMarkerPrefix+='X';
+  const segmentationText=marked.replace(/\b(?:[A-Z]\.){2,}(?=\s+[A-Z][a-z])/gu,initialism=>
+    initialism.replace(/\./gu,()=>{
+      const marker=initialismMarkerPrefix+initialismDots.length+'ZXQ';
+      initialismDots.push(marker);
+      return marker;
+    }));
+  const segments=[...new Intl.Segmenter('en',{granularity:'sentence'}).segment(segmentationText)]
     .map(item=>item.segment);
   const units=[];
   for(const segment of segments){
@@ -226,8 +239,11 @@ function splitCitedSentenceUnits(paragraph){
       else units[units.length-1]+=segment;
     }else units.push(segment);
   }
-  const restored=units.map(unit=>markers.reduce((text,item)=>
-    text.replace(item.marker,item.raw),unit).trim()).filter(Boolean);
+  const restored=units.map(unit=>{
+    const withCitations=markers.reduce((text,item)=>
+      text.replace(item.marker,item.raw),unit);
+    return initialismDots.reduce((text,marker)=>text.replace(marker,'.'),withCitations).trim();
+  }).filter(Boolean);
   return restored.length>1?restored:[paragraph];
 }
 

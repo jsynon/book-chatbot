@@ -628,6 +628,14 @@ const hamletMeaningSource={id:'S1',bookId:'212',title:'The Complete Works of Wil
 const hamletMeaningPlan={version:'reader-evidence-v2',intent:'interpret',
  sources:[{label:'Hamlet',role:'primary',bookIds:['212']}],
  parts:[{id:'P1',question:hamletMeaningQuestion,sourceBookIds:['212'],candidateSourceIds:['S1']}]};
+const duBoisInitialismQuestion='How does Du Bois define double consciousness?';
+const duBoisInitialismSource={id:'S3',bookId:'454',title:'The Souls of Black Folk — W. E. B. Du Bois',page:131,
+ url:'https://example.test/dubois#page=131',candidatePartIds:['P1'],
+ text:'It is a peculiar sensation, this double-consciousness, this sense of always looking at one’s self through the eyes of others. One ever feels his twoness, an American, a Negro; two souls, two thoughts, two unreconciled strivings.',
+ preview:'Double-consciousness is a sense of looking at oneself through others’ eyes.'};
+const duBoisInitialismPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'W. E. B. Du Bois',role:'primary',bookIds:['454']}],
+ parts:[{id:'P1',question:duBoisInitialismQuestion,sourceBookIds:['454'],candidateSourceIds:['S3']}]};
 function directAnswerReview(directAnswerClaimIds){
  return (_model,{messages})=>{
   const payload=JSON.parse(messages[1].content);
@@ -1555,6 +1563,43 @@ test('unknown-only required answer citation stays rejected and cannot be replace
  assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'unknown-source-id',sentenceIndex:1}]);
  assert.deepEqual(result.trace.coverageGaps,[{partId:'P1',reason:'required-direct-answer-rejected'}]);
  assert.deepEqual(result.trace.citationRepairs,[]);
+});
+
+test('author initials stay attached to the cited direct answer without merging later sentences',async()=>{
+ let reviewPayload;
+ const ai=makeAI([answer('PART P1\nW.E.B. Du Bois defines double consciousness as viewing oneself through other people’s eyes. [S3] '+
+  'He describes the condition as a divided identity with conflicting strivings. [S3]'),
+  (_model,{messages})=>{
+   reviewPayload=JSON.parse(messages[1].content);
+   return review([['P1','answered']])(_model,{messages});
+  }]);
+ const result=await composeEvidenceAnswer(duBoisInitialismQuestion,[duBoisInitialismSource],ai,[],{
+  plan:duBoisInitialismPlan,catalog:{454:duBoisInitialismSource.title},trace:true
+ });
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.match(result.answer,/^W\.E\.B\. Du Bois defines double consciousness/);
+ assert.deepEqual(result.trace.rejected,[]);
+ assert.deepEqual(result.trace.coverageGaps,[]);
+ assert.equal(reviewPayload.parts[0].requiredAnswerClaimId,'P1-C1',
+  'the complete initialism-bearing first sentence remains the required answer');
+ assert.deepEqual([...new Set(result.evidenceMap.map(item=>item.claimId))],['P1-C1','P1-C2'],
+  'the following cited sentence stays a separate claim');
+});
+
+test('an invalid citation on an initialism-bearing direct answer still leaves the part partial',async()=>{
+ const ai=makeAI([answer('PART P1\nW.E.B. Du Bois defines double consciousness as viewing oneself through other people’s eyes. [S99] '+
+  'He describes the condition as a divided identity with conflicting strivings. [S3]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(duBoisInitialismQuestion,[duBoisInitialismSource],ai,[],{
+  plan:duBoisInitialismPlan,catalog:{454:duBoisInitialismSource.title},trace:true
+ });
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.doesNotMatch(result.answer,/W\.E\.B\. Du Bois defines/);
+ assert.match(result.answer,/divided identity with conflicting strivings\. \[S3\]/);
+ assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'unknown-source-id',sentenceIndex:1}]);
+ assert.deepEqual(result.trace.coverageGaps,[{partId:'P1',reason:'required-direct-answer-rejected'}]);
 });
 
 test('a citation linked to another question part is rejected even when its source ID exists',async()=>{
