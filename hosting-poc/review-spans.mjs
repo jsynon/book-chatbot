@@ -65,6 +65,22 @@ export function buildReviewSpans(sourceId,text,{maxSpanLength=DEFAULT_MAX_SPAN_L
 }
 
 const REVIEW_STOP_WORDS=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
+// These small families help rank ordinary paraphrases and inflections. They
+// are ranking hints only: the semantic reviewer still decides support, and
+// exact word-form overlap always receives the stronger score. These families
+// are read from original tokens so related forms stay easy to audit.
+const REVIEW_TERM_FAMILIES=[
+  ['complete','completeness','incomplete','incompleteness'],
+  ['wealth','wealthy','prosperity','prosperous','riches'],
+  ['temporary','temporarily','transient','transitory','impermanent','remain','remains']
+];
+const REVIEW_TERM_FAMILY_BY_TERM=new Map(REVIEW_TERM_FAMILIES.flatMap(family=>
+  family.map(term=>[term,family[0]])));
+function reviewTermFamilies(value){
+  const terms=String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]{3,}/gu)||[];
+  return new Set(terms.map(term=>REVIEW_TERM_FAMILY_BY_TERM.get(term)).filter(Boolean));
+}
 function reviewTerms(value){
   return new Set((String(value||'').normalize('NFKC').toLocaleLowerCase()
     .match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>{
@@ -80,10 +96,21 @@ function reviewTerms(value){
  */
 export function rankReviewSpans(spans,{question='',answer=''}={}){
   const answerTerms=reviewTerms(answer),questionTerms=reviewTerms(question);
+  const answerFamilies=reviewTermFamilies(answer),questionFamilies=reviewTermFamilies(question);
   const score=text=>{
     const terms=reviewTerms(text);
+    const spanFamilies=reviewTermFamilies(text);
     let value=0;
-    for(const term of terms){if(answerTerms.has(term))value+=3;if(questionTerms.has(term))value+=1;}
+    for(const term of terms){
+      if(answerTerms.has(term))value+=3;
+      if(questionTerms.has(term))value+=1;
+    }
+    // A related form can surface a likely passage in the short hint list, but
+    // scores below exact normalized overlap and never grants support.
+    for(const family of spanFamilies){
+      if(answerFamilies.has(family))value+=2;
+      if(questionFamilies.has(family))value+=1;
+    }
     return value;
   };
   return spans.map((span,index)=>({span,index,score:score(span.text)}))
