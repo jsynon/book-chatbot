@@ -755,3 +755,25 @@ Two integration tests cover the boundary and its safety condition:
 | Live paired validation | Pending merge and Worker deployment. Rerun the same ten-case paired set; confirm both Du Bois P1 cases pass without changing the other cases. |
 
 This fixes the evaluator false negative without weakening fail-closed answer coverage. The three genuine run #16 partials remain separate answer-quality evidence and should be revisited after the paired validation.
+
+## October 27, 2026: paired-scope run #17 and Boethius reviewer-hint ranking
+
+Paired-scope run [#40512297605](https://github.com/jsynon/antilogicalism/actions/runs/40512297605) completed all ten cases in with-review mode on library v48. The artifact is `reading-companion-paired-scope-evaluation-all` (artifact ID `12737459736`). The site revision was `d04d70cb4b2b2f0a6fb04ac519a8d43c94154147`; the Worker source revision was `554f32fc792a4a7e47048aee6b034a9b839a98ed` (PR #278, the Du Bois-initialism sentence-boundary correction). The run used the existing 25-call estimate, with no request failures, planner fallbacks, or skipped cases.
+
+The structural result was 10/10: All Books passed 5/5 and Selected Books passed 5/5, with all 20 question parts supported. This is a strong structural result for the paired set. It does not establish a broad answer-quality gain: the five-dimension human rubric is pending for all ten cases, and the artifact does not measure semantic highlight relevance. All 36 cited highlights were text-located, which verifies location only.
+
+The Selected Books Boethius answer is structurally supported and gives a correct central account of happiness as inward and secure from Fortune. Its trace also exposes a narrower answer-quality omission. The composer included P2-C3, “Her assessment of Fortune's gifts suggests that external prosperity is unreliable because it is often incomplete or temporary,” citing S4 (page 13). Review marked that source partial with `claim-source-not-supported` and selected no span, so the final answer omitted this useful explanatory detail while retaining the other supported happiness claims. The matching S4-Q15 passage about welfare's completeness not appearing or remaining and abundant wealth was in the evidence packet, but its claim-level ranked hint position was 19; the four hints instead led with general Fortune/gift passages. The full span list was still available to the reviewer, so this is a prioritization issue, not missing retrieval or an allowlist failure.
+
+The bounded local change adjusts only `rankReviewSpans` in the existing reviewer handoff. It adds a few lightweight families for the observed paraphrases and related forms (completeness/incompleteness, prosperity/wealth, and temporary/remains). Exact normalized word overlap scores higher than a family match. These scores only order exact spans for reviewer attention; they never establish support. The full span list, stable span IDs, source fingerprint checks, same-source selection boundary, and accepted-span limits remain unchanged. No new stage, model call, retrieval page, prompt payload, or evidence budget is added.
+
+| Validation | Result |
+|---|---|
+| Run #17 full S4 trace replay with revised ranking | Pass; S4-Q15 moves from rank 19 to rank 4 and enters the existing four claim-level hints. |
+| Saved-case regression | Added; the trace-shaped fixture requires S4-Q15 in the top four while preserving all five exact spans, and confirms an exact match outranks a related-family match. |
+| Focused answer suite (`node --test hosting-poc/evidence-answer.test.mjs`) | Pass; 94 tests, 0 failures. |
+| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | Pass; 303 tests, 0 failures. |
+| Syntax and whitespace | Pass; `node --check` on the changed JavaScript files and `git diff --check`. |
+| Live paired-scope validation | Pending PR merge and Worker deployment. Rerun the same paired set once and inspect whether the reviewer accepts the wealth/completeness passage for Boethius P2-C3. |
+| Answer-quality conclusion | No general improvement claimed. This targets one observed hint-ordering miss; semantic acceptance remains the reviewer's job and human scoring is still needed. |
+
+Keep the acceptance set frozen for this validation. If the reviewer still rejects S4-Q15 despite it moving into the four hints, inspect the exact reviewer decision and claim wording before changing ranking again; do not add another retrieval or review stage based on one stochastic miss.

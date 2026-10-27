@@ -235,6 +235,28 @@ test('review spans put direct paraphrase evidence first without discarding other
  assert.deepEqual(new Set(ranked.map(span=>span.spanId)),new Set(spans.map(span=>span.spanId)));
  assert.ok(ranked.every(span=>text.includes(span.text)));
 });
+test('review hint ranking promotes the run-17 Boethius wealth and completeness passage',()=>{
+ const spans=[
+  {spanId:'S4-Q1',text:"Fortune's gift of happiness, you must listen while I recall how many and how great are your sources of happiness: and thus, if you have possessed that which is the most precious among all Fortune's gifts, and if that is"},
+  {spanId:'S4-Q2',text:'still safe and unharmed in your possession, you will never, while you keep these better gifts, be able to justly charge Fortune with unkindness.'},
+  {spanId:'S4-Q5',text:'Again, your wife lives, a woman whose character is full of virtue, whose modesty excels its kind; a woman who (to put in a word the gifts she brought you) is like her father.'},
+  {spanId:'S4-Q9',text:"Fortune's hatred has not yet been so great as to destroy all your holds upon happiness: the tempest that is fallen upon you is not too great for you: your anchors hold yet firm, and they should keep ever nigh to"},
+  {spanId:'S4-Q15',text:"For the condition of our welfare is a matter fraught with care: either its completeness never appears, or it never remains. One man's wealth is abundant, but his birth and breeding put him to shame."}
+ ];
+ const ranked=rankReviewSpans(spans,{
+  question:"What do Lady Philosophy's descriptions of Fortune's gifts reveal about the nature of true happiness?",
+  answer:"Her assessment of Fortune's gifts suggests that external prosperity is unreliable because it is often incomplete or temporary."
+ });
+ assert.equal(ranked.length,spans.length,'ranking must preserve the complete exact-span set');
+ assert.ok(ranked.slice(0,4).some(span=>span.spanId==='S4-Q15'),
+  'wealth/prosperity, completeness/incompleteness, and temporary/remains cues should surface the direct passage in the four claim hints');
+ const exactFirst=rankReviewSpans([
+  {spanId:'S1-Q1',text:'The wealth remains secure.'},
+  {spanId:'S1-Q2',text:'The prosperity remains secure.'}
+ ],{answer:'Wealth is secure.'});
+ assert.equal(exactFirst[0].spanId,'S1-Q1',
+  'exact normalized overlap must outrank a related-family hint');
+});
 test('review request orders the cited page by the answer sentence while preserving span IDs',async()=>{
  const text='A historical introduction recounts debates about institutions, books, readers, editions, publication, libraries, translations, commentaries, editors, authors, scholars, chronology, archives, and the long development of literary criticism across several generations. No immediate transition from a proof of probability to faith is possible. The author then considers another example.';
  const source={...hume,text,preview:text};
