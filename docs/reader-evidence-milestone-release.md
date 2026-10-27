@@ -367,7 +367,34 @@ The change reuses the existing planner/composer/reviewer calls and page packet. 
 | Focused Worker regression | Pass: 72 tests, including preservation of earlier missing-span and cross-group failure guards. |
 | Focused website evaluator regressions | Pass: 51 tests, including offline recheck using the saved all-books planner eligibility set. |
 | Full offline suites | Pass: Worker `node --test hosting-poc/*.test.mjs`, 277 tests; website `node --test reading-companion/*.test.mjs`, 194 tests. Changed modules pass `node --check`; both candidate diffs pass `git diff --check`. |
-| PR/deployment | Open and unmerged: [Worker #262](https://github.com/jsynon/book-chatbot/pull/262) and [website #217](https://github.com/jsynon/antilogicalism/pull/217). Neither is deployed. |
-| Live validation | Pending. After both candidates are merged and deployed, rerun the same paired scope workflow. Inspect Hume book 276's actual cited page and the Boethius accepted span next to the claim; manually review all `additionalEligibleBookIds`. |
+| PR/deployment | Merged: [Worker #262](https://github.com/jsynon/book-chatbot/pull/262) and [website #217](https://github.com/jsynon/antilogicalism/pull/217). The user reports deploying the Worker; paired run #2 recorded Worker revision `d657b43ff610969692e63cab5e3f33a1219de729`. |
+| Live validation | Completed in paired run #2, recorded below. The alignment correction remained effective; the Boethius downgrade was not reproduced, so its exact pruning path still needs a deliberate trace to validate. |
 | Quality conclusion | No answer-quality improvement is established by this artifact or these structural regressions. The evaluator now separates planner eligibility from semantic relevance, while the Worker can preserve a claim supported by a valid source from its planned group. |
 | Unseen acceptance suite | Keep frozen until the paired artifact is re-run and cited page text is reviewed. |
+
+## October 26, 2026: paired-scope run #2 and candidate-to-part handoff
+
+Paired scope run [#40419672507](https://github.com/jsynon/antilogicalism/actions/runs/40419672507) used website source `8ac297ab1372250451bcd828693b3eaf67d371f5`, Worker source `d657b43ff610969692e63cab5e3f33a1219de729`, and library v48. All ten rows completed with no request failures or planner fallbacks; the 25-call baseline was respected. Structural results were 6/10 overall: All Books 2/5 and Selected Books 4/5. Fifteen of twenty question parts were supported, two were partial, and three were unsupported. Every cited source had a located highlight, which confirms location only.
+
+The source-alignment false negative from run #1 did not recur. The Hume page in All Books was aligned to its planned source group, and the audit correctly reported the additional eligible book. However, the case exposed a more important evidence handoff loss: the Kant-linked searches returned pages 104, 98, 103, and 213 from *Critique of Pure Reason*, but all 12 hydrated `retrievalCandidates` were Hume pages. The bounded packet consequently contained six Hume pages, leaving the Kant part unsupported. The merge step reserved many Hume pages from several linked facets before it reserved a candidate for the Kant part.
+
+The Hamlet All Books failure occurred earlier. The planner did not assign book IDs to the part. A Shakespeare-focused facet resolved catalog books 212 and 564, but its top results were other Shakespeare pages; the exact part wording was searched globally and surfaced commentary. Page 454, which the Selected Books run retrieved and cited, did not appear in All Books search results. A part query scoped to works resolved by a sibling facet should be run inside those already trusted works so source-specific wording has a chance to find the intended page.
+
+This bounded website candidate changes two existing handoffs in `reading-companion/evidence-search.mjs`:
+
+- Candidate merging gives every question part its strongest eligible page before distributing additional distinct-work pages across parts. Ordinary cross-facet ranking fills the rest of the existing 12-candidate limit.
+- When an exact part question was searched globally but another linked facet resolved that part to catalog works, retrieval repeats the exact query only inside the unresolved works. The result trace records `partScopeInherited` and the targeted book IDs. It does not widen the part's source allowlist or the reader's selected-book scope.
+
+These are local index searches; they add no Worker AI call, no model stage, and no submitted-page budget. The existing six-page Worker packet, fingerprints, citation validation, review rules, and public response contract remain unchanged. This addresses evidence availability in the Hume/Kant and Hamlet traces; it does not establish answer quality or fix the separate incomplete Hume span in Selected Books or Du Bois reviewer variance.
+
+| Candidate validation | Result |
+|---|---|
+| Hume/Kant candidate regression | Pass; when one part has many linked books/facets, a Kant candidate survives the bounded merge and reaches the submitted packet. |
+| Hamlet named-source regression | Pass; the exact part query inherits only catalog-resolved books 212 and 564, page 454 reaches the packet, and an unscoped commentary candidate cannot satisfy the part. |
+| Focused retrieval suite | Pass; 62 tests, 0 failures. |
+| Full website suite | Pass; `node --test reading-companion/*.test.mjs`, 196 tests, 0 failures. |
+| Worker dependency suite | Pass; Worker suite 277 tests, 0 failures. No Worker runtime or shared contract changed. |
+| Zero-AI published-library evaluation | Passes expected-source retrieval in 30/31 cases, with 0 source-identity issues, fingerprint errors, or execution errors. The one miss is the existing 1 John expected-source case; the benchmark is source discovery/identity only, not answer quality. |
+| Saved-plan retrieval replay | Pass; replayed the Hume/Kant and Hamlet All Books plans from run #2 against the published v48 index with no AI calls. Kant pages entered candidates and the packet; Hamlet page 454 entered both. This replay does not test composition/review or independently verify fingerprints. |
+| Live validation | Pending. After website publication, rerun the same paired scope workflow. Confirm these evidence pages survive in the authenticated artifact and check the other cases for regressions. Inspect cited page text and review traces; a structural score alone is not a quality judgment. |
+| Unseen acceptance suite | Keep frozen until the paired rerun has been reviewed. |
