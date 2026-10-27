@@ -191,7 +191,9 @@ test('a pronoun-led claim preserves editorial mediation from the named-author an
   const ai=makeAI([answer('PART P1\nNietzsche argued that Christianity’s moral ideals were life-denying. [S1] '+secondSentence),
    (_model,{messages})=>{
     const payload=JSON.parse(messages[1].content);
-    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+    const unmediatedCommentary=payload.claims.some(claim=>claim.sourceIds.includes('S2')&&
+     !/According to Kaufmann’s commentary/.test(claim.text));
+    return {response:JSON.stringify({parts:[{partId:'P1',status:unmediatedCommentary?'partial':'answered'}],
      claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
       sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
        spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
@@ -606,6 +608,53 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
  }]);
 });
 
+test('a rejected non-direct claim is omitted without downgrading a reviewed direct answer',async()=>{
+ const ai=makeAI([answer('PART P1\nThe phrase means fear of death can make Hamlet hesitate to act. [S1]\n'+
+  'This proves that every person is incapable of decisive action. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    directAnswerClaimIds:['P1-C1']}],claims:payload.claims.map(claim=>{
+     const accepted=claim.claimId==='P1-C1';
+     return {claimId:claim.claimId,status:accepted?'answered':'partial',
+      sources:claim.sourceIds.map(sourceId=>({sourceId,status:accepted?'answered':'partial',
+       spanIds:accepted?claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1):[]}))};
+    })})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
+  plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/fear of death can make Hamlet hesitate to act/);
+ assert.doesNotMatch(result.answer,/every person is incapable/,
+  'the unsupported non-direct claim is filtered before final rendering');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P1'&&issue.reason==='claim-source-not-supported'));
+ assert.equal(ai.calls.length,2,'pruning reuses the existing compose and review calls');
+});
+
+test('a rejected nominated direct-answer claim keeps the part partial despite an accepted related claim',async()=>{
+ const ai=makeAI([answer('PART P1\nThe phrase means an awareness of consequences makes Hamlet hesitate. [S1]\n'+
+  'Fear of death makes Hamlet hesitate to act. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    directAnswerClaimIds:['P1-C1']}],claims:payload.claims.map(claim=>{
+     const accepted=claim.claimId==='P1-C2';
+     return {claimId:claim.claimId,status:accepted?'answered':'partial',
+      sources:claim.sourceIds.map(sourceId=>({sourceId,status:accepted?'answered':'partial',
+       spanIds:accepted?claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1):[]}))};
+    })})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
+  plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.equal(result.coverage,'partial');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P1'&&issue.reason==='direct-answer-claim-not-supported'));
+ assert.match(result.answer,/Fear of death makes Hamlet hesitate to act/);
+});
+
 test('a direct-answer claim ID from another part cannot mark this part supported',async()=>{
  const ai=makeAI([answer('PART P1\nThe phrase means fear of death can make people hesitate to act. [S1]'),
   directAnswerReview(['P2-C1'])],{decorateReview:false});
@@ -682,6 +731,9 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/require an explicit plain-language interpretation/);
  assert.match(REVIEW_PROMPT,/directAnswerClaimIds/);
  assert.match(REVIEW_PROMPT,/A consequence, example, or related fact alone is not a direct answer/);
+ assert.match(REVIEW_PROMPT,/smallest sufficient set of claim IDs/);
+ assert.match(REVIEW_PROMPT,/Do not list every claim by default/);
+ assert.match(REVIEW_PROMPT,/unsupported non-direct claim can be omitted without downgrading/);
  assert.match(REVIEW_PROMPT,/assess each author’s premise only against that author’s evidence/);
  assert.match(REVIEW_PROMPT,/synthesis is answered only when the cited evidence supports the specific relationship/);
  assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
@@ -959,7 +1011,9 @@ test('prior speaker attribution carries across accepted claims without crossing 
  ].join(' ');
  const ai=makeAI([answer('PART P1\n'+draft),(_model,{messages})=>{
   const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+  const unqualifiedSecondVoice=payload.claims.some(claim=>claim.sourceIds.includes('S2')&&
+   !/Johannes Climacus/.test(claim.text));
+  return {response:JSON.stringify({parts:[{partId:'P1',status:unqualifiedSecondVoice?'partial':'answered'}],
    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};

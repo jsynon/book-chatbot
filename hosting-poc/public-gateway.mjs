@@ -31,14 +31,15 @@ const CURATED_PRIMARY_WORK_ALIASES = Object.freeze([
   {alias:'Hamlet',author:'William Shakespeare',bookIds:['212']},
 ]);
 
-export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=6){
+export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=6,question=''){
   const byId=new Map(citations.map(source=>[String(source?.id||''),source]));
   const citationOrder=[...new Set([...citationIds(answer),...citations.map(source=>String(source?.id||''))])]
     .filter(id=>byId.has(id));
-  const stopWords=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
+  const stopWords=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might not of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
   const terms=value=>new Set((String(value||'').normalize('NFKC').toLocaleLowerCase()
-    .match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>term.replace(/(?:ing|ed|es|s)$/u,'')).filter(term=>
+    .match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>term.replace(/(?:ing|ed|s)$/u,'')).filter(term=>
       term.length>=3&&!stopWords.has(term)));
+  const questionTerms=terms(question);
   const readableQuote=value=>{
     const quote=String(value||'');
     if(!quote)return 0;
@@ -68,16 +69,21 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       .filter(item=>usefulQuote(item.quote))
       .filter((item,index,all)=>all.findIndex(other=>other.quote===item.quote&&
         other.claimId===item.claimId&&other.point===item.point)===index);
-    // Reviewer-approved spans are already exact and source-verified. When a
-    // page has several, prefer the span whose vocabulary best matches its
-    // linked claim; stable input order breaks ties and remains the fallback
-    // when the claim has no useful lexical overlap.
+    // Reviewer-approved spans are already exact and source-verified. Rank
+    // them by their linked claim first, then use the original question as a
+    // secondary signal so a phrase asked about can outrank nearby context.
+    // This is quote ordering only; neither lexical score proves support.
     candidates.sort((left,right)=>{
       const score=item=>{
         const pointTerms=terms(item.point),quoteTerms=terms(item.quote);
-        if(!pointTerms.size||!quoteTerms.size)return 0;
-        let overlap=0;for(const term of pointTerms)if(quoteTerms.has(term))overlap++;
-        return overlap/Math.sqrt(pointTerms.size*quoteTerms.size);
+        if(!quoteTerms.size)return 0;
+        const similarity=referenceTerms=>{
+          if(!referenceTerms.size)return 0;
+          let overlap=0;for(const term of referenceTerms)if(quoteTerms.has(term))overlap++;
+          return overlap/Math.sqrt(referenceTerms.size*quoteTerms.size);
+        };
+        const pointScore=similarity(pointTerms),questionScore=similarity(questionTerms);
+        return questionTerms.size?pointScore*0.35+questionScore*0.65:pointScore;
       };
       return score(right)-score(left)||readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
     });
@@ -3820,7 +3826,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     // from fingerprint-verified source pages. Missing anchors stay missing;
     // a catalog preview is not evidence for a claim.
     const evidenceHighlights=selectPublicEvidenceHighlights(output.answer,
-      output.citations||[],output.evidenceMap||[]);
+      output.citations||[],output.evidenceMap||[],6,data.question);
     // Suggestions only populate the next question; they are not model claims
     // or an implicit extra billable AI call. Fresh retrieval occurs each turn.
     const followUpQuestions=output.outcome==='verified-source-draft'?
