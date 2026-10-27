@@ -28,10 +28,29 @@ function review(statuses,{evidenceByPart={},includeEvidence=true}={}){
   return {response:JSON.stringify({parts,claims})};
  };
 }
-function makeAI(responses){
+function makeAI(responses,{decorateReview=true}={}){
  const calls=[];
  return {calls,run:async(model,request)=>{calls.push({model,request});const next=responses.shift();
-   if(next instanceof Error)throw next;return typeof next==='function'?next(model,request):next;}};
+   if(next instanceof Error)throw next;
+   const result=typeof next==='function'?next(model,request):next;
+   // Most fixtures predate the direct-answer field and test other review rules.
+   // Give those valid mock reviews one claim per part; focused contract tests opt out.
+   const systemText=String(request?.messages?.[0]?.content||'');
+   if(decorateReview&&systemText.includes('directAnswerClaimIds')&&typeof result?.response==='string'){
+    try{
+     const reviewObject=JSON.parse(result.response);
+     const payload=JSON.parse(request.messages[1].content);
+     if(Array.isArray(reviewObject.parts)&&Array.isArray(reviewObject.claims)){
+      for(const part of reviewObject.parts){
+       if(Array.isArray(part.directAnswerClaimIds))continue;
+       part.directAnswerClaimIds=payload.claims
+        .filter(claim=>claim.partId===part.partId).slice(0,1).map(claim=>claim.claimId);
+      }
+      return {...result,response:JSON.stringify(reviewObject)};
+     }
+    }catch{}
+   }
+   return result;}};
 }
 
 test('selected-books hypothetical answers recover author groups from verified source titles when planning was skipped',async()=>{
@@ -224,7 +243,7 @@ test('review request orders the cited page by the answer sentence while preservi
   reviewPayload=JSON.parse(messages[1].content);
   const selected=reviewPayload.parts[0].evidence[0].spans[0];
   const claim=reviewPayload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:['P1-C1']}],
    claims:[{claimId:claim.claimId,status:'answered',spanIds:[selected.spanId]}]})};
  }};
  const result=await composeEvidenceAnswer('What is the relation between faith and probability?',[source],ai,[],{
@@ -243,7 +262,7 @@ test('compact review decisions validate exact spans without rationale text or re
   reviewPayload=JSON.parse(messages[1].content);
   const claim=reviewPayload.claims[0],span=reviewPayload.parts[0].evidence[0].spans[0];
   assert.equal(max_completion_tokens,1800);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
     spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}]}]})};
  }};
@@ -536,6 +555,22 @@ const onePartPlan={version:'reader-evidence-v2',intent:'explain',
  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
  parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
    searchQueries:['Hume necessity custom'],candidateSourceIds:['S1']}],queries:['Hume necessity custom']};
+const hamletMeaningQuestion='What is the meaning of “conscience makes cowards of us all” in Hamlet’s soliloquy?';
+const hamletMeaningSource={id:'S1',bookId:'212',title:'The Complete Works of William Shakespeare — William Shakespeare',page:454,
+ text:'Thus conscience does make cowards of us all, And thus the native hue of resolution Is sicklied o’er with the pale cast of thought, And enterprises of great pith and moment With this regard their currents turn awry And lose the name of action.',
+ preview:'Thus conscience does make cowards of us all, and enterprises of great pith and moment lose the name of action.'};
+const hamletMeaningPlan={version:'reader-evidence-v2',intent:'interpret',
+ sources:[{label:'Hamlet',role:'primary',bookIds:['212']}],
+ parts:[{id:'P1',question:hamletMeaningQuestion,sourceBookIds:['212'],candidateSourceIds:['S1']}]};
+function directAnswerReview(directAnswerClaimIds){
+ return (_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}))})};
+ };
+}
 const twoSidePlan={version:'reader-evidence-v2',resolvedQuestion:'How do Hume and Kant differ about causal necessity?',intent:'compare',
  sources:[{label:'David Hume',role:'primary',bookIds:['35']},{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
  parts:[
@@ -543,6 +578,59 @@ const twoSidePlan={version:'reader-evidence-v2',resolvedQuestion:'How do Hume an
   {id:'P2',question:'How does Kant explain causal necessity?',sourceBookIds:['40'],searchQueries:['Kant causality a priori']},
   {id:'P3',question:'How do Hume and Kant differ?',sourceBookIds:['35','40'],searchQueries:['Hume custom','Kant a priori']}
  ],queries:['Hume custom','Kant a priori']};
+
+test('a consequence-only sentence cannot pass a phrase-meaning part as a direct answer',async()=>{
+ const ai=makeAI([answer('PART P1\nConsequently, important enterprises lose their momentum and fail to become actions. [S1]'),
+  directAnswerReview([])],{decorateReview:false});
+ const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
+  plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.equal(result.coverage,'partial');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P1'&&issue.reason==='direct-answer-claim-missing'));
+ assert.deepEqual(result.trace.reviewContract.partDecisions,[{
+  partId:'P1',directAnswerClaimIds:[],acceptedDirectAnswerClaimIds:[],directAnswerCovered:false
+ }]);
+ assert.equal(ai.calls.length,2,'the direct-answer check uses the existing compose and review calls');
+});
+
+test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
+ const ai=makeAI([answer('PART P1\nThe phrase means fear of death can make people hesitate to act. [S1]'),
+  directAnswerReview(['P1-C1'])],{decorateReview:false});
+ const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
+  plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.trace.reviewContract.partDecisions,[{
+  partId:'P1',directAnswerClaimIds:['P1-C1'],acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true
+ }]);
+});
+
+test('a direct-answer claim ID from another part cannot mark this part supported',async()=>{
+ const ai=makeAI([answer('PART P1\nThe phrase means fear of death can make people hesitate to act. [S1]'),
+  directAnswerReview(['P2-C1'])],{decorateReview:false});
+ const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
+  plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P1'&&issue.reason==='direct-answer-claim-id-invalid'));
+});
+
+test('a reviewer that omits direct-answer IDs leaves the part partial',async()=>{
+ const ai=makeAI([answer('PART P1\nThe phrase means fear of death can make people hesitate to act. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+      spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}))})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
+  plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P1'&&issue.reason==='direct-answer-claims-missing'));
+});
 
 test('the deterministic polarity guard rejects a reviewed positive claim that reverses an exact source negation',async()=>{
  const source={id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:40,
@@ -592,6 +680,8 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/review every cited source ID separately/);
  assert.match(REVIEW_PROMPT,/material clause or premise/i);
  assert.match(REVIEW_PROMPT,/require an explicit plain-language interpretation/);
+ assert.match(REVIEW_PROMPT,/directAnswerClaimIds/);
+ assert.match(REVIEW_PROMPT,/A consequence, example, or related fact alone is not a direct answer/);
  assert.match(REVIEW_PROMPT,/assess each author’s premise only against that author’s evidence/);
  assert.match(REVIEW_PROMPT,/synthesis is answered only when the cited evidence supports the specific relationship/);
  assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
@@ -1523,7 +1613,7 @@ test('flat reviewer decisions retain exact provenance and source-encoded spans',
   }
   reviewPayload=JSON.parse(messages[1].content);
   const claim=reviewPayload.claims[0];
-  return {response:'```json\n'+JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+  return {response:'```json\n'+JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',spanIds:['S1-Q1']}]})+'\n```'};
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[source],ai,[],{

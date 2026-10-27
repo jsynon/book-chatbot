@@ -3,7 +3,7 @@ Total output lines: 815
 
 # Reading Companion evidence milestone: release report
 Last updated: October 27, 2026
-Status: Paired-scope run #5 ([40432440170](https://github.com/jsynon/antilogicalism/actions/runs/40432440170)) completed all ten rows on library v48 and passed 6/10 structural cases: All Books 2/5 and Selected Books 4/5. Seventeen of 20 parts were supported; three remained partial. All 34 citations had located highlights, which verifies text location but not semantic support. The trace exposed a Hume test-scope mismatch and a Hamlet primary-source handoff failure. The bounded correction is implemented in local Worker and website branches: name the exact Hume and Kant works in the paired question, and resolve the named play Hamlet to Shakespeare’s verified primary collection so the existing per-part source gate can exclude commentary as a substitute. Offline suites pass; no live quality improvement is claimed until the same paired workflow is rerun after merge and deployment. Keep fail-closed partial coverage for Wollstonecraft and Boethius, and keep the unseen acceptance suite frozen.
+Status: Paired-scope run #6 ([40436293515](https://github.com/jsynon/antilogicalism/actions/runs/40436293515)) completed all ten rows on library v48 and passed 7/10 structural cases: All Books 4/5 and Selected Books 3/5. Seventeen of 20 parts were supported; three remained partial. All 30 citations had located highlights, which verifies text location but not semantic support. Hume/Kant now pass in both scopes; Hamlet passes structurally in both, although its All Books answer is too thin to count as a quality success. Wollstonecraft Selected and Boethius in both scopes remain partial. The next bounded Worker change adds a direct-answer claim handoff to the existing reviewer and requires the nominated same-part claim to survive exact quote review before a part can be marked supported. This candidate is covered by offline tests; no live quality improvement is claimed until the paired workflow is rerun after merge and deployment. Keep the unseen acceptance suite frozen.
 The earlier James 2:14–26 miss from run [40157017806](https://github.com/jsynon/antilogicalism/actions/runs/40157017806) was traced to scripture scope being dropped from part queries; that fix is merged in website PR #188.
 Historical implementation branches: `codex/live-eval-progress-and-part-evidence-20261024`, `codex/review-contract-salvage-20261024`, `codex/evidence-recovery-web`, and `codex/evidence-recovery-backend`.
 
@@ -448,3 +448,23 @@ No planner/composer/reviewer call, answer packet size, review decision, citation
 | Syntax and whitespace checks | Pass; changed JavaScript modules pass `node --check`; both repository diffs pass `git diff --check` |
 | Live paired-scope validation | Pending merge/deployment; rerun the same ten rows and check Hume *Enquiry* page 30 in submitted sources, Hamlet part source IDs and cited Shakespeare passage, plus all other rows for regressions |
 | Unseen acceptance suite | Keep frozen until the live source text and answers are reviewed |
+
+
+## October 27, 2026: paired-scope run #6 and direct-answer coverage handoff
+
+Run [#6](https://github.com/jsynon/antilogicalism/actions/runs/40436293515) completed all ten paired-scope cases on library v48 with-review. It recorded zero request failures, planner fallbacks, or skipped cases, with an estimated 25 Worker AI calls. The deployed website revision was `55ca020e5b06f0056193329b0e597941ba85666c`; the Worker source revision was `b9c4860abdafc867b9e0451b60949c78ea97b8fd`, running as Worker version `7dd0e7b4-f18c-4389-bead-f38c3be82ec8`.
+
+The run passed 7/10 structural cases: All Books 4/5 and Selected Books 3/5. Seventeen of 20 parts were supported and three were partial. All 30 citations resolved to located highlights; this confirms location only, not that a highlight or passage supports its answer claim. No cases had human semantic ratings. Compared with run #5 (6/10), Hume/Kant and Hamlet All Books improved; the net structural change was +1. Hume/Kant passed in both scopes. Hamlet passed structurally in both scopes, but its All Books answer was a one-sentence statement about enterprises losing momentum and did not adequately explain conscience; the Selected Books answer gave a more useful explanation. Wollstonecraft Selected remained partial. Boethius was partial in both scopes, with its Selected result regressing from the previous run. These are answer-quality and completeness signals; do not loosen the evidence gate to improve the score.
+
+The bounded candidate change extends the existing review response with `directAnswerClaimIds` for each question part. The reviewer must name the claim or claims that directly answer the part and cover its explicit facets; a related consequence or example alone does not qualify for a meaning, definition, reason, or relationship question. The Worker then verifies deterministically that each nominated ID belongs to that same part and that the claim survives exact quote review. If a part has accepted claims but no valid accepted direct-answer claim, it remains partial. The IDs and validation decision are retained in the authenticated review trace. This adds no model call, pipeline stage, retrieval pass, page packet, or public response field. It does not regenerate or rewrite prose.
+
+The reviewer still makes the semantic judgment about whether a claim directly answers the question. The Worker check makes that judgment explicit and auditable and prevents a missing, cross-part, or citation-rejected claim from silently satisfying coverage; it is not an independent semantic judge and does not by itself guarantee a stronger answer. Highlight relevance remains a separate follow-up.
+
+| Validation | Result |
+|---|---|
+| Focused answer-pipeline tests | 77 passed, 0 failed |
+| Full Worker tests (`node --test hosting-poc/*.test.mjs`) | 284 passed, 0 failed |
+| Syntax and whitespace checks | Passed; all changed JavaScript files pass `node --check`, and `git diff --check` is clean |
+| Live paired-scope rerun after merge and Worker deployment | Pending; required before claiming live improvement |
+| Highlight relevance evaluation | Separate discussion and milestone |
+| Unseen acceptance suite | Keep frozen |
