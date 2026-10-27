@@ -1109,11 +1109,19 @@ export async function trustedPacketSources(question,locators,fetcher=(url,option
   return sources;
 }
 
-// v1.9.3 private pilot: verify the *exact* UTF-8 source page text supplied
-// by the browser against a small, owner-published v48 fingerprint packet.
+// Verify exact UTF-8 source text against the owner-published fingerprint
+// collection selected by the client page version (v48 or v49).
 // The SHA-256 is calculated in the Worker using native WebCrypto; no mutable
 // browser-provided title, excerpt, page ID or PDF link is trusted.
-export const FINGERPRINT_ROOT='https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v2/';
+export const FINGERPRINT_ROOTS=Object.freeze({
+  48:Object.freeze({root:'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v2/',
+    schema:'antilogicalism-reader-fingerprints-v2'}),
+  49:Object.freeze({root:'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v3/',
+    schema:'antilogicalism-reader-fingerprints-v3'}),
+});
+// Keep the legacy export pointed at v48 for any internal consumers that still
+// rely on the original collection. New client sources declare their version.
+export const FINGERPRINT_ROOT=FINGERPRINT_ROOTS[48].root;
 export async function verifiedFingerprintSources(question,items,fetcher=(url,opts)=>globalThis.fetch(url,opts)) {
   if(!Array.isArray(items)||!items.length||items.length>6)
     throw new Error('Invalid source count');
@@ -1128,6 +1136,10 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
        item.candidatePartIds.length>6||item.candidatePartIds.some(value=>
          typeof value!=='string'||!/^P[1-9]\d*$/.test(value))))
       throw new Error('Invalid source part mapping');
+    const libraryVersion=item.libraryVersion===undefined?48:item.libraryVersion;
+    const fingerprintContract=FINGERPRINT_ROOTS[libraryVersion];
+    if(!Number.isSafeInteger(libraryVersion)||!fingerprintContract)
+      throw new Error('Invalid source claim');
     const bookId=String(item.bookId),page=item.page;
     const id=bookId+':'+page;
     if(seen.has(id))throw new Error('Duplicate source claim');
@@ -1137,9 +1149,9 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
       throw new Error('Unacceptable page text size');
     totalBytes+=bytes.byteLength;
     if(totalBytes>35000)throw new Error('Too much text submitted');
-    const chunk=Math.floor((page-1)/32),key=bookId+'/'+chunk;
+    const chunk=Math.floor((page-1)/32),key=libraryVersion+'/'+bookId+'/'+chunk;
     if(!packets.has(key)){
-      const response=await fetcher(FINGERPRINT_ROOT+'books/'+bookId+'/'+chunk+'.json',{cache:'no-store'});
+      const response=await fetcher(fingerprintContract.root+'books/'+bookId+'/'+chunk+'.json',{cache:'no-store'});
       if(!response.ok)throw new Error('Trusted fingerprint packet is unavailable');
       const raw=new Uint8Array(await response.arrayBuffer());
       if(raw.byteLength>12000)throw new Error('Fingerprint packet exceeds size cap');
@@ -1147,8 +1159,8 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
         packetBytes:raw.byteLength});
     }
     const {fingerprint:p,packetBytes}=packets.get(key);
-    if(p.schema!=='antilogicalism-reader-fingerprints-v2'||
-       p.hashAlgorithm!=='SHA-256-utf8-exact'||p.libraryVersion!==48||
+    if(p.schema!==fingerprintContract.schema||
+       p.hashAlgorithm!=='SHA-256-utf8-exact'||p.libraryVersion!==libraryVersion||
        p.bookId!==bookId||p.chunk!==chunk||
        p.firstPage!==chunk*32+1||p.lastPage!==chunk*32+32||
        typeof p.title!=='string'||!p.title.trim()||
@@ -1166,7 +1178,7 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
     const digest=await crypto.subtle.digest('SHA-256',bytes);
     const actual=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
     if(actual!==match.sha256)throw new Error('Source text SHA-256 mismatch');
-    sources.push({id:'S'+(sources.length+1),bookId,title:p.title,
+    sources.push({id:'S'+(sources.length+1),libraryVersion,bookId,title:p.title,
       page,globalPageId:match.globalPageId,
       url:'https://drive.google.com/file/d/'+p.pdfDriveId+
         '/view?usp=sharing#page='+page,
@@ -1178,7 +1190,6 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
   }
   return sources;
 }
-
 function completeMissingNote(value){
   if(typeof value!=='string')return '';
   const note=value.trim().slice(0,240).trim();
@@ -3908,7 +3919,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           fingerprintBytes:s.fingerprintBytes,
         })),
         wallElapsedMs:Math.round(performance.now()-started),cpuTimeMs:null,
-        note:'Exact page text SHA-256 matched trusted v48 fingerprints; this does not verify AI claims. No AI was run.'});
+        note:'Exact page text SHA-256 matched trusted v48/v49 fingerprints; this does not verify AI claims. No AI was run.'});
     }catch(error){
       const reason=String(error?.message||error);
       const clientMismatch=/SHA-256 mismatch|length mismatch|Invalid source claim|Duplicate source claim|Unacceptable page text size|Too much text submitted/.test(reason);

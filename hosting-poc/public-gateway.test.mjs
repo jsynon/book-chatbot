@@ -1507,13 +1507,13 @@ test('fingerprint route supports local CORS preflight without touching AI',async
 });
 
 
-async function fingerprintTestFixture() {
+async function fingerprintTestFixture({libraryVersion=48}={}) {
  const text='The public disputes were over a breached agreement, whereas growing power created fear among competing cities. The deeper cause of the war was stated to be anxiety over political change.';
  const bytes=new TextEncoder().encode(text);
  const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),
     b=>b.toString(16).padStart(2,'0')).join('');
- const fingerprint={schema:'antilogicalism-reader-fingerprints-v2',
-    hashAlgorithm:'SHA-256-utf8-exact',libraryVersion:48,
+ const fingerprint={schema:'antilogicalism-reader-fingerprints-v'+(libraryVersion===48?2:3),
+    hashAlgorithm:'SHA-256-utf8-exact',libraryVersion,
     bookId:'152',title:'History of the Peloponnesian War — Thucydides',
     pdfDriveId:PDF,chunk:1,firstPage:33,lastPage:64,
     pages:[38,39,40,41,42,43].map((page,index)=>({page,globalPageId:34403+index,
@@ -1521,12 +1521,12 @@ async function fingerprintTestFixture() {
  const url=HOST+'/internal/verified-answer',
     secret='valid-private-token-for-the-verified-pilot-456';
  const body={question:'What caused the Peloponnesian War?',
-    sources:[{bookId:'152',page:38,text}]};
+    sources:[{bookId:'152',page:38,text,...(libraryVersion===48?{}:{libraryVersion})}]};
  let fetchCount=0,aiCount=0;
  const fetcher=async requestUrl=>{
     fetchCount++;
     assert.equal(requestUrl,
-      'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v2/books/152/1.json');
+      'https://jsynon.github.io/antilogicalism-library-data/reader-fingerprints-v'+(libraryVersion===48?2:3)+'/books/152/1.json');
     return Response.json(fingerprint);
  };
  const run=async(_model,input)=>{
@@ -1570,6 +1570,22 @@ test('v1.9.4 exact v48 source generates two bounded AI stages with canonical cit
  assert.equal(fixture.stats().fetchCount,1);
  assert.equal(result.headers.get('Access-Control-Allow-Origin'),
     'http://127.0.0.1:8766');
+});
+test('v1.9.5 exact v49 source generates two bounded AI stages with v3 fingerprints',async()=>{
+ const fixture=await fingerprintTestFixture({libraryVersion:49});
+ const result=await fixture.response();
+ assert.equal(result.status,200);
+ const data=await result.json();
+ assert.equal(data.outcome,'verified-source-draft');
+ assert.equal(data.verifiedPages,1);
+ assert.equal(data.citations.length,1);
+ assert.equal(data.citations[0].globalPageId,34403);
+ assert.equal(data.citations[0].page,38);
+ assert(data.citations[0].url.includes(PDF));
+ assert.equal(data.coverage,'partial');
+ assert.equal(data.reviewStatus,'claim_support_not_independently_verified');
+ assert.equal(fixture.stats().aiCount,2);
+ assert.equal(fixture.stats().fetchCount,1);
 });
 test('v1.9.4 rejects modified same-length text before any inference',async()=>{
  const fixture=await fingerprintTestFixture();
