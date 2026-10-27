@@ -1,4 +1,10 @@
-const DEFAULT_MAX_SPAN_LENGTH=220;
+// Keep reviewer spans aligned with the public sentence-anchor ceiling. This
+// lets a common long sentence stay intact instead of ending at an arbitrary
+// 220-character cutoff that later becomes an awkward citation highlight.
+const DEFAULT_MAX_SPAN_LENGTH=320;
+// Keep short neighboring sentences grouped as before; only a single longer
+// source sentence gets the wider budget, so passage ranking stays granular.
+const MAX_MERGED_SPAN_LENGTH=220;
 const MIN_SPAN_LENGTH=12;
 
 function trimRange(text,start,end){
@@ -40,19 +46,20 @@ export function buildReviewSpans(sourceId,text,{maxSpanLength=DEFAULT_MAX_SPAN_L
   const source=String(text||'');
   if(!/^S[1-9]\d*$/.test(String(sourceId))||!Number.isInteger(maxSpanLength)||
     maxSpanLength<MIN_SPAN_LENGTH) return [];
+  const mergeLimit=Math.min(maxSpanLength,MAX_MERGED_SPAN_LENGTH);
   const ranges=sentenceRanges(source),spans=[];let pending=null;
   const flush=()=>{if(pending){spans.push(pending);pending=null;}};
   for(const range of ranges){
     if(range.text.length>maxSpanLength){
       flush();spans.push(...splitLongRange(source,range,maxSpanLength));continue;
     }
-    if(pending&&range.start-pending.end<=2&&range.end-pending.start<=maxSpanLength){
+    if(pending&&range.start-pending.end<=2&&range.end-pending.start<=mergeLimit){
       pending=trimRange(source,pending.start,range.end);continue;
     }
     flush();
     if(range.text.length<MIN_SPAN_LENGTH&&spans.length){
       const previous=spans.at(-1);
-      if(range.start-previous.end<=2&&range.end-previous.start<=maxSpanLength){
+      if(range.start-previous.end<=2&&range.end-previous.start<=mergeLimit){
         spans[spans.length-1]=trimRange(source,previous.start,range.end);continue;
       }
     }

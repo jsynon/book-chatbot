@@ -219,7 +219,7 @@ test('review span IDs map only to exact contiguous source slices and stay within
  assert.ok(spans.length>2);
  assert.equal(new Set(spans.map(span=>span.spanId)).size,spans.length);
  for(const span of spans){
-  assert.ok(span.text.length>=12&&span.text.length<=220);
+  assert.ok(span.text.length>=12&&span.text.length<=320);
   assert.equal(text.slice(span.start,span.end),span.text);
   assert.ok(text.includes(span.text));
  }

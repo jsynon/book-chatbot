@@ -858,3 +858,18 @@ The highlight check exposes the next distinct issue. The artifact locates all se
 | Next validation | Run the frozen ten-question paired acceptance set with PR #281 deployed. Do not reopen the Hume/Kant logic unless it regresses there; prioritize a separate bounded inspection of truncated/weak highlights. |
 
 This run validates the bounded review-handoff milestone for the intended Hume/Kant pair. It does not show that semantic reviewer decisions are infallible or that the whole answer pipeline has reached the project goal. Preserve the successful trace and use the full paired acceptance set to check for cross-question regressions before starting the separate highlight work.
+
+## October 27, 2026: complete, readable citation highlights
+
+Run #21 exposed a presentation defect in the existing exact-evidence handoff: `buildReviewSpans` split source sentences at 220 characters, so approved Hume excerpts ended at “which is the only” and “we are,” while Kant ended at “therefore of.” The Worker had verified the exact quote and located it on the correct page, but the visible anchor was still an awkward reading target. This was not a reason to loosen citation validation or add another model stage.
+
+The bounded fix raises the maximum exact review span from 220 to 320 characters so the Hume conjunction sentence and the heat/flame sentence can reach review intact. It keeps the old 220-character limit when coalescing multiple short sentences, preserving passage-ranking granularity. For longer source sentences, the gateway may expand an already verified quote to the complete source sentence, up to 480 characters; it still verifies the supplied quote against the source first and adds no wording beyond the source (whitespace may be normalized). Review span IDs, reviewer acceptance limits, source/page checks, model-call counts, and fail-closed behavior are unchanged. The same eight-span-per-page ceiling remains in place; measure the actual packet size and latency in the paired workflow before treating the change as live success.
+
+| Highlight check | Current status |
+|---|---|
+| Hume/Kant examples from run #21 | Offline regression fixture covers the Hume 260-character regular-conjunction sentence and a 444-character Kant sentence. |
+| Exact source validation | Preserved; reviewer quotes must still match source text before a complete-sentence anchor is produced. |
+| Workflow and live-site validation | Pending PR checks, merge/deploy, and a paired workflow run. Compare highlight text, review packet size, review latency, and structural outcomes with run #21. |
+| Semantic highlight relevance | Still requires inspecting whether the selected complete sentence is the best passage for its linked claim; complete sentence boundaries alone do not prove relevance. |
+
+This change targets cut-off highlights while retaining the established evidence and citation gates. It does not claim to solve weak passage choice; use the next paired artifact to evaluate the changed anchors before considering any broader retrieval or composition work.

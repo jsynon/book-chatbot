@@ -4,7 +4,10 @@ export function normalizedEvidenceQuote(text) {
     .replace(/[Ɵɵ]/g,'ti')
     .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 }
-export function completeEvidenceAnchor(text,quote,max=320) {
+// A verified quote may be only one part of a long source sentence. Expanding
+// to a complete source sentence gives readers context while staying bounded;
+// callers still verify the supplied quote verbatim before using this anchor.
+export function completeEvidenceAnchor(text,quote,max=480) {
   const content=String(text||'').replace(/\s+/g,' ').trim();
   const target=normalizedEvidenceQuote(quote);
   if(!target)return quote;
