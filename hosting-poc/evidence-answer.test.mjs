@@ -702,6 +702,61 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
  }]);
 });
 
+test('review can select relevant exact evidence beyond the claim-ranked hint list',async()=>{
+ const text=[
+  'Herein lies my very strength; this is my unchanging sport. I turn my wheel that spins its circle fairly; I delight to make the lowest turn to the top, the highest to the bottom.',
+  'Now would I argue with you by these few words which Fortune herself might use: and do you consider whether her demands are fair?',
+  "Thus she proves her power; if in the selfsame hour one man is raised to happiness, and cast down in despair, 'tis thus she shows her might.",
+  'The sea may charm with its smoothed surface, but no less justly it may soon bristle in storms with rough waves. Is the insatiate discontent of man to bind me to a constancy which belongs not to my ways?',
+  'If Fortune should thus defend herself to you, you would have naught to utter on the other part.'
+ ].join('\n\n\n');
+ const source={id:'S1',bookId:'21',title:'The Consolation of Philosophy — Boethius',page:11,
+  candidatePartIds:['P1'],text,preview:text};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
+  parts:[{id:'P1',question:'How does Lady Philosophy explain the inherent instability of Fortune?',
+   sourceBookIds:['21'],candidateSourceIds:['S1']}]};
+ const draft='PART P1\nLady Philosophy explains that Fortune is inherently unstable because her very nature is defined by inconstancy and changing lots. [S1]';
+ const run=async(partStatus)=>{
+  let reviewerPayload;
+  const ai=makeAI([answer(draft),(_model,{messages})=>{
+   reviewerPayload=JSON.parse(messages[1].content);
+   const claim=reviewerPayload.claims[0];
+   const sourceEvidence=claim.sourceEvidence.find(item=>item.sourceId==='S1');
+   const pageEvidence=reviewerPayload.parts[0].evidence.find(item=>item.id==='S1');
+   const sourceReason=pageEvidence.spans.find(span=>/constancy which belongs not to my ways/i.test(span.text));
+   assert.ok(sourceReason,'the relevant statement is present in the supplied part evidence');
+   assert.ok(!sourceEvidence.spanIds.includes(sourceReason.spanId),
+    'this fixture reproduces the run 14 miss: the exact span is outside the ranked claim hints');
+   return {response:JSON.stringify({
+    parts:[{partId:'P1',status:partStatus,directAnswerClaimIds:[claim.claimId]}],
+    claims:[{claimId:claim.claimId,status:'answered',sources:[{
+     sourceId:'S1',status:'answered',spanIds:[sourceReason.spanId]}]}]
+   })};
+  }],{decorateReview:false});
+  const result=await composeEvidenceAnswer('How does Lady Philosophy explain the instability of Fortune?',
+   [source],ai,[],{plan,catalog:{21:source.title},trace:true});
+  return {ai,result};
+ };
+
+ const answered=await run('answered');
+ const decision=answered.result.trace.reviewContract.reviewDecisions[0];
+ assert.equal(answered.result.questionParts[0].status,'supported');
+ assert.equal(decision.candidateSpanIds.length,4);
+ assert.ok(!decision.candidateSpanIds.includes('S1-Q4'),
+  'the exact quote remains absent from the claim-ranked hint list');
+ assert.equal(decision.reviewerSpanIds[0],'S1-Q4');
+ assert.equal(decision.acceptedSpanIds[0],'S1-Q4');
+ assert.match(decision.acceptedQuote,/constancy which belongs not to my ways/i);
+ assert.equal(answered.ai.calls.length,2,'using the same-source fallback adds no model call');
+
+ const reviewerPartial=await run('partial');
+ assert.equal(reviewerPartial.result.questionParts[0].status,'partial',
+  'exact span validation does not override the reviewer’s explicit incomplete part status');
+ assert.equal(reviewerPartial.result.trace.reviewContract.partDecisions[0].directAnswerCovered,true);
+ assert.equal(reviewerPartial.ai.calls.length,2);
+});
+
 test('a why-answer using the source reason brings that exact span into review',async()=>{
  const text='The sea may charm with its smoothed surface, but no less justly it may soon bristle in storms with rough waves. '+
   'Is the insatiate discontent of man to bind me to a constancy which belongs not to my ways? '+
@@ -839,7 +894,7 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/use the smallest set of pages that directly supports that claim/);
  assert.match(COMPOSER_PROMPT,/Do not add a page just because it was retrieved or belongs to the same author/);
  assert.match(COMPOSER_PROMPT,/If distinct claims rely on different passages, write separate sentences/);
- assert.match(REVIEW_PROMPT,/sourceEvidence index/);
+ assert.match(REVIEW_PROMPT,/sourceEvidence list of the highest-ranked same-source span IDs/);
  assert.match(REVIEW_PROMPT,/one flat top-level claims array/);
  assert.match(REVIEW_PROMPT,/only one top-level claims property/);
  assert.match(REVIEW_PROMPT,/one source decision for every source cited by every claim/);
@@ -855,6 +910,10 @@ test('the composer uses a short per-part answer contract and the reviewer links 
   'the reviewer must emit claim/source decisions before selecting part coverage');
  assert.match(REVIEW_PROMPT,/Review every answer sentence separately/);
  assert.match(REVIEW_PROMPT,/stable claimId/);
+ assert.match(REVIEW_PROMPT,/ranked hints, not an allowlist/);
+ assert.match(REVIEW_PROMPT,/select another span only if it directly supports the claim/);
+ assert.match(REVIEW_PROMPT,/same source's evidence list for the claim's part/);
+ assert.doesNotMatch(REVIEW_PROMPT,/Use only supplied span IDs from that source's sourceEvidence list/);
  assert.match(REVIEW_PROMPT,/citation attached to a neighboring clause does not support it/);
  assert.match(REVIEW_PROMPT,/Select span IDs only/);
  assert.match(REVIEW_PROMPT,/"sources":\[\{"sourceId":"S1"/);
