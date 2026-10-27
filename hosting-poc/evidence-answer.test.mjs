@@ -591,7 +591,8 @@ test('a consequence-only sentence cannot pass a phrase-meaning part as a direct 
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.partId==='P1'&&issue.reason==='direct-answer-claim-missing'));
  assert.deepEqual(result.trace.reviewContract.partDecisions,[{
-  partId:'P1',directAnswerClaimIds:[],acceptedDirectAnswerClaimIds:[],directAnswerCovered:false
+  partId:'P1',reviewerStatus:'answered',finalStatus:'partial',directAnswerClaimIds:[],
+  acceptedDirectAnswerClaimIds:[],directAnswerCovered:false
  }]);
  assert.equal(ai.calls.length,2,'the direct-answer check uses the existing compose and review calls');
 });
@@ -604,7 +605,8 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.trace.reviewContract.partDecisions,[{
-  partId:'P1',directAnswerClaimIds:['P1-C1'],acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true
+  partId:'P1',reviewerStatus:'answered',finalStatus:'answered',directAnswerClaimIds:['P1-C1'],
+  acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true
  }]);
 });
 
@@ -1297,6 +1299,9 @@ test('per-part citation checking rejects unknown, malformed, and cross-linked ID
  assert.equal(result.coverage,'none');
  assert.equal(result.failureCode,'answer-citation-validation-failed');
  assert.match(result.trace.rejected.map(item=>item.reason).join(' '),/unknown|citation/);
+ assert.deepEqual(result.trace.final.failure.validationReasons,
+  ['source-not-linked-to-question-part','unknown-source-id']);
+ assert.equal('validationReasons' in result,false,'validation diagnostics stay inside the authenticated trace');
 });
 
 test('a citation linked to another question part is rejected even when its source ID exists',async()=>{

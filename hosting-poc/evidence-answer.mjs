@@ -609,10 +609,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             'direct-answer-claim-not-supported':'direct-answer-claim-missing';
       supportIssues.push({partId:part.id,reason});
     }
-    partDecisions.push({partId:part.id,
-      directAnswerClaimIds:directAnswerIds,
-      acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
-      directAnswerCovered});
     if(!acceptedAnswers.length)status='unanswered';
     // Rejected non-direct claims were not added to acceptedAnswers, so they
     // cannot leak into the final answer or veto a directly answered part.
@@ -623,6 +619,13 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
        !comparisonReviewEvidenceComplete(part,plan,sources,evidence)){
       status='partial';supportIssues.push({partId:part.id,reason:'comparison-support-missing-source-group'});
     }
+    partDecisions.push({partId:part.id,
+      // Keep the model's decision beside the deterministic outcome so a
+      // trace can show which stage left a requested part incomplete.
+      reviewerStatus:reviewerPart?.status||'missing',finalStatus:status,
+      directAnswerClaimIds:directAnswerIds,
+      acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
+      directAnswerCovered});
     answerContext.push(...acceptedAnswers);
     return {partId:part.id,status,evidence,answers:acceptedAnswers,
       directAnswerClaimIds:directAnswerIds,
@@ -630,6 +633,17 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       directAnswerCovered,reason:''};
   });
   return {parts,issues:[...new Set(issues)],supportIssues,recovered,reviewDecisions,partDecisions};
+}
+
+const VALIDATION_REASON_CODES=new Set([
+  'sentence-missing-citation','invalid-citation-format','unknown-source-id',
+  'source-not-linked-to-question-part','source-outside-question-scope',
+  'answer-text-too-short','hypothetical-inference-not-explicitly-qualified',
+  'hypothetical-inference-missing-source-group-citation','quotation-citation-mismatch'
+]);
+function validationReasonCodes(rejected){
+  return [...new Set((Array.isArray(rejected)?rejected:[]).map(item=>
+    VALIDATION_REASON_CODES.has(item?.reason)?item.reason:'other-validation-rejection'))].sort();
 }
 
 function comparisonReviewEvidenceComplete(part,plan,sources,evidence){
@@ -794,7 +808,10 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       evidenceHighlights.push({source_id:source.id,page:source.page,quote:sourceAnchor});
     }
   }
-  trace.final={answer,questionParts,coverage,failure,reviewFailure,elapsedMs:Date.now()-started};
+  trace.final={answer,questionParts,coverage,
+    failure:failure?.code==='answer-citation-validation-failed'?
+      {...failure,validationReasons:validationReasonCodes(trace.rejected)}:failure,
+    reviewFailure,elapsedMs:Date.now()-started};
   const noText=!answer;
   return {outcome:answer?(unreviewed?'unverified-source-draft':'verified-source-draft'):
       failure?'generation-failed':'insufficient-evidence',
