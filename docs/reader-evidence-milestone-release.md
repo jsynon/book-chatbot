@@ -1,6 +1,6 @@
 # Reading Companion evidence milestone: release report
 Last updated: October 27, 2026
-Status: The latest focused paired-scope run is [#21](https://github.com/jsynon/antilogicalism/actions/runs/40567413698), artifact `12763382692`, using merged Worker revision `6be7e17737df8c24009b50b5e9e44cce5c9bb52d` (PR #281; Cloudflare version `abc6c8e4-f03d-4cb2-a4fb-138d25f44090`): 2/2 structural cases passed, with all six question parts supported and no request failures or planner fallbacks. Both review calls completed in about 28 seconds; the per-part span packet contained 64 spans and about 23–24K serialized characters per scope, versus 228 spans and 53,215 characters in Selected Books run #20. This is a successful live check of the bounded timeout/handoff change on the targeted pair, not a general quality or latency guarantee. Seven of seven cited-source highlights were text-located, but semantic highlight relevance remains unscored and some selected quotes end mid-sentence. The workflow human rubric remains pending for both cases. Rerun the frozen ten-question paired acceptance set before broadening changes; treat citation-highlight relevance as a separate remaining issue.
+Status: The latest paired-scope live run is [#25](https://github.com/jsynon/antilogicalism/actions/runs/40589127363), artifact `12774350799`, using site revision `9dd40ca5f496f8cfc135c37e37ee0e985e827efe` and deployed Worker source revision `339504ccb57bd9f209d912b047866b5c65bf3326` (Cloudflare version `9f4854a5-32ff-4d2b-8cc7-daa1c81a02c8`) on library v48. All ten rows completed without request failures or planner fallbacks, but only 7/10 passed the structural gate (All Books 3/5, Selected Books 4/5; 16 supported, 3 partial, 1 unsupported). The offline passage audit isolates one retrieval-candidate miss: Hamlet All Books p. 454; it reports zero retrieved-best-page packet losses, one context-only Hume/Kant highlight (Kant p. 213), and no review-to-output status mismatches. This remains a structural/answer-quality failure, not a good result. The site has a bounded local fix under review; no post-fix live validation exists yet. Keep the ten-question paired set frozen until the same run confirms p. 454 reaches the candidate pool and submitted packet while Hume/Kant pp. 103–104 and Boethius p. 14 remain available. Human rubric scores remain pending, so the structural count is not a semantic quality score.
 
 ## Goal
 
@@ -899,6 +899,24 @@ The offline selector change preserves the broad answer's top eight spans unless 
 | Offline selector replay | Both scopes retain eight spans per source and seven of their original broad-ranked spans; the direct page-14 passage is present in both packets. |
 | Regression and Worker tests | Focused crowded-packet test passes; full Worker test suite passes 309/309. |
 | Scope | Local selector and saved-trace replay only. No live validation or claim that broader answer quality improved. |
+
+## October 27, 2026: run #25 Hamlet All Books retrieval-candidate miss
+
+Paired-scope run [#40589127363](https://github.com/jsynon/antilogicalism/actions/runs/40589127363), artifact `12774350799`, completed all ten v48 rows with no request failures, planner fallbacks, or skipped cases. It passed 7/10 structural checks (All Books 3/5; Selected Books 4/5), with 16 supported parts, three partial, and one unsupported. The deployed Worker revision was `339504ccb57bd9f209d912b047866b5c65bf3326`; the workflow estimated 25 AI calls. Human quality scores remain pending.
+
+The merged site audit in PR #240 replayed this exact artifact without AI or network calls. Its corrected counters identify one best passage absent from retrieval candidates (Hamlet All Books p. 454), zero best passages retrieved but omitted from the packet, one context-only highlight (Kant p. 213), and zero review-to-output status mismatches. Boethius p. 14 was submitted in both scopes. This corrects an earlier blended count that could miss a candidate-fusion loss.
+
+The bounded site follow-up, branch `codex/hamlet-quote-evidence-retention-20261027`, changes only the shared browser/evaluator candidate merger. When a question part includes a quoted phrase, it prioritizes a passage containing that phrase within the part's already-resolved source books before ordinary rank order. This covers the trace's wording difference (“conscience makes” in the question; “conscience does make” in Shakespeare) and the rank-two result on p. 454. It leaves search allowlists, corpus data, the 12-candidate pool, six-source answer packet, Worker review, model calls, and the public answer contract unchanged. The regression recreates the crowded All Books candidate cap and requires p. 454 to reach source selection.
+
+The saved ten-row query results were replayed locally through the updated candidate merger with no AI or network calls. Hamlet All Books now retains book 212 p. 454 and passes it through source selection; p. 453 remains available. The only candidate-page set change among the ten rows is this Hamlet row (p. 454 enters and a lower-ranked unrelated page leaves). Hume/Kant's direct Kant pp. 103–104 and Boethius p. 14 remain in the captured candidate pools. These results verify deterministic passage handoff for this artifact, not answer quality; the code has not been live-tested.
+
+| Follow-up check | Result |
+|---|---|
+| Quoted Hamlet passage regression | Pass; p. 454 survives the 12-candidate cap and reaches the six-source selector. |
+| Saved paired-candidate replay | Ten rows replayed; only Hamlet All Books candidate set changes. No AI/network calls. |
+| Site unit suite | `node --test reading-companion/*.test.mjs`: 210 passed, 0 failed. |
+| Live acceptance | Pending site PR merge and Pages publication. Rerun the same paired workflow once; confirm p. 454 appears in `retrievalCandidates` and `submittedSources`, then review the answer and source text. |
+| Worker behavior | Unchanged. No Worker redeploy is required for this site-only retrieval change. |
 
 ## October 27, 2026: run #23 trace review and citation-to-highlight linkage
 
