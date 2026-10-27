@@ -836,6 +836,8 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/When the supplied pages state the reason or premise that leads to the phrase's meaning, explain that causal step as well as the consequence/);
  assert.match(COMPOSER_PROMPT,/state each author’s position in a separate sentence/);
  assert.match(COMPOSER_PROMPT,/do not bundle distinct speaker claims under one shared citation group/);
+ assert.match(COMPOSER_PROMPT,/use the smallest set of pages that directly supports that claim/);
+ assert.match(COMPOSER_PROMPT,/Do not add a page just because it was retrieved or belongs to the same author/);
  assert.match(COMPOSER_PROMPT,/If distinct claims rely on different passages, write separate sentences/);
  assert.match(REVIEW_PROMPT,/sourceEvidence index/);
  assert.match(REVIEW_PROMPT,/one flat top-level claims array/);
@@ -1447,6 +1449,61 @@ test('a citation linked to another question part is rejected even when its sourc
  assert.equal(result.questionParts[0].status,'unsupported');
  assert.equal(result.questionParts[1].status,'supported');
  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
+});
+
+test('the composer receives only pages linked to at least one planned part while traces retain every candidate',async()=>{
+ const hamlet={...hamletMeaningSource,candidatePartIds:['P1']};
+ const tillich={...hamletMeaningSource,id:'S2',bookId:'230',title:'The Courage to Be — Paul Tillich',page:16,
+  text:'Tillich discusses courage and anxiety.',candidatePartIds:[]};
+ const huckFinn={...hamletMeaningSource,id:'S3',bookId:'321',title:'Adventures of Huckleberry Finn — Mark Twain',page:42,
+  text:'Huck Finn describes a journey on the river.',candidatePartIds:[]};
+ const sources=[hamlet,tillich,huckFinn];
+ const plan={...hamletMeaningPlan,parts:[{...hamletMeaningPlan.parts[0],sourceBookIds:['212']}]};
+ let composePayload;
+ const ai=makeAI([(_model,{messages})=>{
+  composePayload=JSON.parse(messages[1].content);
+  return answer('PART P1\nHamlet’s conscience weakens resolution and action. [S1]');
+ },review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(hamletMeaningQuestion,sources,ai,[],
+  {plan,catalog:{212:hamletMeaningSource.title},trace:true});
+ assert.deepEqual(composePayload.parts[0].candidateSourceIds,['S1']);
+ assert.deepEqual(composePayload.evidence.map(source=>source.id),['S1']);
+ assert.deepEqual(result.trace.evidence.map(source=>source.id),['S1','S2','S3'],
+  'the authenticated trace keeps the complete retrieved candidate set for diagnosis');
+ assert.equal(result.coverage,'full');
+ assert.equal(ai.calls.length,2,'evidence filtering adds no model call');
+});
+
+test('comparison claims keep citations attached to the smallest supporting source set',async()=>{
+ const humeP24={...hume,id:'S5',page:24,
+  text:'Inferences from experience arise from custom, not reasoning.',preview:'Experience guides inference through custom.'};
+ const kantP103={...kant,id:'S3',page:103,
+  text:'Causality is a condition of objective cognition of appearances in temporal succession.',
+  preview:'Causality is a condition of objective cognition.'};
+ const humeP39={...hume,id:'S1',page:39,
+  text:'Custom is the great guide of human life.',preview:'Custom guides human life.'};
+ const kantP104={...kant,id:'S4',page:104,
+  text:'The principle of causality is a condition of possible experience.',
+  preview:'Causality is a condition of possible experience.'};
+ const sources=[
+  {...humeP39,candidatePartIds:['P1','P3']},
+  {...kantP103,candidatePartIds:['P2','P3']},
+  {...humeP24,candidatePartIds:['P1','P3']},
+  {...kantP104,candidatePartIds:['P2','P3']}
+ ];
+ const ai=makeAI([answer('PART P1\nHume says causal inference comes from custom rather than reasoning. [S5]\n'+
+  'PART P2\nKant treats causality as a condition of possible experience. [S4]\n'+
+  'PART P3\nHume grounds inference in custom, while Kant makes causality a condition of objective experience. [S5, S3]'),
+  review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant explain causal necessity?',sources,ai,[],
+  {plan:twoSidePlan,catalog,trace:true});
+ assert.equal(result.coverage,'full');
+ assert.deepEqual([...new Set(result.evidenceMap.map(source=>source.id))].sort(),['S3','S4','S5']);
+ assert.ok(result.answer.includes('[S5]'));
+ assert.ok(result.answer.includes('[S4]'));
+ assert.ok(result.answer.includes('[S5, S3]'));
+ assert.ok(!result.answer.includes('[S1]'));
+ assert.equal(ai.calls.length,2,'claim-specific citation guidance adds no model call');
 });
 
 test('a bad quoted sentence is removed without discarding neighboring verified sentences',async()=>{
