@@ -521,8 +521,8 @@ The bounded Worker change keeps the existing three-way trust boundary—model re
 | Full Worker suite (`node --test hosting-poc/*.test.mjs`) | Pass; 290 tests, 0 failures. |
 | Syntax and whitespace checks | Pass; changed Worker JavaScript passes `node --check` and `git diff --check`. |
 | Website/evaluator suite | No website runtime code changed; the paired workflow shape and 25-call estimate are unchanged. |
-| Live paired validation | Pending merge and Worker deployment. Rerun the same ten cases once; inspect the recovered Wollstonecraft review trace and whether the four affected parts now nominate only claims that survive validation. Confirm no unsupported direct claim becomes full and review citations/highlights against page text. |
-| Quality conclusion | No live answer-quality improvement is claimed. A successful parse and a better selected claim set remain subject to source-level review; keep the unseen acceptance suite frozen. |
+| Live paired validation | Completed in run #10 after merge/deployment. Wollstonecraft All Books succeeded with valid review JSON, but the trace had no recovery event, so this run did not exercise the delimiter-repair branch. The four direct-answer handoffs were not all resolved; follow-up run #11 tests the source-subset change. |
+| Quality conclusion | The clean Wollstonecraft run confirms the case completed, but no broad quality improvement was established. Human source review remains necessary; keep the unseen acceptance suite frozen. |
 
 ## October 27, 2026: paired-scope run #10 and source-subset/interpretive-completeness candidate
 
@@ -541,5 +541,28 @@ The answer-quality signal is separate from the subset fix. Both Hamlet answers p
 | Focused answer suite (`node --test hosting-poc/evidence-answer.test.mjs`) | Pass; 83 tests, 0 failures. |
 | Full Worker suite (`node --test hosting-poc/*.test.mjs`) | Pass; 292 tests, 0 failures. |
 | Syntax and whitespace | Pass; changed modules pass `node --check`, and `git diff --check` is clean. |
-| Live paired-scope validation | Pending merge and Worker deployment. Rerun the same ten cases once; inspect the four affected handoffs, both Hamlet answers and citations to the adjacent premise, comparison safeguards, source identity, and highlights. |
-| Quality conclusion | The candidate targets a demonstrated interpretive omission and a deterministic handoff defect. It does not establish semantic accuracy; manually review the answer text against the source pages before unfreezing the unseen acceptance set. |
+| Live paired-scope validation | Completed in run #11 after merge/deployment; see the follow-up entry below. The expected Hume/Kant All Books and Boethius P2 handoffs recovered. |
+| Quality conclusion | Run #11's Hamlet answers included the supplied fear-of-death premise, but the artifact has no human semantic scores. This is a promising observed answer change, not proof of broad quality improvement; keep the unseen acceptance set frozen. |
+
+## October 27, 2026: paired-scope run #11 validates the source-subset change
+
+Paired-scope run [#40455788471](https://github.com/jsynon/antilogicalism/actions/runs/40455788471) completed all ten cases in with-review mode on v48 using the existing 25-call estimate. It had no request failures or planner fallbacks. The site revision was `c5e4eb8221c11a55ca60190eba948a7f8482cccb`; the Worker revision was `0b129183ff2a04eb7cda1b78d52d35059cdef645`, the merge commit for PR [#271](https://github.com/jsynon/book-chatbot/pull/271), running as Cloudflare version `81848ea5-8acb-4ec2-b2bb-a3fea7695be0`. This confirms the workflow tested the merged update.
+
+The run passed 8/10 structural cases, up from run #10's 7/10, with 18/20 parts supported and two partial (run #10 had 15 supported and five partial). The question set, site revision, scope pairing, and planned 20 parts were the same, making this a useful paired comparison, though answer generation remains stochastic. Hume/Kant passed in both scopes; Wollstonecraft passed in both; Du Bois passed in both; Hamlet passed in both. Both Boethius cases remained partial. All 28 cited highlights were located; highlight location does not show semantic relevance. The artifact's human rubric was still unscored for all ten cases.
+
+The source-subset change behaved as intended in the authenticated traces. Hume/Kant All Books P1/P3 omitted the Hume page that the reviewer explicitly marked partial with no spans, while retaining accepted same-group evidence; the case became fully supported. Boethius P2 in both scopes similarly became answered after its weak alternate citation was omitted. The strict boundaries remained: only explicit rejected sources were pruned, and exact accepted spans remained attached to final citations. This is live evidence that the targeted handoff path works, not proof that every use of source subsets is semantically correct.
+
+The two remaining structural failures share one issue: Boethius P1, “How does Lady Philosophy explain the instability of Fortune?” In both scopes, the reviewer itself marked the part partial. Some direct claims survived exact-span validation, including the Fortune-wheel reversal; other generalization/example claims were rejected. The direct-answer IDs that remained did survive, so this is not the old missing-span subset bug. Keep the part partial until its answer and the cited Boethius pages are reviewed together; do not relax the gate based on this score alone.
+
+The Hamlet answers did include the premise absent in run #10: the dread or fear of what follows death causes hesitation, with the selected-books answer connecting it to Hamlet's preference for known hardships over the unknown. Both cite Shakespeare's *Complete Works*, p. 454. This matches the answer-quality prompt change in this sample. The artifact still gives no independent human quality score, and the 28/28 highlight-location count does not judge whether the best lines are highlighted.
+
+The latest dispatched run, [#40459165657](https://github.com/jsynon/antilogicalism/actions/runs/40459165657) (#12), was canceled before any case completed. Its artifact is an initial `running` report with zero completed cases and no Worker source revision, so it is not a result and does not supersede run #11.
+
+| Validation and follow-up | Result |
+|---|---|
+| PR #271 merged and deployed source verification | Pass; run #11 reports its merge commit as `workerSourceRevision`. |
+| Same-group explicit rejection handling | Live trace supports intended recovery in Hume/Kant All Books P1/P3 and both Boethius P2 parts; all remaining source checks stayed active. |
+| Structure | 8/10 cases; 18/20 parts supported, 2 partial, 0 unsupported. |
+| Highlight location | 28/28 citations located; semantic relevance still needs manual review. |
+| Answer-quality result | Hamlet answers now include fear of the unknown after death; human rubric remains 0/10. |
+| Remaining validation | Inspect Boethius P1 source text and answer claims in both scopes, then rate the ten answers on the existing five-dimension rubric before any broader fix or acceptance run. |
