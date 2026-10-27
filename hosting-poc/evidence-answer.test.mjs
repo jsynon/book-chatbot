@@ -676,7 +676,7 @@ const twoSidePlan={version:'reader-evidence-v2',resolvedQuestion:'How do Hume an
  ],queries:['Hume custom','Kant a priori']};
 
 test('a comparison drops an unrequested conditional author-to-author inference',async()=>{
- const inference='As a cautious reader inference, if Kant applied his view of causality to Hume’s account, he might argue that Hume’s custom is a necessary transcendental principle. [S1, S2]';
+ const inference='If Kant applied his view of causality to Hume’s account, he might suggest that Hume’s custom is a necessary transcendental principle. [S1, S2]';
  const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
   'PART P2\nKant identifies causality as an a priori category of relation. [S2]\n'+
   'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]\n'+
@@ -689,6 +689,26 @@ test('a comparison drops an unrequested conditional author-to-author inference',
  assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
   item.reason==='unrequested-cross-author-inference'));
  assert.equal(ai.calls.length,2,'the scope guard reuses compose and review without an extra call');
+});
+
+test('comparison handoff rejects the uncited opening and unrequested might-suggest bridge',async()=>{
+ const inference='If Kant applied his view of causality to Hume’s account, he might suggest that custom is a necessary transcendental principle. [S1, S2]';
+ const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant identifies causality as an a priori category of relation. [S2]\n'+
+  'PART P3\nHume and Kant differ in their accounts of causal necessity.\n'+
+  'Hume ties causal expectation to custom. [S1] Kant treats causality as an a priori category. [S2]\n'+inference),
+  review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:twoSidePlan,catalog,trace:true});
+ assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&item.reason==='sentence-missing-citation'));
+ assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&item.reason==='unrequested-cross-author-inference'));
+ assert.doesNotMatch(result.answer,/differ in their accounts|might suggest/);
+ assert.equal(result.questionParts.find(part=>part.part.includes('differ')).status,'partial',
+  'later cited propositions cannot silently replace the rejected required opening sentence');
+ assert.ok(result.trace.coverageGaps.some(item=>item.partId==='P3'&&
+  item.reason==='required-direct-answer-rejected'));
+ assert.equal(ai.calls.length,2,'the handoff stays within one compose and one review call');
 });
 
 test('an unsupported counterfactual-only comparison exposes its bounded validation reason',async()=>{
@@ -920,6 +940,7 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/interpret it in plain language before describing consequences/);
  assert.match(COMPOSER_PROMPT,/When the supplied pages state the reason or premise that leads to the phrase's meaning, explain that causal step as well as the consequence/);
  assert.match(COMPOSER_PROMPT,/state each author’s position in a separate sentence/);
+ assert.match(COMPOSER_PROMPT,/The first sentence of a comparison part must itself be a sourced comparison/);
  assert.match(COMPOSER_PROMPT,/do not bundle distinct speaker claims under one shared citation group/);
  assert.match(COMPOSER_PROMPT,/use the smallest set of pages that directly supports that claim/);
  assert.match(COMPOSER_PROMPT,/Do not add a page just because it was retrieved or belongs to the same author/);
@@ -1125,6 +1146,55 @@ test('a hypothetical can cite one relevant page per author when more group pages
  assert.deepEqual(inference.sourceIds,['S1','S2']);
  assert.equal(result.coverage,'full');
  assert.equal(ai.calls.length,2);
+});
+
+test('review sees a bounded per-source packet and cannot select an unsent full-source span',async()=>{
+ const text=Array.from({length:24},(_,index)=>
+  `This unrelated passage discusses ordinary philosophical subjects number ${index+1}.`).join('\n\n\n');
+ const source={...hume,text,preview:text,candidatePartIds:['P1']};
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],candidateSourceIds:['S1']} ]};
+ const draft='PART P1\nHume explains causal necessity through custom and habit in repeated experience. [S1]';
+ const runWithSpan=async spanId=>{
+  let payload;
+  const ai=makeAI([answer(draft),(_model,{messages})=>{
+   payload=JSON.parse(messages[1].content);
+   const claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
+  }],{decorateReview:false});
+  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+   [source],ai,[],{plan,catalog,trace:true});
+  return {payload,result,ai};
+ };
+ const offered=await runWithSpan('S1-Q1');
+ const spans=offered.payload.parts[0].evidence[0].spans;
+ assert.equal(spans.length,8,'the reviewer packet has a fixed per-source cap');
+ assert.ok(offered.result.trace.reviewContract.valid);
+ assert.equal(offered.ai.calls.length,2);
+ const omitted=await runWithSpan('S1-Q9');
+ assert.ok(omitted.result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P1'&&issue.reason==='missing-claim-source-span'));
+ assert.equal(omitted.result.coverage,'none',
+  'a valid full-source span cannot be selected when it was not sent to this part review');
+ assert.equal(omitted.ai.calls.length,2);
+});
+
+test('review deadline failure stays fail-closed and records the failed stage without retry',async()=>{
+ const timeout=Object.assign(new Error('Inference deadline exceeded'),{
+  stage:'review',code:'inference-deadline-exceeded',startedAt:Date.now()-45000
+ });
+ const ai=makeAI([answer('PART P1\nHume links causal expectation to custom and regular conjunction. [S1]'),timeout]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true
+ });
+ assert.equal(ai.calls.length,2,'a failed review is not retried or repaired with another model call');
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.trace.final.reviewFailure.stage,'review');
+ assert.equal(result.trace.final.reviewFailure.code,'inference-deadline-exceeded');
+ assert.ok(result.trace.final.reviewFailure.elapsedMs>=45000);
+ assert.equal(result.evidenceHighlights.length,0,'unreviewed draft evidence does not become verified highlights');
 });
 
 test('an evidence limitation stays visible but cannot complete the requested hypothetical inference',async()=>{
