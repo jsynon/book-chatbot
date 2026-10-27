@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT,parseReviewJson} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
@@ -719,7 +719,10 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/attribute claims about that page to the commentator or the commentary/);
  assert.match(COMPOSER_PROMPT,/Cite every factual sentence/);
  assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
+ assert.match(REVIEW_PROMPT,/\"claims\":\[\{/);
  assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
+ assert.ok(REVIEW_PROMPT.indexOf('\"claims\":[')<REVIEW_PROMPT.indexOf('\"parts\":['),
+  'the reviewer must emit claim/source decisions before selecting part coverage');
  assert.match(REVIEW_PROMPT,/Review every answer sentence separately/);
  assert.match(REVIEW_PROMPT,/stable claimId/);
  assert.match(REVIEW_PROMPT,/citation attached to a neighboring clause does not support it/);
@@ -733,7 +736,9 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/require an explicit plain-language interpretation/);
  assert.match(REVIEW_PROMPT,/directAnswerClaimIds/);
  assert.match(REVIEW_PROMPT,/A consequence, example, or related fact alone is not a direct answer/);
- assert.match(REVIEW_PROMPT,/smallest sufficient set of claim IDs/);
+ assert.match(REVIEW_PROMPT,/smallest sufficient set of claims/);
+ assert.match(REVIEW_PROMPT,/First finish the claim and source decisions/);
+ assert.match(REVIEW_PROMPT,/Do not nominate a claim you marked partial or unanswered/);
  assert.match(REVIEW_PROMPT,/Do not list every claim by default/);
  assert.match(REVIEW_PROMPT,/unsupported non-direct claim can be omitted without downgrading/);
  assert.match(REVIEW_PROMPT,/assess each author’s premise only against that author’s evidence/);
@@ -1629,6 +1634,39 @@ test('malformed reviewer JSON with unescaped quotation marks fails closed and pr
  assert.match(result.answer,/custom and regular conjunction/);
  assert.deepEqual(result.trace.reviewContract.issues,['model-output-invalid-format']);
  assert.equal(ai.calls.length,2,'format handling must not make an additional model call');
+});
+
+test('the exact run 9 Wollstonecraft reviewer response parses after repeated unmatched closers are removed',()=>{
+ const raw=['```json',
+  '{"parts":[{"partId":"P1","status":"answered","directAnswerClaimIds":["P1-C1","P1-C2","P1-C3","P1-C4","P1-C5"]},{"partId":"P2","status":"answered","directAnswerClaimIds":["P2-C1","P2-C2","P2-C3","P2-C4","P2-C5"]}],"claims":[{"claimId":"P1-C1","status":"answered","sources":[{"sourceId":"S5","status":"answered","spanIds":["S5-Q8","S5-Q25"]}]]},{"claimId":"P1-C2","status":"answered","sources":[{"sourceId":"S5","status":"answered","spanIds":["S5-Q21"]}]]},{"claimId":"P1-C3","status":"answered","sources":[{"sourceId":"S4","status":"answered","spanIds":["S4-Q5"]}]]},{"claimId":"P1-C4","status":"answered","sources":[{"sourceId":"S2","status":"answered","spanIds":["S2-Q19"]}]]},{"claimId":"P1-C5","status":"answered","sources":[{"sourceId":"S5","status":"answered","spanIds":["S5-Q25"]}]]},{"claimId":"P2-C1","status":"answered","sources":[{"sourceId":"S4","status":"answered","spanIds":["S4-Q20","S4-Q22"]}]]},{"claimId":"P2-C2","status":"answered","sources":[{"sourceId":"S5","status":"answered","spanIds":["S5-Q6"]}]]},{"claimId":"P2-C3","status":"answered","sources":[{"sourceId":"S1","status":"answered","spanIds":["S1-Q21"]}]]},{"claimId":"P2-C4","status":"answered","sources":[{"sourceId":"S4","status":"answered","spanIds":["S4-Q20"]}]]},{"claimId":"P2-C5","status":"answered","sources":[{"sourceId":"S4","status":"answered","spanIds":["S4-Q22"]}]]}]}',
+  '```'].join('\n');
+ const review=parseReviewJson({response:raw});
+ assert.equal(review.parts.length,2);
+ assert.equal(review.claims.length,10);
+ assert.deepEqual(review.parts.map(part=>part.directAnswerClaimIds.length),[5,5]);
+});
+
+test('run 9 repeated-unmatched-closer recovery still validates the full review and makes no extra call',async()=>{
+ const sourceDecision={sourceId:'S1',status:'answered',spanIds:['S1-Q1']};
+ const valid=JSON.stringify({claims:['P1-C1','P1-C2'].map(claimId=>({claimId,status:'answered',
+  sources:[sourceDecision]})),parts:[{partId:'P1',status:'answered',
+  directAnswerClaimIds:['P1-C1','P1-C2']}]});
+ const malformed=valid.replaceAll('"spanIds":["S1-Q1"]}]}','"spanIds":["S1-Q1"]}]]}');
+ assert.equal((malformed.match(/\]\]\}/gu)||[]).length,2,
+  'fixture must preserve the repeated closing brackets seen across run 9 claim records');
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n'+
+  'Repeated conjunction guides inference. [S1]'),
+  {response:'```json\n'+malformed+'\n```'}],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.deepEqual(result.trace.reviewContract.recovered,[{
+  stage:'review',code:'repeated-unmatched-closer',count:2
+ }]);
+ assert.deepEqual(result.evidenceMap.map(item=>item.id),['S1','S1']);
+ assert.equal(ai.calls.length,2,'syntax normalization must not trigger another model call');
 });
 
 test('run 48 reviewer typo fails closed without exposing unreviewed evidence',async()=>{

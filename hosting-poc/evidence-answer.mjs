@@ -18,6 +18,8 @@ The passage explains the author's position and the reason for it. [S1]
 PART P2
 The two accounts differ in the role they assign to experience. [S1, S2]`;
 
+// The response asks for claim/source decisions before part coverage so the
+// direct-answer set is chosen from reviewed claims, not nominated in advance.
 export const REVIEW_PROMPT=`Review every answer sentence separately against the exact supplied spans from each cited, fingerprint-verified source. Use the stable claimId for each decision. Your primary task is to decide whether the evidence supports the claim as written, not whether the page shares its topic words. The input has question parts, evidence spans, and one flat top-level claims array. Each claim has its exact text, partId, cited sourceIds, and a sourceEvidence index that helps locate relevant spans. A source's sourceGroup identifies the planner's author/source group; it is context for assigning premises, not proof.
 
 For every claim, review every cited source ID separately and inspect the exact text of the spans you select. Check the same concept, actor, action, polarity, qualification, and scope. When a part asks what a phrase or statement means, require an explicit plain-language interpretation; consequences or nearby imagery alone leave the part partial. For comparisons, assess each author’s premise only against that author’s evidence; one source cannot support another speaker’s clause, and synthesis is answered only when the cited evidence supports the specific relationship. A reversed negation or attribution is a material contradiction: a speaker saying they cannot do X does not support a sentence saying that speaker can do X, or a general claim that the author or everyone can do X. First-person inability or experience does not establish a general rule. A neighboring doctrine, shared keyword, or citation alone is not support. Select span IDs only; do not copy or rewrite quotations. If one supplied span does not support every material clause, select the smallest set of up to ${MAX_REVIEW_SPANS_PER_SOURCE} distinct relevant spans from that same source that does; otherwise mark that source partial or unanswered and return no unsupported spans.
@@ -26,13 +28,13 @@ Attribute each passage to the voice supported by its text and context. Metadata 
 
 For definitions, check whether the answer gives the defining operation or contrast when the passages provide it. For phrase-meaning questions, assess whether the answer interprets the phrase itself before describing its effects. For questions about justification, knowledge, or necessity, a category name alone is incomplete; assess the stated grounds or argument. Keep broad author answers focused on the requested view, not a list of retrieved topics.
 
-For every part, include the directAnswerClaimIds field with the smallest sufficient set of claim IDs that directly answers the part and together covers its explicitly requested facets. Do not list every claim by default: exclude context, examples, consequences, qualifications, and repeated support unless one is needed to answer a requested facet. A consequence, example, or related fact alone is not a direct answer when the part asks for a meaning, definition, reason, or relationship. Use an empty array when no fully supported set directly answers the part. Each ID must belong to that same part; the Worker checks that every selected claim survives exact quote review. Set the part status from the answer that remains after unsupported claims are removed: an unsupported non-direct claim can be omitted without downgrading a complete direct answer, but a missing or unsupported direct-answer claim keeps the part partial or unanswered.
+First finish the claim and source decisions. Then, for each part, include directAnswerClaimIds as the smallest sufficient set of claims you judged answered and that directly covers its explicitly requested facets. Do not nominate a claim you marked partial or unanswered, or one whose required source group lacks an answered source with a selected span. A weak alternate citation may be omitted only under the source-subset rule above, and the remaining evidence must still support every claim clause and required source group. Do not list every claim by default: exclude context, examples, consequences, qualifications, and repeated support unless one is needed to answer a requested facet. A consequence, example, or related fact alone is not a direct answer when the part asks for a meaning, definition, reason, or relationship. Use an empty array when no fully supported set directly answers the part. Each ID must belong to that same part; the Worker checks that every selected claim survives exact quote review. Set the part status from the answer that remains after unsupported claims are removed: an unsupported non-direct claim can be omitted without downgrading a complete direct answer, but a missing or unsupported direct-answer claim keeps the part partial or unanswered.
 
 For an explicit hypothetical question about one author responding to another, require a standalone, clearly labeled, cautious reader inference. Assess each cited author source against its own premise; do not demand that a source record the hypothetical response itself. The premises must establish the same specific point of contact, and the conclusion must follow modestly from it. The inference claim must include relevant evidence from every author source group; a broad comparison, unrelated quotation, one-sided citation, or citation attached to a neighboring clause does not support it. Never present the inference as historical fact. If a needed premise or shared point is missing, mark it partial or unanswered. A limitation saying that no reliable inference is possible does not complete a part that asks what one author would think.
 
 Return one source decision for every source cited by every claim, in the same order. A source is answered only when its selected exact spans support every material clause or premise attributed to that source. Return at most ${MAX_REVIEW_SPANS_PER_SOURCE} distinct spans per source and ${MAX_REVIEW_SPANS_PER_CLAIM} spans total per claim. Assess whether the claim remains fully supported by a subset of its cited sources: an additional weak or redundant citation may be omitted from the final answer only when the remaining accepted source or sources support every material clause and every required premise. Do not let a rejected alternate page downgrade a claim when an accepted page from the same planned source group supports it. Do not drop a source group needed for a comparison or synthesis; if a required premise has no accepted source, the claim or part is partial. Part status reflects whether the answer covers the requested part, not just whether its listed claims have citations.
 
-Return one valid JSON object only, without Markdown or explanation. Use exactly this shape: {"parts":[{"partId":"P1","status":"answered|partial|unanswered","directAnswerClaimIds":["P1-C1"]}],"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q2"]},{"sourceId":"S2","status":"answered|partial|unanswered","spanIds":["S2-Q1"]}]}]}. Include every supplied part and claim exactly once, with only one top-level claims property. Each part's directAnswerClaimIds must contain only the smallest sufficient set of direct-answer claims for that part, not all claims by default, and must be empty if no accepted set answers all requested facets. Set part status from the answer after unsupported claims are removed. Include every cited source exactly once in its claim. Unanswered claims or sources use an empty spanIds array. Use only supplied span IDs from that source's sourceEvidence list; the Worker validates the IDs against exact text. Do not copy source wording into the response. Do not include rationales, answer text, page text, nested claim arrays, or extra fields.`
+Return one valid JSON object only, without Markdown or explanation. Output claim decisions before part decisions so the part's direct-answer set is chosen from the completed evidence review. Use exactly this shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q2"]},{"sourceId":"S2","status":"answered|partial|unanswered","spanIds":["S2-Q1"]}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","directAnswerClaimIds":["P1-C1"]}]}. Include every supplied claim and source exactly once, then every supplied part exactly once, with only one top-level claims property. Each part's directAnswerClaimIds must contain only the smallest sufficient set of direct-answer claims for that part, not all claims by default, and must be empty if no accepted set answers all requested facets. Every nominated claim must have an answered claim decision and retain evidence for every required source group. Set part status from that answer after unsupported claims are removed. Unanswered claims or sources use an empty spanIds array. Use only supplied span IDs from that source's sourceEvidence list; the Worker validates the IDs against exact text. Do not copy source wording into the response. Do not include rationales, answer text, page text, nested claim arrays, or extra fields.`
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -45,14 +47,40 @@ function responseText(raw,stage){
   if(typeof text!=='string'||!text.trim())throw new ModelFormatError(stage,'Model response was empty.');
   return text;
 }
+const REVIEW_JSON_RECOVERY=Symbol('reviewJsonRecovery');
+function removeRepeatedUnmatchedClosers(value){
+  const stack=[];let output='',inString=false,escaped=false,previousCloser='',removed=0;
+  for(let index=0;index<value.length;index++){
+    const char=value[index];
+    if(inString){
+      output+=char;
+      if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char==='"')inString=false;
+      continue;
+    }
+    if(char==='"'){inString=true;previousCloser='';output+=char;continue;}
+    if(char==='{'){stack.push('}');previousCloser='';output+=char;continue;}
+    if(char==='['){stack.push(']');previousCloser='';output+=char;continue;}
+    if(char==='}'||char===']'){
+      if(stack.at(-1)===char){stack.pop();previousCloser=char;output+=char;continue;}
+      // Run 9's reviewer emitted a second `]` after closing a source list.
+      // Drop only an immediately repeated closer that is impossible at this
+      // stack position; valid nested arrays still close through the stack.
+      if(char===previousCloser&&value[index-1]===char&&stack.length){removed++;continue;}
+      return null;
+    }
+    if(!/\s/u.test(char))previousCloser='';
+    output+=char;
+  }
+  return !inString&&stack.length===0&&removed?{text:output,removed}:null;
+}
 function parseJson(raw,stage){
   const text=responseText(raw,stage).trim();
   const fenced=text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   const candidate=fenced?fenced[1]:text;
   try{return JSON.parse(candidate);}catch{}
-  // Recover the first complete JSON object while respecting braces inside
-  // quoted strings. Only the known model tail `]}` (or its single-character
-  // truncation) is ignored; semantic/schema validation still runs in full.
+  // Find the first complete root object without counting braces inside
+  // quoted strings. The suffix is checked separately; no root content is
+  // repaired here.
   const start=candidate.indexOf('{');
   if(start<0||candidate.slice(0,start).trim())
     throw new ModelFormatError(stage,'Model response was not valid JSON.');
@@ -66,9 +94,24 @@ function parseJson(raw,stage){
   }
   if(end<0||!/^\s*(?:\]\s*\}?|\}\s*\]?)?\s*$/.test(candidate.slice(end)))
     throw new ModelFormatError(stage,'Model response was not valid JSON.');
-  try{return JSON.parse(candidate.slice(start,end));}
-  catch{throw new ModelFormatError(stage,'Model response was not valid JSON.');}
+  const objectText=candidate.slice(start,end);
+  try{return JSON.parse(objectText);}
+  catch{
+    // Recovery is limited to review output and one unambiguous defect pattern.
+    // The normal review-schema and exact-span checks still run after parsing.
+    const recovered=stage==='review'?removeRepeatedUnmatchedClosers(objectText):null;
+    if(recovered){
+      try{
+        const parsed=JSON.parse(recovered.text);
+        Object.defineProperty(parsed,REVIEW_JSON_RECOVERY,{value:{code:'repeated-unmatched-closer',count:recovered.removed}});
+        return parsed;
+      }catch{}
+    }
+    throw new ModelFormatError(stage,'Model response was not valid JSON.');
+  }
 }
+// Keep the review parser independently testable against authenticated trace fixtures.
+export function parseReviewJson(raw){return parseJson(raw,'review');}
 
 function linkEvidenceToParts(plan,sources){
   const groups=(plan.sources||[]).filter(source=>['primary','subject'].includes(source.role)&&
@@ -756,10 +799,12 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       })));
       const reviewPayload={question,parts:reviewParts,claims:reviewClaims};
       try{
-        const rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseJson);
+        const rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
         review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMaps,question,reviewClaims);
+        const syntaxRecovery=rawReview?.[REVIEW_JSON_RECOVERY];
         trace.reviewContract={valid:review.issues.length===0,issues:review.issues,
-          supportIssues:review.supportIssues,recovered:review.recovered,
+          supportIssues:review.supportIssues,recovered:[...review.recovered,
+            ...(syntaxRecovery?[{stage:'review',...syntaxRecovery}]:[])],
           reviewDecisions:review.reviewDecisions,partDecisions:review.partDecisions};
         if(review.issues.length)reviewFailure={stage:'review',code:'review-contract-incomplete',
           message:'Review omitted or changed one or more question-part decisions.'};
