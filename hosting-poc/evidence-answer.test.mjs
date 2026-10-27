@@ -565,6 +565,10 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/three to five concise sentences/);
  assert.match(COMPOSER_PROMPT,/planner's search queries are retrieval leads, not a list of topics/);
  assert.match(COMPOSER_PROMPT,/one main claim/);
+ assert.match(COMPOSER_PROMPT,/Answer each supplied question part directly in its first sentence/);
+ assert.match(COMPOSER_PROMPT,/interpret it in plain language before describing consequences/);
+ assert.match(COMPOSER_PROMPT,/state each author’s position in a separate sentence/);
+ assert.match(COMPOSER_PROMPT,/do not bundle distinct speaker claims under one shared citation group/);
  assert.match(COMPOSER_PROMPT,/If distinct claims rely on different passages, write separate sentences/);
  assert.match(REVIEW_PROMPT,/sourceEvidence index/);
  assert.match(REVIEW_PROMPT,/one flat top-level claims array/);
@@ -587,6 +591,9 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/A reversed negation or attribution is a material contradiction/);
  assert.match(REVIEW_PROMPT,/review every cited source ID separately/);
  assert.match(REVIEW_PROMPT,/material clause or premise/i);
+ assert.match(REVIEW_PROMPT,/require an explicit plain-language interpretation/);
+ assert.match(REVIEW_PROMPT,/assess each author’s premise only against that author’s evidence/);
+ assert.match(REVIEW_PROMPT,/synthesis is answered only when the cited evidence supports the specific relationship/);
  assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
