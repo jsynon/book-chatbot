@@ -899,3 +899,41 @@ The offline selector change preserves the broad answer's top eight spans unless 
 | Offline selector replay | Both scopes retain eight spans per source and seven of their original broad-ranked spans; the direct page-14 passage is present in both packets. |
 | Regression and Worker tests | Focused crowded-packet test passes; full Worker test suite passes 309/309. |
 | Scope | Local selector and saved-trace replay only. No live validation or claim that broader answer quality improved. |
+
+## October 27, 2026: run #23 trace review and citation-to-highlight linkage
+
+Paired-scope run [#40574778730](https://github.com/jsynon/antilogicalism/actions/runs/40574778730), artifact `reading-companion-paired-scope-evaluation-all` (ID `12766852545`), completed on library v48 with the merged PR #283 Worker revision `d98c7bf1e12aec5846bcd8d175e1cd66eeb7a81a` and Cloudflare version `eb7b4886-ce47-4129-a960-b5845718736f`. It completed all five paired questions without request failures, fallbacks, or skipped cases, but the structural result was **8/10**: All Books 3/5 and Selected Books 5/5. Eighteen of twenty answer parts were supported; two were partial. The workflow estimated 25 Worker AI calls.
+
+Offline trace review isolated the two misses to different claim-to-evidence failures:
+
+- **Hume/Kant, All Books P3:** the composer opened with an uncited comparison sentence. The deterministic citation validator rejected that required direct-answer sentence as `sentence-missing-citation`. Later cited comparison claims survived review, but they could not replace the rejected required answer. The final trace records `required-direct-answer-rejected`; the reviewer’s `directAnswerCovered` describes only the surviving claims at its stage, not the final post-validation coverage gate. This is a composition-format failure, not missing retrieved evidence. Selected Books P3 passed.
+- **Boethius, All Books P1:** required claim P1-C1 said Fortune is unstable because of uncertainty **and the fickle changes of the material world**. Review selected the exact page-14 span “that Fortune by its own uncertainty can never come near to reaching happiness” and rejected the broader claim as `claim-source-not-supported`; that span does not establish the added material-world-change explanation. Other Fortune claims passed, but the required direct answer remained partial. Selected Books used a narrower formulation and passed, though its “inconstancy” wording should still be read with the quote’s narrower statement about uncertainty rather than treated as proof of an identical claim.
+
+The Boethius P2 packet replay does not show that PR #283 changed this case’s packet. The broad top-eight packet exactly matched the artifact. Its top-six required-claim candidates were already present, so the conditional replacement did not activate. The “happiness without … lies within yourselves” span was rank 11 on the claim-specific ranking and was absent, yet review supported P2 using other accepted page-14 spans. P2’s pass is therefore not evidence that this selector rescued the direct span; do not widen the packet on this case alone.
+
+The same artifact reveals a distinct highlight-linkage defect. On Selected Books Boethius page 14, the evidence map contains approved exact quotes for multiple claims, including P2-C2’s wealth/possession claim. The public highlight payload retains at most three quotes per source page and omits that P2-C2 quote. The active site client then tries to match the answer sentence against those three quotes and, if none match, falls back to the page group’s primary quote, which belongs to a different claim. The source reader faithfully locates the quote it receives, so a location pass can coexist with a semantically wrong passage being opened for a particular citation. All 33 source entries in this artifact had a located highlight, but `highlightRelevance` is inspection-only and did not score claim-level relevance; the workflow’s location result does not rule out this wrong-claim fallback.
+
+This points to a bounded, zero-AI-call highlight fix: keep the compact three-quote page summary for source cards, but resolve each inline citation using the full verified claim/source evidence map (or an equivalent claim-indexed payload). Remove the fallback to a different page-level primary claim; if the citation cannot be mapped confidently, open the cited page without a highlight. Add a regression for Boethius P2-C2 as a fourth page claim and assert that its inline citation opens the wealth/possession quote, never the happiness quote. A stronger relevance check should follow each answer sentence through its own claim ID and exact approved quote to the located source text; “some highlight exists on this page” is too weak. Lexical ranking can order verified candidates, but it cannot establish semantic entailment.
+
+| Run #23 trace check | Finding |
+|---|---|
+| Structural outcome | 8/10; All Books 3/5 and Selected Books 5/5; 18/20 parts supported. |
+| Hume/Kant All Books P3 | Uncited required opening comparison rejected before review; later cited claims could not substitute. |
+| Boethius All Books P1 | Required claim added a material-world-change rationale absent from the selected uncertainty quote. |
+| Boethius P2 packet replay | Selector condition inactive; packet unchanged from broad top eight; direct span rank 11 and absent, while P2 passed on other spans. |
+| Highlight location vs relevance | 33/33 source entries located; semantic relevance was not scored. A fourth claim’s approved quote was omitted by the three-quote page payload, allowing UI fallback to another claim’s primary quote. |
+| Bounded highlight change | Implemented in the site client: inline citations resolve against the existing full verified evidence map, while source cards retain their three-quote page summary. |
+
+The site implementation adds `reading-companion/citation-evidence.mjs` and integrates it in the active `companion-v111.mjs`. The helper requires one exact normalized claim-point match among reviewer-approved evidence for that source and claim; it rejects unverified, missing, or ambiguous matches with an empty highlight list. It does not use the compact page summary or fall back to the page's primary quote. The existing source reader then performs its exact text-location check as before. No Worker payload expansion was needed because the public answer already returns the verified `evidenceMap`; retrieval, review, the three-quote source-card cap, and AI-call count are unchanged.
+
+Regression tests reproduce the run #23 Boethius page-14 overflow: the P2-C2 wealth quote is outside the three-item page summary but remains in the evidence map, and its inline citation selects that quote. Further tests prove that a happiness quote is never used as fallback, and that missing, ambiguous, wrong-source, or unverified evidence produces no highlight. This is a linkage/location guarantee, not an automatic semantic-entailment score. The two structural misses remain separate composition/support issues and are not changed by this highlight patch.
+
+| Implementation validation | Result |
+|---|---|
+| Site Reading Companion tests (`node --test reading-companion/*.test.mjs`) | 149 passed, 0 failed. |
+| Focused citation-evidence tests | 5 passed, including the Boethius overflow fixture and live response wiring. |
+| Active client syntax and patch checks | `node --check` for `companion-v111.mjs` and `citation-evidence.mjs`; `git diff --check` passed. |
+| Worker contract suite (`node --test hosting-poc/*.test.mjs`) | 309 passed, 0 failed; Worker code and response contract remain unchanged. |
+| Live validation | Pending site PR merge and GitHub Pages publication. Run the same Boethius question and inspect an inline P2-C2 citation; confirm it opens the wealth quote and not the happiness quote. Also verify that citations with no exact claim match open the page without a highlight. |
+
+This replay and regression are local/PR validation only. Run #23 remains the live result; the change has not yet been published or checked in a live browser.
