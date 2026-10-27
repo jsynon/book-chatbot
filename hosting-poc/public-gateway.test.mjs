@@ -2320,6 +2320,27 @@ test('public highlights prefer the reviewed span most relevant to its linked cla
   'Christianity is a destructive, life-hostile principle that emerged from resentment.');
 });
 
+test('repeated claim links do not crowd a distinct verified highlight off a source page',()=>{
+ const citation={id:'S5',title:'An Enquiry Concerning Human Understanding — David Hume',
+  page:24,url:'https://example.test/hume#page=24'};
+ const custom='All inferences from experience, therefore, are effects of custom, not of reasoning. Custom, then, is the great guide of human life.';
+ const heat='After the constant conjunction of two objects—heat and flame—we are determined by custom alone to expect the one from the appearance of the other.';
+ const inferencePoint='Hume explains that inference from cause to effect comes from custom rather than reasoning.';
+ const heatPoint='Hume explains how constant conjunction, such as heat and flame, leads us to expect one event from another.';
+ const highlights=selectPublicEvidenceHighlights(
+  'How does Hume explain inference from cause to effect?', [citation],[
+   {id:'S5',claimId:'P1-C1',partId:'P1',point:inferencePoint,quote:custom,quoteVerified:true},
+   {id:'S5',claimId:'P1-C3',partId:'P1',point:inferencePoint,quote:custom,quoteVerified:true},
+   {id:'S5',claimId:'P2-C1',partId:'P2',point:inferencePoint,quote:custom,quoteVerified:true},
+   {id:'S5',claimId:'P1-C2',partId:'P1',point:heatPoint,quote:heat,quoteVerified:true}
+  ],1);
+ const quotes=highlights[0].quotes.map(item=>item.quote);
+ assert.equal(quotes.filter(quote=>quote===custom).length,1,
+  'the same source sentence keeps only its best-ranked claim association');
+ assert.ok(quotes.includes(heat),
+  'a distinct approved example is available among the page excerpts');
+ assert.equal(highlights[0].quotes.find(item=>item.quote===custom).point,inferencePoint);
+});
 test('public primary highlight favors a phrase named in the question over nearby context',()=>{
  const question='In Hamlet’s “To be, or not to be” soliloquy, what does he mean when he says that conscience makes cowards of us all?';
  const source={id:'S3',title:'The Complete Works of William Shakespeare — William Shakespeare',

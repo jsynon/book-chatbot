@@ -66,9 +66,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
       .map((item,index)=>({quote:removeLeadingRunningHeader(item.anchorQuote||item.quote),
         point:String(item.point||''),claimId:String(item.claimId||''),partId:String(item.partId||''),index}))
-      .filter(item=>usefulQuote(item.quote))
-      .filter((item,index,all)=>all.findIndex(other=>other.quote===item.quote&&
-        other.claimId===item.claimId&&other.point===item.point)===index);
+      .filter(item=>usefulQuote(item.quote));
     // Reviewer-approved spans are already exact and source-verified. Rank
     // them by their linked claim first, then use the original question as a
     // secondary signal so a phrase asked about can outrank nearby context.
@@ -87,7 +85,33 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       };
       return score(right)-score(left)||readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
     });
-    return [id,candidates.slice(0,3)];
+    // One exact quote may support several claims. Deduplicate only after
+    // ranking so its strongest claim link survives and repeated copies cannot
+    // consume all three excerpt slots ahead of distinct approved passages.
+    const seenQuotes=new Set();
+    const distinctCandidates=candidates.filter(item=>{
+      if(seenQuotes.has(item.quote))return false;
+      seenQuotes.add(item.quote);return true;
+    });
+    // Prefer one distinct claim in each slot before using extra excerpts for
+    // a claim that already has one. This keeps a clear answer sentence's own
+    // reviewed passage available when another claim has several overlapping
+    // spans on the same page.
+    const selected=[],selectedClaims=new Set();
+    for(const item of distinctCandidates){
+      if(item.claimId&&selectedClaims.has(item.claimId))continue;
+      selected.push(item);
+      if(item.claimId)selectedClaims.add(item.claimId);
+      if(selected.length===3)break;
+    }
+    if(selected.length<3){
+      for(const item of distinctCandidates){
+        if(selected.some(value=>value.quote===item.quote))continue;
+        selected.push(item);
+        if(selected.length===3)break;
+      }
+    }
+    return [id,selected];
   }));
   // The six-item cap applies to cited pages, not to individual approved
   // excerpts. Keep up to three exact spans per page so one citation can
