@@ -939,8 +939,8 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/When the question asks only for a comparison, do not append a counterfactual/);
  assert.match(COMPOSER_PROMPT,/interpret it in plain language before describing consequences/);
  assert.match(COMPOSER_PROMPT,/When the supplied pages state the reason or premise that leads to the phrase's meaning, explain that causal step as well as the consequence/);
- assert.match(COMPOSER_PROMPT,/state each author’s position in a separate sentence/);
- assert.match(COMPOSER_PROMPT,/The first sentence of a comparison part must itself be a sourced comparison/);
+ assert.match(COMPOSER_PROMPT,/each author’s position in a separate cited clause of the opening sentence/);
+ assert.match(COMPOSER_PROMPT,/The first sentence of a comparison part must itself be a sourced comparison, with evidence for each side cited in that sentence/);
  assert.match(COMPOSER_PROMPT,/do not bundle distinct speaker claims under one shared citation group/);
  assert.match(COMPOSER_PROMPT,/use the smallest set of pages that directly supports that claim/);
  assert.match(COMPOSER_PROMPT,/Do not add a page just because it was retrieved or belongs to the same author/);
