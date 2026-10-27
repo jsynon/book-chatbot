@@ -6,6 +6,7 @@ const DEFAULT_MAX_SPAN_LENGTH=320;
 // source sentence gets the wider budget, so passage ranking stays granular.
 const MAX_MERGED_SPAN_LENGTH=220;
 const MIN_SPAN_LENGTH=12;
+const REQUIRED_ANSWER_CANDIDATE_WINDOW=6;
 
 function trimRange(text,start,end){
   while(start<end&&/\s/u.test(text[start]))start++;
@@ -122,4 +123,26 @@ export function rankReviewSpans(spans,{question='',answer=''}={}){
   };
   return spans.map((span,index)=>({span,index,score:score(span.text)}))
     .sort((a,b)=>b.score-a.score||a.index-b.index).map(item=>item.span);
+}
+
+/**
+ * Keep the review packet small while reserving one missing claim-specific span
+ * for the part's required first answer. Broad ranking retains the other slots;
+ * the semantic reviewer still decides whether any span supports the claim.
+ */
+export function selectReviewPacketSpans(spans,{question='',answer='',requiredAnswer='',limit=8}={}){
+  if(!Number.isInteger(limit)||limit<0)return [];
+  const ranked=rankReviewSpans(spans,{question,answer});
+  if(!limit||!requiredAnswer)return ranked.slice(0,limit);
+  const packet=ranked.slice(0,limit);
+  if(!packet.length)return packet;
+  // The whole answer can push the required first-answer passage below the
+  // packet cap. If one of its six strongest claim-specific candidates is
+  // missing, replace only the packet's last item so seven broad slots remain.
+  const packetIds=new Set(packet.map(span=>span.spanId));
+  const requiredCandidate=rankReviewSpans(spans,{question,answer:requiredAnswer})
+    .slice(0,REQUIRED_ANSWER_CANDIDATE_WINDOW)
+    .find(span=>!packetIds.has(span.spanId));
+  if(!requiredCandidate)return packet;
+  return [...packet.slice(0,-1),requiredCandidate];
 }

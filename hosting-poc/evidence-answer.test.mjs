@@ -279,6 +279,62 @@ test('review request orders the cited page by the answer sentence while preservi
  assert.equal(result.coverage,'full');
  assert.equal(result.evidenceMap[0].quote,reviewPayload.parts[0].evidence[0].spans[0].text);
 });
+test('the bounded review packet keeps a required direct-answer passage when broader claims crowd it out',async()=>{
+ const question='What do the gifts of Fortune reveal about the nature of true happiness?';
+ const claims=[
+  'The gifts of Fortune reveal that true happiness cannot be found in external, shifting circumstances but must be sought within oneself.',
+  "Lady Philosophy observes that Fortune's gifts, such as wealth, are not truly one's own because they rely on the nature of others and can be lost or diminished when transferred.",
+  'She explains that if happiness is tied to things that can be taken away, such as the stability of the body, then mortals are constantly on the verge of wretchedness.',
+  'Consequently, true happiness requires being master of oneself, as this provides a possession that Fortune can never seize.'
+ ];
+ const text=[
+  'snatched away, is not the highest good (since that which is best cannot be snatched away), it is plain that Fortune by its own uncertainty can never come near to reaching happiness.',
+  'you cannot doubt that, if death can carry away happiness, the whole race of mortals is sinking into wretchedness to be found upon the border of death.',
+  'But we know that many have sought the enjoyment of happiness not only by death, but even by sorrow and sufferings: how then can the presence of this life make us happy, when its end cannot make us unhappy?',
+  "You, I know well, are firmly persuaded that men's understandings can never die; this truth is planted deep in you by many proofs: since then it is plain that the happiness of fortune is bounded by the death of the body,",
+  'If the gifts of Fortune fade not nor pass quickly away, even so, what is there in them which could ever be truly yours, or which would not lose its value when examined or thought upon?',
+  'If he knows it, he must needs live in fear of losing that which he cannot doubt that he may lose; wherefore an ever-present fear allows not such an one to be happy.',
+  'But that cannot remain with one person which is handed over to another: therefore money becomes valuable to its possessor when, by being scattered, it is transferred to others, and ceases to be possessed.',
+  'If then you are master of yourself, you will be in possession of that which you will never wish to lose, and which Fortune will never be able to take from you.',
+  "Are riches valuable for their own nature, or on account of your and other men's natures? Which is the more valuable, the gold itself or the power of the stored up-money?",
+  'delights the care-ridden. Wherefore, then, O mortal men, seek ye that happiness without, which lies within yourselves? Ye are confounded by error and ignorance.'
+ ].join('\n\n\n');
+ const source={id:'S1',bookId:'21',title:'The Consolation of Philosophy — Boethius',page:14,
+  candidatePartIds:['P1'],text,preview:text};
+ const allAnswerText=claims.join(' ');
+ const allSpans=buildReviewSpans(source.id,text);
+ const oldPacket=rankReviewSpans(allSpans,{question,answer:allAnswerText}).slice(0,8);
+ const requiredClaimSpans=rankReviewSpans(allSpans,{question,answer:claims[0]});
+ const directPassage=allSpans.find(span=>/happiness without|lies within yourselves/i.test(span.text));
+ assert.ok(!oldPacket.some(span=>span.spanId===directPassage.spanId),
+  'the broad answer ranking reproduces the run-22 omission');
+ assert.ok(requiredClaimSpans.slice(0,6).some(span=>span.spanId===directPassage.spanId),
+  'the direct-answer ranking finds the missing passage within its six-candidate window');
+
+ let reviewPayload;
+ const ai=makeAI([answer('PART P1\n'+claims.map(claim=>claim+' [S1]').join('\n\n')),
+  (_model,{messages})=>{
+   reviewPayload=JSON.parse(messages[1].content);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    directAnswerClaimIds:[reviewPayload.parts[0].requiredAnswerClaimId]}],
+    claims:reviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',spanIds:[
+      claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(question,[source],ai,[],{
+  plan:{intent:'explain',sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
+   parts:[{id:'P1',question,sourceBookIds:['21'],candidateSourceIds:['S1']}]},
+  catalog:{21:source.title},trace:true
+ });
+ const packet=reviewPayload.parts[0].evidence[0].spans;
+ assert.equal(packet.length,8,'claim priority keeps the existing per-source packet cap');
+ assert.ok(packet.some(span=>/happiness without|lies within yourselves/i.test(span.text)),
+  'the required direct-answer passage reaches review despite its lower broad-answer rank');
+ assert.equal(packet.filter(span=>oldPacket.some(old=>old.spanId===span.spanId)).length,7,
+  'only the lowest broad-ranked span is displaced to protect the direct answer');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(ai.calls.length,2,'the handoff improvement adds no model call');
+});
 test('compact review decisions validate exact spans without rationale text or repeated payload fields',async()=>{
  let reviewPayload;
  const ai={run:async(_model,{messages,max_completion_tokens})=>{
