@@ -341,6 +341,70 @@ test('a supported source in the same planned group keeps a claim when an alterna
  assert.equal(result.trace.reviewContract.reviewDecisions.find(item=>item.sourceId==='S1').accepted,false);
  assert.equal(result.trace.reviewContract.reviewDecisions.find(item=>item.sourceId==='S2').accepted,true);
 });
+test('an explicitly rejected spanless alternate can be omitted when same-group evidence supports the claim',async()=>{
+ const title='The Consolation of Philosophy — Boethius';
+ const sources=[
+  {id:'S1',bookId:'21',title,page:11,candidatePartIds:['P1'],
+   text:'Fortune cannot remain constant, for change is her nature.',preview:'Change is Fortune’s nature.'},
+  {id:'S2',bookId:'21',title,page:10,candidatePartIds:['P1'],
+   text:'If Fortune begin to stay still, she is no longer Fortune. Her changing nature is her constant way.',
+   preview:'If Fortune begin to stay still, she is no longer Fortune.'}
+ ];
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
+  parts:[{id:'P1',question:'Why can Fortune not remain still?',sourceBookIds:['21'],
+   candidateSourceIds:['S1','S2']}]};
+ for(const rejectedStatus of ['partial','unanswered']){
+  const ai=makeAI([answer('PART P1\nFortune cannot be stayed; if she remained still, she would no longer be Fortune. [S1, S2]'),
+   (_model,{messages})=>{
+    const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+    const span=claim.sourceEvidence.find(item=>item.sourceId==='S2').spanIds[0];
+    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+     claimId:claim.claimId,status:'answered',sources:[
+      {sourceId:'S1',status:rejectedStatus,spanIds:[]},
+      {sourceId:'S2',status:'answered',spanIds:[span]}
+     ]}]})};
+   }]);
+  const result=await composeEvidenceAnswer('Why can Fortune not remain still?',sources,ai,[],
+   {plan,catalog:{...catalog,21:title},trace:true});
+  assert.equal(result.coverage,'full',`${rejectedStatus} without spans is an explicit rejection, not an unresolved citation`);
+  assert.match(result.answer,/\[S2\]$/);
+  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
+  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+   issue.sourceId==='S1'&&issue.reason==='claim-source-not-supported'));
+ }
+});
+test('a source marked answered without an accepted exact span still blocks subset promotion',async()=>{
+ const title='The Consolation of Philosophy — Boethius';
+ const sources=[
+  {id:'S1',bookId:'21',title,page:11,candidatePartIds:['P1'],
+   text:'Fortune cannot remain constant, for change is her nature.',preview:'Change is Fortune’s nature.'},
+  {id:'S2',bookId:'21',title,page:10,candidatePartIds:['P1'],
+   text:'If Fortune begin to stay still, she is no longer Fortune. Her changing nature is her constant way.',
+   preview:'If Fortune begin to stay still, she is no longer Fortune.'}
+ ];
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
+  parts:[{id:'P1',question:'Why can Fortune not remain still?',sourceBookIds:['21'],
+   candidateSourceIds:['S1','S2']}]};
+ const ai=makeAI([answer('PART P1\nFortune cannot be stayed; if she remained still, she would no longer be Fortune. [S1, S2]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   const span=claim.sourceEvidence.find(item=>item.sourceId==='S2').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[
+     {sourceId:'S1',status:'answered',spanIds:[]},
+     {sourceId:'S2',status:'answered',spanIds:[span]}
+    ]}]})};
+  }]);
+ const result=await composeEvidenceAnswer('Why can Fortune not remain still?',sources,ai,[],
+  {plan,catalog:{...catalog,21:title},trace:true});
+ assert.equal(result.coverage,'none');
+ assert.equal(result.questionParts[0].status,'unsupported');
+ assert.equal(result.evidenceMap.length,0);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S1'&&issue.reason==='missing-claim-source-span'));
+});
 test('compact review cannot verify a sentence unless every cited source has a selected span',async()=>{
  const ai=makeAI([answer('PART P1\nHume grounds necessity in custom, while Kant treats causality as a priori. [S1, S2]'),
   (_model,{messages})=>{
@@ -706,6 +770,7 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/one main claim/);
  assert.match(COMPOSER_PROMPT,/Answer each supplied question part directly in its first sentence/);
  assert.match(COMPOSER_PROMPT,/interpret it in plain language before describing consequences/);
+ assert.match(COMPOSER_PROMPT,/When the supplied pages state the reason or premise that leads to the phrase's meaning, explain that causal step as well as the consequence/);
  assert.match(COMPOSER_PROMPT,/state each author’s position in a separate sentence/);
  assert.match(COMPOSER_PROMPT,/do not bundle distinct speaker claims under one shared citation group/);
  assert.match(COMPOSER_PROMPT,/If distinct claims rely on different passages, write separate sentences/);
@@ -734,6 +799,7 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(REVIEW_PROMPT,/review every cited source ID separately/);
  assert.match(REVIEW_PROMPT,/material clause or premise/i);
  assert.match(REVIEW_PROMPT,/require an explicit plain-language interpretation/);
+ assert.match(REVIEW_PROMPT,/preserves that essential causal step as well as the outcome/);
  assert.match(REVIEW_PROMPT,/directAnswerClaimIds/);
  assert.match(REVIEW_PROMPT,/A consequence, example, or related fact alone is not a direct answer/);
  assert.match(REVIEW_PROMPT,/smallest sufficient set of claims/);
