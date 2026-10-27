@@ -37,8 +37,8 @@ test('bounded search planner produces distinct, well-formed corpus search querie
  assert.deepEqual(answer.queries,good.queries);
  assert.equal(answer.usage.neurons,3);
 });
-test('planner returns a bounded structured plan with canonical source IDs and question parts',async()=>{
- const question='How do Hume’s Enquiry and Kant’s Critique of Pure Reason differ over causal necessity?';
+test('planner returns a bounded plan scoped to the explicitly named Hume and Kant works',async()=>{
+ const question='In Hume’s An Enquiry Concerning Human Understanding, how does he explain causal necessity, and how does Kant’s Critique of Pure Reason differ?';
  const planned={resolvedQuestion:question,intent:'compare',
   sources:[{label:'Hume',role:'primary'},{label:'Kant',role:'primary'}],
   parts:['How does Hume explain causal necessity?','How does Kant explain causal necessity?'],
@@ -47,15 +47,13 @@ test('planner returns a bounded structured plan with canonical source IDs and qu
   run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}],
    usage:{neurons:5}})});
  assert.equal(result.plan.intent,'compare');
- assert.deepEqual(result.plan.parts.map(part=>part.sourceBookIds),[
-  ['34','35','268','276','555'],['40'],['34','35','268','276','555','40']]);
+ assert.deepEqual(result.plan.parts.map(part=>part.sourceBookIds),[['35'],['40'],['35','40']]);
  assert.match(result.plan.parts[2].question,/compare in response to this question/i);
  assert.ok(result.plan.parts[0].searchQueries.some(query=>/Hume/i.test(query)));
  assert.ok(result.plan.parts[1].searchQueries.some(query=>/Kant/i.test(query)));
  assert.ok(result.plan.parts[2].searchQueries.some(query=>/Hume/i.test(query)));
  assert.ok(result.plan.parts[2].searchQueries.some(query=>/Kant/i.test(query)));
- assert.ok(result.plan.sources[0].bookIds.includes('35'));
- assert.ok(result.plan.sources[1].bookIds.includes('40'));
+ assert.deepEqual(result.plan.sources.map(source=>source.bookIds),[['35'],['40']]);
  assert.deepEqual(result.plan.sources.map(source=>source.role),['primary','primary']);
  assert.equal(result.plan.queries.length,2);
  assert.match(result.queries[0],/causal necessity|necessary connection/i);
@@ -293,6 +291,21 @@ test('literary passage planning prefers the canonical primary work',async()=>{
  assert.match(systemPrompt,/inside collected works, include its canonical author even if the reader names only the scene/i);
  assert.match(systemPrompt,/search Hamlet with William Shakespeare/i);
  assert.match(systemPrompt,/primary text over commentary or anthologies/i);
+});
+
+test('a named play inside a collection is bound to its verified primary catalog record',async()=>{
+ const question='In Hamlet’s “To be, or not to be” soliloquy, what does he mean by “conscience makes cowards of us all”?';
+ const planned={resolvedQuestion:question,intent:'interpret',sources:[],
+  parts:['What does Hamlet mean by “conscience makes cowards of us all”?'],scope:'',
+  queries:['Hamlet conscience makes cowards of us all thought fear action',
+   'Hamlet soliloquy native hue resolution pale cast of thought']};
+ const result=await planSearchQueries(question,'',{
+  run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]})
+ });
+ assert.deepEqual(result.plan.sources.map(source=>source.bookIds),[['212']],
+  'the title alias must resolve to the catalog’s primary Shakespeare collection');
+ assert.deepEqual(result.plan.parts[0].sourceBookIds,['212'],
+  'the work boundary must reach the normalized question part');
 });
 test('definition questions preserve the exact phrase instead of broad planner paraphrases',async()=>{
  let systemPrompt='';
