@@ -2320,6 +2320,25 @@ test('public highlights prefer the reviewed span most relevant to its linked cla
   'Christianity is a destructive, life-hostile principle that emerged from resentment.');
 });
 
+test('public primary highlight favors a phrase named in the question over nearby context',()=>{
+ const question='In Hamlet’s “To be, or not to be” soliloquy, what does he mean when he says that conscience makes cowards of us all?';
+ const source={id:'S3',title:'The Complete Works of William Shakespeare — William Shakespeare',
+  page:454,url:'https://example.test/shakespeare#page=454'};
+ const point='This uncertainty makes individuals choose to endure known suffering rather than flee to the unknown.';
+ const nearby='Those ills we have Than fly to others that we know not of.';
+ const direct='Thus conscience does make cowards of us all, And thus the native hue of resolution Is sicklied o’er with the pale cast of thought.';
+ const highlights=selectPublicEvidenceHighlights(
+  'This uncertainty makes individuals endure known suffering rather than flee to the unknown. [S3].',
+  [source],[
+   {id:'S3',claimId:'P1-C1',partId:'P1',point,quote:nearby,quoteVerified:true},
+   {id:'S3',claimId:'P1-C1',partId:'P1',point,quote:direct,quoteVerified:true}
+  ],6,question);
+ assert.equal(highlights[0].quote,direct,
+  'the exact phrase asked about should lead the source highlights for this question');
+ assert.deepEqual(highlights[0].quotes.map(item=>item.quote),[direct,nearby],
+  'the neighboring context remains available as an alternate approved excerpt');
+});
+
 test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounded AI',async()=>{
  const pilot=await pilotScenario();
  const result=await pilot.post();
@@ -2361,6 +2380,27 @@ test('public evidence highlights follow a source-verified claim anchor',async()=
  assert.match(prompts[1][1].content,/speaker: Thucydides/);
  assert.match(prompts[1][1].content,/qualifier: was stated to be/);
  assert.match(prompts[1][1].content,/verified quote and sentence context/);
+});
+test('public highlight selection uses the reader question to rank approved spans',async()=>{
+ const context='The public disputes were over a breached agreement, whereas growing power created fear among competing cities.';
+ const direct='The deeper cause of the war was stated to be anxiety over political change.';
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'full',missing:'',evidence:[
+       {id:'S1',point:'This passage is relevant context for the answer.',quote:context},
+       {id:'S1',point:'This passage is relevant context for the answer.',quote:direct}
+     ]
+   })}}]};
+   return {choices:[{finish_reason:'stop',message:{content:
+     'The deeper cause was anxiety over political change [S1].'}}]};
+ }});
+ const response=await pilot.post({body:{question:'What was the deeper cause of the war?'}});
+ assert.equal(response.status,200);
+ const data=await response.json();
+ assert.equal(data.evidenceHighlights[0].quote,direct,
+  'the request question must reach ranking without replacing exact reviewed spans');
+ assert.deepEqual(data.evidenceHighlights[0].quotes.map(item=>item.quote),[direct,context]);
+ assert.equal(pilot.stats().calls,2,'question-aware ranking adds no model call');
 });
 test('public highlights show multiple distinct verified passages from one cited page',async()=>{
  const first='The public disputes were over a breached agreement, whereas growing power created fear among competing cities.';
