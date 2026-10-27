@@ -645,6 +645,34 @@ const twoSidePlan={version:'reader-evidence-v2',resolvedQuestion:'How do Hume an
   {id:'P3',question:'How do Hume and Kant differ?',sourceBookIds:['35','40'],searchQueries:['Hume custom','Kant a priori']}
  ],queries:['Hume custom','Kant a priori']};
 
+test('a comparison drops an unrequested conditional author-to-author inference',async()=>{
+ const inference='As a cautious reader inference, if Kant applied his view of causality to Hume’s account, he might argue that Hume’s custom is a necessary transcendental principle. [S1, S2]';
+ const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant identifies causality as an a priori category of relation. [S2]\n'+
+  'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]\n'+
+  inference),review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:twoSidePlan,catalog,trace:true});
+ assert.equal(result.coverage,'full','supported direct comparison claims still answer every part');
+ assert.doesNotMatch(result.answer,/cautious reader inference|necessary transcendental principle/);
+ assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
+  item.reason==='unrequested-cross-author-inference'));
+ assert.equal(ai.calls.length,2,'the scope guard reuses compose and review without an extra call');
+});
+
+test('an unsupported counterfactual-only comparison exposes its bounded validation reason',async()=>{
+ const inference='As a cautious reader inference, if Kant applied his view of causality to Hume’s account, he might argue that Hume’s custom is a necessary transcendental principle. [S1, S2]';
+ const plan={...twoSidePlan,parts:[{...twoSidePlan.parts[2],id:'P1'}]};
+ const ai=makeAI([answer('PART P1\n'+inference)]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],
+  {plan,catalog,trace:true});
+ assert.equal(result.trace.final.failure.validationReasons[0],'unrequested-cross-author-inference');
+ assert.doesNotMatch(result.answer,/necessary transcendental principle/);
+ assert.equal(ai.calls.length,1,'no review call runs when every draft sentence is rejected');
+});
+
 test('a consequence-only sentence cannot pass a phrase-meaning part as a direct answer',async()=>{
  const ai=makeAI([answer('PART P1\nConsequently, important enterprises lose their momentum and fail to become actions. [S1]'),
   directAnswerReview([])],{decorateReview:false});
@@ -672,6 +700,39 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
   partId:'P1',reviewerStatus:'answered',finalStatus:'answered',directAnswerClaimIds:['P1-C1'],
   acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true
  }]);
+});
+
+test('a why-answer using the source reason brings that exact span into review',async()=>{
+ const text='The sea may charm with its smoothed surface, but no less justly it may soon bristle in storms with rough waves. '+
+  'Is the insatiate discontent of man to bind me to a constancy which belongs not to my ways? '+
+  'Herein lies my very strength; this is my unchanging sport. I turn my wheel that spins its circle fairly; '+
+  'I delight to make the lowest turn to the top, the highest to the bottom.';
+ const source={id:'S1',bookId:'21',title:'The Consolation of Philosophy — Boethius',page:11,
+  candidatePartIds:['P1'],text,preview:text};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
+  parts:[{id:'P1',question:'How does Lady Philosophy explain the instability of Fortune?',
+   sourceBookIds:['21'],candidateSourceIds:['S1']}]};
+ const ai=makeAI([answer('PART P1\nFortune says constancy does not belong to her ways; her unchanging sport is turning the wheel, raising the lowest and lowering the highest. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   const spans=payload.parts[0].evidence[0].spans;
+   const selected=spans.filter(span=>/constancy which belongs not to my ways|unchanging sport.*wheel/is.test(span.text));
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:['P1-C1']}],
+    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:selected.map(span=>span.spanId)}]}]})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Lady Philosophy explain the instability of Fortune?',
+  [source],ai,[],{plan,catalog:{21:source.title},trace:true});
+ const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
+ const offered=reviewPayload.parts[0].evidence[0].spans.map(span=>span.text);
+ assert.ok(offered.some(span=>/constancy which belongs not to my ways/.test(span)),
+  'the direct source reason must reach the reviewer, not only the wheel example');
+ assert.ok(offered.some(span=>/unchanging sport.*wheel/is.test(span)));
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.evidenceMap.length,2,'the reviewer can retain both complementary exact spans');
+ assert.equal(ai.calls.length,2,'the source-specific explanation uses the existing two calls');
 });
 
 test('a rejected non-direct claim is omitted without downgrading a reviewed direct answer',async()=>{
@@ -769,6 +830,8 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/planner's search queries are retrieval leads, not a list of topics/);
  assert.match(COMPOSER_PROMPT,/one main claim/);
  assert.match(COMPOSER_PROMPT,/Answer each supplied question part directly in its first sentence/);
+ assert.match(COMPOSER_PROMPT,/When a part asks why something happens, state the page’s own reason in its terms/);
+ assert.match(COMPOSER_PROMPT,/When the question asks only for a comparison, do not append a counterfactual/);
  assert.match(COMPOSER_PROMPT,/interpret it in plain language before describing consequences/);
  assert.match(COMPOSER_PROMPT,/When the supplied pages state the reason or premise that leads to the phrase's meaning, explain that causal step as well as the consequence/);
  assert.match(COMPOSER_PROMPT,/state each author’s position in a separate sentence/);
