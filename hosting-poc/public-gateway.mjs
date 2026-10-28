@@ -128,7 +128,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
   }).slice(0,limit);
 }
 // v1.12 full public-catalog coverage; each answer page must still match an
-// owner-published v48 fingerprint before it reaches the model.
+// owner-published v48 or v49 fingerprint before it reaches the model.
 export const PILOT_BOOKS = Object.freeze({
   "2": "Fragments — Anaxagoras",
   "3": "Summa Contra Gentiles — Thomas Aquinas",
@@ -772,6 +772,8 @@ export const PILOT_BOOKS = Object.freeze({
   "650": "Selections from the Prison Notebooks — Antonio Gramsci",
   "651": "Being and Some Philosophers — Étienne Gilson",
   "652": "First Outline of a System of the Philosophy of Nature — F. W. J. Schelling",
+  "653": "A History of Philosophy, Volume I: Greece and Rome — Frederick Copleston",
+  "654": "A History of Philosophy, Volume II: Medieval Philosophy — Frederick Copleston",
 });
 export const PILOT_BOOK_IDS = Object.freeze(Object.keys(PILOT_BOOKS));
 const PILOT_BOOK_SET = new Set(PILOT_BOOK_IDS);
@@ -3675,7 +3677,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       publicEnabled:env.PUBLIC_ENABLED==='true',mode:'public-foundation'},200,origin);
   }
   // v1.11 public, staged interdisciplinary alpha. All accepted pages MUST
-  // pass original v48 hashes; availability is limited to books with published v48 fingerprints.
+  // pass published v48 or v49 fingerprints; availability is limited to books with published fingerprints.
   // Public enablement requires explicit opt-in AND every safety binding.
   const pilotReady=env.PUBLIC_PILOT_ENABLED==='true' &&
     env.PUBLIC_ENABLED!=='true' && typeof env.TURNSTILE_SITE_KEY==='string' &&
