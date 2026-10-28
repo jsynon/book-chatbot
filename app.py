@@ -7123,6 +7123,17 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path in ("/local-workbench-theme.css", "/local-workbench-theme.js"):
+            filename = self.path.lstrip("/")
+            body = (ROOT / filename).read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/css; charset=utf-8" if filename.endswith(".css") else "application/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if self.path == "/book-lite.css":
             # Local copy of the main site's Book Lite CSS for a faithful preview.
             # No external API is needed and the chat server remains localhost-only.

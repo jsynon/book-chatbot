@@ -1,0 +1,23 @@
+/* Local-only skin. Mirrors Reading Companion's clean Book Lite surface without changing its API. */
+:root { --local-paper:#fff; --local-ink:#30363a; --local-muted:#626b70; --local-border:#d7dce0; --local-panel:#fff; --local-soft:#f6f7f8; --local-link:#222b30; color-scheme:light; }
+html[data-local-theme="dark"] { --local-paper:#181b20; --local-ink:#e7e9ec; --local-muted:#b6bdc4; --local-border:#424951; --local-panel:#242930; --local-soft:#20252b; --local-link:#e7e9ec; color-scheme:dark; }
+html, body, #page, #main, main.companion-content { background:var(--local-paper)!important; color:var(--local-ink)!important; }
+body .companion-content, body .companion-content p, body .companion-content h1, body .companion-content h2, body .companion-content h3, body .companion-content label, body .companion-content strong, body .companion-content summary { color:var(--local-ink); }
+body .companion-content .intro, body .companion-content .eyebrow, body .companion-content .speaker, body .companion-content .developer-footnote {color:var(--local-muted)!important}
+body .companion-content a, body #secondary a, body .site-title a {color:var(--local-link)!important}
+body .companion-content input, body .companion-content textarea, body .companion-content select {background:var(--local-panel)!important;color:var(--local-ink)!important;border:1px solid var(--local-border)!important;border-radius:3px!important}
+body .companion-content button:not(.local-theme-toggle) {border-radius:3px}
+body .companion-content .turn, body .companion-content .reader-panel, body .companion-content .highlights, body .companion-content details, body .companion-content .coverage-note, body .companion-content .batch-runner, body .companion-content #developer-mode-nav {background:var(--local-panel)!important;color:var(--local-ink)!important;border-color:var(--local-border)!important}
+body .companion-content .turn.user {background:var(--local-soft)!important}
+body .companion-content .body, body .companion-content .source-text, body .companion-content blockquote {color:var(--local-ink)!important}
+body .companion-content header, body .companion-content hr, body #secondary {border-color:var(--local-border)!important}
+body #secondary, body #secondary .widget, body #secondary p, body #secondary h2 {color:var(--local-ink)!important;background:var(--local-paper)!important}
+body .main-navigation {position:relative}
+body .main-navigation .menu-primary-container {padding-right:118px}
+.local-theme-toggle {position:absolute;right:12px;top:50%;transform:translateY(-50%);min-height:32px;padding:4px 10px;border:1px solid var(--local-border);border-radius:4px;background:var(--local-panel);color:var(--local-ink);font:600 12px/1.4 system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+.local-theme-toggle:focus-visible {outline:2px solid #7299bd;outline-offset:2px}
+.local-dev-marker {font:600 12px/1.4 system-ui,sans-serif;color:var(--local-muted);padding:7px 0}
+html[data-local-theme="dark"] .site-header, html[data-local-theme="dark"] .site-navigation {background:#20252b!important;color:var(--local-ink)!important}
+html[data-local-theme="dark"] .site-header a, html[data-local-theme="dark"] .site-navigation a, html[data-local-theme="dark"] .site-description {color:var(--local-ink)!important}
+@media(max-width:780px){body .main-navigation .menu-primary-container{padding-right:50px}.local-theme-toggle{width:34px;height:34px;padding:3px;font-size:0}.local-theme-toggle::before{content:'◐';font-size:21px}.local-theme-toggle span{display:none}}
+@media(max-width:480px){body .main-navigation .menu-primary-container{padding-right:44px}.local-theme-toggle{right:5px}}
