@@ -2226,7 +2226,11 @@ test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every
  assert.equal(details.bookId,'152');
  assert.equal(details.firstPage,33);
  assert.equal(details.lastPage,64);
- assert.equal(PILOT_BOOK_IDS.length,642);
+ assert.equal(PILOT_BOOK_IDS.length,644);
+ assert.equal(PILOT_BOOKS['653'],'A History of Philosophy, Volume I: Greece and Rome — Frederick Copleston');
+ assert.equal(PILOT_BOOKS['654'],'A History of Philosophy, Volume II: Medieval Philosophy — Frederick Copleston');
+ assert(PILOT_BOOK_IDS.includes('653'));
+ assert(PILOT_BOOK_IDS.includes('654'));
  assert(!PILOT_BOOK_IDS.includes('1'));
  assert(!PILOT_BOOK_IDS.includes('628'));
  assert.equal(PILOT_BOOKS['2'],'Fragments — Anaxagoras');
