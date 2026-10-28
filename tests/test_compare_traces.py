@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import json
 
 PATH = Path(__file__).resolve().parents[1] / "scripts" / "compare_traces.py"
@@ -44,7 +45,7 @@ class TraceComparisonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "trace.json"
             path.write_text("{}", encoding="utf-8")
-            with unittest.mock.patch.object(traces, "MAX_FILE_BYTES", 1):
+            with patch.object(traces, "MAX_FILE_BYTES", 1):
                 with self.assertRaises(ValueError):
                     traces.load_json(path)
 
