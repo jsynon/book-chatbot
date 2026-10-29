@@ -488,7 +488,7 @@ test('broad philosophical planning keeps one direct question while allowing boun
  assert.match(systemPrompt,/retain a direct query for it/i);
  assert.match(systemPrompt,/do not force a fixed author pair/i);
  assert.match(systemPrompt,/turn context into another required part/i);
- assert.match(systemPrompt,/do not by themselves establish a computer simulation/i);
+ assert.match(systemPrompt,/distinguish direct evidence for the claim from related arguments about how it can be known/i,'epistemic context is governed by general guidance, not a simulation-specific route');
 });
 test('contextual-source guidance is general and does not hardcode simulation thinkers',async()=>{
  let systemPrompt='';
