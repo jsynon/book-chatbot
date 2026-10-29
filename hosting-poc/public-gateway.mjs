@@ -24,13 +24,6 @@ const FRONTEND_ORIGIN = 'https://jsynon.github.io';
 const EXPECTED_TURNSTILE_HOST = 'jsynon.github.io';
 const TURNSTILE_ACTION = 'companion_ask';
 
-// The catalog stores some authored works inside collections rather than as
-// standalone records. Keep only verified title-to-primary-record mappings
-// here; a character name or a passing mention must never create source scope.
-const CURATED_PRIMARY_WORK_ALIASES = Object.freeze([
-  {alias:'Hamlet',author:'William Shakespeare',bookIds:['212']},
-]);
-
 export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=6,question=''){
   const byId=new Map(citations.map(source=>[String(source?.id||''),source]));
   const citationOrder=[...new Set([...citationIds(answer),...citations.map(source=>String(source?.id||''))])]
@@ -1311,19 +1304,6 @@ function sourceGroupMetadata(){
       if(!authorBooks.has(normalized))authorBooks.set(normalized,{name,bookIds:new Set(),surname:normalized.split(' ').at(-1)});
       authorBooks.get(normalized).bookIds.add(book.bookId);
     }
-  }
-  // Hamlet is not a standalone catalog title: the full primary text is in
-  // Shakespeare's Complete Works (book 212). Bind this named play only to
-  // that verified primary record, not to commentary or a general anthology.
-  for(const item of CURATED_PRIMARY_WORK_ALIASES){
-    const ids=item.bookIds.filter(id=>{
-      const title=PILOT_BOOKS[id]||'';
-      return title.includes(item.author)&&authorBooks.get(normalizedSourceGroupText(item.author))
-        ?.bookIds.has(id);
-    });
-    if(!ids.length)continue;
-    const key=normalizedSourceGroupText(item.alias);
-    titleBooks.set(key,{label:item.alias,bookIds:new Set(ids)});
   }
   const surnameOwners=new Map();
   for(const author of authorBooks.values()){

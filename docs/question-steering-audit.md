@@ -9,12 +9,13 @@ This audit follows the live path across `book-chatbot` (Worker and workbench) an
 | Add a perception/external-world/experience/dream/skepticism query when a question looked like a simulation or reality question | Worker planner post-processing | This selected a subject-specific search vocabulary after the planner had already run. The planner can now choose context searches from the question and library context. |
 | Split a query automatically when the question used the phrase “what roles do … play” | Worker planner post-processing | The heuristic was tied to one surface form and could rewrite a valid planner result. Planned query facets remain intact. |
 | Permit interpretive sources for a verse-range question merely because the question named Augustine | Worker source-scope handling | Commentary is now admitted when commentary is explicitly requested or a named author/work resolves to a requested source group. The direct passage scope remains enforced. |
+| Bind the unlisted title `Hamlet` directly to Shakespeare's Complete Works (book 212) | Worker source-group handling | A question-specific work alias was steering source scope. Works absent from standalone catalog titles now use the same general retrieval and source-resolution path. |
 | Add a 1 John 4:7–12 search when an All Books planner call failed on “God is love” | Shared site retriever | A runtime fallback should preserve the reader's question and scope, not infer a preferred answer source from one acceptance case. |
 | Add Kant-specific Second Analogy terms for causal-necessity searches | Shared site index search | Source-language expansions must come from the visible planner query, not a growing title/topic exception list. |
 | Treat “dependent origination” and “dependent arising” as an injected synonym family | Shared site index search | The reader and planner queries now determine lexical search terms. Relevant alternate wording should be proposed by the planner and then judged against page text. |
 | Add `aristotle` as a filler term in workbench recovery coverage | Python workbench | The recovery scorer now ignores generic framing words rather than a named-author exception. |
 
-Acceptance cases may continue to mention these questions and required source groups. Those are evaluation expectations, not runtime source selection rules. The verified `Hamlet` catalog alias is also retained: it maps a named work to the collection record that actually contains it, and carries no answer content or relevance claim.
+Acceptance cases may continue to mention these questions and required source groups. Those are evaluation expectations, not runtime source selection rules. The one-off `Hamlet` alias to Shakespeare's Complete Works has also been removed; general catalog title and author matching remains.
 
 ## Safeguards retained
 
