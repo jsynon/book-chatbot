@@ -3418,13 +3418,15 @@ function namedGroupQueryTargets(question,bookTitle){
 }
 
 export async function planSearchQueries(question,bookTitle,ai,history=[]){
+  // Keep contextual discovery inside the existing planning call; its sources and
+  // query facets guide retrieval without hardcoding answers or adding coverage parts.
   const response=await ai.run(MODEL,{
     messages:[
       {role:'system',content:
         'You are a scholarly digital librarian, not an answering assistant. '+
         'Return EXACTLY one JSON object {"resolvedQuestion":"...","intent":"explain|compare|interpret|locate","sources":[{"label":"...","role":"primary|subject|commentary"}],"parts":["..."],"scope":"...","queries":["...","..."]}. '+
         'intent must be explain, compare, interpret, or locate. resolvedQuestion must replace follow-up references only when recent history makes the referent clear; otherwise repeat the current question. '+
-        'sources is an array of up to four objects with a short label and role primary, subject, or commentary; identify only sources explicitly requested by the reader. '+
+        'sources is an array of up to four objects with a short label and role primary, subject, or commentary; include explicitly requested sources and, for broad conceptual questions, only a small number of clearly relevant contextual thinkers or works that help explain the central issue. Keep a primary source distinct from commentary, and do not add sources merely because they share a topic. '+
         'parts is an array of one to six short questions that preserve every distinct requested component. Do not turn related themes, possible consequences, or background into extra required parts unless the reader asked about them; for a broad single question, keep one central part and use supported context in its answer. Rewrite dependent pronouns such as “he,” “this passage,” or “that argument” with the parent question’s subject, work, and quoted phrase so each part can be searched independently. scope is an explicit work, chapter, verse, section, or page restriction, or an empty string. '+
         'Return two to four different, concise search phrases (4-13 words apiece) in queries. '+
         'They must locate original passages addressing distinct requested parts '+
@@ -3484,6 +3486,9 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
         'appear in the primary source; do not rely only on abstract labels such '+
         'as “immediate disputes” or “triggers.” Treat any event names used in a '+
         'search query as retrieval leads, never as evidence for the answer. '+
+        // Keep broad questions open to useful context without creating topic-specific routes or new answer obligations. '+
+        'For a broad conceptual or philosophical question, keep the reader’s central question as the main part and retain a direct query for it. When a relevant tradition or argument can clarify what the question assumes or what can be known, add a distinct search lead for that context using recognizable thinker, work, or framework terms likely to occur in the source. Do not force a fixed author pair, infer that a contextual source proves the central hypothesis, or turn context into another required part. '+
+        'For questions about whether reality is simulated, distinguish the computational hypothesis from related arguments about skeptical doubt, perception, idealism, or empiricism; those arguments may clarify limits on knowledge but do not by themselves establish a computer simulation. '+
         'When the reader names authors or '+
         'works, retain the relevant name in its corresponding query so source '+
         'discovery can distinguish books in the full library. For a question '+
