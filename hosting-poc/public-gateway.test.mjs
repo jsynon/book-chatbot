@@ -453,13 +453,10 @@ test('all-books planner assigns a named-work query to each side of a cross-work 
    })}}]};
  }};
  const result=await planSearchQueries(question,'',ai);
- assert.match(prompt,/use one query per source and retain all requested facets that apply to it/);
- assert.match(prompt,/including later clauses and the relation being compared/);
- assert.match(prompt,/concrete observable signal, measurement, motion, or named example/);
- assert.match(prompt,/Do not substitute a general statement that models can be compared with observations/);
- assert.match(prompt,/When a question uses an abstract modern label or asks about social effects/);
- assert.match(prompt,/search for the source’s concrete mechanisms, definitions, and examples/);
- assert.match(prompt,/education, law, custom, dependence, exclusion, or institutions/);
+ assert.match(prompt,/For named-source comparisons or hypotheticals, search each source for its own relevant position on the same subject/);
+ assert.match(prompt,/Preserve the subject, named sources, exact requested concept, and textual scope/);
+ assert.doesNotMatch(prompt,/Darwin|Hawking|astronomical observations|education, law, custom/,
+  'the shared planner guidance must not contain topic-specific search routes');
  assert.match(result.queries[0],/On the Origin of Species/i);
  assert.match(result.queries[0],/natural selection|favorable variations/i);
  assert.match(result.queries[1],/(?:A )?Brief History of Time/i);
@@ -497,7 +494,7 @@ test('planner preserves an explicit verse range in both complementary searches',
   ]})}}]};
  }};
  const result=await planSearchQueries(question,'New King James Version Bible — Various authors',ai);
- assert.match(plannerPrompt,/keep the full book, chapter, and verse range in BOTH queries/);
+ assert.match(plannerPrompt,/textual scope in the queries that need them/);
  assert.match(result.queries[0],/1 John 4:7-12/);
  assert.match(result.queries[1],/1 John 4:7-12/);
  assert.match(result.queries[1],/necessitates loving one another/);
@@ -542,8 +539,8 @@ test('planner keeps three distinct requested components as three targeted search
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:expected})}}]};
  }};
  const result=await planSearchQueries(question,'',ai);
- assert.match(prompt,/two to four different, concise search phrases/);
- assert.match(prompt,/Use one query per distinct component/);
+ assert.match(prompt,/Return two to four distinct concise search phrases/);
+ assert.match(prompt,/Use remaining queries for its distinct requested facets/);
  assert.deepEqual(result.queries,expected);
 });
 

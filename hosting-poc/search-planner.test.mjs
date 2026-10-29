@@ -112,7 +112,7 @@ test('search planner retains explicitly named authors and works for source scopi
   }
  });
  assert.match(systemPrompt,/explicitly requested authors or works/i);
- assert.match(systemPrompt,/Do not invent authors or works/i);
+ assert.match(systemPrompt,/Do not invent authors, works, answers, or citations/i);
 });
 test('epistemic comparison planning searches for the argument behind a principle',async()=>{
  let systemPrompt='';
