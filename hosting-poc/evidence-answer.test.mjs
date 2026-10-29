@@ -996,7 +996,7 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/two or three short paragraphs/);
  assert.match(COMPOSER_PROMPT,/whether from one work or several/);
  assert.match(COMPOSER_PROMPT,/roughly 160–260 words as a guide, not a quota/);
- assert.match(COMPOSER_PROMPT,/If only one source directly answers or the evidence is thin, stay concise/);
+ assert.match(COMPOSER_PROMPT,/If one source directly answers or the evidence is thin, stay concise/);
  assert.match(COMPOSER_PROMPT,/Do not pad, repeat, or add a source just to lengthen the response/);
  assert.doesNotMatch(COMPOSER_PROMPT,/80–140 words/);
  assert.match(COMPOSER_PROMPT,/planner's search queries are retrieval leads, not a list of topics/);
@@ -1006,6 +1006,9 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/When the question asks only for a comparison, do not append a counterfactual/);
  assert.match(COMPOSER_PROMPT,/interpret it in plain language before describing consequences/);
  assert.match(COMPOSER_PROMPT,/When the supplied pages state the reason or premise that leads to the phrase's meaning, explain that causal step as well as the consequence/);
+ assert.match(COMPOSER_PROMPT,/When a later source reports a historical figure's teaching, attribute it as that source's account or attribution/);
+ assert.match(COMPOSER_PROMPT,/Do not add a preface, status labels, bullets, inline list markers/);
+ assert.match(REVIEW_PROMPT,/For a later source reporting a historical figure, distinguish the source's report or attribution from a directly verified statement/);
  assert.match(COMPOSER_PROMPT,/each author’s position in a separate cited clause of the opening sentence/);
  assert.match(COMPOSER_PROMPT,/The first sentence of a comparison part must itself be a sourced comparison, with evidence for each side cited in that sentence/);
  assert.match(COMPOSER_PROMPT,/do not bundle distinct speaker claims under one shared citation group/);
@@ -1543,7 +1546,7 @@ test('author-wide questions retain the author works unless the reader names a di
  assert.equal(broad.parts[0].question,question);
  assert.deepEqual(broad.parts[0].sourceBookIds,['140','192','253','436']);
  const explicitFacets=normalizePlan({...raw,parts:['What does Kierkegaard say about faith?','How does he relate faith to the individual?']},
-  'What did Kierkegaard say about faith and the individual?',catalog);
+  'What did Kierkegaard say about faith, and how does he relate it to the individual?',catalog);
  assert.equal(explicitFacets.parts.length,2,'explicitly requested facets remain separate coverage parts');
  const scoped=normalizePlan(raw,'What did Kierkegaard say about faith in Fear and Trembling?',catalog);
  assert.deepEqual(scoped.parts[0].sourceBookIds,['140']);
@@ -1930,7 +1933,7 @@ test('a reviewer cannot mark an answer supported without selecting a span from i
   {partId:'P1',claimId:'P1-C1',sourceId:'S2',reason:'missing-claim-source-span'}]);
  assert.deepEqual(result.trace.reviewContract.reviewDecisions,[{
   partId:'P1',claimId:'P1-C1',sourceId:'S2',claimText:'Kant lists causality among the categories of relation.',
-  claimStatus:'answered',sourceStatus:'partial',
+  claimStatus:'answered',sourceStatus:'partial',attributionStatus:'missing',attributedSpeaker:'',
   candidateSpanIds:['S2-Q1'],reviewerSpanIds:[],acceptedSpanIds:[],acceptedQuote:'',acceptedQuotes:[],accepted:false,
   validationReason:'missing-claim-source-span'
  }]);
@@ -1970,7 +1973,7 @@ test('the active reviewer resolves a selected span to exact bounded source text'
  assert.equal(result.trace.reviewContract.supportIssues.length,0);
  assert.deepEqual(result.trace.reviewContract.reviewDecisions,[{
   partId:'P1',claimId:'P1-C1',sourceId:'S1',claimText:'Aristotle treats soul as the actuality of a living body.',
-  claimStatus:'answered',sourceStatus:'answered',
+  claimStatus:'answered',sourceStatus:'answered',attributionStatus:'missing',attributedSpeaker:'',
   candidateSpanIds:result.trace.reviewContract.reviewDecisions[0].candidateSpanIds,
   reviewerSpanIds:[spans[0].spanId],acceptedSpanIds:[spans[0].spanId],
   acceptedQuote:spans[0].text.slice(0,280),acceptedQuotes:[spans[0].text.slice(0,280)],
