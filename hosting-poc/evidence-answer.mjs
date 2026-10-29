@@ -13,6 +13,9 @@ const MAX_REVIEW_PACKET_SPANS_PER_SOURCE=8;
 // review packet or an allowlist by themselves.
 const MAX_REVIEW_CANDIDATES_PER_SOURCE=MAX_REVIEW_SPANS_PER_SOURCE+1;
 const MAX_COMPOSER_PASSAGE_SPANS_PER_SOURCE=8;
+// Evaluation-only expansion uses the same verified passages and citations as
+// composition. It may deepen an explanation, but it cannot introduce sources.
+export const EXPANSION_PROMPT=`Expand the draft only where the supplied verified passage windows support more explanation. Preserve its direct answer, qualifications, and attribution. Add useful reasoning, context, or a distinct contribution from any relevant source ID in the supplied evidence packet, including a source omitted from the first draft; cite that source ID beside the claim. Keep factual claims close to their citations. Do not cite or use any source outside the supplied evidence packet, add a claim unsupported by these windows, rely on outside knowledge, or pad. If the draft already covers the supported evidence well, return it essentially unchanged. Return the same PART P1, PART P2 headings and citation format as the draft.`;
 // The composer receives focused page windows with one neighboring span on each
 // side. Full fingerprint-verified text remains in the private trace and is used
 // by review; lexical ranking only prioritizes context and never grants support.
@@ -869,7 +872,8 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const usage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
   const started=Date.now();
   async function run(stage,system,payload,parser){
-    if(usage.calls>=2)throw Error('Answer call budget exceeded');
+    const callLimit=options.expand===true?3:2;
+    if(usage.calls>=callLimit)throw Error('Answer call budget exceeded');
     const messages=[{role:'system',content:system},{role:'user',content:JSON.stringify(payload)}];
     const start=Date.now();usage.calls++;
     let response,timer;
@@ -900,7 +904,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const composerSourceIds=new Set(plan.parts.flatMap(part=>part.candidateSourceIds||[]));
   const validatedAnswers=[];let review=null,reviewFailure=null,failure=null;
   try{
-    const composed=await run('compose',COMPOSER_PROMPT,{question,plan,history,
+    const composePayload={question,plan,history,
       parts:plan.parts.map(part=>({partId:part.id,question:part.question,
         candidateSourceIds:part.candidateSourceIds||[]})),
     evidence:[...pageById.values()].filter(page=>composerSourceIds.has(page.id)).map(page=>{
@@ -917,9 +921,31 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         passages:composerPassageWindows(page.id,evidenceText,question,linkedParts),
         provenance,
         ...(voiceGuidance?{attributionRequirement:voiceGuidance}:{})};
-    })},response=>parsePartAnswers(response,plan));
-    const checked=validatePartAnswers(composed.parts,sources,plan,question);
-    const composeResponse=trace.stages.find(stage=>stage.stage==='compose')?.response;
+    })};
+    const composed=await run('compose',COMPOSER_PROMPT,composePayload,
+      response=>parsePartAnswers(response,plan));
+    let draft=composed;
+    if(options.expand===true&&composed.parts.some(part=>part.text.trim())){
+      // Keep this experiment between the first draft and evidence review. The
+      // expander sees only the original verified windows and existing draft;
+      // ordinary public requests never enable this extra inference call.
+      try{
+        draft=await run('expand',EXPANSION_PROMPT,{question,plan,
+          parts:composed.parts.map(part=>({partId:part.partId,text:part.text})),
+          evidence:composePayload.evidence},response=>parsePartAnswers(response,plan,'expand'));
+        trace.expansion={attempted:true,changed:draft.parts.some((part,index)=>
+          part.text.trim()!==composed.parts[index]?.text.trim())};
+      }catch(error){
+        // Expansion is an experiment, not a dependency of the baseline answer.
+        // If it errors or returns malformed output, retain the valid first draft
+        // and let the normal evidence review judge that draft.
+        trace.expansion={attempted:true,changed:false,fallback:'original-draft-retained',
+          failureCode:error?.failureCode||'expansion-failed'};
+      }
+    }
+    const checked=validatePartAnswers(draft.parts,sources,plan,question);
+    const composeResponse=trace.stages.find(stage=>stage.stage==='expand')?.response||
+      trace.stages.find(stage=>stage.stage==='compose')?.response;
     const modelReportedNoEvidence=!checked.parts.some(part=>part.answers.length)&&
       explicitlyReportsInsufficientEvidence(composeResponse);
     trace.rejected=checked.rejected;
@@ -935,15 +961,15 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         .map(part=>({partId:part.partId,reason:'required-direct-answer-rejected'})),
     ];
     validatedAnswers.push(...checked.parts);
-    if(composed.recoveredLegacyRecords)trace.recovery={stage:'compose',code:'legacy-record-format',recovered:true};
-    if(composed.recoveredWithoutHeading){
-      trace.recovery={stage:'compose',code:'missing-part-heading',recovered:true};
+    if(draft.recoveredLegacyRecords)trace.recovery={stage:options.expand?'expand':'compose',code:'legacy-record-format',recovered:true};
+    if(draft.recoveredWithoutHeading){
+      trace.recovery={stage:options.expand?'expand':'compose',code:'missing-part-heading',recovered:true};
       if(!checked.parts.some(part=>part.answers.length)&&!modelReportedNoEvidence)failure={stage:'compose',code:'model-output-invalid-format',
-        message:'The composer omitted the question-part heading and no cited answer could be recovered.'};
+        message:'The answer draft omitted the question-part heading and no cited answer could be recovered.'};
     }
-    if(composed.missingAllHeadings&&!modelReportedNoEvidence)failure={stage:'compose',code:'model-output-invalid-format',
-      message:'The composer omitted all planned question-part headings.'};
-    const anyDraftText=composed.parts.some(part=>part.text.trim());
+    if(draft.missingAllHeadings&&!modelReportedNoEvidence)failure={stage:options.expand?'expand':'compose',code:'model-output-invalid-format',
+      message:'The answer draft omitted all planned question-part headings.'};
+    const anyDraftText=draft.parts.some(part=>part.text.trim());
     if(!failure&&!modelReportedNoEvidence&&anyDraftText&&!checked.parts.some(part=>part.answers.length))
       failure={stage:'compose-validation',code:'answer-citation-validation-failed',
         message:'The draft did not contain a verifiable citation for any answer part.'};

@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 51288)
+Total output lines: 1078
+
 # Reading Companion evidence milestone: release report
 Last updated: October 27, 2026
 Status: The latest paired-scope live run is [#25](https://github.com/jsynon/antilogicalism/actions/runs/40589127363), artifact `12774350799`, using site revision `9dd40ca5f496f8cfc135c37e37ee0e985e827efe` and deployed Worker source revision `339504ccb57bd9f209d912b047866b5c65bf3326` (Cloudflare version `9f4854a5-32ff-4d2b-8cc7-daa1c81a02c8`) on library v48. All ten rows completed without request failures or planner fallbacks, but only 7/10 passed the structural gate (All Books 3/5, Selected Books 4/5; 16 supported, 3 partial, 1 unsupported). The offline passage audit isolates one retrieval-candidate miss: Hamlet All Books p. 454; it reports zero retrieved-best-page packet losses, one context-only Hume/Kant highlight (Kant p. 213), and no review-to-output status mismatches. This remains a structural/answer-quality failure, not a good result. The site has a bounded local fix under review; no post-fix live validation exists yet. Keep the ten-question paired set frozen until the same run confirms p. 454 reaches the candidate pool and submitted packet while Hume/Kant pp. 103–104 and Boethius p. 14 remain available. Human rubric scores remain pending, so the structural count is not a semantic quality score.
@@ -527,38 +530,7 @@ The run confirms a narrow source-subset handoff defect. In Hume/Kant All Books P
 
 The answer-quality signal is separate from the subset fix. Both Hamlet answers passed structure but explained that thought weakens resolve and action without stating the passage's preceding reason: fear of what may follow death. The adjacent soliloquy page was in the submitted packet, but the answer did not use it. The candidate therefore tightens existing composer and reviewer instructions for phrase interpretation: when the supplied pages give the causal premise behind a phrase's effect, include that premise and cite its own page; do not invent missing context. This aims at fuller interpretation from already supplied evidence, without increasing the packet or adding a stage. It does not claim a broad quality gain from prompt text alone.
 
-| Candidate validation | Result |
-|---|---|
-| Explicit partial/unanswered citation with no span IDs plus accepted same-group exact evidence | Pass; both explicit statuses are omitted while the accepted citation and same-group requirement remain enforced. |
-| Answered citation with no accepted exact span | Pass; claim is not promoted and no evidence is retained. |
-| Missing comparison-side group and existing accepted/rejected-direct-claim safeguards | Pass; existing regression tests remain green in the full Worker suite. |
-| Interpretive causal-premise guidance | Composer/reviewer prompt contract assertions pass; this checks the instruction contract, not live model compliance. |
-| Focused answer suite (`node --test hosting-poc/evidence-answer.test.mjs`) | Pass; 83 tests, 0 failures. |
-| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | Pass; 292 tests, 0 failures. |
-| Syntax and whitespace | Pass; changed modules pass `node --check`, and `git diff --check` is clean. |
-| Live paired-scope validation | Completed in run #11 after merge/deployment; see the follow-up entry below. The expected Hume/Kant All Books and Boethius P2 handoffs recovered. |
-| Quality conclusion | Run #11's Hamlet answers included the supplied fear-of-death premise, but the artifact has no human semantic scores. This is a promising observed answer change, not proof of broad quality improvement; keep the unseen acceptance set frozen. |
-
-## October 27, 2026: paired-scope run #11 validates the source-subset change
-
-Paired-scope run [#40455788471](https://github.com/jsynon/antilogicalism/actions/runs/40455788471) completed all ten cases in with-review mode on v48 using the existing 25-call estimate. It had no request failures or planner fallbacks. The site revision was `c5e4eb8221c11a55ca60190eba948a7f8482cccb`; the Worker revision was `0b129183ff2a04eb7cda1b78d52d35059cdef645`, the merge commit for PR [#271](https://github.com/jsynon/book-chatbot/pull/271), running as Cloudflare version `81848ea5-8acb-4ec2-b2bb-a3fea7695be0`. This confirms the workflow tested the merged update.
-
-The run passed 8/10 structural cases, up from run #10's 7/10, with 18/20 parts supported and two partial (run #10 had 15 supported and five partial). The question set, site revision, scope pairing, and planned 20 parts were the same, making this a useful paired comparison, though answer generation remains stochastic. Hume/Kant passed in both scopes; Wollstonecraft passed in both; Du Bois passed in both; Hamlet passed in both. Both Boethius cases remained partial. All 28 cited highlights were located; highlight location does not show semantic relevance. The artifact's human rubric was still unscored for all ten cases.
-
-The source-subset change behaved as intended in the authenticated traces. Hume/Kant All Books P1/P3 omitted the Hume page that the reviewer explicitly marked partial with no spans, while retaining accepted same-group evidence; the case became fully supported. Boethius P2 in both scopes similarly became answered after its weak alternate citation was omitted. The strict boundaries remained: only explicit rejected sources were pruned, and exact accepted spans remained attached to final citations. This is live evidence that the targeted handoff path works, not proof that every use of source subsets is semantically correct.
-
-The two remaining structural failures share one issue: Boethius P1, “How does Lady Philosophy explain the instability of Fortune?” In both scopes, the reviewer itself marked the part partial. Some direct claims survived exact-span validation, including the Fortune-wheel reversal; other generalization/example claims were rejected. The direct-answer IDs that remained did survive, so this is not the old missing-span subset bug. Keep the part partial until its answer and the cited Boethius pages are reviewed together; do not relax the gate based on this score alone.
-
-The Hamlet answers did include the premise absent in run #10: the dread or fear of what follows death causes hesitation, with the selected-books answer connecting it to Hamlet's preference for known hardships over the unknown. Both cite Shakespeare's *Complete Works*, p. 454. This matches the answer-quality prompt change in this sample. The artifact still gives no independent human quality score, and the 28/28 highlight-location count does not judge whether the best lines are highlighted.
-
-The latest dispatched run, [#40459165657](https://github.com/jsynon/antilogicalism/actions/runs/40459165657) (#12), was canceled before any case completed. Its artifact is an initial `running` report with zero completed cases and no Worker source revision, so it is not a result and does not supersede run #11.
-
-| Validation and follow-up | Result |
-|---|---|
-| PR #271 merged and deployed source verification | Pass; run #11 reports its merge commit as `workerSourceRevision`. |
-| Same-group explicit rejection handling | Live trace supports intended recovery in Hume/Kant All Books P1/P3 and both Boethius P2 parts; all remaining source checks stayed active. |
-| Structure | 8/10 cases; 18/20 parts supported, 2 partial, 0 unsupported. |
-| Highlight location | 28/28 citations located; semantic relevance still needs manual review. |
+| Candidate validation | Re…1288 tokens truncated…28 citations located; semantic relevance still needs manual review. |
 | Answer-quality result | Hamlet answers now include fear of the unknown after death; human rubric remains 0/10. |
 | Remaining validation | Inspect Boethius P1 source text and answer claims in both scopes, then rate the ten answers on the existing five-dimension rubric before any broader fix or acceptance run. |
 
@@ -1068,3 +1040,11 @@ The same artifact showed the 1986 and 2019 *Teaching of Buddha* editions contrib
 The composer and reviewer already distinguished retrospective reports from primary statements; the instructions now make the reporting source the grammatical subject when only its account is evidenced, and require that framing during review. This avoids converting a later source's report into a verified historical claim while preserving useful source material.
 
 Focused regression fixtures cover the index collision and coherent-prose control, answer-packet exclusion, differing-length duplicate excerpts, materially different passages, bounded diagnostic forwarding, and mediated-source attribution language. These changes need deployment and a comparable live run. Structural pass rates alone do not establish answer quality; continue using the five human scores and inspect the retrieved/cited passages and answer prose.
+
+## October 29, 2026: one-run quality benchmark and expansion ablation
+
+The conditional search-gap planner described above is already implemented in the live website/Worker flow. Recent all-books traces show that it can run without recovering the expected sources, so the project must measure its before/after candidate sets and relevant-page recall before treating the extra query call as a quality improvement. Do not add a duplicate gap-planning call. Keep its search phrases optional, bounded, within the original source scope, and separate from answer evidence.
+
+The Worker now has an authenticated evaluation-only `with-expansion` variant. It runs after the initial composition and before the existing evidence review. It receives the same plan, draft, and fingerprint-verified passage windows, and may elaborate only supported material already in that packet. The standard public answer path remains composition plus review. Paired evaluation compares both variants with the same selected pages; the extra call is enabled only when the authenticated evaluator requests it. Expansion success is judged by the five human dimensions, citation support, and completeness, not by word-count gain alone.
+
+The website evaluator now accepts `baseline` and `expanded` retrieval profiles. The expanded experiment raises the candidate pool from 24 pages across four books to 48 pages across six books; the final answer packet remains capped at six pages. This is an evaluation profile, not the live-site default. The new consolidated workflow runs the three approved calibration cases or the full acceptance set in one dispatch and may compare the expansion variant. Its report-collection job records structural failures without treating them as an answer-quality verdict; `qualityStatus` stays `pending-human-review` until all five human scores are supplied. Preserve the current source fingerprint, scope, citation, and review protections while judging the experiment on labeled relevance, exact-window evidence, human quality scores, and candidate diversity.
