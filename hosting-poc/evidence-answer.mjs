@@ -222,6 +222,13 @@ function cleanPartAnswer(text){
   flush();
   return {text:output.join('\n\n'),legacy};
 }
+function explicitlyReportsInsufficientEvidence(raw){
+  const text=typeof raw==='string'?raw:
+    typeof raw?.response==='string'?raw.response:
+    typeof raw?.choices?.[0]?.message?.content==='string'?raw.choices[0].message.content:'';
+  return /(?:\b(?:provided|supplied|retrieved|available)\s+(?:source\s+)?(?:passages?|pages?|texts?|evidence|sources?)\b[^.!?\n]{0,140}\b(?:do not|don't|does not|doesn't|cannot|can't|fail to|fails to)\b[^.!?\n]{0,100}\b(?:answer|address|support|establish|speak to)\b)|(?:\b(?:not enough|insufficient)\s+(?:relevant\s+)?(?:evidence|information|support)\b[^.!?\n]{0,100}\b(?:answer|address|establish)\b)/iu.test(text);
+}
+
 function parsePartAnswers(raw,plan,stage='compose'){
   const text=responseText(raw,stage).replace(/^```[a-z0-9_-]*\s*/i,'').replace(/\s*```$/,'');
   const known=new Set(plan.parts.map(part=>part.id));
@@ -908,6 +915,12 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         ...(voiceGuidance?{attributionRequirement:voiceGuidance}:{})};
     })},response=>parsePartAnswers(response,plan));
     const checked=validatePartAnswers(composed.parts,sources,plan,question);
+    const composeResponse=trace.stages.find(stage=>stage.stage==='compose')?.response;
+    const modelReportedNoEvidence=!checked.parts.some(part=>part.answers.length)&&
+      explicitlyReportsInsufficientEvidence(composeResponse);
+    if(modelReportedNoEvidence)
+      trace.coverageGaps.push(...plan.parts.map(part=>({partId:part.id,
+        reason:'model-reported-insufficient-evidence'})));
     trace.rejected=checked.rejected;
     // Citation cleanup is reviewable only in the authenticated trace; the
     // public answer contains the sanitized citation and verified source.
@@ -922,13 +935,13 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     if(composed.recoveredLegacyRecords)trace.recovery={stage:'compose',code:'legacy-record-format',recovered:true};
     if(composed.recoveredWithoutHeading){
       trace.recovery={stage:'compose',code:'missing-part-heading',recovered:true};
-      if(!checked.parts.some(part=>part.answers.length))failure={stage:'compose',code:'model-output-invalid-format',
+      if(!checked.parts.some(part=>part.answers.length)&&!modelReportedNoEvidence)failure={stage:'compose',code:'model-output-invalid-format',
         message:'The composer omitted the question-part heading and no cited answer could be recovered.'};
     }
-    if(composed.missingAllHeadings)failure={stage:'compose',code:'model-output-invalid-format',
+    if(composed.missingAllHeadings&&!modelReportedNoEvidence)failure={stage:'compose',code:'model-output-invalid-format',
       message:'The composer omitted all planned question-part headings.'};
     const anyDraftText=composed.parts.some(part=>part.text.trim());
-    if(!failure&&anyDraftText&&!checked.parts.some(part=>part.answers.length))
+    if(!failure&&!modelReportedNoEvidence&&anyDraftText&&!checked.parts.some(part=>part.answers.length))
       failure={stage:'compose-validation',code:'answer-citation-validation-failed',
         message:'The draft did not contain a verifiable citation for any answer part.'};
     if(options.review!==false&&checked.parts.some(part=>part.answers.length)){
