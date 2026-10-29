@@ -655,9 +655,8 @@ def focus_checker_sources(
         return list(sources)
 
     question_terms = question_topic_anchor_terms(question) - STOP_WORDS
-    # Broad framing words add little discrimination between Aristotle's
-    # passages. Keep topic terms such as "good" available only if they are a
-    # genuinely useful signal alongside a more specific term.
+    # Broad framing words add little discrimination between passages from
+    # the same work. Keep topic terms available when they distinguish a query.
     broad_terms = {"human", "life", "good", "thing", "people", "man", "way"}
     question_terms -= broad_terms
     draft_terms = set(tokenize(draft)) - STOP_WORDS - broad_terms
@@ -1980,9 +1979,7 @@ def query_needs_expansion(question: str, sources: list[dict]) -> bool:
     # actual account of how repeated actions form character. Ignore these
     # framing terms only when measuring coverage; they remain available to the
     # ordinary lexical scorer and never alter the user's question.
-    coverage_fillers = {
-        "aristotle", "become", "becoming", "help", "someone",
-    }
+    coverage_fillers = {"become", "becoming", "help", "someone"}
     topical_question_terms = question_terms - coverage_fillers
     if not topical_question_terms:
         topical_question_terms = question_terms
@@ -2003,7 +2000,7 @@ def query_needs_expansion(question: str, sources: list[dict]) -> bool:
             # A single shared word is weak evidence that a whole question part
             # is covered. For example, an unrelated passage mentioning an
             # "argument" should not suppress expansion for a request asking
-            # how Aristotle argues for the highest good. Keep a one-term floor
+            # how a text supports a principle. Keep a one-term floor
             # for genuinely short facets, but require two distinct matches
             # whenever the facet contains at least two meaningful terms.
             facet_floor = 2 if len(facet_terms) > 1 else 1
@@ -3007,7 +3004,7 @@ def call_ollama(question: str, sources: list[dict], history: list[dict], model: 
     if has_unmatched_parenthetical_alias(question, sources):
         # When the retrieved text does not use a reader's technical label or
         # its parenthetical gloss, answer in the text's own vocabulary. This
-        # avoids making the alias itself look like a claim Aristotle states.
+        # avoids making the alias itself look like a claim the source states.
         system += (
             " The question supplies a term with a parenthetical gloss that the strongest passages do not "
             "use. Treat those words as the reader's search cues, not as required source wording. Begin with "
@@ -3834,7 +3831,7 @@ def comparison_evidence_issue(
         # A concept can be named in one short excerpt while another short
         # excerpt from the same passage supplies a nearby qualifying detail.
         # Requiring every excerpt to repeat the concept label, as Build 61
-        # did, rejected useful context when Aristotle's wording introduced a
+        # did, rejected useful context when the source introduced a
         # term once and then described its property in a separate sentence.
         # Keep the direct-name requirement, but assess each claim clause
         # against one excerpt at a time below instead of pooling all words.
@@ -4332,7 +4329,7 @@ def claim_vocabulary_gaps(
         # Every named topic that a clause explicitly discusses needs lexical
         # footing in that clause's exact quote bundle. Previously the stricter
         # floor applied only when one clause named two or more topics, which
-        # still let a sentence such as "Aristotle does not discuss God" ride
+        # still let a sentence such as "the author does not discuss X" ride
         # on a generic quote about the soul or the good man. In multi-topic
         # questions, each topic may appear in its own sentence, but each such
         # sentence must cite wording about the topic it names. The answer-level
@@ -4387,7 +4384,7 @@ def partial_recovery_vocabulary_gaps(
     framing_terms = {
         "according", "author", "book", "claim", "concept", "describe",
         "directly", "discuss", "establish", "passage", "provided", "say",
-        "text", "think", "view", "believe", "mean", "aristotle",
+        "text", "think", "view", "believe", "mean",
     }
     author_label = BOOK_TITLE.rsplit("—", 1)[-1] if "—" in BOOK_TITLE else ""
     ignored.update(tokenize(author_label))

@@ -101,7 +101,7 @@ test('hypothetical thinker questions bind side searches to each author and reser
  assert.ok(result.plan.parts[1].searchQueries.every(query=>/Kierkegaard/i.test(query)&&!/Nietzsche/i.test(query)));
  assert.deepEqual(result.plan.parts[2].searchQueries,result.queries,
   'the synthesis reuses the two source-side queries instead of creating an unscoped third facet');
- assert.match(systemPrompt,/hypothetical question about what author A would think of author B/i);
+ assert.match(systemPrompt,/named-source comparisons or hypotheticals/i);
 });
 test('search planner retains explicitly named authors and works for source scoping',async()=>{
  let systemPrompt='';
@@ -111,8 +111,8 @@ test('search planner retains explicitly named authors and works for source scopi
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(good)}}]};
   }
  });
- assert.match(systemPrompt,/retain the relevant name in its corresponding query/i);
- assert.match(systemPrompt,/Do not invent authors or works/i);
+ assert.match(systemPrompt,/explicitly requested authors or works/i);
+ assert.match(systemPrompt,/Do not invent authors, works, answers, or citations/i);
 });
 test('epistemic comparison planning searches for the argument behind a principle',async()=>{
  let systemPrompt='';
@@ -126,10 +126,7 @@ test('epistemic comparison planning searches for the argument behind a principle
     })}}]};
    }
   });
- assert.match(systemPrompt,/how a claim, principle, or necessity can be known/i);
- assert.match(systemPrompt,/preserve that epistemic relation and the exact phenomenon/i);
- assert.match(systemPrompt,/argument, grounds, or conditions of validity/i);
- assert.match(systemPrompt,/without replacing the terms the reader used/i);
+ assert.match(systemPrompt,/Preserve the subject, named sources, exact requested concept, and textual scope/i);
 });
 test('process-focused planning requires source-level actions as well as topic labels',async()=>{
  let systemPrompt='';
@@ -146,15 +143,8 @@ test('process-focused planning requires source-level actions as well as topic la
   }
  );
  assert.deepEqual(answer.queries,plan.queries);
- assert.match(systemPrompt,/concrete process and causal sequence/i);
- assert.match(systemPrompt,/every process-focused query must include at least one concrete action, verb, or causal phrase/i);
- assert.match(systemPrompt,/source-level descriptions of what people or things do over abstract labels alone/i);
- assert.match(systemPrompt,/repeated actions or doing just acts/i);
- assert.match(systemPrompt,/what role or function a named concept plays/i);
- assert.match(systemPrompt,/who acts, what it does, or what follows/i);
- assert.match(systemPrompt,/Treat source-native wording as a retrieval lead, not evidence/i);
- assert.match(systemPrompt,/reserve a query for the source’s general explanation or causal rule/i);
- assert.match(systemPrompt,/do not spend every query on a memorable or narrow example/i);
+ assert.match(systemPrompt,/Use remaining queries for its distinct requested facets/i);
+ assert.match(systemPrompt,/Treat every query as a retrieval lead, never as evidence/i);
 });
 test('theory-and-challenge planning searches the proposition and its textual correction separately',async()=>{
  let systemPrompt='';
@@ -174,22 +164,15 @@ test('theory-and-challenge planning searches the proposition and its textual cor
   });
  assert.equal(calls,1);
  assert.deepEqual(answer.queries,expected);
- assert.match(systemPrompt,/general rule, principle, or mechanism/i);
- assert.match(systemPrompt,/use separate queries for the proposition and the reply, counterpoint, or correction/i);
- assert.match(systemPrompt,/do not substitute motive or aftermath for the correction/i);
+ assert.match(systemPrompt,/requested definition, reason, evidence, or relation itself/i);
 });
-test('splits bundled coordinated role queries into separate search facets without another AI call',async()=>{
+test('keeps planner query facets as returned without question-specific rewriting',async()=>{
  const cases=[
   {
    question:'According to Darwin, how does natural selection operate, and what roles do inherited variation and the struggle for existence play?',
    planned:[
     'Darwin On the Origin of Species natural selection operation',
     'Darwin On the Origin of Species inherited variation and struggle for existence'
-   ],
-   expected:[
-    'Darwin On the Origin of Species natural selection operation',
-    'Darwin On the Origin of Species inherited variation',
-    'Darwin On the Origin of Species the struggle for existence'
    ]
   },
   {
@@ -197,11 +180,6 @@ test('splits bundled coordinated role queries into separate search facets withou
    planned:[
     'Aristotle repeated actions form virtue',
     'Aristotle habituation and practical reason developing virtue'
-   ],
-   expected:[
-    'Aristotle repeated actions form virtue',
-    'Aristotle habituation',
-    'Aristotle practical reason'
    ]
   }
  ];
@@ -214,10 +192,10 @@ test('splits bundled coordinated role queries into separate search facets withou
    }
   });
   assert.equal(calls,1);
-  assert.deepEqual(answer.queries,item.expected);
+  assert.deepEqual(answer.queries,item.planned);
  }
 });
-test('cause-versus-trigger planning seeks concrete incidents instead of abstract labels',async()=>{
+test('cause-oriented planning keeps query design inside the planner response',async()=>{
  let systemPrompt='';
  await planSearchQueries(
   'What caused the conflict, and how did its underlying cause differ from the immediate disputes?', '', {
@@ -229,10 +207,7 @@ test('cause-versus-trigger planning seeks concrete incidents instead of abstract
    }
   }
  );
- assert.match(systemPrompt,/distinguishes an underlying or structural cause from/i);
- assert.match(systemPrompt,/concrete incidents that brought the conflict about/i);
- assert.match(systemPrompt,/do not rely only on abstract labels/i);
- assert.match(systemPrompt,/search query as retrieval leads, never as evidence/i);
+ assert.match(systemPrompt,/Treat every query as a retrieval lead, never as evidence/i);
 });
 test('comparative planning keeps each source on the exact disputed concept',async()=>{
  let systemPrompt='';
@@ -250,11 +225,10 @@ test('comparative planning keeps each source on the exact disputed concept',asyn
   }
  );
  assert.deepEqual(result.queries,queries);
- assert.match(systemPrompt,/specific disputed concept/i);
- assert.match(systemPrompt,/Kant on causal necessity, search the Second Analogy/i);
- assert.match(systemPrompt,/regulative or absolute necessity alone is not a direct answer/i);
- assert.match(systemPrompt,/that source’s own definition, criterion, or explanation/i);
- assert.match(systemPrompt,/merely reports the other thinker’s position/i);
+ assert.match(systemPrompt,/requested concept/i);
+ assert.doesNotMatch(systemPrompt,/Kant on causal necessity|Second Analogy/i);
+ assert.match(systemPrompt,/Search for the requested definition, reason, evidence, or relation itself/i);
+ assert.match(systemPrompt,/each source for its own relevant position/i);
 });
 test('dependent part questions retain the parent subject and quoted passage in retrieval queries',async()=>{
  const question='In Hamlet’s “To be, or not to be” soliloquy, what alternatives does he weigh, and how does uncertainty about what follows death affect his reasoning?';
@@ -286,11 +260,8 @@ test('literary passage planning prefers the canonical primary work',async()=>{
   }
  );
  assert.deepEqual(result.queries,queries);
- assert.match(systemPrompt,/For a literary scene or quoted line/i);
- assert.match(systemPrompt,/canonical work or author/i);
- assert.match(systemPrompt,/inside collected works, include its canonical author even if the reader names only the scene/i);
- assert.match(systemPrompt,/search Hamlet with William Shakespeare/i);
- assert.match(systemPrompt,/primary text over commentary or anthologies/i);
+ assert.doesNotMatch(systemPrompt,/Hamlet with William Shakespeare/i);
+ assert.match(systemPrompt,/distinguish their own text from commentary/i);
 });
 
 test('a named play inside a collection is bound to its verified primary catalog record',async()=>{
@@ -319,7 +290,7 @@ test('definition questions preserve the exact phrase instead of broad planner pa
  });
  assert.equal(answer.queries[0],'God is love meaning');
  assert.equal(answer.queries[1],'love through human experience and action');
- assert.match(systemPrompt,/For a phrase or expression, keep that exact phrase in one query/i);
+ assert.match(systemPrompt,/Preserve the subject, named sources, exact requested concept, and textual scope/i);
 });
 test('technical concept definitions preserve the reader term and add source-native search vocabulary',async()=>{
  const question='What is sunyata?';
@@ -334,9 +305,7 @@ test('technical concept definitions preserve the reader term and add source-nati
    })}}]};
   }
  });
- assert.match(systemPrompt,/what a technical, traditional, or translated concept means/);
- assert.match(systemPrompt,/preserve the reader’s exact term in one query/);
- assert.match(systemPrompt,/the source’s own definition or operation: the relation it names/);
+ assert.match(systemPrompt,/Where the reader uses modern or abstract wording, add likely source wording/i);
  assert.deepEqual(result.queries,expected);
  assert.equal(result.plan.parts.length,1,
   'source-native search vocabulary must not become extra requested answer parts');
@@ -448,16 +417,14 @@ test('follow-up planner resolves vague references from prior turns',async()=>{
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(good)}}]};
   }
  },history);
- assert.match(systemPrompt,/resolve it from the recent conversation/i);
- assert.match(systemPrompt,/concrete subject and named author or work/i);
- assert.match(systemPrompt,/Do not use generic phrases like "the current account" or "related works"/i);
+ assert.match(systemPrompt,/Resolve follow-up references only when conversation history makes them clear/i);
  assert.match(userPrompt,/Reader: According to Thucydides/);
  assert.match(userPrompt,/Assistant: Thucydides identifies the growth of Athenian power/);
  assert.match(userPrompt,/Current follow-up question: How does this account compare/);
 });
 
 
-test('broad philosophical planning keeps one direct question while allowing bounded context searches',async()=>{
+test('broad philosophical planning keeps one direct question and permits relevant context',async()=>{
  let systemPrompt='',calls=0;
  const question='Are we living in a simulation?';
  const plan={
@@ -484,13 +451,11 @@ test('broad philosophical planning keeps one direct question while allowing boun
  assert.match(result.queries[0],/simulation/i,'retain a direct search for the actual question');
  assert.match(result.queries[1],/Descartes/i);
  assert.match(result.queries[2],/Hume/i);
- assert.match(systemPrompt,/broad conceptual or philosophical question/i);
- assert.match(systemPrompt,/retain a direct query for it/i);
- assert.match(systemPrompt,/do not force a fixed author pair/i);
- assert.match(systemPrompt,/turn context into another required part/i);
- assert.match(systemPrompt,/distinguish direct evidence for the claim from related arguments about how it can be known/i,'epistemic context is governed by general guidance, not a simulation-specific route');
+ assert.match(systemPrompt,/Keep a single direct question as one part/i);
+ assert.match(systemPrompt,/context is optional retrieval guidance/i);
+ assert.doesNotMatch(systemPrompt,/Descartes|Berkeley|Hume/i);
 });
-test('reality questions retain a direct query and gain one generic epistemic context lead when the planner omits it',async()=>{
+test('the planner does not append a topic-specific query when its plan omits one',async()=>{
  const question='Are we living in a simulation?';
  const planned={resolvedQuestion:question,intent:'explain',
   parts:[question],queries:['are we living in a computational simulation',
@@ -498,11 +463,10 @@ test('reality questions retain a direct query and gain one generic epistemic con
  const result=await planSearchQueries(question,'',{
   run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]})
  });
- assert.equal(result.queries.length,3);
+ assert.equal(result.queries.length,2);
  assert.match(result.queries[0],/simulation/i,'keep a direct search for the central question');
- assert.match(result.queries.at(-1),/perception external world experience dream skepticism/i);
+ assert.equal(result.queries[1],'computer simulation probability argument');
  assert.equal(result.plan.parts.length,1,'context stays a search lead, not a new answer obligation');
- assert.doesNotMatch(result.queries.join(' '),/Descartes|Berkeley|Hume/i,'do not route to a fixed author set');
 });
 
 test('contextual-source guidance is general and does not hardcode simulation thinkers',async()=>{
@@ -516,7 +480,6 @@ test('contextual-source guidance is general and does not hardcode simulation thi
    ]})}}]};
   }
  });
- assert.match(systemPrompt,/only a small number of clearly relevant contextual thinkers or works/i);
- assert.match(systemPrompt,/do not add sources merely because they share a topic/i);
+ assert.match(systemPrompt,/add context sources only when they clearly help explain the central question/i);
  assert.doesNotMatch(systemPrompt,/Descartes.*Berkeley.*Hume/i);
 });
