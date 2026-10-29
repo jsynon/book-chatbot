@@ -1021,3 +1021,8 @@ Offline regression cases cover the context-query fallback and a footnote-attribu
 
 
 The composer also now distinguishes an explicit “the supplied passages do not answer this question” response from malformed answer output when no cited answer survives. It returns the existing `insufficient-evidence` outcome and records a coverage gap; answer coverage remains none, so this does not pass the quality gate or trigger a retry.
+
+
+## October 29, 2026: refusal wording and trace-order follow-up
+
+The first simulation reruns after the retrieval/answer changes exposed two gaps in the insufficient-evidence classification. The model said the available text “does not contain information” rather than “does not answer,” and one response path attempted to add a coverage-gap trace before the trace list was initialized. The follow-up recognizes both phrasings and constructs the trace list once, so an explicit refusal with no retained cited answer returns the structured insufficient-evidence outcome. It still records zero answer coverage. Offline regression coverage now includes both phrasings. The simulation reruns also show that the context query alone does not reliably retrieve the desired epistemic sources; that remains a separate retrieval-ranking issue.
