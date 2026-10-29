@@ -69,6 +69,14 @@ node --test reading-companion/*.test.mjs
 
 These suites use offline fixtures. They do not replace a live model run or source-based answer review.
 
+## Current answer-quality guardrails
+
+Broad questions about reality and existence keep one direct answer part. If their planner queries omit epistemic vocabulary, the Worker adds one bounded context lead about perception, the external world, experience, dreams, and skepticism. This is a generic retrieval aid: it adds no named-author route, answer obligation, model call, or retrieval capacity. The original question remains the first query.
+
+The existing reviewer now has an explicit source-attribution decision for named-speaker claims. It should inspect the selected passage and nearby footnote/source-credit context before accepting claims such as “X taught…”; the trace records its attribution status and speaker. The composer can use two or three paragraphs and roughly 160–260 words when multiple relevant passages explain distinct facets, while remaining concise when support is thin. Length and source count remain diagnostics, not quality scores. The five human scores remain accuracy, question coverage, explanation quality, citation support, and citation completeness.
+
+Offline regression coverage is added for the planner context lead and a quoted-speaker attribution conflict. Live acceptance evidence is still needed to determine whether retrieval and answers improve after deployment.
+
 ## Separate local workbench
 
 The repository also contains a Python application for local experimentation. It runs a local model through Ollama and does not call the Cloudflare Worker. On Windows, run `start.bat`; otherwise start it with `python app.py` and open `http://127.0.0.1:8765/`. Its developer view is at `http://127.0.0.1:8765/developer`.
