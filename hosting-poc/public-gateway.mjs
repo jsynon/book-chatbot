@@ -14,6 +14,7 @@
  * The Free Workers CPU limit (10ms) requires real deployment measurement.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
+import {selectEvidenceCandidates} from './evidence-selector.mjs';
 import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v48/';
@@ -3617,6 +3618,46 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       pilotBookIds:PILOT_BOOK_IDS,
       searchPlanning:true,
       scope:'full-public-catalog'},200,origin);
+  }
+  if(url.pathname==='/api/pilot-select-evidence'){
+    const reply=(body,status=200)=>json({...body,...workerVersionDiagnostics(env)},status,origin);
+    if(origin!==FRONTEND_ORIGIN)return reply({error:'Origin not allowed'},403,origin);
+    if(request.method==='OPTIONS')return new Response(null,{status:204,headers:headers(origin)});
+    if(request.method!=='POST')return reply({error:'Method not allowed'},405,origin);
+    if(!pilotReady)return reply({error:'AI evidence selection is not enabled'},503,origin);
+    // This experimental selector is available only to the authenticated
+    // evaluator until a frozen benchmark shows that it improves evidence use.
+    if(!authorizedPilotEvaluation(request,env))return reply({error:'Not found'},404,origin);
+    const ip=request.headers.get('CF-Connecting-IP');
+    if(!ip||ip.length>64)return reply({error:'Request identity unavailable'},403,origin);
+    try{
+      const visitor=await env.AI_RATE_LIMITER.limit({key:'reading-pilot:visitor:'+ip+':selector'});
+      const total=await env.GLOBAL_RATE_LIMITER.limit({key:'reading-pilot:global'});
+      if(!visitor.success||!total.success)
+        return reply({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
+    }catch{return reply({error:'Request limits unavailable'},503,origin);}
+    if(Number(request.headers.get('Content-Length'))>40000)
+      return reply({error:'Request too large'},413,origin);
+    let data;
+    try{
+      const raw=await request.text();
+      if(new TextEncoder().encode(raw).byteLength>40000)
+        return reply({error:'Request too large'},413,origin);
+      data=JSON.parse(raw);
+    }catch{return reply({error:'Invalid JSON request'},400,origin);}
+    if(!data||typeof data!=='object'||Array.isArray(data))
+      return reply({error:'Invalid evidence selection request'},400,origin);
+    try{
+      const result=await selectEvidenceCandidates({question:data.question,parts:data.parts,
+        candidates:data.candidates,ai:env.AI});
+      return reply({...result,guidance:'Experimental page selection only; submitted full pages are independently fingerprint-verified'},200,origin);
+    }catch(error){
+      const diagnostics=inferenceFailureDiagnostics(error);
+      console.warn('Reader pilot evidence selection failed',diagnostics);
+      return reply({error:'Evidence selection unavailable',
+        failureCode:publicAiFailureCode(diagnostics.providerClass)||'evidence-selection-failed',
+        ...(typeof diagnostics.providerCode==='string'?{failureProviderCode:diagnostics.providerCode}:{})},502,origin);
+    }
   }
   if(url.pathname==='/api/pilot-plan'){
     const reply=(body,status=200)=>json({...body,...workerVersionDiagnostics(env)},status,origin);
