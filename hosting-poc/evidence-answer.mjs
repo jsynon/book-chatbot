@@ -699,11 +699,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const selected=selectedBySource.get(sourceId)||[];
         const rawDecision=decision.sources.find(item=>String(item?.sourceId||'')===sourceId);
         const namedAttribution=hasNamedSpeakerAttribution(answer.text);
-        const modelAttributionIssue=namedAttribution?
-          sourceDecision?.attributionStatus==='conflict'?'source-attribution-conflict':
-          sourceDecision?.attributionStatus==='unclear'?'source-attribution-unclear':
-          sourceDecision?.attributionStatus==='not_applicable'?'source-attribution-not-applicable':
-          sourceDecision?.attributionStatus==='supported'?'':'';
+        const attributionStatus=sourceDecision?.attributionStatus;
+        const modelAttributionIssue=namedAttribution&&attributionStatus==='conflict'?
+          'source-attribution-conflict':
+          namedAttribution&&attributionStatus==='unclear'?'source-attribution-unclear':
+          namedAttribution&&attributionStatus==='not_applicable'?'source-attribution-not-applicable':'';
         const provenanceAttributionIssue=sourceDecision?.status==='answered'?
           sourceVoiceAttributionIssue(answer.text,sourceById.get(sourceId),plan,
             precedingAnswers,sourceById):'';
