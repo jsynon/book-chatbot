@@ -3418,7 +3418,7 @@ function namedGroupQueryTargets(question,bookTitle){
 }
 
 const EPISTEMIC_QUERY_TERMS=/\b(?:perception|perceiv(?:e|ed|es|ing)|experience|senses?|external world|dream(?:s|ing)?|skeptic(?:al|ism)?|doubt|certainty|appearance|idealism|empiricism|realism|belief|know(?:ledge)?)\b/iu;
-const BROAD_REALITY_QUESTION_TERMS=/\b(?:simulation|simulated|reality|real|existence|exist|external world|world around us)\b/iu;
+const BROAD_REALITY_QUESTION_TERMS=/\b(?:simulation|simulated reality|reality|real world|external world|world around us|nature of reality|what is real|does\s+(?:the\s+)?(?:world|universe|physical world|god|anything)\s+exist|whether\s+(?:the\s+)?(?:world|universe|physical world|god|anything)\s+exists?)\b/iu;
 const EPISTEMIC_CONTEXT_QUERY='perception external world experience dream skepticism';
 
 // Add a bounded, source-native context lead only when the question concerns
