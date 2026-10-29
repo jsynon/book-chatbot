@@ -304,7 +304,7 @@ test('literary passage planning prefers the canonical primary work',async()=>{
  assert.match(systemPrompt,/distinguish their own text from commentary/i);
 });
 
-test('a named play inside a collection is bound to its verified primary catalog record',async()=>{
+test('a play title absent from the catalog does not create a curated source alias',async()=>{
  const question='In Hamlet’s “To be, or not to be” soliloquy, what does he mean by “conscience makes cowards of us all”?';
  const planned={resolvedQuestion:question,intent:'interpret',sources:[],
   parts:['What does Hamlet mean by “conscience makes cowards of us all”?'],scope:'',
@@ -313,10 +313,10 @@ test('a named play inside a collection is bound to its verified primary catalog 
  const result=await planSearchQueries(question,'',{
   run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]})
  });
- assert.deepEqual(result.plan.sources.map(source=>source.bookIds),[['212']],
-  'the title alias must resolve to the catalog’s primary Shakespeare collection');
- assert.deepEqual(result.plan.parts[0].sourceBookIds,['212'],
-  'the work boundary must reach the normalized question part');
+ assert.deepEqual(result.plan.sources,[],
+  'a play absent from standalone catalog titles should use generic retrieval');
+ assert.equal(result.plan.parts[0].sourceBookIds,null,
+  'no catalog source boundary should be added for the unlisted play');
 });
 test('definition questions preserve the exact phrase instead of broad planner paraphrases',async()=>{
  let systemPrompt='';
