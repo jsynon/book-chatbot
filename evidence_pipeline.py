@@ -457,8 +457,8 @@ def choose_evidence(question, history, index, facets, provider, log,
         }
 
     # Source coverage belongs to a PERSON, not whichever particular volume
-    # was highest-ranked. A citation from Aristotle's Ethics satisfies an
-    # Aristotle requirement even if the Works anthology was also selected.
+    # was highest-ranked. A source that belongs to the requested work satisfies
+    # that source requirement even when a broader anthology is also selected.
     # Only citations from actual retrieved works can satisfy this.
     author_groups = getattr(index, "discovery", {}).get(
         "required_author_groups", []
