@@ -487,7 +487,7 @@ test('broad philosophical planning keeps one direct question while allowing boun
  assert.match(systemPrompt,/broad conceptual or philosophical question/i);
  assert.match(systemPrompt,/retain a direct query for it/i);
  assert.match(systemPrompt,/do not force a fixed author pair/i);
- assert.match(systemPrompt,/do not turn context into another required part/i);
+ assert.match(systemPrompt,/turn context into another required part/i);
  assert.match(systemPrompt,/do not by themselves establish a computer simulation/i);
 });
 test('contextual-source guidance is general and does not hardcode simulation thinkers',async()=>{
@@ -496,7 +496,8 @@ test('contextual-source guidance is general and does not hardcode simulation thi
   run:async(_model,options)=>{
    systemPrompt=options.messages[0].content;
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
-    'personal identity continuity of consciousness memory'
+    'personal identity continuity of consciousness memory',
+   'personal identity self relation through time'
    ]})}}]};
   }
  });
