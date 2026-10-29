@@ -3417,6 +3417,21 @@ function namedGroupQueryTargets(question,bookTitle){
   });
 }
 
+const EPISTEMIC_QUERY_TERMS=/\b(?:perception|perceiv(?:e|ed|es|ing)|experience|senses?|external world|dream(?:s|ing)?|skeptic(?:al|ism)?|doubt|certainty|appearance|idealism|empiricism|realism|belief|know(?:ledge)?)\b/iu;
+const BROAD_REALITY_QUESTION_TERMS=/\b(?:simulation|simulated reality|reality|real world|external world|world around us|nature of reality|what is real|does\s+(?:the\s+)?(?:world|universe|physical world|god|anything)\s+exist|whether\s+(?:the\s+)?(?:world|universe|physical world|god|anything)\s+exists?)\b/iu;
+const EPISTEMIC_CONTEXT_QUERY='perception external world experience dream skepticism';
+
+// Add a bounded, source-native context lead only when the question concerns
+// reality/existence and the planner supplied no epistemic search vocabulary.
+function ensureEpistemicContextQuery(question,queries){
+  if(!BROAD_REALITY_QUESTION_TERMS.test(String(question||''))||
+     queries.some(query=>EPISTEMIC_QUERY_TERMS.test(query)))return queries;
+  const distinct=queries.filter(query=>query.toLocaleLowerCase()!==EPISTEMIC_CONTEXT_QUERY);
+  // The planner orders the central-question query first; keep it and the
+  // strongest remaining leads while preserving the existing four-query cap.
+  return [...distinct.slice(0,3),EPISTEMIC_CONTEXT_QUERY];
+}
+
 export async function planSearchQueries(question,bookTitle,ai,history=[]){
   // Keep contextual discovery inside the existing planning call; its sources and
   // query facets guide retrieval without hardcoding answers or adding coverage parts.
@@ -3556,6 +3571,7 @@ export async function planSearchQueries(question,bookTitle,ai,history=[]){
        /^[\p{L}\p{N} .,;:'"?!()\-–]+$/u.test(q)))
     throw new Error('Invalid search plan');
   let queries=options.map(q=>q.trim().replace(/\s+/g,' '));
+  queries=ensureEpistemicContextQuery(question,queries);
   const counterfactualResponse=isCounterfactualAuthorResponseQuestion(question);
   if(counterfactualResponse){
     const requested=requestedSourceGroups(question,bookTitle);
