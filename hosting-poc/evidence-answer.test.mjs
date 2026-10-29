@@ -2346,6 +2346,19 @@ test('malformed composition is reported as generation failure without retrying o
  assert.equal(result.failureCode,'model-output-invalid-format');
 });
 
+test('the composer explicit refusal becomes structured insufficient evidence without a retry',async()=>{
+ const ai=makeAI([answer('The supplied passages do not address the question about whether reality is simulated.')]);
+ const result=await composeEvidenceAnswer('Are we living in a simulation?',[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question:'Are we living in a simulation?'}]},catalog,trace:true
+ });
+ assert.equal(ai.calls.length,1);
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.coverage,'none');
+ assert.equal(result.failureCode,undefined);
+ assert.ok(result.trace.coverageGaps.some(item=>
+  item.reason==='model-reported-insufficient-evidence'));
+});
+
 test('an explicitly empty planned answer is reported as insufficient evidence, not a format failure',async()=>{
  const ai=makeAI([answer('PART P1')]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[],ai,[],
