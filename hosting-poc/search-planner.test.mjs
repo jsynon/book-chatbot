@@ -455,3 +455,52 @@ test('follow-up planner resolves vague references from prior turns',async()=>{
  assert.match(userPrompt,/Assistant: Thucydides identifies the growth of Athenian power/);
  assert.match(userPrompt,/Current follow-up question: How does this account compare/);
 });
+
+
+test('broad philosophical planning keeps one direct question while allowing bounded context searches',async()=>{
+ let systemPrompt='',calls=0;
+ const question='Are we living in a simulation?';
+ const plan={
+  resolvedQuestion:question,intent:'explain',
+  sources:[{label:'René Descartes',role:'primary'},{label:'David Hume',role:'primary'}],
+  parts:['What can be established about whether reality is computationally simulated?'],
+  scope:'',queries:[
+   'whether reality is a computational simulation',
+   'Descartes dream argument external world skeptical doubt',
+   'Hume external objects perception belief experience'
+  ]
+ };
+ const result=await planSearchQueries(question,'',{
+  run:async(_model,options)=>{
+   calls++;
+   systemPrompt=options.messages[0].content;
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(plan)}}]};
+  }
+ });
+ assert.equal(calls,1,'context discovery stays in the existing planner call');
+ assert.equal(result.plan.parts.length,1,'context does not become extra required coverage');
+ assert.equal(result.plan.parts[0].question,'What can be established about whether reality is computationally simulated?');
+ assert.equal(result.queries.length,3);
+ assert.match(result.queries[0],/simulation/i,'retain a direct search for the actual question');
+ assert.match(result.queries[1],/Descartes/i);
+ assert.match(result.queries[2],/Hume/i);
+ assert.match(systemPrompt,/broad conceptual or philosophical question/i);
+ assert.match(systemPrompt,/retain a direct query for it/i);
+ assert.match(systemPrompt,/do not force a fixed author pair/i);
+ assert.match(systemPrompt,/do not turn context into another required part/i);
+ assert.match(systemPrompt,/do not by themselves establish a computer simulation/i);
+});
+test('contextual-source guidance is general and does not hardcode simulation thinkers',async()=>{
+ let systemPrompt='';
+ await planSearchQueries('What is personal identity?', '', {
+  run:async(_model,options)=>{
+   systemPrompt=options.messages[0].content;
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
+    'personal identity continuity of consciousness memory'
+   ]})}}]};
+  }
+ });
+ assert.match(systemPrompt,/only a small number of clearly relevant contextual thinkers or works/i);
+ assert.match(systemPrompt,/do not add sources merely because they share a topic/i);
+ assert.doesNotMatch(systemPrompt,/Descartes.*Berkeley.*Hume/i);
+});
