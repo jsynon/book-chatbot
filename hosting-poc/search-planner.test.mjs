@@ -479,7 +479,7 @@ test('broad philosophical planning keeps one direct question while allowing boun
  });
  assert.equal(calls,1,'context discovery stays in the existing planner call');
  assert.equal(result.plan.parts.length,1,'context does not become extra required coverage');
- assert.equal(result.plan.parts[0].question,'What can be established about whether reality is computationally simulated?');
+ assert.equal(result.plan.parts[0].question,question,'a direct question remains the single required coverage goal');
  assert.equal(result.queries.length,3);
  assert.match(result.queries[0],/simulation/i,'retain a direct search for the actual question');
  assert.match(result.queries[1],/Descartes/i);
