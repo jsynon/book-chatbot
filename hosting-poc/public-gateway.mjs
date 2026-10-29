@@ -3725,7 +3725,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     }
     let output;
     const evaluationAuthorized=authorizedPilotEvaluation(request,env);
-    const answerVariant=evaluationAuthorized&&data.answerVariant==='compose-only'?'compose-only':'with-review';
+    const answerVariant=evaluationAuthorized&&['compose-only','with-expansion'].includes(data.answerVariant)?
+      data.answerVariant:'with-review';
     try{
       // The public pilot uses the evidence pipeline by default. An explicit
       // legacy setting is a rollback switch; authenticated evaluations always
@@ -3742,6 +3743,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         output=await composeEvidenceAnswer(data.question,answerSources,env.AI,data.history||[],{
           plan,catalog:PILOT_BOOKS,selectedBookId,
           review:answerVariant!=='compose-only',
+          expand:answerVariant==='with-expansion',
           // Full prompts and source text are returned only to the dedicated
           // authenticated evaluation workflow, never to ordinary visitors.
           trace:authorizedPilotEvaluation(request,env),
