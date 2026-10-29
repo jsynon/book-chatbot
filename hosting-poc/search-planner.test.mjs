@@ -490,6 +490,21 @@ test('broad philosophical planning keeps one direct question while allowing boun
  assert.match(systemPrompt,/turn context into another required part/i);
  assert.match(systemPrompt,/distinguish direct evidence for the claim from related arguments about how it can be known/i,'epistemic context is governed by general guidance, not a simulation-specific route');
 });
+test('reality questions retain a direct query and gain one generic epistemic context lead when the planner omits it',async()=>{
+ const question='Are we living in a simulation?';
+ const planned={resolvedQuestion:question,intent:'explain',
+  parts:[question],queries:['are we living in a computational simulation',
+   'computer simulation probability argument']};
+ const result=await planSearchQueries(question,'',{
+  run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]})
+ });
+ assert.equal(result.queries.length,3);
+ assert.match(result.queries[0],/simulation/i,'keep a direct search for the central question');
+ assert.match(result.queries.at(-1),/perception external world experience dream skepticism/i);
+ assert.equal(result.plan.parts.length,1,'context stays a search lead, not a new answer obligation');
+ assert.doesNotMatch(result.queries.join(' '),/Descartes|Berkeley|Hume/i,'do not route to a fixed author set');
+});
+
 test('contextual-source guidance is general and does not hardcode simulation thinkers',async()=>{
  let systemPrompt='';
  await planSearchQueries('What is personal identity?', '', {
