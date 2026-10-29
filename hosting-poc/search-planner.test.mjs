@@ -315,7 +315,7 @@ test('a play title absent from the catalog does not create a curated source alia
  });
  assert.deepEqual(result.plan.sources,[],
   'a play absent from standalone catalog titles should use generic retrieval');
- assert.deepEqual(result.plan.parts[0].sourceBookIds,[],
+ assert.equal(result.plan.parts[0].sourceBookIds,null,
   'no catalog source boundary should be added for the unlisted play');
 });
 test('definition questions preserve the exact phrase instead of broad planner paraphrases',async()=>{
