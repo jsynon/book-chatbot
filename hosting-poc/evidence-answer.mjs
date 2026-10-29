@@ -226,7 +226,11 @@ function explicitlyReportsInsufficientEvidence(raw){
   const text=typeof raw==='string'?raw:
     typeof raw?.response==='string'?raw.response:
     typeof raw?.choices?.[0]?.message?.content==='string'?raw.choices[0].message.content:'';
-  return /(?:\b(?:provided|supplied|retrieved|available)\s+(?:source\s+)?(?:passages?|pages?|texts?|evidence|sources?)\b[^.!?\n]{0,140}\b(?:do not|don't|does not|doesn't|cannot|can't|fail to|fails to)\b[^.!?\n]{0,100}\b(?:answer|address|support|establish|speak to)\b)|(?:\b(?:not enough|insufficient)\s+(?:relevant\s+)?(?:evidence|information|support)\b[^.!?\n]{0,100}\b(?:answer|address|establish)\b)/iu.test(text);
+  const namesSuppliedEvidence=/\b(?:provided|supplied|retrieved|available)\s+(?:source\s+)?(?:passages?|pages?|texts?|evidence|sources?)\b/iu;
+  const deniesAnAnswer=/\b(?:do not|don't|does not|doesn't|cannot|can't|fail to|fails to)\s+(?:(?:answer|address|support|establish|speak to)\b|(?:contain|include|provide|offer)\s+(?:any\s+)?(?:relevant\s+)?(?:information|evidence|answer|support)\b)/iu;
+  const statesEvidenceIsInsufficient=/\b(?:not enough|insufficient)\s+(?:relevant\s+)?(?:evidence|information|support)\b.{0,100}\b(?:answer|address|establish)\b/iu;
+  return (namesSuppliedEvidence.test(text)&&deniesAnAnswer.test(text))||
+    statesEvidenceIsInsufficient.test(text);
 }
 
 function parsePartAnswers(raw,plan,stage='compose'){
@@ -918,14 +922,13 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     const composeResponse=trace.stages.find(stage=>stage.stage==='compose')?.response;
     const modelReportedNoEvidence=!checked.parts.some(part=>part.answers.length)&&
       explicitlyReportsInsufficientEvidence(composeResponse);
-    if(modelReportedNoEvidence)
-      trace.coverageGaps.push(...plan.parts.map(part=>({partId:part.id,
-        reason:'model-reported-insufficient-evidence'})));
     trace.rejected=checked.rejected;
     // Citation cleanup is reviewable only in the authenticated trace; the
     // public answer contains the sanitized citation and verified source.
     trace.citationRepairs=checked.citationRepairs;
     trace.coverageGaps=[
+      ...(modelReportedNoEvidence?plan.parts.map(part=>({partId:part.id,
+        reason:'model-reported-insufficient-evidence'})):[]),
       ...checked.parts.filter(part=>part.missingHypotheticalInference)
         .map(part=>({partId:part.partId,reason:'hypothetical-inference-missing'})),
       ...checked.parts.filter(part=>part.requiredAnswerRejected)
