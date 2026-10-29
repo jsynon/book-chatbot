@@ -991,8 +991,11 @@ test('the deterministic polarity guard rejects a reviewed positive claim that re
 });
 
 test('the composer uses a short per-part answer contract and the reviewer links exact quotes to claims',()=>{
- assert.match(COMPOSER_PROMPT,/one heading and one short answer paragraph for each supplied part/);
- assert.match(COMPOSER_PROMPT,/two short paragraphs/);
+ assert.match(COMPOSER_PROMPT,/one heading and a concise answer for each supplied part/);
+ assert.match(COMPOSER_PROMPT,/A part may use up to three short paragraphs when distinct evidence needs separate explanation/);
+ assert.match(COMPOSER_PROMPT,/two or three short paragraphs/);
+ assert.match(COMPOSER_PROMPT,/whether from one work or several/);
+ assert.match(COMPOSER_PROMPT,/roughly 160–260 words as a guide, not a quota/);
  assert.match(COMPOSER_PROMPT,/If only one source directly answers or the evidence is thin, stay concise/);
  assert.match(COMPOSER_PROMPT,/Do not pad, repeat, or add a source just to lengthen the response/);
  assert.doesNotMatch(COMPOSER_PROMPT,/80–140 words/);
@@ -1295,6 +1298,33 @@ test('the run-58 comparison limitation remains partial while a positive inferenc
  assert.equal(result.questionParts[2].status,'partial');
  assert.match(result.answer,/support a comparison but not a reliable inference/);
  assert.deepEqual(result.trace.coverageGaps,[{partId:'P3',reason:'hypothetical-inference-missing'}]);
+});
+
+test('quoted-speaker conflicts are preserved as a source-attribution rejection',async()=>{
+ const source={id:'S1',bookId:'80',title:'Buddha’s Teachings',page:44,
+  text:'The cycle of births and deaths is like the turning seasons. (Y. Chambers, Buddha’s Teachings, vv. 729–730)',
+  preview:'The cycle of births and deaths is like the turning seasons.'};
+ const question='What did Buddha say about death?';
+ const plan={...onePartPlan,intent:'explain',
+  sources:[{label:'Buddha',role:'primary',bookIds:['80']}],
+  parts:[{id:'P1',question,sourceBookIds:['80'],candidateSourceIds:['S1']}]};
+ const ai=makeAI([answer('PART P1\nThe Buddha taught that birth and death recur in cycles. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
+     attributionStatus:'conflict',attributedSpeaker:'Y. Chambers'}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer(question,[source],ai,[],{
+  plan,catalog:{80:'Buddha’s Teachings'},trace:true
+ });
+ assert.equal(ai.calls.length,2,'attribution is checked in the existing review call');
+ assert.equal(result.coverage,'none','the misattributed claim cannot survive review');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S1'&&issue.reason==='source-attribution-conflict'));
+ assert.equal(result.trace.reviewContract.reviewDecisions[0].attributedSpeaker,'Y. Chambers');
 });
 
 test('known editorial and pseudonymous source voices must be named or mediated',async()=>{
@@ -2231,6 +2261,8 @@ test('flat reviewer decisions retain exact provenance and source-encoded spans',
  assert.deepEqual(reviewPayload.parts[0].evidence[0].provenance,composePayload.evidence[0].provenance);
  assert.deepEqual(result.trace.reviewContract.recovered,[]);
  assert.match(REVIEW_PROMPT,/Metadata about credited authors.*is context, not proof/i);
+ assert.match(REVIEW_PROMPT,/attributionStatus/);
+ assert.match(REVIEW_PROMPT,/nearby footnote and source-credit text/);
 });
 
 test('a fenced reviewer object with the observed stray closing tail parses but still requires every cited source span',async()=>{
