@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {handleRequest,planSearchQueries,composeVerifiedAnswer,validConversationHistory} from './public-gateway.mjs';
+import {handleRequest,planSearchQueries,planSearchGapQueries,composeVerifiedAnswer,validConversationHistory} from './public-gateway.mjs';
 
 const HOST='https://antilogicalism-companion-public.jsynon.workers.dev';
 const question='How does Raskolnikov attempt to justify murder and how does the novel challenge his reasoning?';
@@ -36,6 +36,46 @@ test('bounded search planner produces distinct, well-formed corpus search querie
  const answer=await planSearchQueries(question,'Crime and Punishment — Dostoevsky',mockAI);
  assert.deepEqual(answer.queries,good.queries);
  assert.equal(answer.usage.neurons,3);
+});
+test('conditional gap planner returns optional distinct search terms and sees bounded retrieval evidence',async()=>{
+ const response=await planSearchGapQueries('How do we know reality exists?','',{
+  weakParts:[{part:'How do we know reality exists?',overlap:1}],
+  originalQueries:['reality existence knowledge'],
+  candidates:[{title:'A source',excerpt:'A bounded passage excerpt.'}]
+ },{run:async(_model,options)=>{
+  const prompt=options.messages.map(message=>message.content).join('\n');
+  assert.match(prompt,/optional retrieval leads/i);
+  assert.match(prompt,/A bounded passage excerpt/);
+  return {choices:[{finish_reason:'stop',message:{content:'{"queries":["empirical knowledge of external world","reality existence perception"]}'}}],usage:{neurons:2}};
+ }});
+ assert.deepEqual(response.queries,['empirical knowledge of external world','reality existence perception']);
+ assert.equal(response.usage.neurons,2);
+});
+test('conditional gap planner rejects malformed and repeated original queries',async()=>{
+ const result=await planSearchGapQueries('What is knowledge?','',{
+  weakParts:[{part:'What is knowledge?',overlap:0}],originalQueries:['empirical knowledge of external world'],candidates:[]
+ },{run:async()=>({choices:[{finish_reason:'stop',message:{content:
+  '{"queries":["empirical knowledge of external world","alternate theory of knowledge"]}'}}]})});
+ assert.deepEqual(result.queries,['alternate theory of knowledge']);
+ await assert.rejects(planSearchGapQueries('What is knowledge?','',{
+  weakParts:[],originalQueries:[],candidates:[]
+ },{run:async()=>({choices:[{finish_reason:'stop',message:{content:'{"queries":["x"]}'}}]})}),/Invalid retrieval gap queries/);
+});
+test('pilot planner route keeps conditional gap output separate from the answer plan',async()=>{
+ let calls=0,verificationCalls=0;
+ const environment=env({AI:{run:async(_model,options)=>{
+  calls++;assert.match(options.messages[0].content,/optional retrieval leads/i);
+  return {choices:[{finish_reason:'stop',message:{content:'{"queries":["experience and perception","external world knowledge"]}'}}]};
+ }}});
+ const response=await handleRequest(request({...body,retrievalGap:{
+  weakParts:[{part:'How do we know reality?',overlap:0}],originalQueries:['reality existence knowledge'],
+  candidates:[{title:'A source',excerpt:'A bounded passage excerpt.'}]
+ }}),environment,async(...args)=>{verificationCalls++;return verify(...args);});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.deepEqual(result.queries,['experience and perception','external world knowledge']);
+ assert.equal(result.plan,undefined);
+ assert.equal(calls,1);assert.equal(verificationCalls,1);
 });
 test('planner returns a bounded plan scoped to the explicitly named Hume and Kant works',async()=>{
  const question='In Hume’s An Enquiry Concerning Human Understanding, how does he explain causal necessity, and how does Kant’s Critique of Pure Reason differ?';
