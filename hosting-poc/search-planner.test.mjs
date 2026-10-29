@@ -479,7 +479,7 @@ test('broad philosophical planning keeps one direct question while allowing boun
  });
  assert.equal(calls,1,'context discovery stays in the existing planner call');
  assert.equal(result.plan.parts.length,1,'context does not become extra required coverage');
- assert.equal(result.plan.parts[0].question,'What can be established about whether reality is computationally simulated?');
+ assert.equal(result.plan.parts[0].question,question,'a direct question remains the single required coverage goal');
  assert.equal(result.queries.length,3);
  assert.match(result.queries[0],/simulation/i,'retain a direct search for the actual question');
  assert.match(result.queries[1],/Descartes/i);
@@ -488,7 +488,7 @@ test('broad philosophical planning keeps one direct question while allowing boun
  assert.match(systemPrompt,/retain a direct query for it/i);
  assert.match(systemPrompt,/do not force a fixed author pair/i);
  assert.match(systemPrompt,/turn context into another required part/i);
- assert.match(systemPrompt,/do not by themselves establish a computer simulation/i);
+ assert.match(systemPrompt,/distinguish direct evidence for the claim from related arguments about how it can be known/i,'epistemic context is governed by general guidance, not a simulation-specific route');
 });
 test('contextual-source guidance is general and does not hardcode simulation thinkers',async()=>{
  let systemPrompt='';
