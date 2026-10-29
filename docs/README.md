@@ -75,7 +75,7 @@ Broad questions about reality and existence keep one direct answer part. If thei
 
 The existing reviewer now has an explicit source-attribution decision for named-speaker claims. It should inspect the selected passage and nearby footnote/source-credit context before accepting claims such as “X taught…”; the trace records its attribution status and speaker. The composer can use two or three paragraphs and roughly 160–260 words when multiple relevant passages explain distinct facets, while remaining concise when support is thin. Length and source count remain diagnostics, not quality scores. The five human scores remain accuracy, question coverage, explanation quality, citation support, and citation completeness.
 
-Offline regression coverage is added for the planner context lead and a quoted-speaker attribution conflict. Live acceptance evidence is still needed to determine whether retrieval and answers improve after deployment.
+Offline regression coverage is added for the planner context lead, explicit insufficient-evidence response, and a quoted-speaker attribution conflict. When the composer explicitly reports that supplied passages do not answer the question and no cited answer survives, the Worker returns the existing structured insufficient-evidence outcome with zero coverage rather than labeling that evidence gap as a format failure. Live acceptance evidence is still needed to determine whether retrieval and answers improve after deployment.
 
 ## Separate local workbench
 
