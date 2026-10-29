@@ -1007,8 +1007,10 @@ test('the composer uses a short per-part answer contract and the reviewer links 
  assert.match(COMPOSER_PROMPT,/interpret it in plain language before describing consequences/);
  assert.match(COMPOSER_PROMPT,/When the supplied pages state the reason or premise that leads to the phrase's meaning, explain that causal step as well as the consequence/);
  assert.match(COMPOSER_PROMPT,/When a later source reports a historical figure's teaching, attribute it as that source's account or attribution/);
+ assert.match(COMPOSER_PROMPT,/make the reporting source the grammatical subject/);
  assert.match(COMPOSER_PROMPT,/Do not add a preface, status labels, bullets, inline list markers/);
  assert.match(REVIEW_PROMPT,/For a later source reporting a historical figure, distinguish the source's report or attribution from a directly verified statement/);
+ assert.match(REVIEW_PROMPT,/explicitly framed as the reporting source's account/);
  assert.match(COMPOSER_PROMPT,/each author’s position in a separate cited clause of the opening sentence/);
  assert.match(COMPOSER_PROMPT,/The first sentence of a comparison part must itself be a sourced comparison, with evidence for each side cited in that sentence/);
  assert.match(COMPOSER_PROMPT,/do not bundle distinct speaker claims under one shared citation group/);

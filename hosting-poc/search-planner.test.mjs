@@ -39,12 +39,17 @@ test('bounded search planner produces distinct, well-formed corpus search querie
 });
 test('conditional gap planner returns optional distinct search terms and sees bounded retrieval evidence',async()=>{
  const response=await planSearchGapQueries('How do we know reality exists?','',{
-  weakParts:[{part:'How do we know reality exists?',overlap:1}],
+  weakParts:[{part:'How do we know reality exists?',overlap:0,
+   matchedTerms:['simulation'],coverageReason:'index-like-candidates-not-counted',
+   coverageSource:{bookId:'114',page:1264,globalPageId:'114:1264'}}],
   originalQueries:['reality existence knowledge'],
   candidates:[{title:'A source',excerpt:'A bounded passage excerpt.'}]
  },{run:async(_model,options)=>{
   const prompt=options.messages.map(message=>message.content).join('\n');
   assert.match(prompt,/optional retrieval leads/i);
+  assert.match(prompt,/coverageReason.*index-like-candidates-not-counted/);
+  assert.match(prompt,/coverageSource.*1264/);
+  assert.match(prompt,/index-like page is not evidence/i);
   assert.match(prompt,/A bounded passage excerpt/);
   return {choices:[{finish_reason:'stop',message:{content:'{"queries":["empirical knowledge of external world","reality existence perception"]}'}}],usage:{neurons:2}};
  }});
