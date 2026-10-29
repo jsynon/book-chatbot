@@ -695,6 +695,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const modelAttributionIssue=namedAttribution?
           sourceDecision?.attributionStatus==='conflict'?'source-attribution-conflict':
           sourceDecision?.attributionStatus==='unclear'?'source-attribution-unclear':
+          sourceDecision?.attributionStatus==='not_applicable'?'source-attribution-not-applicable':
           sourceDecision?.attributionStatus==='supported'?'':'';
         const provenanceAttributionIssue=sourceDecision?.status==='answered'?
           sourceVoiceAttributionIssue(answer.text,sourceById.get(sourceId),plan,
