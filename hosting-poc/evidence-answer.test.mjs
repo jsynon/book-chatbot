@@ -992,7 +992,10 @@ test('the deterministic polarity guard rejects a reviewed positive claim that re
 
 test('the composer uses a short per-part answer contract and the reviewer links exact quotes to claims',()=>{
  assert.match(COMPOSER_PROMPT,/one heading and one short answer paragraph for each supplied part/);
- assert.match(COMPOSER_PROMPT,/three to five concise sentences/);
+ assert.match(COMPOSER_PROMPT,/two short paragraphs/);
+ assert.match(COMPOSER_PROMPT,/If only one source directly answers or the evidence is thin, stay concise/);
+ assert.match(COMPOSER_PROMPT,/Do not pad, repeat, or add a source just to lengthen the response/);
+ assert.doesNotMatch(COMPOSER_PROMPT,/80–140 words/);
  assert.match(COMPOSER_PROMPT,/planner's search queries are retrieval leads, not a list of topics/);
  assert.match(COMPOSER_PROMPT,/one main claim/);
  assert.match(COMPOSER_PROMPT,/Answer each supplied question part directly in its first sentence/);

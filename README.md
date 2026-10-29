@@ -74,4 +74,6 @@ The public companion is a pilot for the full collection. Current work evaluates 
 
 Search may miss a useful passage because of wording, OCR quality, or the limits of selecting a small set of pages. Even when the cited page is correct, the model can misread or overstate what it says. Compare important claims with the passage and original page.
 
+For broad All Books questions, the live retriever keeps up to 24 hydrated candidate pages across four books before selecting at most six verified pages for the answer. A broad answer may use a second paragraph when a distinct work adds relevant context; thin evidence still calls for a concise answer. These changes reuse the existing planner, composer, and reviewer calls and do not force a fixed source list.
+
 **Guiding principle:** use AI to help readers find, question, and understand the books, while keeping the books themselves at the center.
