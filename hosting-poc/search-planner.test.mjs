@@ -39,7 +39,7 @@ test('bounded search planner produces distinct, well-formed corpus search querie
 });
 test('conditional gap planner returns optional distinct search terms and sees bounded retrieval evidence',async()=>{
  const response=await planSearchGapQueries('How do we know reality exists?','',{
-  weakParts:[{part:'How do we know reality exists?',overlap:0,
+  weakParts:[{partId:'P1',part:'How do we know reality exists?',overlap:0,
    matchedTerms:['simulation'],coverageReason:'index-like-candidates-not-counted',
    coverageSource:{bookId:'114',page:1264,globalPageId:'114:1264'}}],
   originalQueries:['reality existence knowledge'],
@@ -53,9 +53,13 @@ test('conditional gap planner returns optional distinct search terms and sees bo
   assert.match(prompt,/underlying concepts, assumptions, or kinds of reasoning/i);
   assert.match(prompt,/distinct from direct evidence for the contemporary claim/i);
   assert.match(prompt,/A bounded passage excerpt/);
-  return {choices:[{finish_reason:'stop',message:{content:'{"queries":["empirical knowledge of external world","reality existence perception"]}'}}],usage:{neurons:2}};
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
+   {partId:'P1',query:'empirical knowledge of external world'},
+   {partId:'P1',query:'reality existence perception'}]})}}],usage:{neurons:2}};
  }});
  assert.deepEqual(response.queries,['empirical knowledge of external world','reality existence perception']);
+ assert.deepEqual(response.queryPartLinks,[{query:'empirical knowledge of external world',partIds:['P1']},
+  {query:'reality existence perception',partIds:['P1']}]);
  assert.equal(response.usage.neurons,2);
 });
 test('conditional gap planner rejects malformed and repeated original queries',async()=>{
@@ -75,7 +79,7 @@ test('pilot planner route keeps conditional gap output separate from the answer 
   return {choices:[{finish_reason:'stop',message:{content:'{"queries":["experience and perception","external world knowledge"]}'}}]};
  }}});
  const response=await handleRequest(request({...body,retrievalGap:{
-  weakParts:[{part:'How do we know reality?',overlap:0}],originalQueries:['reality existence knowledge'],
+  weakParts:[{partId:'P1',part:'How do we know reality?',overlap:0}],originalQueries:['reality existence knowledge'],
   candidates:[{title:'A source',excerpt:'A bounded passage excerpt.'}]
  }}),environment,async(...args)=>{verificationCalls++;return verify(...args);});
  assert.equal(response.status,200);
@@ -174,6 +178,17 @@ test('epistemic comparison planning searches for the argument behind a principle
    }
   });
  assert.match(systemPrompt,/Preserve the subject, named sources, exact requested concept, and textual scope/i);
+});
+test('a one-part plan links conceptual planner queries without adding answer obligations',async()=>{
+ const queries=['simulation hypothesis arguments','appearance reality external world knowledge'];
+ const result=await planSearchQueries('Could reality be simulated?','',{
+  run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   resolvedQuestion:'Could reality be simulated?',intent:'explain',sources:[],
+   parts:['Could reality be simulated?'],scope:'',queries
+  })}}]})
+ });
+ assert.ok(queries.every(query=>result.plan.parts[0].searchQueries.includes(query)));
+ assert.equal(result.plan.parts.length,1);
 });
 test('process-focused planning requires source-level actions as well as topic labels',async()=>{
  let systemPrompt='';
