@@ -3739,8 +3739,15 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       // model output, error text, question, token, passage content, or IP.
       const diagnostics=inferenceFailureDiagnostics(error);
       console.warn('Reader pilot search planning failed',diagnostics);
+      // Keep planner-stage failures inspectable without exposing provider
+      // messages or source text. The site trace distinguishes the initial plan
+      // from the conditional gap plan and can safely record this fixed class.
+      const failureStage=data.retrievalGap?'gap-planning':'planning';
+      const failureDetail=String(diagnostics.providerClass||'unknown')
+        .toLocaleLowerCase().replace(/[^a-z0-9]+/gu,'_').slice(0,48);
       return reply({error:'Search planning unavailable; try direct passage search',
         failureCode:publicAiFailureCode(diagnostics.providerClass)||'search-planning-failed',
+        failureStage,failureDetail,
         ...(typeof diagnostics.providerCode==='string'?
           {failureProviderCode:diagnostics.providerCode}:{})},502,origin);
     }
