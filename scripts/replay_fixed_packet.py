@@ -100,7 +100,9 @@ def read_trace_packet(report, case):
     choices = response.get("choices", []) if isinstance(response, dict) else []
     message = choices[0].get("message", {}) if choices else {}
     draft = message.get("content") if isinstance(message, dict) else None
-    return trace, sources, payload, draft if isinstance(draft, str) else None
+    if not isinstance(draft, str):
+        raise ReplayError("The trace has no raw Worker composition response.")
+    return trace, sources, payload, draft
 
 
 def local_page(library_root, book_id, page_id, page_number):
@@ -142,15 +144,14 @@ def make_passages(payload, trace, sources, library_root, catalog):
             raise ReplayError(f"Local v49 text for {source_id} fails its Worker page fingerprint.")
 
         windows = row.get("passages")
-        if isinstance(windows, list):
-            texts = [w["text"] for w in windows if isinstance(w, dict)
-                     and isinstance(w.get("text"), str) and w["text"].strip()]
-            page_context = source.get("scopeText") or source.get("text")
-            if not isinstance(page_context, str) or any(t not in page_context for t in texts):
-                raise ReplayError(f"Composition windows for {source_id} do not match the trace page.")
-            text = "\n\n".join(texts)
-        else:
-            text = row.get("text", "")
+        if not isinstance(windows, list) or not windows:
+            raise ReplayError(f"The Worker trace has no composition windows for {source_id}.")
+        texts = [w["text"] for w in windows if isinstance(w, dict)
+                 and isinstance(w.get("text"), str) and w["text"].strip()]
+        page_context = source.get("scopeText") or source.get("text")
+        if not texts or not isinstance(page_context, str) or any(t not in page_context for t in texts):
+            raise ReplayError(f"Composition windows for {source_id} do not match the trace page.")
+        text = "\n\n".join(texts)
         if not isinstance(text, str) or not text.strip():
             raise ReplayError(f"The Worker composition packet has no text for {source_id}.")
         size = len(text.encode("utf-8"))
@@ -245,17 +246,25 @@ def main(argv=None):
          if isinstance(p, dict)] or [question],
         provider, "fixed-packet-replay-v1", fixed_evidence=passages,
     )
-    final = trace.get("final", {})
+    final = trace.get("final")
+    final = final if isinstance(final, dict) else {}
+    compose_stage = next(s for s in trace.get("stages", [])
+                         if isinstance(s, dict) and s.get("stage") == "compose")
     output = {
         "schema": "reading-companion-fixed-packet-replay-v1",
-        "caseId": args.case_id, "question": question, "corpusVersion": "v49",
+        "caseId": args.case_id, "question": question, "questionSha256": digest(question),
+        "corpusVersion": "v49",
         "packet": {"sourceCount": len(audit), "utf8Bytes": byte_count,
                    "sources": audit, "sha256": digest(json.dumps(
                        [(x["source_id"], x["window_sha256"]) for x in audit],
                        ensure_ascii=False, separators=(",", ":")))},
-        "worker": {"compositionDraft": worker_draft,
-                   "finalReviewedAnswer": final.get("answer") or case.get("answerText", "")},
-        "local": {"model": args.model, "contextTokens": args.context_tokens,
+        "worker": {"model": trace.get("model"),
+                   "compositionElapsedMs": compose_stage.get("elapsedMs"),
+                   "compositionDraft": worker_draft,
+                   "finalReviewedAnswer": final.get("answer") or case.get("answerText", ""),
+                   "answerCalls": case.get("usage", {}).get("calls")},
+        "local": {"build": "fixed-packet-replay-v1",
+                  "model": args.model, "contextTokens": args.context_tokens,
                   "answer": result.get("answer", ""), "outcome": result.get("outcome", ""),
                   "followUpQuestions": result.get("follow_up_questions", []),
                   "elapsedMs": round((time.perf_counter() - started) * 1000),
