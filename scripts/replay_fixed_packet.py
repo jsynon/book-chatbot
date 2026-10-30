@@ -103,10 +103,29 @@ def load_raw_page(library_root: Path, version: str, book_id: str,
     return pages[0]["text"]
 
 
-def worker_evidence_by_id(trace):
+def worker_evidence_by_id(trace, case, report):
+    corpus = report.get("reproducibility", {}).get("corpus", {})
+    if corpus.get("libraryVersion") != 49:
+        raise ReplayError("This replay supports only live evaluation artifacts from v49.")
+    submitted = case.get("submittedSources")
     evidence = trace.get("evidence") if isinstance(trace, dict) else None
-    if not isinstance(evidence, list) or not evidence:
-        raise ReplayError("The saved answer trace does not contain verified page evidence.")
+    if not isinstance(submitted, list) or not isinstance(evidence, list) or not evidence:
+        raise ReplayError("The artifact is missing submitted-page metadata or verified trace evidence.")
+
+    # submittedSources carries the global page ID; the authenticated Worker
+    # trace carries the exact text and fingerprint. Join them by stable book/page.
+    submitted_by_page = {}
+    for item in submitted:
+        if not isinstance(item, dict):
+            raise ReplayError("The artifact contains malformed submitted-page metadata.")
+        key = (str(item.get("bookId", "")), item.get("page"))
+        global_id = item.get("globalPageId")
+        if (not key[0].isdigit() or not isinstance(key[1], int)
+                or not isinstance(global_id, int) or global_id < 0
+                or key in submitted_by_page):
+            raise ReplayError("Submitted-page identities are missing or duplicated.")
+        submitted_by_page[key] = item
+
     result = {}
     for page in evidence:
         if not isinstance(page, dict):
@@ -114,21 +133,23 @@ def worker_evidence_by_id(trace):
         source_id = page.get("id")
         if not isinstance(source_id, str) or not SOURCE_ID.fullmatch(source_id) or source_id in result:
             raise ReplayError("The saved evidence trace has invalid or duplicate source IDs.")
-        if page.get("libraryVersion") != 49:
-            raise ReplayError("This replay supports only Worker-verified library v49 pages.")
+        key = (str(page.get("bookId", "")), page.get("page"))
+        metadata = submitted_by_page.get(key)
+        if metadata is None:
+            raise ReplayError(f"{source_id} is not present in submitted page metadata.")
         digest = page.get("sha256")
         if not isinstance(digest, str) or not SHA256.fullmatch(digest):
             raise ReplayError(f"{source_id} has no valid canonical page fingerprint.")
-        result[source_id] = page
-    if len(result) > LIVE_MAX_SOURCES:
-        raise ReplayError("The live trace contains more than six submitted pages.")
+        result[source_id] = {**page, "globalPageId": metadata["globalPageId"]}
+    if len(result) > LIVE_MAX_SOURCES or len(result) != len(submitted_by_page):
+        raise ReplayError("Worker evidence and submitted page lists do not match.")
     return result
 
 
-def prepare_packet(payload, trace, library_root, version, catalog):
+def prepare_packet(payload, trace, case, report, library_root, version, catalog):
     from passage_quality import source_form
 
-    pages_by_id = worker_evidence_by_id(trace)
+    pages_by_id = worker_evidence_by_id(trace, case, report)
     evidence_rows = payload["evidence"]
     if not 1 <= len(evidence_rows) <= LIVE_MAX_SOURCES:
         raise ReplayError("The Worker composition packet must have one to six pages.")
@@ -282,7 +303,7 @@ def main(argv=None):
     }
     catalog_data = read_catalog(args.catalog.expanduser(), fallback_book)
     passages, source_audit, total_bytes = prepare_packet(
-        payload, trace, args.library_data.expanduser().resolve(),
+        payload, trace, case, report, args.library_data.expanduser().resolve(),
         args.corpus_version, catalog_data
     )
     index = FixedPacketIndex(passages, app.tokenize)
