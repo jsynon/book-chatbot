@@ -618,9 +618,9 @@ function hasNegationScopeMismatch(claimText,sourceText){
   // "Neither P nor Q may be asserted" is stronger than "P and Q are not both true".
   // Detect that narrow logical-scope mismatch without encoding any topic or author.
   const sentenceParts=value=>String(value||'').split(/[.!?…]+/u).filter(Boolean);
-  const sourceRejectsAlternatives=/\\b(?:not\\s+(?:right|correct|permissible|valid)\\s+to|cannot|can't|could not|couldn't|must not|may not)\\s+(?:state|say|claim|assert|affirm|maintain)\\b/iu;
-  const eitherOr=/\\b(?:neither|nor|either)\\b/iu;
-  const claimRejectsConjunction=/\\b(?:not|cannot|can't|incorrect|wrong|impossible)\\b[^.!?;]{0,120}\\b(?:both|simultaneously|at once)\\b/iu;
+  const sourceRejectsAlternatives=/\b(?:not\s+(?:right|correct|permissible|valid)\s+to|cannot|can't|could not|couldn't|must not|may not)\s+(?:state|say|claim|assert|affirm|maintain)\b/iu;
+  const eitherOr=/\b(?:neither|nor|either)\b/iu;
+  const claimRejectsConjunction=/\b(?:not|cannot|can't|incorrect|wrong|impossible)\b[^.!?;]{0,120}\b(?:both|simultaneously|at once)\b/iu;
   for(const sourceSentence of sentenceParts(sourceText)){
     if(!sourceRejectsAlternatives.test(sourceSentence)||!eitherOr.test(sourceSentence))continue;
     const sourceTerms=polarityTerms(sourceSentence);
