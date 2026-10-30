@@ -341,7 +341,7 @@ test('compact review decisions validate exact spans without rationale text or re
   if(messages[0].content.startsWith('Answer the reader'))return answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]');
   reviewPayload=JSON.parse(messages[1].content);
   const claim=reviewPayload.claims[0],span=reviewPayload.parts[0].evidence[0].spans[0];
-  assert.equal(max_completion_tokens,1800);
+  assert.equal(max_completion_tokens,messages[0].content.startsWith('Answer the reader')?1800:3000);
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
     spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}]}]})};
@@ -359,6 +359,7 @@ test('compact review decisions validate exact spans without rationale text or re
  assert.equal('candidateSourceIds' in reviewPayload.parts[0],false);
  assert.equal('sha256' in reviewPayload.parts[0].evidence[0],false);
 });
+
 
 test('source-grouped review makes each cited source decision explicit and keeps a missing side partial',async()=>{
  const plan={...twoSidePlan,parts:[{id:'P1',question:'How do Hume and Kant differ?',sourceBookIds:['35','40'],

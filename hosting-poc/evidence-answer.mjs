@@ -718,7 +718,17 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // This sentence is general context or synthesis. The reviewer judges
         // its usefulness and attribution, while exact-span checks remain
         // reserved for claims that cite a library page.
-        if(decision.sources.length){issues.push('context-claim-has-source-decisions');continue;}
+        if(decision.sources.length){
+          // A malformed reviewer decision for an uncited sentence must not
+          // invalidate unrelated, correctly reviewed claims. Drop the invalid
+          // source assertions and fail this claim closed in the trace.
+          supportIssues.push({partId:part.id,claimId:answer.claimId,
+            reason:'context-claim-has-source-decisions'});
+          reviewDecisions.push({partId:part.id,claimId:answer.claimId,
+            claimText:String(answer.text||'').slice(0,320),claimStatus:'partial',
+            contextOnly:true,accepted:false,validationReason:'context-claim-has-source-decisions'});
+          continue;
+        }
         if(claimStatus==='answered'){
           const retainedAnswer={...answer,sourceIds:[],
             renderedText:answer.renderedText||answer.text};
@@ -946,8 +956,12 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     const timeoutError=Object.assign(new Error('Inference deadline exceeded'),{
       stage,code:'inference-deadline-exceeded',startedAt:start
     });
+    // Reviewer decisions scale with the number of claim/source pairs. Give
+    // that existing call room for compact JSON without changing answer length
+    // or adding another model call.
+    const outputTokenBudget=stage==='review'?3000:1800;
     try{response=await Promise.race([ai.run(READER_MODEL,{messages,
-      chat_template_kwargs:{enable_thinking:false},max_completion_tokens:1800}),
+      chat_template_kwargs:{enable_thinking:false},max_completion_tokens:outputTokenBudget}),
       new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),45000);})]);}
     finally{clearTimeout(timer);}
     usage.neurons+=Math.max(0,Number(response?.usage?.neurons)||0);
