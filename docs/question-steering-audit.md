@@ -36,3 +36,8 @@ The current evidence does not establish that removing narrow routes or adding a 
 ## Audit boundary
 
 This is a focused audit of question interpretation, retrieval, answer composition, and their shared validation/evaluation boundaries. It does not claim a line-by-line security review of every repository subsystem. The preserved safeguards above are cross-referenced with `docs/README.md`; the site-side retrieval policy and active evaluation guidance are in `reading-companion/LIVE-EVALUATION.md`.
+
+
+## Conditional gap-query phrasing
+
+When the retrieved text leaves a question part weakly covered, the existing gap-planner call may return up to three optional search leads. Keep each lead compact and centered on one concept or relationship, using distinct leads for distinct angles instead of a long string of adjacent terms. Preserve the question’s central relation or contrast. This is a general search-quality constraint; it does not name thinkers, works, or question-specific vocabulary. The leads remain attached to the weak part for retrieval eligibility only and do not add answer obligations. Continue to judge results from their passages rather than query overlap or titles.
