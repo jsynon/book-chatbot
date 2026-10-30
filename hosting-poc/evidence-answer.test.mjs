@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson} from './evidence-answer.mjs';
-import {auditFinalAnswer,normalizePlan,sourceProvenance} from './reader-contract.mjs';
+import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
 const catalog={35:'An Enquiry Concerning Human Understanding — David Hume',40:'Critique of Pure Reason — Immanuel Kant'};
@@ -341,7 +341,7 @@ test('compact review decisions validate exact spans without rationale text or re
   if(messages[0].content.startsWith('Answer the reader'))return answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]');
   reviewPayload=JSON.parse(messages[1].content);
   const claim=reviewPayload.claims[0],span=reviewPayload.parts[0].evidence[0].spans[0];
-  assert.equal(max_completion_tokens,messages[0].content.startsWith('Answer the reader')?1800:3000);
+  assert.equal(max_completion_tokens,messages[0].content.startsWith('Answer the reader')?1800:2100);
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
     spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}]}]})};
@@ -784,16 +784,20 @@ test('an unsupported counterfactual-only comparison exposes its bounded validati
 
 test('a consequence-only sentence cannot pass a phrase-meaning part as a direct answer',async()=>{
  const ai=makeAI([answer('PART P1\nConsequently, important enterprises lose their momentum and fail to become actions. [S1]'),
-  directAnswerReview([])],{decorateReview:false});
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   const spanId=claim.sourceEvidence[0].spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',spanIds:[spanId]}]
+   }]})};
+  }],{decorateReview:false});
  const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
   plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
  assert.equal(result.questionParts[0].status,'partial');
  assert.equal(result.coverage,'partial');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.partId==='P1'&&issue.reason==='direct-answer-claim-missing'));
  assert.deepEqual(result.trace.reviewContract.partDecisions,[{
-  partId:'P1',reviewerStatus:'answered',finalStatus:'partial',directAnswerClaimIds:[],
-  acceptedDirectAnswerClaimIds:[],directAnswerCovered:false,outputStatus:'partial'
+  partId:'P1',reviewerStatus:'partial',finalStatus:'partial',directAnswerClaimIds:['P1-C1'],
+  acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true,outputStatus:'partial'
  }]);
  assert.equal(ai.calls.length,2,'the direct-answer check uses the existing compose and review calls');
 });
@@ -946,30 +950,32 @@ test('a rejected nominated direct-answer claim keeps the part partial despite an
  assert.match(result.answer,/Fear of death makes Hamlet hesitate to act/);
 });
 
-test('a direct-answer claim ID from another part cannot mark this part supported',async()=>{
+test('a legacy direct-answer ID cannot override the Worker’s first-sentence mapping',async()=>{
  const ai=makeAI([answer('PART P1\nThe phrase means fear of death can make people hesitate to act. [S1]'),
   directAnswerReview(['P2-C1'])],{decorateReview:false});
  const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
   plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
- assert.equal(result.questionParts[0].status,'partial');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.partId==='P1'&&issue.reason==='direct-answer-claim-id-invalid'));
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerClaimIds[0],'P1-C1');
 });
 
-test('a reviewer that omits direct-answer IDs leaves the part partial',async()=>{
+test('the compact review contract infers the direct answer from the first checked sentence',async()=>{
  const ai=makeAI([answer('PART P1\nThe phrase means fear of death can make people hesitate to act. [S1]'),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content);
    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
     claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,
       spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}))})};
   }],{decorateReview:false});
  const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
   plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
- assert.equal(result.questionParts[0].status,'partial');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.partId==='P1'&&issue.reason==='direct-answer-claims-missing'));
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerClaimIds[0],'P1-C1');
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,true);
+ assert.match(REVIEW_PROMPT,/Do not repeat a source status or direct-answer claim IDs/);
+ assert.doesNotMatch(REVIEW_PROMPT,/sourceId":"S1","status"/);
 });
 
 test('the deterministic polarity guard rejects a reviewed positive claim that reverses an exact source negation',async()=>{
@@ -1007,7 +1013,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(REVIEW_PROMPT,/Judge each part against the exact question/);
  assert.match(REVIEW_PROMPT,/only related background or ends with an unfinished thought/);
  assert.match(REVIEW_PROMPT,/the supplied passages cannot establish its truth, so do not treat their silence as disproof/);
- assert.match(REVIEW_PROMPT,/exact spans/);
+ assert.match(REVIEW_PROMPT,/exact supporting span IDs/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(REVIEW_PROMPT,/For a claim with sourceIds empty, return an empty sources array/);
 });
@@ -1529,6 +1535,9 @@ test('a quoted technical term is not mistaken for a source quotation, while mult
  assert.equal(auditFinalAnswer('The account turns on “whatness.” [S1]',[hume]).ok,true);
  assert.equal(auditFinalAnswer('The source says “custom and habit.” [S1]',[hume]).ok,false);
  assert.equal(auditFinalAnswer('The source says “mind is determined by custom.” [S1]',[hume]).ok,true);
+ const repaired=removeUnsupportedQuoteMarks('The source says “custom and habit.” [S1]',[hume]);
+ assert.equal(repaired.text,'The source says custom and habit. [S1]');
+ assert.equal(repaired.repairs[0].action,'removed-nonexact-quotation-marks');
 });
 
 test('a quote binds to the first following citation, not a later comparison citation',()=>{
@@ -1830,7 +1839,7 @@ test('comparison claims keep citations attached to the smallest supporting sourc
  assert.equal(ai.calls.length,2,'claim-specific citation guidance adds no model call');
 });
 
-test('a bad quoted sentence is removed without discarding neighboring verified sentences',async()=>{
+test('a non-exact quotation is converted to a paraphrase and reviewed with neighboring claims',async()=>{
  const dubois1={id:'S5',bookId:'454',title:'The Souls of Black Folk — W. E. B. Du Bois',page:141,
   url:'https://example.test/dubois#page=141',
   text:'It is a peculiar sensation, this double-consciousness, this sense of always looking at one’s self through the eyes of others. One ever feels his two-ness,—an American, a Negro; two souls, two thoughts, two unreconciled strivings; two warring ideals in one dark body, whose dogged strength alone keeps it from being torn asunder. The history of the American Negro is the history of this strife,—this longing to attain self-conscious manhood, to merge his double self into a better and truer self. In this merging he wishes neither of the older selves to be lost. He would not Africanize America, for America has too much to teach the world and Africa. He would not bleach his Negro soul in a flood of white Americanism, for he knows that Negro blood has a message for the world. He simply wishes to make it possible for a man to be both a Negro and an American. The problem of the twentieth century is the problem of the color-line. It is a peculiar sensation, this double life, this sense of always looking at one’s self through the eyes of others.',
@@ -1860,8 +1869,11 @@ test('a bad quoted sentence is removed without discarding neighboring verified s
  assert.equal(result.questionParts[0].status,'supported');
  assert.match(result.answer,/“double life” and painful self-consciousness\. \[S5\]/);
  assert.match(result.answer,/ongoing historical strife\. \[S3\]/);
- assert.doesNotMatch(result.answer,/double consciousness/);
- assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'quotation-citation-mismatch',sentenceIndex:2}]);
+ assert.match(result.answer,/within double consciousness forces Black Americans/);
+ assert.doesNotMatch(result.answer,/“double consciousness”/);
+ assert.equal(result.trace.rejected.length,0);
+ assert.deepEqual(result.trace.quoteRepairs,[{partId:'P1',sentenceIndex:2,
+  quote:'double consciousness',sourceIds:['S5'],action:'removed-nonexact-quotation-marks'}]);
  assert.deepEqual(result.citations.map(item=>item.id),['S5','S3']);
 });
 

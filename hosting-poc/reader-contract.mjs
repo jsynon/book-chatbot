@@ -90,6 +90,23 @@ export function auditFinalAnswer(answer,sources){
   }
   return {ok:!unknownIds.length&&!quoteFailures.length,ids,unknownIds,quoteFailures};
 }
+// A phrase that is not an exact source quotation can still be a sound
+// paraphrase. Remove only its quote marks, then let the ordinary source-span
+// reviewer decide whether the cited claim is supported; never silently keep it
+// as a direct quotation.
+export function removeUnsupportedQuoteMarks(answer,sources){
+  let text=String(answer||'');
+  const audit=auditFinalAnswer(text,sources);
+  const repairs=[];
+  for(const quote of audit.quoteFailures.slice().sort((a,b)=>b.start-a.start)){
+    if(quote.end<=quote.start+1)continue;
+    const value=text.slice(quote.start+1,quote.end-1);
+    text=text.slice(0,quote.start)+value+text.slice(quote.end);
+    repairs.unshift({quote:String(quote.text||value).slice(0,180),
+      sourceIds:[...(quote.sourceIds||[])],action:'removed-nonexact-quotation-marks'});
+  }
+  return {text,repairs,unknownIds:audit.unknownIds};
+}
 export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   const bounded=(v,max)=>typeof v==='string'?v.trim().slice(0,max):'';
   const resolvedQuestion=bounded(raw?.resolvedQuestion,600)||question;
