@@ -2185,7 +2185,19 @@ async function pilotScenario({config={},model,turnstileValid=true}={}) {
    }
    return fixture.fetcher(url,init);
  };
- const ai={run:async(...args)=>{calls++;return (model||fixture.run)(...args);}};
+ const ai={run:async(...args)=>{
+   calls++;
+   const input=args[1];
+   if(input?.max_completion_tokens===500){
+     const selection=JSON.parse(input.messages[1].content);
+     const candidateIds=selection.candidates.slice(0,6).map(candidate=>candidate.id);
+     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
+       selection.parts.map(part=>({partId:part.partId,candidateIds,
+         coverage:candidateIds.length?'supported':'none'}))})}}],
+       usage:{neurons:1,prompt_tokens:10,completion_tokens:10}};
+   }
+   return (model||fixture.run)(...args);
+ }};
  const environment=env({...pilotBaseEnv, ...config,
    AI:ai,
    AI_RATE_LIMITER:{limit:async({key})=>{limitCalls++;visitorKeys.push(key);return {success:true}}},
@@ -2242,7 +2254,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  const revision='abcdef0123456789abcdef0123456789abcdef01';
  const metadata={id:'version-0123456789abcdef',tag:revision,timestamp:'2026-10-21T00:00:00.000Z'};
  assert.deepEqual(workerVersionDiagnostics({CF_VERSION_METADATA:metadata}),{
-  workerSourceBuild:'public-gateway-evidence-selection-v3',
+  workerSourceBuild:'public-gateway-verified-candidate-selection-v4',
   workerVersionId:metadata.id,workerVersionTag:metadata.tag,
   workerSourceRevision:revision,
   workerVersionTimestamp:metadata.timestamp
@@ -2258,7 +2270,7 @@ test('version diagnostics expose the Cloudflare Worker version on planner and an
  assert.equal(planData.workerVersionId,metadata.id);
  assert.equal(planData.workerVersionTag,metadata.tag);
  assert.equal(planData.workerSourceRevision,revision);
- assert.equal(planData.workerSourceBuild,'public-gateway-evidence-selection-v3');
+ assert.equal(planData.workerSourceBuild,'public-gateway-verified-candidate-selection-v4');
  const answerPilot=await pilotScenario({config:{CF_VERSION_METADATA:metadata}});
  const answered=await answerPilot.post();
  const answerData=await answered.json();
@@ -2667,7 +2679,7 @@ test('evidence-v2 public route returns six reviewed highlights for six cited pag
  assert.deepEqual(result.evidenceHighlights.map(item=>item.source_id),
   ['S1','S2','S3','S4','S5','S6']);
  assert.ok(result.evidenceHighlights.every(item=>item.quoteLocated===undefined));
- assert.equal(pilot.stats().calls,2,'the public highlight fix adds no AI request');
+ assert.equal(pilot.stats().calls,3,'Worker evidence selection precedes the existing compose/review pair');
 });
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{

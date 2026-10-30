@@ -14,7 +14,7 @@
  * The Free Workers CPU limit (10ms) requires real deployment measurement.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {selectEvidenceCandidates} from './evidence-selector.mjs';
+import {MAX_SELECTOR_CANDIDATES,selectEvidenceCandidates} from './evidence-selector.mjs';
 import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v48/';
@@ -795,7 +795,7 @@ export function workerVersionDiagnostics(env={}) {
   const safe=(value,limit=128)=>typeof value==='string'&&value.length>0&&value.length<=limit?value:null;
   const tag=safe(metadata?.tag);
   return {
-    workerSourceBuild:'public-gateway-evidence-selection-v3',
+    workerSourceBuild:'public-gateway-verified-candidate-selection-v4',
     workerVersionId:safe(metadata?.id),
     workerVersionTag:tag,
     workerSourceRevision:tag&&/^[a-f0-9]{40}$/i.test(tag)?tag.toLowerCase():null,
@@ -1118,8 +1118,9 @@ export const FINGERPRINT_ROOTS=Object.freeze({
 // Keep the legacy export pointed at v48 for any internal consumers that still
 // rely on the original collection. New client sources declare their version.
 export const FINGERPRINT_ROOT=FINGERPRINT_ROOTS[48].root;
-export async function verifiedFingerprintSources(question,items,fetcher=(url,opts)=>globalThis.fetch(url,opts)) {
-  if(!Array.isArray(items)||!items.length||items.length>6)
+export async function verifiedFingerprintSources(question,items,fetcher=(url,opts)=>globalThis.fetch(url,opts),
+  {maxSources=6,maxTotalBytes=35000}={}) {
+  if(!Array.isArray(items)||!items.length||items.length>maxSources)
     throw new Error('Invalid source count');
   const packets=new Map(),seen=new Set(),sources=[];
   let totalBytes=0;
@@ -1144,7 +1145,7 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
     if(bytes.byteLength<25||bytes.byteLength>14000)
       throw new Error('Unacceptable page text size');
     totalBytes+=bytes.byteLength;
-    if(totalBytes>35000)throw new Error('Too much text submitted');
+    if(totalBytes>maxTotalBytes)throw new Error('Too much text submitted');
     const chunk=Math.floor((page-1)/32),key=libraryVersion+'/'+bookId+'/'+chunk;
     if(!packets.has(key)){
       const response=await fetcher(fingerprintContract.root+'books/'+bookId+'/'+chunk+'.json',{cache:'no-store'});
@@ -3643,46 +3644,6 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       searchPlanning:true,
       scope:'full-public-catalog'},200,origin);
   }
-  if(url.pathname==='/api/pilot-select-evidence'){
-    const reply=(body,status=200)=>json({...body,...workerVersionDiagnostics(env)},status,origin);
-    if(origin!==FRONTEND_ORIGIN)return reply({error:'Origin not allowed'},403,origin);
-    if(request.method==='OPTIONS')return new Response(null,{status:204,headers:headers(origin)});
-    if(request.method!=='POST')return reply({error:'Method not allowed'},405,origin);
-    if(!pilotReady)return reply({error:'AI evidence selection is not enabled'},503,origin);
-    // This experimental selector is available only to the authenticated
-    // evaluator until a frozen benchmark shows that it improves evidence use.
-    if(!authorizedPilotEvaluation(request,env))return reply({error:'Not found'},404,origin);
-    const ip=request.headers.get('CF-Connecting-IP');
-    if(!ip||ip.length>64)return reply({error:'Request identity unavailable'},403,origin);
-    try{
-      const visitor=await env.AI_RATE_LIMITER.limit({key:'reading-pilot:visitor:'+ip+':selector'});
-      const total=await env.GLOBAL_RATE_LIMITER.limit({key:'reading-pilot:global'});
-      if(!visitor.success||!total.success)
-        return reply({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
-    }catch{return reply({error:'Request limits unavailable'},503,origin);}
-    if(Number(request.headers.get('Content-Length'))>40000)
-      return reply({error:'Request too large'},413,origin);
-    let data;
-    try{
-      const raw=await request.text();
-      if(new TextEncoder().encode(raw).byteLength>40000)
-        return reply({error:'Request too large'},413,origin);
-      data=JSON.parse(raw);
-    }catch{return reply({error:'Invalid JSON request'},400,origin);}
-    if(!data||typeof data!=='object'||Array.isArray(data))
-      return reply({error:'Invalid evidence selection request'},400,origin);
-    try{
-      const result=await selectEvidenceCandidates({question:data.question,parts:data.parts,
-        candidates:data.candidates,ai:env.AI});
-      return reply({...result,guidance:'Experimental page selection only; submitted full pages are independently fingerprint-verified'},200,origin);
-    }catch(error){
-      const diagnostics=inferenceFailureDiagnostics(error);
-      console.warn('Reader pilot evidence selection failed',diagnostics);
-      return reply({error:'Evidence selection unavailable',
-        failureCode:publicAiFailureCode(diagnostics.providerClass)||'evidence-selection-failed',
-        ...(typeof diagnostics.providerCode==='string'?{failureProviderCode:diagnostics.providerCode}:{})},502,origin);
-    }
-  }
   if(url.pathname==='/api/pilot-plan'){
     const reply=(body,status=200)=>json({...body,...workerVersionDiagnostics(env)},status,origin);
     if(origin!==FRONTEND_ORIGIN)return reply({error:'Origin not allowed'},403,origin);
@@ -3769,12 +3730,15 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       if(!visitor.success||!total.success)
         return reply({error:'The demo is busy; please try again later',failureCode:'rate-limited'},429,origin);
     }catch{return reply({error:'Request limits unavailable'},503,origin);}
-    if(Number(request.headers.get('Content-Length'))>40000)
+    // The browser sends a bounded pool of exact candidate pages. The Worker
+    // selects from that pool only after verifying every page, then sends at
+    // most six pages through the existing answer evidence budget.
+    if(Number(request.headers.get('Content-Length'))>360000)
       return reply({error:'Request too large'},413,origin);
     let data;
     try{
       const raw=await request.text();
-      if(new TextEncoder().encode(raw).byteLength>40000)
+      if(new TextEncoder().encode(raw).byteLength>360000)
         return reply({error:'Request too large'},413,origin);
       data=JSON.parse(raw);
     }catch{return reply({error:'Invalid JSON request'},400,origin);}
@@ -3784,7 +3748,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       data.turnstileToken.length<5||data.turnstileToken.length>2048||
       !(data.bookId===undefined||data.bookId===''||PILOT_BOOK_SET.has(String(data.bookId)))||
       !Array.isArray(data.sources)||data.sources.length<1||
-      data.sources.length>6||
+      data.sources.length>MAX_SELECTOR_CANDIDATES||
       !data.sources.every(s=>s && PILOT_BOOK_SET.has(String(s.bookId)) &&
         Number.isSafeInteger(s.page) && s.page>=1 && s.page<=10000 &&
         typeof s.text==='string'))
@@ -3792,11 +3756,13 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     if(!await verifyPilotChallenge(request,data.turnstileToken,ip,env,fetcher))
       return reply({error:'Visitor verification failed; please retry the challenge'},403,origin);
     let sourcePages;
-    try{sourcePages=await verifiedFingerprintSources(data.question,data.sources,fetcher);}
+    try{sourcePages=await verifiedFingerprintSources(data.question,data.sources,fetcher,
+      {maxSources:MAX_SELECTOR_CANDIDATES,maxTotalBytes:300000});}
     catch{
       return reply({error:'The selected passages could not be verified'},422,origin);
     }
-    let output;
+    let output,sourceSelectionStatus='legacy',sourceSelectionPages=[],sourceSelectionCandidateCount=sourcePages.length,
+      sourceSelectionUsage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
     const evaluationAuthorized=authorizedPilotEvaluation(request,env);
     const answerVariant=evaluationAuthorized&&['compose-only','with-expansion'].includes(data.answerVariant)?
       data.answerVariant:'with-review';
@@ -3810,19 +3776,93 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         const scopeSources=applyExplicitBibleVerseScope(data.question,
           sourcePages.map(source=>({...source,preview:source.text})));
         const scopedById=new Map(scopeSources.map(source=>[source.id,source.preview]));
-        const answerSources=sourcePages.filter(source=>scopedById.has(source.id)).map(source=>({
+        const verifiedCandidates=sourcePages.filter(source=>scopedById.has(source.id)).map(source=>({
           ...source,...(scopedById.get(source.id)!==source.text?
             {scopeText:scopedById.get(source.id)}:{})}));
+        sourceSelectionCandidateCount=verifiedCandidates.length;
+        const selectionParts=plan.parts.length?plan.parts.map(part=>({partId:part.id,question:part.question.slice(0,400)})):
+          [{partId:'P1',question:data.question}];
+        const selectorCandidates=verifiedCandidates.map((source,index)=>({
+          id:'C'+(index+1),title:source.title.slice(0,200),page:source.page,
+          excerpt:sourceExcerpt(source.scopeText||source.text,data.question,1200)}));
+        let answerSources=[],selectionTrace;
+        const started=performance.now();
+        try{
+          const decision=await selectEvidenceCandidates({question:data.question,parts:selectionParts,
+            candidates:selectorCandidates,ai:env.AI});
+          sourceSelectionUsage=decision.usage;
+          const selectedIds=decision.selectedCandidateIds;
+          const byCandidateId=new Map(verifiedCandidates.map((source,index)=>['C'+(index+1),source]));
+          let totalBytes=0;
+          for(const id of selectedIds){
+            const source=byCandidateId.get(id);
+            if(!source)continue;
+            const bytes=new TextEncoder().encode(source.text).byteLength;
+            if(answerSources.length>=6||bytes>14000||totalBytes+bytes>35000)continue;
+            const candidatePartIds=decision.parts.filter(part=>part.candidateIds.includes(id))
+              .map(part=>part.partId);
+            answerSources.push({...source,id:'S'+(answerSources.length+1),candidatePartIds,
+              ...(source.scopeText?{scopeText:source.scopeText}:{})});
+            totalBytes+=bytes;
+          }
+          if(!answerSources.length)throw new Error('Evidence selector returned no pages within the answer budget.');
+          selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
+            status:'selected',candidateCount:verifiedCandidates.length,
+            candidates:selectorCandidates,decision,selected:answerSources.map(source=>({
+              id:source.id,bookId:source.bookId,page:source.page,candidatePartIds:source.candidatePartIds}))};
+          sourceSelectionStatus='selected';
+        }catch(error){
+          sourceSelectionUsage={calls:1,neurons:0,inputTokens:0,outputTokens:0};
+          // Preserve availability if the extra semantic selection call fails,
+          // while clearly marking that the answer used the retriever's order.
+          sourceSelectionStatus='deterministic-fallback';
+          let totalBytes=0;
+          for(const source of verifiedCandidates){
+            const bytes=new TextEncoder().encode(source.text).byteLength;
+            if(answerSources.length>=6)break;
+            if(bytes>14000||totalBytes+bytes>35000)continue;
+            // In fallback mode, planned source scope is the only safe part
+            // link available; model relevance has not been established.
+            const candidatePartIds=plan.parts.filter(part=>!Array.isArray(part.sourceBookIds)||
+              part.sourceBookIds.map(String).includes(String(source.bookId))).map(part=>part.id);
+            answerSources.push({...source,id:'S'+(answerSources.length+1),candidatePartIds,
+              ...(source.scopeText?{scopeText:source.scopeText}:{})});
+            totalBytes+=bytes;
+          }
+          selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
+            status:sourceSelectionStatus,failureCode:'selector-unavailable',candidateCount:verifiedCandidates.length,
+            selected:answerSources.map(source=>({id:source.id,bookId:source.bookId,page:source.page}))};
+          console.warn('Reader pilot evidence selection fell back to retrieval order',
+            inferenceFailureDiagnostics(error));
+        }
+        if(!answerSources.length)throw new Error('No verified pages fit the answer evidence budget.');
+        sourceSelectionPages=answerSources.map(source=>({id:source.id,bookId:source.bookId,
+          title:source.title,page:source.page,candidatePartIds:source.candidatePartIds||[]}));
         output=await composeEvidenceAnswer(data.question,answerSources,env.AI,data.history||[],{
           plan,catalog:PILOT_BOOKS,selectedBookId,
           review:answerVariant!=='compose-only',
           expand:answerVariant==='with-expansion',
+          selectionTrace,
           // Full prompts and source text are returned only to the dedicated
           // authenticated evaluation workflow, never to ordinary visitors.
           trace:authorizedPilotEvaluation(request,env),
         });
+        output.usage={...output.usage,
+          calls:(Number(output.usage?.calls)||0)+sourceSelectionUsage.calls,
+          neurons:(Number(output.usage?.neurons)||0)+sourceSelectionUsage.neurons,
+          inputTokens:(Number(output.usage?.inputTokens)||0)+sourceSelectionUsage.inputTokens,
+          outputTokens:(Number(output.usage?.outputTokens)||0)+sourceSelectionUsage.outputTokens};
       }else{
-        output=await composeVerifiedAnswer(data.question,sourcePages,env.AI,data.history||[]);
+        let legacyBytes=0;
+        const legacySources=sourcePages.filter(source=>{
+          const bytes=new TextEncoder().encode(source.text).byteLength;
+          if(legacyBytes+bytes>35000||bytes>14000)return false;
+          legacyBytes+=bytes;return true;
+        }).slice(0,6);
+        sourceSelectionStatus='deterministic-fallback';
+        sourceSelectionPages=legacySources.map(source=>({id:source.id,bookId:source.bookId,
+          title:source.title,page:source.page,candidatePartIds:[]}));
+        output=await composeVerifiedAnswer(data.question,legacySources,env.AI,data.history||[]);
       }
       if(output.pipeline==='reader-evidence-v2')output.answerVariant=answerVariant;
     }
@@ -3877,6 +3917,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     const followUpQuestions=output.outcome==='verified-source-draft'?
       output.followUpQuestions:[];
     return reply({...output,verifiedPages:sourcePages.length,pilot:true,
+      sourceSelectionStatus,
+      sourceSelection:{status:sourceSelectionStatus,candidateCount:sourceSelectionCandidateCount,
+        pages:sourceSelectionPages,usage:sourceSelectionUsage},
       evidenceHighlights,followUpQuestions},200,origin);
   }
   // Opt-in local test only; public AI remains disabled. This path accepts
