@@ -989,17 +989,34 @@ test('the deterministic polarity guard rejects a reviewed positive claim that re
 
 test('the answer contract allows useful general context while keeping cited claims traceable',()=>{
  assert.match(COMPOSER_PROMPT,/use your broader knowledge/);
- assert.match(COMPOSER_PROMPT,/General background and your own synthesis do not need a library citation/);
+ assert.match(COMPOSER_PROMPT,/Answer the exact question first/);
+ assert.match(COMPOSER_PROMPT,/explain how they relate without treating them as proof/);
+ assert.match(COMPOSER_PROMPT,/general background and your own synthesis do not need a library citation/i);
  assert.doesNotMatch(COMPOSER_PROMPT,/using only the supplied verified passage windows|Cite every factual sentence|rely on outside knowledge/);
- assert.match(COMPOSER_PROMPT,/Write connected prose by default/);
+ assert.match(COMPOSER_PROMPT,/Write connected prose/);
  assert.match(COMPOSER_PROMPT,/several developed paragraphs/);
  assert.match(EXPANSION_PROMPT,/broader knowledge/);
  assert.doesNotMatch(EXPANSION_PROMPT,/rely on outside knowledge|only where the supplied verified passage windows/);
  assert.match(REVIEW_PROMPT,/Claims with an empty sourceIds array are general context or synthesis/);
+ assert.match(REVIEW_PROMPT,/Judge each part against the exact question/);
+ assert.match(REVIEW_PROMPT,/only related background or ends with an unfinished thought/);
  assert.match(REVIEW_PROMPT,/Do not reject them merely because the supplied passages do not establish them/);
  assert.match(REVIEW_PROMPT,/exact spans/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(REVIEW_PROMPT,/For a claim with sourceIds empty, return an empty sources array/);
+});
+
+test('an unrelated uncited explanation remains partial when the reviewer judges it indirect',async()=>{
+ const question='Are we living in a simulation?';
+ const ai=makeAI([answer('PART P1\nBaudrillard describes hyperreality as a condition where representations shape social life.'),
+  review([['P1','partial']])]);
+ const result=await composeEvidenceAnswer(question,[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question}]},catalog,trace:true
+ });
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.coverage,'none');
+ assert.doesNotMatch(result.answer,/Baudrillard/);
+ assert.equal(result.citations.length,0);
 });
 
 const hypotheticalQuestion='What would Nietzsche think about the thought of Kierkegaard?';
@@ -2278,6 +2295,31 @@ test('malformed composition is reported as generation failure without retrying o
  assert.equal(result.coverage,'none');
  assert.equal(result.citations.length,0);
  assert.equal(result.failureCode,'model-output-invalid-format');
+});
+
+test('a composer response truncated by the model is not reviewed or shown as complete',async()=>{
+ const ai=makeAI([{choices:[{finish_reason:'length',message:{content:
+  'PART P1\nThe simulation hypothesis is a possibility because'}}]}]);
+ const result=await composeEvidenceAnswer('Are we living in a simulation?',[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question:'Are we living in a simulation?'}]},catalog
+ });
+ assert.equal(ai.calls.length,1);
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureCode,'answer-output-truncated');
+ assert.equal(result.answer,'I could not complete a reliable answer this time. Please try again.');
+});
+
+test('an answer ending with an unfinished lead-in is not presented as complete',async()=>{
+ const ai=makeAI([answer('PART P1\nThe hypothesis is possible, but no evidence establishes it. A full answer would compare two possibilities:'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('Are we living in a simulation?',[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question:'Are we living in a simulation?'}]},catalog,trace:true
+ });
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureCode,'answer-incomplete-ending');
+ assert.equal(result.coverage,'none');
+ assert.equal(result.citations.length,0);
+ assert.equal(result.trace.final.failure.code,'answer-incomplete-ending');
 });
 
 test('explicit evidence refusals become structured insufficient evidence without a retry',async()=>{
