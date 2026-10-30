@@ -50,6 +50,8 @@ test('conditional gap planner returns optional distinct search terms and sees bo
   assert.match(prompt,/coverageReason.*index-like-candidates-not-counted/);
   assert.match(prompt,/coverageSource.*1264/);
   assert.match(prompt,/index-like page is not evidence/i);
+  assert.match(prompt,/underlying concepts, assumptions, or kinds of reasoning/i);
+  assert.match(prompt,/distinct from direct evidence for the contemporary claim/i);
   assert.match(prompt,/A bounded passage excerpt/);
   return {choices:[{finish_reason:'stop',message:{content:'{"queries":["empirical knowledge of external world","reality existence perception"]}'}}],usage:{neurons:2}};
  }});
@@ -498,6 +500,9 @@ test('broad philosophical planning keeps one direct question and permits relevan
  assert.match(result.queries[2],/Hume/i);
  assert.match(systemPrompt,/Keep a single direct question as one part/i);
  assert.match(systemPrompt,/context is optional retrieval guidance/i);
+ assert.match(systemPrompt,/do not spend every query on synonyms of that label/i);
+ assert.match(systemPrompt,/underlying concepts, assumptions, or kinds of reasoning/i);
+ assert.match(systemPrompt,/distinct from direct evidence for the contemporary claim/i);
  assert.doesNotMatch(systemPrompt,/Descartes|Berkeley|Hume/i);
 });
 test('the planner does not append a topic-specific query when its plan omits one',async()=>{
@@ -526,5 +531,7 @@ test('contextual-source guidance is general and does not hardcode simulation thi
   }
  });
  assert.match(systemPrompt,/add context sources only when they clearly help explain the central question/i);
+ assert.match(systemPrompt,/do not spend every query on synonyms of that label/i);
+ assert.match(systemPrompt,/underlying concepts, assumptions, or kinds of reasoning/i);
  assert.doesNotMatch(systemPrompt,/Descartes.*Berkeley.*Hume/i);
 });
