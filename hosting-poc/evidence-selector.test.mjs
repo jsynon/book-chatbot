@@ -22,10 +22,39 @@ test('selector prompt demonstrates one valid coverage value and accepts a valid 
   }}};
  const result=await selectEvidenceCandidates(request);
  assert.match(systemPrompt,/"coverage":"supported"/);
- assert.match(systemPrompt,/exactly one of "supported", "partial", or "none"/);
+ assert.match(systemPrompt,/exactly one string: "supported", "partial", or "none"/);
  assert.doesNotMatch(systemPrompt,/"coverage":"supported\|partial\|none"/);
  assert.deepEqual(result.selectedCandidateIds,['C1']);
  assert.equal(result.parts[0].coverage,'supported');
+});
+
+test('selector reports safe subtypes for malformed part decisions',async()=>{
+ const base={question:'What does this source argue?',
+  candidates:[{id:'C1',title:'A source',page:1,excerpt:'A sufficiently long source excerpt for testing.'}]};
+ const cases=[
+  {failureReason:'decision-not-object',decisions:[null]},
+  {failureReason:'missing-part-id',decisions:[{candidateIds:['C1'],coverage:'supported'}]},
+  {failureReason:'unknown-part-id',decisions:[{partId:'P9',candidateIds:['C1'],coverage:'supported'}]},
+  {failureReason:'duplicate-part-id',parts:[{partId:'P1',question:'What is the argument?'},
+   {partId:'P2',question:'What supports the argument?'}],decisions:[
+    {partId:'P1',candidateIds:['C1'],coverage:'supported'},
+    {partId:'P1',candidateIds:['C1'],coverage:'supported'}]},
+  {failureReason:'candidate-ids-not-array',decisions:[{partId:'P1',coverage:'supported'}]},
+  {failureReason:'too-many-candidate-ids',decisions:[{partId:'P1',candidateIds:Array(7).fill('C1'),coverage:'supported'}]},
+  {failureReason:'invalid-coverage',decisions:[{partId:'P1',candidateIds:['C1'],coverage:'supported|partial|none'}]}
+ ];
+ for(const item of cases){
+  const parts=item.parts||[{partId:'P1',question:'What is the argument?'}];
+  const raw=JSON.stringify({parts:item.decisions,privatePayload:'PRIVATE SELECTOR TEXT'});
+  await assert.rejects(selectEvidenceCandidates({...base,parts,
+   ai:{run:async()=>({choices:[{finish_reason:'stop',message:{content:raw}}]})}}),error=>{
+    assert.equal(error.failureCode,'selector-invalid-response');
+    assert.equal(error.failureReason,item.failureReason);
+    assert.equal(error.message.includes('PRIVATE SELECTOR TEXT'),false);
+    assert.equal(error.cause,undefined);
+    return true;
+   },item.failureReason);
+ }
 });
 
 test('selector invalid-response subtype is safe and distinguishes malformed decisions',async()=>{

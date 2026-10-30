@@ -2737,6 +2737,20 @@ test('selector fallback trace retains only an approved invalid-response subtype'
  assert.equal(result.trace.stages[0].failureReason,'unknown-candidate-id');
  assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
 });
+test('selector trace exposes the specific coverage-shape failure without model text',async()=>{
+ const token='selector-coverage-shape-test-token';
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
+  selector:async()=>({choices:[{finish_reason:'stop',message:{content:
+   '{"parts":[{"partId":"P1","candidateIds":["C1"],"coverage":"supported|partial|none"}],"privatePayload":"PRIVATE SELECTOR TEXT"}'}}]})
+ });
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
+ const result=await response.json();
+ assert.equal(response.status,200);
+ assert.equal(result.trace.stages[0].failureCode,'selector-invalid-response');
+ assert.equal(result.trace.stages[0].failureReason,'invalid-coverage');
+ assert.equal(JSON.stringify(result).includes('PRIVATE SELECTOR TEXT'),false);
+});
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===720)return {choices:[{finish_reason:'stop',message:{content:
