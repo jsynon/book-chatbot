@@ -20,7 +20,7 @@ Acceptance cases may continue to mention these questions and required source gro
 ## Safeguards retained
 
 - Explicit works, passages, chapter/verse ranges, and selected-book allowlists continue to bound retrieval.
-- The planner keeps directly requested components and comparisons linked to their source groups. Contextual searches can help explain a question but do not prove its central claim or create an extra coverage obligation.
+- The planner keeps directly requested components and comparisons linked to their source groups. Contextual searches can help explain a question but do not prove its central claim or create an extra coverage obligation. Single-part planner queries and conditional gap queries retain links to the weak part they may help retrieve; those links affect candidate eligibility only and never prescribe a source, answer, or extra obligation.
 - Catalog author, title, editor, and translator metadata remains separate from page-level speaker attribution. Pseudonymous voices and editorial commentary still require provenance-aware handling.
 - Candidate relevance, exact page fingerprints, citation-to-part links, quote location, and answer review remain independent checks. A search hit or a located highlight is not treated as semantic support.
 - The live composer uses a general, evidence-conditional depth target aligned with the workbench: two to four developed paragraphs for substantive questions when the passages support them, with concise answers for simple questions or thin evidence. It does not name or route any topic.
