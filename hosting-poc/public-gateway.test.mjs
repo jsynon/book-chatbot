@@ -2682,7 +2682,7 @@ test('evidence-v2 public route returns six reviewed highlights for six cited pag
  assert.ok(result.evidenceHighlights.every(item=>item.quoteLocated===undefined));
  assert.equal(pilot.stats().calls,3,'Worker evidence selection precedes the existing compose/review pair');
 });
-test('a valid empty evidence selection can still return reviewed general context',async()=>{
+test('a valid empty evidence selection can review a useful single-part answer without a heading',async()=>{
  const token='selector-empty-evidence-test-token';
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
    PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
@@ -2699,7 +2699,7 @@ test('a valid empty evidence selection can still return reviewed general context
     parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
      directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId).map(claim=>claim.claimId)}))})}}]};
    return {choices:[{finish_reason:'stop',message:{content:
-    'PART P1\nThere is no established evidence that we are living in a computer simulation. The idea remains a philosophical possibility, but imagining it or reasoning about simulated observers does not show that it is true.\n\nA serious version of the hypothesis would need observable predictions that distinguish a simulated universe from an ordinary physical one. At present, no confirmed observation settles that question, so the careful answer is that we do not know. Related ideas about virtual or socially shaped experience can offer context, but they do not establish a literal simulation.'}}]};
+    'There is no established evidence that we are living in a computer simulation. The idea remains a philosophical possibility, but imagining it or reasoning about simulated observers does not show that it is true.\n\nA serious version of the hypothesis would need observable predictions that distinguish a simulated universe from an ordinary physical one. At present, no confirmed observation settles that question, so the careful answer is that we do not know. Related ideas about virtual or socially shaped experience can offer context, but they do not establish a literal simulation.'}}]};
   }
  });
  const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{question:'Are we living in a simulation?'}});
@@ -2716,6 +2716,8 @@ test('a valid empty evidence selection can still return reviewed general context
  assert.equal(result.sourceSelection.usage.neurons,2);
  assert.match(result.notice,/no library citations/i);
  assert.equal(result.reviewStatus,'general-context-review');
+ assert.equal(result.trace.recovery.code,'missing-part-heading',
+  'a one-part answer can be assigned and reviewed when its redundant heading is omitted');
  assert.equal(result.usage.calls,3,'the selector, composer, and reviewer calls are retained in usage');
  assert.equal(pilot.stats().calls,3,'an empty evidence selection still reaches composition and review');
  assert.equal(result.trace.stages[0].status,'no-relevant-evidence');
