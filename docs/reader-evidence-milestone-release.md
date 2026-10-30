@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 6999)
-Total output lines: 150
-
 # Reading Companion evidence milestone: release report
 Last updated: October 30, 2026
 Status: The latest live diagnostic is [workflow run #16](https://github.com/jsynon/antilogicalism/actions/runs/41048575521), artifact `reading-companion-quality-benchmark-calibration-baseline-compare-selection`, using site revision `76f68d816a934ea6438bd9594df1642974d7ebc5`, Worker revision `c064273b-32f9-4680-aea2-204c85d151d2`, and library v49. All three questions completed without request failures or fallback generation. Deterministic selection passed 0/3; the evaluation-only model-selection arm passed 1/3 (Buddha). Human rubric scores were still pending. The traces showed a Bible page lost before the candidate pool for God-is-love, expected philosophers absent from simulation retrieval, and useful Buddha pages present in candidates but omitted by deterministic selection. Those handoffs motivate the October 30 Worker-side selection change below; no live validation of that change exists yet.
@@ -38,7 +35,55 @@ Deployment routing is verified from `hosting-poc/public-gateway.mjs`: public vis
 - The active `reader-evidence-v2` path uses one short answer paragraph per planned part, with citations bound to that part's candidate pages and named-work scope. It does not ask Gemma to emit claim IDs or exact evidence spans. The earlier structured-claim version was replaced after live traces showed that its format and recovery logic were too fragile.
 - The active reviewed path uses two Worker answer calls: composition and per-part review. Compose-only uses one. There is no automatic composer regeneration or free-form rewrite after review. A malformed review can leave a citation-checked answer explicitly unverified/partial; unsupported parts stay visible as gaps.
 - Citation IDs are checked against supplied source IDs and part scope. Quoted text in the answer is checked against a cited page, while one-word terms are treated as terminology. In the current evidence-v2 candidate, Worker-generated exact page spans and the review rationale feed the evidence map; its website/evaluator response shape remains unchanged. These checks establish provenance and review traceability, not semantic entailment.
-- Added an authenticated evaluation-…1999 tokens truncated…hey do not establish answer quality from a live model.
+- Added an authenticated evaluation-only trace containing the exact stage prompts, source pages, model responses, timing, rejection reasons, model identity, and usage counters. The public response never includes this trace. User-facing diagnostics expose only bounded plans, citations, exact validated claim anchors, and usage totals, not complete source pages.
+- Live evaluation reports now identify the evaluator source commit and hash the published coverage manifest, corpus manifest, and each exact corpus/index file read during the run. Worker build IDs, model context, prompt text, and inference counters remain attached to each case.
+- Fixed grouped citation auditing so `[S1, S99]` cannot hide an unknown source ID. Follow-up history is cleared on book-scope changes and only successful verified drafts enter history.
+
+## Historical checkpoint: recovery milestone after the early seven-question all-books failure
+
+The early seven-question run described in this section was the decision point for that revision. It passed 1/7. Five cases returned relevant retrieved pages but failed because the then-active composer response could not be parsed as JSON; those were reported through the same fallback used for missing evidence. The Plato/Rousseau comparison also exposed question-part/source misalignment and an incomplete answer. Aristotle was the sole pass. That result pointed to an answer-pipeline and evaluation-contract failure, not a reason to rebuild the corpus or retrieval stack. The later simpler paragraph contract superseded this section's format-retry design.
+
+At this checkpoint, the recovery branch made five bounded changes:
+
+- A malformed or truncated composition gets one format-only regeneration against the same question, plan, and verified pages. If it is still invalid, the result is `generation-failed` with `generation-format-failed` and a separate failure stage/code; it is not mislabeled as insufficient evidence. A malformed review is reported separately and is not retried.
+- The evidence answer path allows at most three model calls: normal compose + review (two), or compose + one malformed-output regeneration + review (three). There is no automatic evidence-expansion loop. Cloudflare JSON mode is not assumed for the deployed Gemma model.
+- Normalized question parts carry allowed source book IDs derived from the resolved source plan and catalog identity. Claim validation rejects named-work evidence that does not match its part. The evaluation suite has explicit part-to-source requirements for the cross-work cases, including Plato/Rousseau.
+- The evaluation workflow can run `with-review`, `compose-only`, or `paired-review-ablation`. Paired mode calls the planner once, retrieves one page packet, then sends that identical packet through the reviewed and compose-only answer paths. It reports structural results for each variant and leaves semantic ratings to a human.
+- A separate seven-question all-books acceptance set uses questions not present in the development and holdout suites. Its report includes blank 0–2 fields for accuracy, question coverage, explanation quality, citation support, and citation completeness. These prompts are reserved for acceptance; a failed acceptance result should lead to a new unseen set for the next frozen candidate.
+
+The acceptance workflow must use **All Books** scope. For seven questions, paired mode estimates 28 Worker model calls (one planner plus three answer-stage calls per case) before format retries. With one malformed-composition retry in each answer variant, the upper estimate is 42 calls. This is a cost estimate, not a request to run the workflow during this implementation pass.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| Backend Worker Node suites: `node --test hosting-poc/*.test.mjs` | 205 passed, 0 failed |
+| Website companion Node suites: `node --test reading-companion/*.test.mjs` | 144 passed, 0 failed |
+| Git whitespace checks | Passed on both recovery branches |
+| Shared browser/Worker contract copies | Byte-identical on both recovery branches |
+| Full-page input, exact source binding, verse-scope boundary, final deterministic rendering, malformed-composer retry and part/source binding | Covered by offline tests |
+| Public trace protection and authenticated evaluation trace | Covered by route test |
+| Edited-author collection discovery and grouped citation regression | Covered by website tests |
+| Exact downloaded corpus-file digest capture | Covered by website test |
+| Latest focused suites after the second holdout (historical baseline) | Backend 182 passed; website 62 passed |
+
+## Historical checkpoint: first live holdout result
+
+The first all-books Hume/Kant holdout run completed without request failures and used the intended six-page evidence budget. The planner resolved the two named works and separated the question into Hume, Kant, and comparison parts. The answer correctly described Hume's account but only identified Kant's category of causality; it did not explain how Kant grounds causal necessity, so the run correctly failed with partial coverage.
+
+This run does not test `reader-evidence-v2`: its `pipeline` field is null, even though the planner plan reports `reader-evidence-v2` as its contract version. The Worker was still using the legacy answer composer. The retrieved Kant results included page 86, which discusses the conditional a priori necessity of dynamical principles, but that page was absent from the six submitted pages. This points to evidence-packet selection as a second issue to investigate after the evaluation is confirmed to exercise the intended answer pipeline. The run's structural citation checks passed, but those checks do not establish semantic support.
+
+At that point, the Worker was changed to route requests authenticated with `PILOT_EVALUATION_TOKEN` through the evidence pipeline even when `READER_PIPELINE` was unset, without changing public answers. The route test verified the returned `pipeline` marker. That change was later merged and deployed; subsequent live runs validated the path.
+
+## Historical checkpoint: second live holdout result
+
+The second all-books Hume/Kant run used `reader-evidence-v2` on Worker version `88a5d8e6-3192-4230-a3d6-bff382a14b80`. It completed the two answer stages with six submitted pages, two final citations, and no request failure. The automated result says `passed: true` and `coverage: full`, but those fields are not a human quality verdict.
+
+The answer accurately explains Hume’s account and accurately identifies Kant’s category of causality as a priori. It still does not explain Kant’s argument for the objective necessity of causal judgments. The reviewer marked the Kant part answered from the category table on page 53, so the model review overstates completeness. Kant’s *Second Analogy* is available in the local corpus around pages 98–104, but none of those pages reached this run’s candidate set. The exact-question search did retrieve page 23, where Kant discusses Hume’s causal principle, but the selector sent page 24 instead. The planner’s Kant query changed to “causality categories synthetic a priori,” omitting “necessity,” which also explains why the earlier page 86 result was not retrieved this time.
+
+The follow-up implementation at that checkpoint addressed this pattern in three shared rules: planner queries retained the requested epistemic relation while seeking the source’s grounds or validity conditions; same-title direct-search near-ties used passage wording to select the page that matched the question; and composition/review prompts required an argument or conditions of validity when a question asked how a principle is known or necessary. Those changes did not add an AI call and were covered by focused offline regressions. Later runs continued to show that these checks did not guarantee complete live answers.
+
+The tests use controlled model responses and synthetic request fixtures. They verify contracts and failure boundaries; they do not establish answer quality from a live model.
 
 ## Historical checkpoint: with-review trace and recovery milestone
 
@@ -103,9 +148,6 @@ This fixes the reproduced contract and query-linking failures in deterministic t
 ## Acceptance status
 
 | Audit criterion | Status |
-Warning: truncated output (original token count: 6960)
-Total output lines: 150
-
 |---|---|
 | Unknown grouped citation IDs fail evaluation | Implemented and tested |
 | A rewrite cannot bypass final checks | Candidate pipeline has no post-review prose rewrite; tested |
@@ -163,7 +205,44 @@ No planner, search, source selection, answer composition, review count, citation
 
 The focused all-books with-review workflow [#66](https://github.com/jsynon/antilogicalism/actions/runs/40260668277) completed against library v48 and Worker revision `bfd2901da9b0a81b026e58cd3481df79694c57e9`. It passed 3/5 structural cases and 5/7 question parts. The trace showed that the two clearest misses were handoff/review failures after relevant evidence had reached composition:
 
-- **Sunyata:** the composer drafted the dependent-arising/emptiness relationship and cited S4 and S6. S6's selected span supported the relationship, while S4 was marked partial; normalization dropped the sentence because one extra citation failed. The existing cleanup guard disabled pruning when an all-books plan contained multiple source …1960 tokens truncated…isting fail-closed source-group regression retained |
+- **Sunyata:** the composer drafted the dependent-arising/emptiness relationship and cited S4 and S6. S6's selected span supported the relationship, while S4 was marked partial; normalization dropped the sentence because one extra citation failed. The existing cleanup guard disabled pruning when an all-books plan contained multiple source groups, even though this was a direct, non-comparison claim with one independently supporting cited page.
+- **Nietzsche on Kierkegaard:** the composer included an explicitly cautious inference. The reviewer marked the author-side pages partial without selecting spans, so the deterministic source gate correctly withheld the inference. The review input identified page provenance, but its claim-specific source index did not explicitly map each cited page to the planner's author group. The trace does not prove that metadata alone will correct model judgment; the change makes the premise-to-author relationship explicit while keeping both source decisions mandatory.
+
+The user's live screenshot adds a general answer-relevance defect: in response to “are we in a simulation?”, the answer included a list of unrelated retrieved topics (Kuhn on scientific theory, Anscombe on reasoning, Hull on behavior, and an Ante-Nicene Fathers passage) as a sentence about why those passages did not answer the question. The citations therefore cluttered the answer without helping answer it. This is separate live evidence from the #66 artifact; it does not identify a Worker revision or prove which stage produced the wording. The composer and reviewer now explicitly omit retrieval inventories and unrelated passages. This remains a model-behavior change that must be checked live.
+
+The bounded Worker candidate keeps the existing planner, retrieval, composition/review stages, source-span checks, response contract, and call count:
+
+- Direct, non-comparison claims may now remove an explicitly partial or unanswered extra citation when another cited page has a valid reviewed span for the claim and every cited source received an explicit decision. The repair remains citation-group-local; comparisons and hypothetical inferences are still excluded. If the reviewer marks the question part partial, retaining a supported claim does not upgrade the part's coverage status.
+- The existing review payload now labels each cited page with its planner author/source-group label and role. Reviewer instructions clarify that for a hypothetical inference, each author page supports its own premise; the inference still requires relevant evidence from both groups and must stay within their shared point of contact. No reviewer decision or source span is relaxed.
+- Composer and reviewer instructions tell the system to omit unrelated retrieved-topic lists and retrieval-process narration. No deterministic semantic classifier or third model call was added.
+
+| Candidate validation | Result |
+|---|---|
+| Sunyata-like direct claim with an unsupported extra citation in a multi-group plan | Pass; supported claim and citation retained, unsupported citation removed, and partial part status remains partial |
+| Hypothetical source-group handoff | Pass; review input maps Nietzsche and Kierkegaard pages to their respective author groups; positive inference still needs both reviewed sources |
+| Failed hypothetical premise | Pass; a missing source group remains unsupported and cannot be pruned |
+| Worker suite: `node --test hosting-poc/*.test.mjs` | 273 passed, 0 failed |
+| Live five-question validation | Pending; merge/deploy this candidate, rerun the focused five-case all-books with-review workflow to inspect Sunyata and the Nietzsche/Kierkegaard reviewer spans, then separately repeat the live simulation question to check whether the irrelevant source inventory disappears |
+| Answer quality | Not established by unit tests; check actual cited page text and attribution in the next artifact |
+
+The screenshot still shows the previous “Read highlighted passages” wording. Website PR [#214](https://github.com/jsynon/antilogicalism/pull/214) has since merged the copy change to “Read passages” for both excerpt and fallback states; verify the published page after its site deployment. This interface change does not alter evidence selection or answer quality, and this Worker candidate does not resolve whether the displayed highlights are the best semantic matches. Keep the unseen acceptance suite frozen until the next focused run confirms the changed citation handoff and relevance behavior.
+
+## October 26, 2026: focused run #68 and bounded hypothetical-inference correction
+
+Focused all-books with-review run [#68](https://github.com/jsynon/antilogicalism/actions/runs/40264347850) completed all five questions against library v48. The artifact reports Worker source revision 35ff77ed42be8a3678f404a6bfc7f1fdf77ec18b, confirming that the deployed Worker included PR #257. It used the existing estimate of 15 Worker AI calls, with no request failures, planner fallbacks, or skipped cases. Four of five cases passed the structural gate; six of seven question parts were supported. The artifact contains no submitted human rubric scores.
+
+The Kant case now passes with two citations from six submitted pages, where run #67 had failed after retaining unrelated citations on a direct claim. This is direct live evidence that the claim-local citation pruning from PR #257 reached the deployed Worker and helped this case. The remaining structural miss is Nietzsche-on-Kierkegaard: the answer covers both authors and links the comparison evidence, but its final part declines a reliable inference and is marked partial. The passages do overlap on faith—Nietzsche critiques Christian faith as masking instincts and hostility to reality, while Johannes de Silentio describes faith as a paradoxical relation to God—so the answer can make a limited conditional reader inference without claiming Nietzsche recorded a judgment about Kierkegaard. That distinction should not be implemented by lowering the review gate: the inference still needs each author's own relevant premise, the same specific concept, and a modest conclusion.
+
+The run also confirms that highlight location is not semantic validation. All 18 cited highlights were found in their cited pages, but the Fear and Trembling excerpt used to support a general statement that faith requires a movement into the absurd is Johannes de Silentio saying that he cannot make that movement. The Nietzsche-on-Christianity “poison/herd” highlight is a passage about the herd's triumph; it supports the herd phrase more directly than “poison.” Sunyata remains a thin secondary-source gloss and omits dependent origination and lack of inherent nature. These remain separate answer-quality findings; this change does not address them.
+
+The bounded candidate resolves an instruction conflict in the existing composer/reviewer contract. It permits a conditional reader inference when both authors' passages support the same narrowly identified concept, while distinguishing that reasoning from a historical claim or verdict on an entire doctrine. The deterministic coverage guard now keeps the hypothetical part partial when the pages do not establish that shared point or the answer only says no inference can be drawn, even if the reviewer labels the limitation complete. A supported answer still needs a standalone inference sentence with the smallest directly relevant citation set from both authors. Source-by-source review and exact-span validation remain unchanged. This alters no planner, retrieval, page budget, call count, public response fields, or highlight behavior.
+
+| Candidate validation | Result |
+|---|---|
+| Positive conditional inference with both author premises | Covered by the existing two-call regression, updated to use a narrow, conditional faith example |
+| Broad claim about the other author's whole philosophy | Remains partial even when both author sources are cited |
+| Limitation without the requested inference | Remains visible but partial; no longer treated by the regression contract as full coverage |
+| Missing or unsupported author premise | Existing fail-closed source-group regression retained |
 | Focused hypothetical Worker tests | Pass; 68 passed, 0 failed |
 | Full Worker suite: node --test hosting-poc/*.test.mjs | Pass; 273 passed, 0 failed |
 | Syntax and whitespace checks | Pass; node --check hosting-poc/evidence-answer.mjs and git diff --check |
@@ -219,9 +298,6 @@ The focused with-review all-books run [#72](https://github.com/jsynon/antilogica
 | Nietzsche on Christianity | Partial | Full | The all-books reviewer rejected a claim backed by editorial commentary presented as Nietzsche's view. The selected-books answer used direct Nietzsche passages. |
 | Sunyata | Full | Partial | The all-books structural pass is weak evidence of quality: its short definition redirects through Smith's account of the Infinite and omits dependent origination. The selected answer mentions dependent arising but has the awkwardly formed “Kalupahana, sunyata…” sentence; a compound middle-path claim citing commentary remains partial. |
 | Nietzsche on Kierkegaard | Full, three planner-created parts | Full, one selected-scope part | Both outputs make a cautious inference, but the selected answer's inference cites a Kierkegaard span about having courage to think a thought whole, which is weak support for its claim about consolation and religious truth. Structural approval does not establish the inference. |
-Warning: truncated output (original token count: 6664)
-Total output lines: 150
-
 
 The trace shows PR #258 is working as intended: unsupported or ambiguous sources leave claims/parts partial instead of being pruned and silently promoted. The deeper polarity failure also shows why that fix alone is not a semantic review. The Worker already had several reviewer instructions about contradiction, voice, and inference, including a first-person inability example. Adding another general warning would repeat the existing contract. Before this candidate, `REVIEW_PROMPT` was about 1,253 words and repeated several rules. The candidate reorganizes it around exact claim entailment, polarity, speaker attribution, and source-group reasoning; it is about 706 words, with the same review response schema and span limits.
 
@@ -276,7 +352,45 @@ The paired candidate makes two narrow changes across the Worker and website eval
 | Area | Change | Boundary |
 |---|---|---|
 | All Books source alignment | Use the saved planner part's `sourceBookIds` as the eligible set; continue requiring the configured expected work and report additional eligible cited works separately for human quality review. | Applies only to All Books audit alignment. Selected Books remains strict. Plan eligibility is not semantic support. |
-| Same-group citation review | Retain a claim when the reviewer marks…1664 tokens truncated…s replay does not test composition/review or independently verify fingerprints. |
+| Same-group citation review | Retain a claim when the reviewer marks it answered and at least one cited source has an accepted exact span, provided accepted evidence still covers every source group represented in the claim. Remove weak citation IDs from the rendered answer/evidence map. | Missing decisions, missing spans, unsupported required source groups, and incomplete comparison premises still fail closed. No broad citation pruning. |
+| Offline report recheck | Reuse the saved scope and planner plan during offline evaluation rechecks, and expose the recalculated part alignment. | Prevents artifact rechecks from silently applying a different scope rule from the live run. |
+
+The change reuses the existing planner/composer/reviewer calls and page packet. It adds no stage, model call, retry, or page budget. Worker regression coverage uses a Boethius-like same-group citation set (one partial source, one accepted exact span) and verifies that only the accepted citation survives. Website coverage checks planner-eligible alternates, out-of-plan sources, strict selected scope, and saved-plan offline rechecks.
+
+| Candidate validation | Result |
+|---|---|
+| Focused Worker regression | Pass: 72 tests, including preservation of earlier missing-span and cross-group failure guards. |
+| Focused website evaluator regressions | Pass: 51 tests, including offline recheck using the saved all-books planner eligibility set. |
+| Full offline suites | Pass: Worker `node --test hosting-poc/*.test.mjs`, 277 tests; website `node --test reading-companion/*.test.mjs`, 194 tests. Changed modules pass `node --check`; both candidate diffs pass `git diff --check`. |
+| PR/deployment | Merged: [Worker #262](https://github.com/jsynon/book-chatbot/pull/262) and [website #217](https://github.com/jsynon/antilogicalism/pull/217). The user reports deploying the Worker; paired run #2 recorded Worker revision `d657b43ff610969692e63cab5e3f33a1219de729`. |
+| Live validation | Completed in paired run #2, recorded below. The alignment correction remained effective; the Boethius downgrade was not reproduced, so its exact pruning path still needs a deliberate trace to validate. |
+| Quality conclusion | No answer-quality improvement is established by this artifact or these structural regressions. The evaluator now separates planner eligibility from semantic relevance, while the Worker can preserve a claim supported by a valid source from its planned group. |
+| Unseen acceptance suite | Keep frozen until the paired artifact is re-run and cited page text is reviewed. |
+
+## October 26, 2026: paired-scope run #2 and candidate-to-part handoff
+
+Paired scope run [#40419672507](https://github.com/jsynon/antilogicalism/actions/runs/40419672507) used website source `8ac297ab1372250451bcd828693b3eaf67d371f5`, Worker source `d657b43ff610969692e63cab5e3f33a1219de729`, and library v48. All ten rows completed with no request failures or planner fallbacks; the 25-call baseline was respected. Structural results were 6/10 overall: All Books 2/5 and Selected Books 4/5. Fifteen of twenty question parts were supported, two were partial, and three were unsupported. Every cited source had a located highlight, which confirms location only.
+
+The source-alignment false negative from run #1 did not recur. The Hume page in All Books was aligned to its planned source group, and the audit correctly reported the additional eligible book. However, the case exposed a more important evidence handoff loss: the Kant-linked searches returned pages 104, 98, 103, and 213 from *Critique of Pure Reason*, but all 12 hydrated `retrievalCandidates` were Hume pages. The bounded packet consequently contained six Hume pages, leaving the Kant part unsupported. The merge step reserved many Hume pages from several linked facets before it reserved a candidate for the Kant part.
+
+The Hamlet All Books failure occurred earlier. The planner did not assign book IDs to the part. A Shakespeare-focused facet resolved catalog books 212 and 564, but its top results were other Shakespeare pages; the exact part wording was searched globally and surfaced commentary. Page 454, which the Selected Books run retrieved and cited, did not appear in All Books search results. A part query scoped to works resolved by a sibling facet should be run inside those already trusted works so source-specific wording has a chance to find the intended page.
+
+This bounded website candidate changes two existing handoffs in `reading-companion/evidence-search.mjs`:
+
+- Candidate merging gives every question part its strongest eligible page before distributing additional distinct-work pages across parts. Ordinary cross-facet ranking fills the rest of the existing 12-candidate limit.
+- When an exact part question was searched globally but another linked facet resolved that part to catalog works, retrieval repeats the exact query only inside the unresolved works. The result trace records `partScopeInherited` and the targeted book IDs. It does not widen the part's source allowlist or the reader's selected-book scope.
+
+These are local index searches; they add no Worker AI call, no model stage, and no submitted-page budget. The existing six-page Worker packet, fingerprints, citation validation, review rules, and public response contract remain unchanged. This addresses evidence availability in the Hume/Kant and Hamlet traces; it does not establish answer quality or fix the separate incomplete Hume span in Selected Books or Du Bois reviewer variance.
+
+| Candidate validation | Result |
+|---|---|
+| Hume/Kant candidate regression | Pass; when one part has many linked books/facets, a Kant candidate survives the bounded merge and reaches the submitted packet. |
+| Hamlet named-source regression | Pass; the exact part query inherits only catalog-resolved books 212 and 564, page 454 reaches the packet, and an unscoped commentary candidate cannot satisfy the part. |
+| Focused retrieval suite | Pass; 62 tests, 0 failures. |
+| Full website suite | Pass; `node --test reading-companion/*.test.mjs`, 196 tests, 0 failures. |
+| Worker dependency suite | Pass; Worker suite 277 tests, 0 failures. No Worker runtime or shared contract changed. |
+| Zero-AI published-library evaluation | Passes expected-source retrieval in 30/31 cases, with 0 source-identity issues, fingerprint errors, or execution errors. The one miss is the existing 1 John expected-source case; the benchmark is source discovery/identity only, not answer quality. |
+| Saved-plan retrieval replay | Pass; replayed the Hume/Kant and Hamlet All Books plans from run #2 against the published v48 index with no AI calls. Kant pages entered candidates and the packet; Hamlet page 454 entered both. This replay does not test composition/review or independently verify fingerprints. |
 | Live validation | Pending. After website publication, rerun the same paired scope workflow. Confirm these evidence pages survive in the authenticated artifact and check the other cases for regressions. Inspect cited page text and review traces; a structural score alone is not a quality judgment. |
 | Unseen acceptance suite | Keep frozen until the paired rerun has been reviewed. |
 
@@ -334,9 +448,6 @@ No planner/composer/reviewer call, answer packet size, review decision, citation
 ## October 27, 2026: paired-scope run #6 and direct-answer coverage handoff
 
 Run [#6](https://github.com/jsynon/antilogicalism/actions/runs/40436293515) completed all ten paired-scope cases on library v48 with-review. It recorded zero request failures, planner fallbacks, or skipped cases, with an estimated 25 Worker AI calls. The deployed website revision was `55ca020e5b06f0056193329b0e597941ba85666c`; the Worker source revision was `b9c4860abdafc867b9e0451b60949c78ea97b8fd`, running as Worker version `7dd0e7b4-f18c-4389-bead-f38c3be82ec8`.
-Warning: truncated output (original token count: 7595)
-Total output lines: 150
-
 
 The run passed 7/10 structural cases: All Books 4/5 and Selected Books 3/5. Seventeen of 20 parts were supported and three were partial. All 30 citations resolved to located highlights; this confirms location only, not that a highlight or passage supports its answer claim. No cases had human semantic ratings. Compared with run #5 (6/10), Hume/Kant and Hamlet All Books improved; the net structural change was +1. Hume/Kant passed in both scopes. Hamlet passed structurally in both scopes, but its All Books answer was a one-sentence statement about enterprises losing momentum and did not adequately explain conscience; the Selected Books answer gave a more useful explanation. Wollstonecraft Selected remained partial. Boethius was partial in both scopes, with its Selected result regressing from the previous run. These are answer-quality and completeness signals; do not loosen the evidence gate to improve the score.
 
@@ -386,7 +497,55 @@ The next review should check whether the candidate captures reviewer status and 
 
 ## October 27, 2026: paired-scope run #9 and bounded reviewer handoff correction
 
-Paired-s…2595 tokens truncated…
+Paired-scope run [#40446494819](https://github.com/jsynon/antilogicalism/actions/runs/40446494819) completed all ten v48 cases with the 25-call baseline and no request failures, planner fallbacks, or skipped rows. It passed 6/10 structural checks: All Books 2/5 and Selected Books 4/5. Sixteen of 22 question parts were supported and six partial; none were unsupported. The Worker source revision was `6c0d973c2ffa3f1a90ebc5b7fb36071cf1481613`, and the site revision was `4d5e3601d939a99a5fdd91a27abdc89cc4568d74`. Human semantic review remained pending for all ten rows. The scope split reversed from run #8, and the planner created a different part count for Hamlet, so the score is not a like-for-like quality comparison.
+
+The authenticated trace showed two separate review-handoff failures. In four partial parts—Hume/Kant All Books P3, Wollstonecraft Selected Books P1, and both Boethius All Books parts—the reviewer marked the part answered but included one or more claims in its direct-answer set that did not survive Worker source checks. The remaining accepted claims may be sufficient, but the system correctly refused to infer that from a reviewer part label alone. Wollstonecraft All Books had a different failure: the reviewer emitted a fenced JSON object with an extra `]` after each source list inside its claims array. The existing parser tolerated a known stray tail but not this repeated, internally unmatched closer, so the answer stayed unverified and returned no evidence map or highlights.
+
+The bounded Worker change keeps the existing three-way trust boundary—model review, exact source validation, deterministic part coverage—and makes those handoffs more coherent:
+
+- Review JSON gets a string-aware delimiter scan. On the review stage only, it can remove an immediately repeated closing delimiter only when that delimiter is unmatched at the current structural position. The normalized text must still parse as JSON and pass the complete existing claim/part/source/span schema. Other malformed or truncated responses remain fail-closed. The authenticated trace records the narrow recovery code and count.
+- The reviewer now emits claim/source decisions before part decisions. Its instructions require the direct-answer set to be chosen afterward, from claims it judged answered and whose evidence still covers every required source group. A weak alternate can be omitted only under the existing supported-subset rule. The Worker still independently requires every nominated direct-answer claim to survive its exact-span and source-group checks; it does not promote a part merely because some claims survived.
+- The composer, retrieval and candidate selection, six-page packet, highlight ranking, public response shape, and model-call budget are unchanged. The composer already separates factual sentences into reviewable claims, so this correction addresses the observed reviewer ordering/selection and formatting defects without another generation stage or a general prompt expansion.
+
+| Candidate validation | Result |
+|---|---|
+| Exact run #9 malformed-review fixture | Pass; the duplicated unmatched `]` is removed, the full review schema and exact span are still required, and trace recovery is recorded. |
+| Malformed quote and unrelated reviewer-format regressions | Pass; unescaped quotes and the prior malformed-key example still fail closed. |
+| Direct-answer fail-closed regressions | Pass; a rejected nominated direct claim still leaves the part partial even when another accepted claim remains. |
+| Focused Worker suite (`node --test hosting-poc/evidence-answer.test.mjs`) | Pass; 81 tests, 0 failures. |
+| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | Pass; 290 tests, 0 failures. |
+| Syntax and whitespace checks | Pass; changed Worker JavaScript passes `node --check` and `git diff --check`. |
+| Website/evaluator suite | No website runtime code changed; the paired workflow shape and 25-call estimate are unchanged. |
+| Live paired validation | Completed in run #10 after merge/deployment. Wollstonecraft All Books succeeded with valid review JSON, but the trace had no recovery event, so this run did not exercise the delimiter-repair branch. The four direct-answer handoffs were not all resolved; follow-up run #11 tests the source-subset change. |
+| Quality conclusion | The clean Wollstonecraft run confirms the case completed, but no broad quality improvement was established. Human source review remains necessary; keep the unseen acceptance suite frozen. |
+
+## October 27, 2026: paired-scope run #10 and source-subset/interpretive-completeness candidate
+
+Paired-scope run [#40450042539](https://github.com/jsynon/antilogicalism/actions/runs/40450042539) completed all ten v48 cases with the existing estimated 25-call baseline. It recorded no request failures, planner fallbacks, or skipped cases. The deployed Worker revision was `a92bc250c8e6ad121163913b46c09f0a29cd0977` (Cloudflare version `c88c28f2-1b5a-46aa-9bea-38fc4728567a`). Structural results were 7/10: All Books 3/5 and Selected Books 4/5. Fifteen of 20 question parts were supported and five partial. All 36 citations had a located highlight, but semantic relevance was not scored; the artifact's human rubric remained blank for all ten answers. The planner produced a different number of parts than the prior run, so the structural score is not a clean like-for-like quality comparison.
+
+The run confirms a narrow source-subset handoff defect. In Hume/Kant All Books P1 and P3, and Boethius P2 in both scopes, the reviewer marked the claim answered, explicitly marked one citation partial or unanswered with no span IDs, and supplied an accepted exact span from another citation in the same planned author/work group. The Worker still treated the explicitly rejected empty citation as unresolved and blocked the supported subset. Keep the existing conditions that the claim decision is answered, accepted exact evidence remains, and every group cited by the claim remains covered. Only an explicit partial/unanswered source decision can be omitted. A missing or malformed decision, a source marked answered without a selected exact span, a legacy spanless review, or an uncovered comparison group must continue to fail closed. This adds no AI call or retry.
+
+The answer-quality signal is separate from the subset fix. Both Hamlet answers passed structure but explained that thought weakens resolve and action without stating the passage's preceding reason: fear of what may follow death. The adjacent soliloquy page was in the submitted packet, but the answer did not use it. The candidate therefore tightens existing composer and reviewer instructions for phrase interpretation: when the supplied pages give the causal premise behind a phrase's effect, include that premise and cite its own page; do not invent missing context. This aims at fuller interpretation from already supplied evidence, without increasing the packet or adding a stage. It does not claim a broad quality gain from prompt text alone.
+
+| Candidate validation | Result |
+|---|---|
+| Explicit partial/unanswered citation with no span IDs plus accepted same-group exact evidence | Pass; both explicit statuses are omitted while the accepted citation and same-group requirement remain enforced. |
+| Answered citation with no accepted exact span | Pass; claim is not promoted and no evidence is retained. |
+| Missing comparison-side group and existing accepted/rejected-direct-claim safeguards | Pass; existing regression tests remain green in the full Worker suite. |
+| Interpretive causal-premise guidance | Composer/reviewer prompt contract assertions pass; this checks the instruction contract, not live model compliance. |
+| Focused answer suite (`node --test hosting-poc/evidence-answer.test.mjs`) | Pass; 83 tests, 0 failures. |
+| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | Pass; 292 tests, 0 failures. |
+| Syntax and whitespace | Pass; changed modules pass `node --check`, and `git diff --check` is clean. |
+| Live paired-scope validation | Completed in run #11 after merge/deployment; see the follow-up entry below. The expected Hume/Kant All Books and Boethius P2 handoffs recovered. |
+| Quality conclusion | Run #11's Hamlet answers included the supplied fear-of-death premise, but the artifact has no human semantic scores. This is a promising observed answer change, not proof of broad quality improvement; keep the unseen acceptance set frozen. |
+
+## October 27, 2026: paired-scope run #11 validates the source-subset change
+
+Paired-scope run [#40455788471](https://github.com/jsynon/antilogicalism/actions/runs/40455788471) completed all ten cases in with-review mode on v48 using the existing 25-call estimate. It had no request failures or planner fallbacks. The site revision was `c5e4eb8221c11a55ca60190eba948a7f8482cccb`; the Worker revision was `0b129183ff2a04eb7cda1b78d52d35059cdef645`, the merge commit for PR [#271](https://github.com/jsynon/book-chatbot/pull/271), running as Cloudflare version `81848ea5-8acb-4ec2-b2bb-a3fea7695be0`. This confirms the workflow tested the merged update.
+
+The run passed 8/10 structural cases, up from run #10's 7/10, with 18/20 parts supported and two partial (run #10 had 15 supported and five partial). The question set, site revision, scope pairing, and planned 20 parts were the same, making this a useful paired comparison, though answer generation remains stochastic. Hume/Kant passed in both scopes; Wollstonecraft passed in both; Du Bois passed in both; Hamlet passed in both. Both Boethius cases remained partial. All 28 cited highlights were located; highlight location does not show semantic relevance. The artifact's human rubric was still unscored for all ten cases.
+
+The source-subset change behaved as intended in the authenticated traces. Hume/Kant All Books P1/P3 omitted the Hume page that the reviewer explicitly marked partial with no spans, while retaining accepted same-group evidence; the case became fully supported. Boethius P2 in both scopes similarly became answered after its weak alternate citation was omitted. The strict boundaries remained: only explicit rejected sources were pruned, and exact accepted spans remained attached to final citations. This is live evidence that the targeted handoff path works, not proof that every use of source subsets is semantically correct.
 
 The two remaining structural failures share one issue: Boethius P1, “How does Lady Philosophy explain the instability of Fortune?” In both scopes, the reviewer itself marked the part partial. Some direct claims survived exact-span validation, including the Fortune-wheel reversal; other generalization/example claims were rejected. The direct-answer IDs that remained did survive, so this is not the old missing-span subset bug. Keep the part partial until its answer and the cited Boethius pages are reviewed together; do not relax the gate based on this score alone.
 
@@ -439,9 +598,6 @@ The initial Boethius P1 diagnosis treated the four claim-ranked IDs as the only 
 ## October 27, 2026: paired-scope run #13 and linked composer evidence candidate
 
 Paired-scope run [#40463165261](https://github.com/jsynon/antilogicalism/actions/runs/40463165261) completed all ten cases on library v48 using with-review mode. It recorded no request failures, planner fallbacks, or skipped cases. The deployed Worker revision was `2f0e60bfe934c2ecb631c127a0238d4e4a496478` (Cloudflare version `51ed66be-0712-45cc-81d3-1717ee4e82d9`), the merged revision containing the cross-author inference guard. Structural results were 8/10: All Books 4/5 and Selected Books 4/5. Seventeen of 20 parts were supported, two partial, and one unsupported. The workflow conclusion reflects those two structural misses; requests and artifact creation completed. All 32 citation highlights were located, but this is location evidence only. The artifact's semantic human-review rubric remained unscored.
-Warning: truncated output (original token count: 6680)
-Total output lines: 150
-
 
 The most actionable failure was All Books Hamlet. Retrieval included the Shakespeare passage as well as pages from unrelated books that were not linked to the Hamlet part. The composer cited those unrelated IDs alongside the Shakespeare page; part-level validation correctly rejected every sentence, leaving the case unsupported. Selected Books Hamlet passed. This distinguishes a prompt-packet problem from a retrieval or source-validation defect: the unrelated pages existed in the authenticated candidate record, but they were not eligible evidence for the planned answer part. Hume/Kant Selected Books was partial because the reviewer did not receive/accept exact spans for some cited sources; the run does not establish that global source filtering fixes that case.
 
@@ -494,7 +650,43 @@ The run #14 reviewer marked P1 partial even though it listed other claims as dir
 | Run #14 Boethius claim-level trace replay | Pass; the direct span is present in part evidence but absent from the four ranked P1-C1 hints in both scopes. |
 | Same-source out-of-shortlist review selection | Pass; the run-shaped fixture selects S1-Q4 outside the four ranked hints, and the Worker retains the exact source text. |
 | Reviewer-part status contract | Pass; an explicit partial part decision remains partial even when the nominated claim's span validates. |
-| Focused answer suite (`node --test hosting-…1680 tokens truncated…ovide semantic answer-quality scoring.
+| Focused answer suite (`node --test hosting-poc/evidence-answer.test.mjs`) | Pass; 89 tests, 0 failures. |
+| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | Pass; 298 tests, 0 failures. |
+| Syntax and whitespace | Pass; `node --check hosting-poc/evidence-answer.mjs` and `git diff --check`. |
+| Model calls and evidence packet | No additional call or page; exact span text is already supplied once in the part evidence. The prompt instruction grows slightly. |
+| Live paired-scope validation | Pending merge and Worker deployment; inspect whether S1-Q11 is selected for P1-C1 and whether the reviewer marks the answer complete. |
+| Answer-quality conclusion | No broad quality gain claimed. This targets one demonstrated reviewer handoff failure; the other run #14 misses and semantic answer quality remain separate work. |
+
+## October 27, 2026: paired-scope run #15 and citation/coverage handoff fix
+
+Paired-scope run [#40471529785](https://github.com/jsynon/antilogicalism/actions/runs/40471529785) completed all ten cases on library v48 in with-review mode. The artifact is `reading-companion-paired-scope-evaluation-all` (artifact ID `12718906841`). The website source revision was `d04d70cb4b2b2f0a6fb04ac519a8d43c94154147`; the Worker revision was `1a360225b27012f467206c8aa59992e58c371c2f` (Cloudflare version `b185b039-bd3f-40b0-8158-27fb32b6e47b`). No request failures, planner fallbacks, or skipped cases were recorded. The run used the existing 25-call estimate: five shared planner calls and twenty answer-stage calls.
+
+The structural result was 9/10: All Books passed 5/5, Selected Books passed 4/5, and 19/20 parts were supported with one partial and none unsupported. Run #14 scored 6/10 and 16/20 parts, so the pair improved on this run. Planner output, retrieved pages, and model composition differed; this is not enough to attribute the gain to a code change. All 37 citations had text-located highlights. The artifact does not score semantic highlight relevance or answer quality, and its five-dimension human rubric remains blank for all ten cases.
+
+The two actionable traces expose different handoff failures:
+
+- **Selected Books Boethius P1:** The relevant causal passage is present as S5 on page 12. The composer cited `[S5, S12]` for the answer's first, causal sentence. S12 is not a supplied source ID; confusing page 12 with citation ID S12 is a plausible explanation, but the trace cannot prove the model's intent. Deterministic validation rejected that sentence for `unknown-source-id`. A later sentence about injustice, citing S1, survived; the reviewer accepted and nominated it as the direct answer, so P1 appeared supported while its causal answer had been removed. This is a citation-ID integrity issue followed by a gap in required-answer lineage, not a retrieval or reviewer-span-selection failure.
+- **Selected Books Wollstonecraft P2:** Relevant text appears in the part evidence on both S1 (p. 2, denied rights/immurement) and S4 (p. 116, “enlightened citizens”). The composer cited S1 alone for a sentence linking denied rights to becoming enlightened citizens. The reviewer only received the cited S1 page and marked the claim partial. It should not attach S4 on its own: the composer must cite the passage that supports that part of the sentence, or split the claims. This is a composition/source-linking issue, not missing retrieval.
+
+The bounded Worker change keeps the existing compose and review calls, source packet, and strict boundaries:
+
+1. The composer prompt now says to use only supplied source IDs, never turn a printed page number into a source ID, and cite both pages when a sentence links a reason on one page to an outcome established on another. It also reminds the composer to split claims when that makes support clearer.
+2. Citation validation may remove a syntactically valid but unknown ID only when the same citation group also contains a known source ID. The remaining known ID must still pass the existing part allowlist, named-book scope, and exact quote/citation audit. Unknown-only citations remain rejected, as do malformed, out-of-part, and out-of-scope IDs. The authenticated trace records which IDs were removed and retained; no source is added by the reviewer or Worker.
+3. The Worker carries the composer-required first answer sentence through validation into the review input. If citation validation drops that sentence, or review does not retain it as an accepted answer, the part cannot be marked supported. Any later supported examples may remain visible, but the part is capped at partial. This closes the observed path where an example alone concealed loss of the requested causal answer.
+4. The regression fixtures reproduce the Boethius page-12/S12 collision and the unknown-only case with a later surviving example. Prompt checks cover cross-page causal citations. These tests establish the Worker contract, not model compliance or semantic answer quality.
+
+| Validation | Result |
+|---|---|
+| Mixed known/unknown citation | Run-shaped fixture removes S12, retains S5, sends only S5 to review, records the repair, and adds no model call. |
+| Unknown-only required answer | Remains rejected; a later supported example leaves the part partial and records `required-direct-answer-rejected`. |
+| Source/part and exact citation checks | Still fail closed for unknown-only, malformed, out-of-part, out-of-scope, and text-mismatched citations. |
+| Focused Worker suite (`node --test hosting-poc/evidence-answer.test.mjs`) | 91 passed, 0 failed. |
+| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | 300 passed, 0 failed. |
+| Syntax and whitespace | `node --check hosting-poc/evidence-answer.mjs` and `git diff --check` passed. |
+| Live paired-scope validation | Completed in run #16 after PR #277 merged and deployed. Selected Boethius now has a complete supported answer and passes; no citation-ID repair was recorded, so this run does not exercise the mixed-known/unknown-ID sanitizer. Selected Wollstonecraft P2 is supported, while its P1 remains partial for a separate unsupported opening claim. |
+| Answer-quality conclusion | Mixed. The corrected trace supports seven full answers and three genuine partials; no broad quality change can be attributed to one stochastic run. Semantic highlight relevance remains unmeasured. Keep the acceptance set frozen. |
+
+This change does not widen retrieval, add an AI call, add a repair stage, or relax source identity, part-scope, quote, reviewer-span, or final-render checks. Run #16 confirms Selected Wollstonecraft P2 is supported, while a different P1 claim remains partial; it also exposes two Du Bois sentence-boundary false negatives. The artifact's rubric is still blank, so its structural score does not provide semantic answer-quality scoring.
 
 ## October 27, 2026: paired-scope run #16 and first-answer lineage validation
 
@@ -556,9 +748,6 @@ Two integration tests cover the boundary and its safety condition:
 
 | Validation | Result |
 |---|---|
-Warning: truncated output (original token count: 7183)
-Total output lines: 150
-
 | Focused Worker suite (`node --test hosting-poc/evidence-answer.test.mjs`) | 93 passed, 0 failed. |
 | Full Worker suite (`node --test hosting-poc/*.test.mjs`) | 302 passed, 0 failed. |
 | Syntax and whitespace | `node --check hosting-poc/evidence-answer.mjs` and `git diff --check` passed. |
@@ -614,7 +803,48 @@ Next, keep the acceptance set fixed and avoid widening retrieval or adding anoth
 
 ## October 27, 2026: focused Hume/Kant trace and review-handoff fix
 
-The previous turn inspected two consecutive focused paired runs rather than treating a single timeout as a stable regression. Run [#40563347181](https://github.com/jsynon/antilogicalism/actions/runs/40…2183 tokens truncated…lusion rather than the specific heat/flame sentence. Continue to treat highlight relevance as a separate product-quality concern.
+The previous turn inspected two consecutive focused paired runs rather than treating a single timeout as a stable regression. Run [#40563347181](https://github.com/jsynon/antilogicalism/actions/runs/40563347181) (artifact `12761293341`) had a network error in Selected Books before the Worker version was assigned; All Books completed with all three parts supported and five citations. The repeat, [#40564438606](https://github.com/jsynon/antilogicalism/actions/runs/40564438606) (artifact `12762701445`), completed both scopes without planner fallback or top-level request failures, but scored 0/2 structurally.
+
+Run #20 isolates two separate failure classes:
+
+- **All Books:** the reviewer request hit the Worker’s own 45-second inference timer. The saved trace named `Inference deadline exceeded` but omitted the stage because the timer error carried no stage metadata. The draft remained unverified and partial with no evidence highlights, as required by the fail-closed contract. The answer contained enough cited prose to compose a draft, so this is review-stage availability/packet-size evidence, not a retrieval failure.
+- **Selected Books:** Hume P1 and Kant P2 were supported, while comparison P3 stayed partial. The first comparison sentence was an uncited summary, which the deterministic validator correctly rejected as the required direct answer. A later sentence gave the separately cited author positions, but those could not replace the rejected first sentence. The draft also appended an unrequested “if Kant applied ... he might suggest ...” speculation. The comparison guard covered “argue” and similar verbs but missed “suggest,” so the speculative sentence reached review and was rejected there. The reviewer’s partial verdict must remain partial; do not promote P3 merely because later claims survive.
+
+The active public evidence route imports `composeEvidenceAnswer` from `hosting-poc/evidence-answer.mjs` via `hosting-poc/public-gateway.mjs`. The fix is confined to that Worker module and its direct test file, `hosting-poc/evidence-answer.test.mjs`; it does not change the planner, retrieval, browser, legacy route, or evaluator. It makes four bounded changes:
+
+1. Comparison instructions now explicitly require the opening sentence to state each author’s position in a separate cited clause. This aligns the first-sentence direct-answer contract with the source-specific citation rule. The required-direct-answer check stays strict and trace output now records a `required-direct-answer-rejected` coverage gap even when review already returned partial.
+2. The existing cross-author transfer detector recognizes `may/might/would/could suggest`, `propose`, and `infer` along with its existing transfer verbs. The check still only removes an unrequested conditional transfer from a comparison; it does not block an explicitly requested, qualified hypothetical.
+3. Reviewer evidence is limited to the top eight ranked exact spans per cited source per question part. The smaller per-claim hint list remains four; it is drawn from those offered spans. The server validates selections against the per-part packet, so an exact span still present elsewhere in the full source cannot be selected if it was not sent in this review request. Full verified source data stays in the authenticated trace. This bounds repeated span text without making ranking a support decision.
+4. The existing 45-second timer records the stage, stable error code, and elapsed time when it fires. The review still fails closed, and no retry or repair model call is added.
+
+The regression tests replay the run #20 comparison shape, verify the unrequested “might suggest” bridge is rejected before review, assert the uncited opening remains a coverage gap, enforce the eight-span packet and unsent-span boundary, and exercise stage-specific timeout reporting without waiting 45 seconds. Existing tests continue to protect against upgrading a reviewer-partial answer.
+
+| Validation | Result |
+|---|---|
+| Focused evidence-answer suite (`node --test hosting-poc/evidence-answer.test.mjs`) | 97 passed, 0 failed. |
+| Full Worker suite (`node --test hosting-poc/*.test.mjs`) | 306 passed, 0 failed. |
+| Whitespace / patch check (`git diff --check`) | Passed. |
+| Calls, retries, and stages | Unchanged: with-review stays at one compose plus one review call; no retry or new stage. |
+| Live result | Pending PR merge and Worker deployment. The current trace’s 0/2 result is not retroactively changed; rerun the same focused paired workflow once after deployment and compare reviewer deadline, P3 coverage, and exact selected spans. |
+
+The All Books timeout is the clearest reason for shrinking repeated reviewer input, but an offline timeout simulation cannot prove the live latency improvement. The packet change is limited to the review request and exact per-part validation boundary; it does not increase retrieval or claim that review semantics are solved. If the deployed reviewer still reaches its deadline, inspect the new stage/elapsed trace and packet size before changing budgets or introducing retries. Keep the full acceptance set frozen for this check.
+
+## October 27, 2026: focused Hume/Kant run #21 after PR #281
+
+Paired-scope run [#40567413698](https://github.com/jsynon/antilogicalism/actions/runs/40567413698) completed with the `paired-hume-kant-causal-inference` case in with-review mode on library v48. Artifact `reading-companion-paired-scope-evaluation-paired-hume-kant-causal-inference` (ID `12763382692`) was produced at 19:17 UTC. PR #281 merged at 19:14 UTC; the artifact’s Worker source revision exactly matches its merge commit, `6be7e17737df8c24009b50b5e9e44cce5c9bb52d`, and reports Cloudflare version `abc6c8e4-f03d-4cb2-a4fb-138d25f44090`. The site revision remained `2c3c12e20fbdfbb36406c05f15edb248b7ac756d`.
+
+The official result was **2/2 structural passes**: All Books 1/1 and Selected Books 1/1. Both cases completed all six planned parts (three per scope) as supported, with no partial or unsupported parts, request failures, planner fallbacks, or skipped cases. The workflow estimated five Worker AI calls. The new Worker timer and capped review handoff were active in both cases.
+
+The traces show the intended behavior:
+
+- Both review calls completed without a deadline failure: 28.48 seconds for All Books and 28.12 seconds for Selected Books. Total case times were about 72 seconds and 41 seconds, respectively, including retrieval and composition.
+- Each part sent at most eight exact spans per cited page. The review request contained 64 spans and about 23,355 characters for All Books, and 64 spans and about 23,692 characters for Selected Books. The selected-scope run #20 request had 228 spans and 53,215 characters. This is a roughly 55% reduction in serialized review text and 72% fewer span entries on the repeated Selected Books case. One successful pair does not isolate packet size as the sole reason latency improved, but it confirms that the previously failing deadline did not recur with the new bounded request.
+- P3’s opening comparison sentence now directly states Hume’s and Kant’s contrast with both author sources cited. The uncited opening gap is gone. The “if Kant applied ... he might suggest ...” sentence is still recorded as `unrequested-cross-author-inference` and is absent from both final answers.
+- All Books had four unsupported alternate citations to Hume page 48 recorded as `claim-source-not-supported`; the final answer retained the claims where Hume page 24 provided reviewed support. Selected Books had one rejected alternate citation on P3, while accepted evidence from the same source group remained. These rejections did not create unsupported final claims or block coverage.
+
+My independent read of the answer text and accepted passages is positive: both scopes give direct, relevant explanations of Hume’s custom-based causal inference, Kant’s role for causality in possible experience, and their contrast. The five-dimension workflow rubric is still pending for both cases; this assessment does not populate or replace those artifact fields. This one question pair does not establish a broad answer-quality gain.
+
+The highlight check exposes the next distinct issue. The artifact locates all seven cited-source highlights, but semantic relevance is explicitly unscored. Several exact selected quotes stop before the supported sentence is complete: All Books’ Hume quote about heat and flame ends at “we are”; the Kant page 104 quote ends at “therefore of”; and the Selected Books Hume page 48 quote ends at “which is the only.” The citation pages themselves contain fuller support, so this is not evidence that the answer citations are wrong; it is evidence that a located highlight can still be an awkward or incomplete reading target. The current Hume page 24 highlight also shows the broad custom conclusion rather than the specific heat/flame sentence. Continue to treat highlight relevance as a separate product-quality concern.
 
 | Run #21 check | Result |
 |---|---|
@@ -668,9 +898,6 @@ The offline selector change preserves the broad answer's top eight spans unless 
 | Structural consequence | All Books P2 became partial because the required direct-answer claim had no accepted evidence; Selected Books P2 was supported. |
 | Offline selector replay | Both scopes retain eight spans per source and seven of their original broad-ranked spans; the direct page-14 passage is present in both packets. |
 | Regression and Worker tests | Focused crowded-packet test passes; full Worker test suite passes 309/309. |
-Warning: truncated output (original token count: 7384)
-Total output lines: 150
-
 | Scope | Local selector and saved-trace replay only. No live validation or claim that broader answer quality improved. |
 
 ## October 27, 2026: run #25 Hamlet All Books retrieval-candidate miss
@@ -722,7 +949,55 @@ Regression tests reproduce the run #23 Boethius page-14 overflow: the P2-C2 weal
 | Implementation validation | Result |
 |---|---|
 | Site Reading Companion tests (`node --test reading-companion/*.test.mjs`) | 149 passed, 0 failed. |
-| Focused citation-evidence tests | 5 …2384 tokens truncated…e-review tests passed 4/4; the Worker evidence-answer tests passed 98/98; replaying the run #24 report preserved the structural result at 7/10 and reproduced the four passage/status diagnostics above. The full client suite passed 207/207 and the full Worker suite passed 309/309. Both repository diffs pass `git diff --check`; the gold JSON and changed JavaScript files pass syntax/parse checks. No live workflow has been rerun, and no claim is made that answer quality improved in production.
+| Focused citation-evidence tests | 5 passed, including the Boethius overflow fixture and live response wiring. |
+| Active client syntax and patch checks | `node --check` for `companion-v111.mjs` and `citation-evidence.mjs`; `git diff --check` passed. |
+| Worker contract suite (`node --test hosting-poc/*.test.mjs`) | 309 passed, 0 failed; Worker code and response contract remain unchanged. |
+| Live validation | Pending site PR merge and GitHub Pages publication. Run the same Boethius question and inspect an inline P2-C2 citation; confirm it opens the wealth quote and not the happiness quote. Also verify that citations with no exact claim match open the page without a highlight. |
+
+This replay and regression are local/PR validation only. Run #23 remains the live result; the change has not yet been published or checked in a live browser.
+
+## October 27, 2026: run #24 offline passage review
+
+Paired-scope run [#40580563553](https://github.com/jsynon/antilogicalism/actions/runs/40580563553), artifact `reading-companion-paired-scope-evaluation-all` (ID `12769053355`), completed on library v48 with client revision `579cf50594c5770d38e9fe0968d780809e7679b1`, Worker source revision `8e04d7a2f49ff2338bacf2e8905268977d5165a8`, and Worker version `46230924-f00a-4b26-926a-e02c20631be4`. It completed all ten paired cases without request failures, planner fallbacks, or skipped cases, but only **7/10** met the structural gate: All Books 3/5 and Selected Books 4/5. Fifteen of twenty answer parts were supported, four partial, and one unsupported. The run estimated 25 Worker AI calls.
+
+The following passage annotations were checked against the original Drive PDFs, including the page layout for the decisive Boethius, Hume, Kant, and Shakespeare pages. “Best” here means strongest within the candidate set preserved by this run, not a claim that every page in the entire corpus was exhaustively compared.
+
+| Trace / claim | Best evidence in the reviewed candidates | Other candidate or selected evidence | Annotation |
+|---|---|---|---|
+| Hume/Kant selected, Hume’s causal inference | Hume pp. 24 and 39 | Hume pp. 44–45 and 30 appeared in query results; p. 45 focuses on inference about human actions, while pp. 24/39 directly explain custom, repeated conjunction, the one-instance contrast, and the customary transition. | Pages 24 and 39 are direct and complementary; the answer’s custom/habit explanation is well grounded. |
+| Hume/Kant selected, Kant’s role for causality | Kant pp. 103–104 | Kant p. 213 also says that everything which happens must have a cause, but does so in a discussion of cosmological freedom. | Pages 103–104 are the best direct support for causality as a condition of objective experience. Page 213 is contextual support, not the best highlight for that claim. |
+| Hume/Kant selected, comparison | Hume pp. 24/39 paired with Kant pp. 103/104 | The answer also maps Kant p. 213 to the comparison claim. | The four direct pages establish the contrast between custom-based inference and causality as a condition of experience. Prefer those for the claim-level highlight; p. 213 may remain supporting context. |
+| Boethius all-books, why Fortune is unstable | Boethius pp. 11–12 | Page 11 gives Fortune’s “unchanging sport” and wheel; page 12 places that instability alongside changing natural conditions and the law that nothing born remains constant. | Both are direct. Page 12 also supports the draft’s natural-world analogy. The reviewer marked that analogy claim partial because its citation set included pages 11 and other pages that did not support that specific comparison; the final answer removed it but retained partial coverage. |
+| Boethius all-books, what Fortune’s gifts reveal about happiness | Boethius p. 14, with p. 11 as a direct companion | Page 11 says wealth and honors are Fortune’s handmaids and come and go. Page 14 directly connects chance, loss, the highest good, happiness, and the limitations of riches. Page 38 discusses divine goodness and happiness; page 12 warns against trusting brittle fortunes. | Page 14 is the strongest single passage for the requested inference; p. 11 is the best direct passage for the gifts’ impermanence. Page 14 was in the all-books candidate pool but omitted from the submitted six-page packet; Selected Books included it and passed. The all-books reviewer marked the broad gifts-to-happiness claim partial on p. 11 alone. |
+| Hamlet all-books, meaning of the soliloquy | Shakespeare, *Hamlet*, p. 454 | Shakespeare p. 1625 discusses conscience in a different scene; Tillich p. 43 is commentary about the soliloquy, not Shakespeare’s primary text. | Page 454 is the direct primary passage: the surrounding lines connect fear of what follows death to hesitation and the loss of resolution. Page 1625 is a keyword match but answers a different question; Tillich is contextual commentary only. Page 454 appeared as the second result for a Shakespeare-specific query, then disappeared before the final packet. |
+
+The Hume trace also exposes a final-status inconsistency. The reviewer response marks all three parts answered and all listed claims answered. The final result marks the Hume part and comparison partial. Its draft had an uncited opening comparison sentence and an unrequested hypothetical about Kant applying his view to Hume; both were rejected. The hypothetical was removed, but the trace still reports `required-direct-answer-rejected`. The finalized Hume paragraph also omits an optional “no idea of necessary connection” claim that appeared in the draft, without a matching rejection entry. Retrieval supplied the needed direct passages, so the regression should target agreement among the draft, accepted claims, final text, and final part status.
+
+This review gives the next offline regression set four bounded assertions:
+
+1. For Hamlet all-books, keep Shakespeare p. 454 through candidate fusion and into the answer packet; do not treat p. 1625 or secondary commentary as interchangeable support for the soliloquy.
+2. For Boethius all-books, retain p. 14 for the gifts-and-happiness part when it is in the candidate pool, or leave that part explicitly partial if no direct passage survives selection. A removed optional analogy must not keep the Fortune-instability part partial by itself.
+3. For Hume/Kant selected-books, final coverage must agree with the accepted reviewer claims and the final answer after rejected sentences are removed. Preserve a cited direct comparison, and do not carry a stale rejection into the final status.
+4. For all three, a located quote is not a “best passage” pass. A highlight should be judged against the claim, primary/secondary voice, context, and stronger alternatives in the recorded candidate set. Multiple equally strong passages may be labeled tied; the test should not force a unique winner where the evidence does not.
+
+| Run #24 offline review | Finding |
+|---|---|
+| Structural outcome | 7/10; All Books 3/5 and Selected Books 4/5; 15/20 parts supported. |
+| Hume/Kant | Direct evidence was available; selected-books partial status follows composition/review/final-status disagreement, not a missing source page. |
+| Boethius | The strongest gifts-to-happiness passage, p. 14, was a candidate but missed the all-books packet; partial status also persisted after an extra analogy was removed. |
+| Hamlet | The exact primary-text page, p. 454, was returned by one query but dropped before packet submission; the wrong scene on p. 1625 was submitted instead. |
+| Highlight evaluation | Quote location and claim/source linkage do not establish best-passage relevance. “Best” is evaluated only within the captured candidate set. |
+| Follow-up scope | Use these three annotated traces for an offline replay and focused tests before another full paired run; no additional AI judge or model call is needed. |
+
+## Run #24 offline review implementation
+
+Added a no-AI passage audit in the Reading Companion client checkout. The gold file stores page identifiers and human judgments only; it does not copy book text. Its scope is the candidate lists captured in run #24, and it explicitly distinguishes best/tied evidence from acceptable support, context-only material, and rejects. The existing offline recheck now reports whether the best reviewed candidate reached the submitted packet, whether submitted highlights point to non-best material, and whether the review-stage part status agrees with the returned answer status. These counts diagnose known traces; they do not claim corpus-wide optimality or serve as a semantic pass score.
+
+The paired audit reproduced two packet-selection misses (Hamlet p. 454 and Boethius p. 14), one context-only highlight (Kant p. 213), and one Hume/Kant review-to-output status mismatch. This makes the evidence-selection and highlight regressions inspectable without repeating model calls. It does not yet alter retrieval, ranking, packet construction, or highlight selection, so it should not be described as an answer-quality fix.
+
+The Worker trace now adds `outputStatus` beside its existing review decision fields. `finalStatus` continues to mean the review result after exact-span validation; `outputStatus` records the final state after answer assembly and required-answer checks. This exposes where a status changes without changing the public answer or adding an AI call. Regression tests cover the comparison case where review says answered but final assembly returns partial.
+
+Validation performed locally: the focused passage-review tests passed 4/4; the Worker evidence-answer tests passed 98/98; replaying the run #24 report preserved the structural result at 7/10 and reproduced the four passage/status diagnostics above. The full client suite passed 207/207 and the full Worker suite passed 309/309. Both repository diffs pass `git diff --check`; the gold JSON and changed JavaScript files pass syntax/parse checks. No live workflow has been rerun, and no claim is made that answer quality improved in production.
 
 
 ## October 29, 2026: planner-part and composer-window refinement
@@ -773,9 +1048,6 @@ The conditional planner can add at most one extra inference call per live scope,
 
 ## October 29, 2026: repeated calibration #3 and coverage false negative
 
-Warning: truncated output (original token count: 7883)
-Total output lines: 127
-
 Repeated calibration run [#3](https://github.com/jsynon/antilogicalism/actions/runs/40942322015), artifact `12927642441`, used site revision `6b8e13d`, Worker source revision `ffbaa628`, and corpus v49. It completed all six attempts without request failures, but only one answer passed structural checks. The simulation case produced one partial off-topic draft and two careful but unhelpful abstentions; Buddha answers were partial, partial, and structurally supported. The artifact's human rubric entries were still pending, so the structural pass was not a semantic quality score.
 
 All six traces reported no conditional gap-planner attempt. The previous diagnostic took the maximum count of question terms anywhere on a page and required only two matches. In the simulation trace, “living” and “simulation” appeared in separate contexts on a Spengler page about imitation, which made the page look sufficient and suppressed the retry. The site now measures whether distinctive terms occur together in a short text window and uses that signal both for part linking and candidate ranking. When the signal is weak, the existing bounded librarian call receives the matched terms and may produce alternate queries that preserve context or use source-native wording. It cannot add required answer parts or name preferred works.
@@ -820,7 +1092,49 @@ The baseline and expanded paired-selection runs showed that a larger candidate p
 
 The existing planner and conditional gap-planner prompts now ask for distinct conceptual search angles where useful. When a contemporary or specialized label may not appear in historical texts, they may search the concepts, assumptions, or reasoning those texts use to examine the underlying issue. They must keep those contextual leads separate from direct evidence, preserve the reader's scope, and must not prescribe authors, works, answer claims, or extra answer parts. No inference call or retrieval budget was added. Prompt regression checks ensure this guidance stays general and does not name the simulation-case thinkers.
 
-This is a retrieval-planning experiment, not evidence that rec…2883 tokens truncated…er 30, 2026: clarify the first-sentence review handoff
+This is a retrieval-planning experiment, not evidence that recall or answer quality has improved. After merge and deployment, rerun the same paired-selection calibration in baseline and expanded modes. Compare actual planner queries, sources found per facet, candidate book/page recall, selected pages, and human-scored answer quality; keep the selector evaluation-only until broader retrieval gains and answer quality are demonstrated.
+
+## October 30, 2026: move final evidence selection into the verified Worker path
+
+The latest quality benchmark exposed a stage-boundary problem more clearly than another retrieval rule could: useful pages could appear in raw search results, then disappear from the bounded browser-selected packet before answer composition. Buddha traces showed pages already in the candidate set being lost to deterministic selection. The God-is-love run showed a direct Bible page in query results but absent from the hydrated answer candidates. The live meaning-of-life screenshot was a larger symptom: the live packet contained unrelated works while the local workbench had retrieved and compared relevant authors. These examples point to a general failure mode: retrieval, packet selection, composition, and review each made separate decisions, but the final answer stage could not recover evidence discarded upstream.
+
+The pipeline now sends the full bounded retrieval candidate pool to the Worker. The Worker fingerprint-verifies all candidate pages before a semantic selection call sees their bounded excerpts. That selector can return only candidate IDs; the Worker maps them back to verified full pages, applies the existing six-page/35 KB composition budget, and binds selections to planned question parts. Composition and review remain unchanged, and deterministic citation, page identity, source scope, and exact-span checks remain in force. The public selector failure path is explicit in `sourceSelectionStatus` and the authenticated trace; it falls back to the retrieved order within the same packet bounds.
+
+This moves the answer-critical semantic choice to a stage with enough context to make it and removes the separate evaluation-only selector endpoint. Baseline retrieval sends up to 24 pages; the expanded evaluation profile can send up to 48 pages, subject to a 250 KB browser upload cap and a 300 KB Worker text cap. The selector sees at most 1,200 characters per verified page and chooses at most six. A normal reviewed All Books request now uses four model calls (plan, select, compose, review), with one optional conditional gap-planning call. A selected-book request may skip planning. This is an intentional increase of one call to prevent irreversible evidence loss before the Worker; it is not a question-specific author or answer route.
+
+The `compare-selection` evaluation now compares a six-page incoming pool with the full retrieved pool while keeping Worker selection, composition, and review the same. That isolates whether widening the candidate handoff improves outcomes. It does not compare deterministic versus model selection, because the public path now uses the same Worker selector in both arms. The artifact should record each verified candidate, selection decision, selected page set, selector usage/fallback, answer, and review result.
+
+This implementation is a structural candidate, not evidence that answer quality has improved. The next live check should compare the same broad questions under the narrow and full candidate-pool arms, then human-score accuracy, question coverage, explanation quality, citation support, and citation completeness. In particular, confirm that the direct Bible passage survives into the full pool, that simulation-related philosophers are actually retrieved, and that the relevant Buddha passages are selected. If a source is missing from the Worker candidate list, the remaining fault is retrieval. If it is present but not selected, inspect selector judgment. If selected but omitted from a claim, inspect composition/review. Keep acceptance conclusions separate from this diagnostic calibration until these handoffs are reviewed.
+
+## October 30, 2026: prevent false author scoping and preserve selector abstentions
+
+The repeated life-meaning trace showed that an all-books query was narrowed after planning: the planner declared all available works and selected no books, but the website inferred book IDs 283–290 from the generic word “authors.” Those catalog entries carry the collective byline “Various authors.” The website now excludes collective catalog credits from person-name matching while retaining explicit title and named-person scoping. This is a general retrieval correction; it does not encode expected authors or answers for the calibration question.
+
+The Worker now records a valid selector response with no chosen pages as `no-relevant-evidence` instead of substituting retrieval-order pages. The answer path can still compose a general-knowledge response from an empty evidence set; the trace makes clear that no library source was selected. Technical selector failures still use the bounded retrieval-order fallback to preserve availability, but traces distinguish provider failure, invalid response, truncation, and budget exhaustion. Fingerprint verification, selected-book scope, the six-page composition limit, and the ordinary plan/select/compose/review sequence remain in place.
+
+Offline regressions cover generic plural wording against collective bylines, preservation of real author and work matching, empty selector decisions, technical fallback classification, and evaluation artifact handling. These checks protect the handoff contract; only a deployed live run can show whether answer quality improves.
+
+## October 30, 2026: allow broader knowledge and natural synthesis
+
+The active Worker answer path no longer treats the selected library passages as the only knowledge the model may use. Composition and evaluation-only expansion can draw on general knowledge to explain concepts and connect ideas; citations identify claims about what the books or their speakers say. The composer no longer fails validation solely because a sentence has no library citation. The reviewer assesses uncited context for relevance and attribution, while citations on source-derived claims still pass through the exact-span review and deterministic ID/scope checks.
+
+The no-relevant-evidence selector result now flows through composition and review with an empty source set, allowing a useful contextual answer without pretending that retrieval found support. Existing source scope, attribution, and comparison checks remain unchanged. The ordinary plan/select/compose/review call sequence is unchanged; no generation stage was added.
+
+The quality rubric must treat citation completeness as coverage of source-derived claims, not citation density across all sentences. General context can improve answer fullness, but its accuracy and relevance remain separate judgment dimensions because the book packet cannot verify it. The next live run should include a question whose direct answer is absent from the library and several questions with useful passages, so we can check that broader explanation is available without weakening source attribution or citation support.
+
+The first live simulation-question check exposed a quality gap: the response substituted Baudrillard's related idea of hyperreality for a direct answer about literal simulation, then stopped at an unfinished list introduction. An existing empty-selection regression had accepted a generic statement about using general knowledge as a fully answered result, so it did not test directness. The follow-up tightens the existing composer and reviewer contracts to answer the exact question before using analogies, judge uncited answers for directness and completion, and reject drafts that are truncated or end in an unfinished lead-in. A valid source-free answer is now labeled `general-context-answer`, separate from `verified-source-draft`; the user notice no longer assumes that empty selection means retrieval found no relevant passage. These changes add no model call and do not prescribe a simulation answer or named source. Offline tests exercise the question with no selected pages and ensure a substantive general answer can pass review while an adjacent, incomplete answer cannot.
+
+The next four-case live benchmark, run after PR 315 and before PR 316 was merged, showed that this synthesis change had broken the output contract. All four cases failed structural checks: the God-is-love draft used source-derived quotations without Worker citation IDs and failed quote/citation validation; the simulation draft had no selected pages and omitted its one-part heading, so its otherwise substantive general answer was rejected; the Buddha draft also omitted the heading and used parenthetical `(S#)` labels instead of recognized citations; and the meaning-of-life case returned only two generic uncited sentences while reporting full coverage. The benchmark's job succeeded, but its result was zero structural passes out of four. The traces show no new model call as the cause. They show that the shorter composer prompt said when citations were needed but omitted the exact `[S1]`/`[S1, S2]` syntax, while the Worker still expected that syntax. Separately, the reviewer prompt treated every empty `sourceIds` list as general context, even when the prose attributed a view to a particular author, and a PR 315 guard discarded recovered one-part answers whenever they lacked citations.
+
+The follow-up restores the exact page-ID citation instruction without requiring a citation on every factual sentence, tells review to distinguish independent context from uncited source attribution, and routes recoverable one-part answers through ordinary validation and the existing review call. Regression coverage includes an unheaded source-free answer that reaches review, an uncited source claim that the reviewer marks unsupported, the exact citation syntax, and the public empty-selector route. The planner, selector, composition, and review call count remains unchanged. Only a new deployed workflow run can show whether the live model follows the corrected contract.
+
+## October 30, 2026: contain malformed uncited-claim review decisions
+
+The latest four-case artifact exposed a reviewer handoff defect: the reviewer attached a source decision to an answer claim with no citation IDs. Previously, this single uncited claim added a contract-wide issue and could invalidate otherwise valid exact-span decisions. The Worker now drops those invalid source assertions, records a claim-level support issue, and leaves that claim out of the answer while retaining independently verified claims. Cited claims continue to require accepted exact spans and source checks.
+
+The same artifact showed a long answer's 19-claim review reaching its output-token ceiling. The existing review call now has a 3000-token output budget; composition stays at 1800, and no model call or answer-length behavior was added. The trace's source-free simulation answer also showed that the website evaluator required citations even when the Worker explicitly returned a full, reviewed `general-context-answer`. The site evaluator now marks that narrow, no-required-source case as `evidenceApplicability: not-applicable`; this is structural handling only, does not claim library support, and leaves manual quality scores pending. Required-source cases and failed reviews still need the usual evidence and checks.
+
+## October 30, 2026: clarify the first-sentence review handoff
 
 The 12-attempt answer-quality run [#26](https://github.com/jsynon/antilogicalism/actions/runs/41130098147) showed that several long, useful answers were downgraded when the first sentence summarized multiple supported ideas, while later source-specific claims passed review. The same run included a simulation answer that passed after treating “the library does not answer this” as the direct answer and then discussing adjacent material. Another simulation attempt had a failed review request; that remains a request failure, not a coverage judgment.
 
