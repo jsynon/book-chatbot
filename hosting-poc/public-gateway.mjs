@@ -14,9 +14,11 @@
  * The Free Workers CPU limit (10ms) requires real deployment measurement.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {MAX_SELECTOR_CANDIDATES,selectEvidenceCandidates} from './evidence-selector.mjs';
+import {MAX_SELECTOR_CANDIDATES,orderFallbackCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
 import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
+const SAFE_SELECTOR_FAILURE_REASONS=new Set(['missing-text','invalid-json','missing-part-decisions',
+  'invalid-part-decision','unknown-candidate-id','coverage-selection-mismatch','missing-part-decision']);
 export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v48/';
 // Keep a generous character ceiling that fits the bounded model output while
 // allowing detailed, evidence-supported answers without turning them into 502s.
@@ -3847,7 +3849,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           // while clearly marking that the answer used the retriever's order.
           sourceSelectionStatus='deterministic-fallback';
           let totalBytes=0;
-          for(const source of verifiedCandidates){
+          for(const source of orderFallbackCandidates(verifiedCandidates)){
             const bytes=new TextEncoder().encode(source.text).byteLength;
             if(answerSources.length>=6)break;
             if(bytes>14000||totalBytes+bytes>35000)continue;
@@ -3864,6 +3866,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             failureCode:['selector-provider-error','selector-invalid-request','selector-invalid-response',
               'selector-output-truncated','selector-budget-empty'].includes(error?.failureCode)?
               error.failureCode:'selector-error',candidateCount:verifiedCandidates.length,
+            ...(SAFE_SELECTOR_FAILURE_REASONS.has(error?.failureReason)?{failureReason:error.failureReason}:{}),
             selected:answerSources.map(source=>({id:source.id,bookId:source.bookId,page:source.page}))};
           console.warn('Reader pilot evidence selection fell back to retrieval order',
             inferenceFailureDiagnostics(error));

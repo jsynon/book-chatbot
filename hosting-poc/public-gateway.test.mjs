@@ -2723,6 +2723,20 @@ test('selector provider errors retain a safe reason while the bounded fallback r
  assert.ok(result.sourceSelection.pages.length>0);
  assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
 });
+test('selector fallback trace retains only an approved invalid-response subtype',async()=>{
+ const token='selector-invalid-subtype-test-token';
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
+  selector:async()=>({choices:[{finish_reason:'stop',message:{content:
+   '{"parts":[{"partId":"P1","candidateIds":["C99"],"coverage":"supported"}]}'}}]})
+ });
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
+ const result=await response.json();
+ assert.equal(response.status,200);
+ assert.equal(result.trace.stages[0].failureCode,'selector-invalid-response');
+ assert.equal(result.trace.stages[0].failureReason,'unknown-candidate-id');
+ assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
+});
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
    if(input.max_completion_tokens===720)return {choices:[{finish_reason:'stop',message:{content:

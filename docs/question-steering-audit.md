@@ -39,6 +39,14 @@ The current evidence does not establish that removing narrow routes or adding a 
 
 This is a focused audit of question interpretation, retrieval, answer composition, and their shared validation/evaluation boundaries. It does not claim a line-by-line security review of every repository subsystem. The preserved safeguards above are cross-referenced with `docs/README.md`; the site-side retrieval policy and active evaluation guidance are in `reading-companion/LIVE-EVALUATION.md`.
 
+## October 30 follow-up: broader candidates and observable selection fallback
+
+The next offline replay found a useful page in a raw search facet that did not reach the Worker's 24-page candidate packet. The site now offers up to 32 candidates across the same four-book/four-page search limits and gives each facet a chance to contribute an unrepresented work before filling remaining slots by cross-facet rank. This widens only the candidate handoff; it does not change the reader's scope, search plan, six-page answer limit, or claim/citation review. The Worker still makes the relevance decision.
+
+When the Worker selector returns a malformed response, the trace now records a fixed `failureReason` such as `invalid-json` or `unknown-candidate-id`, without storing the model's raw output. The existing availability fallback retains one candidate per work before taking second pages, and is still labeled `deterministic-fallback`. The selector instruction favors distinct works only when each adds genuinely useful evidence. A selector outage therefore remains a selection failure, not evidence that the fallback pages are semantically relevant.
+
+The simulation acceptance rubric no longer supplies fixed philosopher searches or requires any named philosopher. It checks whether the answer addresses the question, uses relevant evidence, and states what the evidence cannot establish. Buddha answer breadth remains a quality criterion when distinct works add distinct support, not a fixed source-count quota. The composer defaults to connected prose; the site only renders Markdown lists when the reader explicitly asks for an enumeration.
+
 
 ## Conditional gap-query phrasing
 
