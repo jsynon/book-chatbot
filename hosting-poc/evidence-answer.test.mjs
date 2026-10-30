@@ -2194,9 +2194,9 @@ test('flat reviewer decisions retain exact provenance and source-encoded spans',
   roleMeaning:'The planner role describes intended source selection, not the voice or genre of this individual page.'});
  assert.deepEqual(reviewPayload.parts[0].evidence[0].provenance,composePayload.evidence[0].provenance);
  assert.deepEqual(result.trace.reviewContract.recovered,[]);
- assert.match(REVIEW_PROMPT,/Metadata about credited authors.*is context, not proof/i);
+ assert.match(REVIEW_PROMPT,/A source citation is not proof by itself/i);
  assert.match(REVIEW_PROMPT,/attributionStatus/);
- assert.match(REVIEW_PROMPT,/nearby footnote and source-credit text/);
+ assert.match(REVIEW_PROMPT,/Check attribution/);
 });
 
 test('a fenced reviewer object with the observed stray closing tail parses but still requires every cited source span',async()=>{

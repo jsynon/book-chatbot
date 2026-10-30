@@ -225,6 +225,15 @@ function explicitlyReportsInsufficientEvidence(raw){
   return (namesSuppliedEvidence.test(text)&&deniesAnAnswer.test(text))||
     statesEvidenceIsInsufficient.test(text);
 }
+function isExplicitEvidenceRefusalOnly(text){
+  const value=String(text||'').trim();
+  // A refusal is an abstention only when it is the whole response. Preserve a
+  // useful answer that mentions a source gap and then explains the topic from
+  // general knowledge.
+  return Boolean(value&&explicitlyReportsInsufficientEvidence(value)&&
+    !/[.!?]\s+\S/u.test(value)&&
+    !/\b(?:but|however|although|yet|nevertheless|generally|in general|general knowledge|broader knowledge|outside knowledge|can still|can answer|useful explanation)\b/iu.test(value));
+}
 
 function parsePartAnswers(raw,plan,stage='compose'){
   const text=responseText(raw,stage).replace(/^```[a-z0-9_-]*\s*/i,'').replace(/\s*```$/,'');
@@ -952,7 +961,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   // pages linked to no planned part out of the shared prompt also prevents an
   // unrelated retrieved result from tempting the composer into that failure.
   const composerSourceIds=new Set(plan.parts.flatMap(part=>part.candidateSourceIds||[]));
-  const validatedAnswers=[];let review=null,reviewFailure=null,failure=null;
+  const validatedAnswers=[];let review=null,reviewFailure=null,failure=null,reviewedLibraryClaims=false;
   try{
     const composePayload={question,plan,history,
       parts:plan.parts.map(part=>({partId:part.id,question:part.question,
@@ -993,18 +1002,23 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           failureCode:error?.failureCode||'expansion-failed'};
       }
     }
-    const checked=validatePartAnswers(draft.parts,sources,plan,question);
-    const composeResponse=trace.stages.find(stage=>stage.stage==='expand')?.response||
-      trace.stages.find(stage=>stage.stage==='compose')?.response;
-    const modelReportedNoEvidence=!checked.parts.some(part=>part.answers.length)&&
-      explicitlyReportsInsufficientEvidence(composeResponse);
+    const explicitRefusalPartIds=new Set(draft.parts.filter(part=>
+      isExplicitEvidenceRefusalOnly(part.text)).map(part=>part.partId));
+    const unheadedUncitedPartIds=new Set(draft.recoveredWithoutHeading?
+      draft.parts.filter(part=>!citationIds(part.text).length).map(part=>part.partId):[]);
+    const rejectedFormatPartIds=new Set([...explicitRefusalPartIds,...unheadedUncitedPartIds]);
+    const checked=validatePartAnswers(draft.parts.map(part=>rejectedFormatPartIds.has(part.partId)?
+      {...part,text:''}:part),sources,plan,question);
+    reviewedLibraryClaims=checked.parts.some(part=>(part.answers||[]).some(answer=>answer.sourceIds.length));
+    const modelReportedNoEvidence=explicitRefusalPartIds.size>0&&
+      checked.parts.every(part=>!part.answers.length);
     trace.rejected=checked.rejected;
     // Citation cleanup is reviewable only in the authenticated trace; the
     // public answer contains the sanitized citation and verified source.
     trace.citationRepairs=checked.citationRepairs;
     trace.coverageGaps=[
-      ...(modelReportedNoEvidence?plan.parts.map(part=>({partId:part.id,
-        reason:'model-reported-insufficient-evidence'})):[]),
+      ...[...explicitRefusalPartIds].map(partId=>({partId,
+        reason:'model-reported-insufficient-evidence'})),
       ...checked.parts.filter(part=>part.missingHypotheticalInference)
         .map(part=>({partId:part.partId,reason:'hypothetical-inference-missing'})),
       ...checked.parts.filter(part=>part.requiredAnswerRejected)
@@ -1157,7 +1171,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     evidenceMap,evidenceHighlights,reviewStatus:options.review===false?'answer-draft-unverified':
       reviewFailure?(['model-output-invalid-format','review-output-truncated'].includes(reviewFailure.code)?'review-format-failed':'review-contract-incomplete'):
       failure?(failure.code==='model-output-invalid-format'?'generation-format-failed':'pipeline-failed'):
-      used.size?'claim-review':'general-context-review',
+      used.size||reviewedLibraryClaims?'claim-review':'general-context-review',
     ...(failure?{failureCode:failure.code,failureStage:failure.stage}:{}),
     ...(reviewFailure?{failureCode:reviewFailure.code,failureStage:reviewFailure.stage}:{}),
     followUpQuestions:[],usage,model:READER_MODEL,pipeline:CONTRACT_VERSION,
