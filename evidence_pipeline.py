@@ -30,6 +30,43 @@ CANDIDATE_LIMIT = 24
 PRIMARY_LIMIT = 6
 CONTEXT_LIMIT = 3
 MAX_EVIDENCE_CHARS = 17200
+# Fixed-packet replay is deliberately limited to the live request's page and
+# source-text budgets; it is a local evaluation input, not a wider answer path.
+MAX_FIXED_PACKET_SOURCES = 6
+MAX_FIXED_PACKET_BYTES = 35_000
+
+
+def validate_fixed_evidence(evidence):
+    """Validate a replay packet before the composer can see any source text."""
+    if not isinstance(evidence, list) or not 1 <= len(evidence) <= MAX_FIXED_PACKET_SOURCES:
+        raise ValueError("Fixed evidence must contain one to six source pages.")
+    seen = set()
+    total_bytes = 0
+    for passage in evidence:
+        if not isinstance(passage, dict):
+            raise ValueError("Fixed evidence contains a malformed source page.")
+        source_id = passage.get("source_id")
+        if (not isinstance(source_id, str)
+                or not re.fullmatch(r"S[1-9]\\d*", source_id)
+                or source_id in seen):
+            raise ValueError("Fixed evidence source IDs must be unique known page IDs.")
+        seen.add(source_id)
+        if (not str(passage.get("book_id", "")).isdigit()
+                or not isinstance(passage.get("title"), str)
+                or not passage["title"].strip()
+                or not isinstance(passage.get("text"), str)
+                or not passage["text"].strip()
+                or not isinstance(passage.get("pages"), list)
+                or not passage["pages"]
+                or any(not isinstance(page, int) or page < 1 for page in passage["pages"])):
+            raise ValueError("Fixed evidence is missing a valid book, title, page, or text.")
+        size = len(passage["text"].encode("utf-8"))
+        if size > MAX_FIXED_PACKET_BYTES:
+            raise ValueError("A fixed evidence page exceeds the live source byte limit.")
+        total_bytes += size
+    if total_bytes > MAX_FIXED_PACKET_BYTES:
+        raise ValueError("Fixed evidence exceeds the live total source byte limit.")
+    return evidence
 
 
 def _sentences(text):
@@ -572,7 +609,8 @@ def _follow_up_questions(output):
     return clean
 
 def answer_evidence_first(question, history, index, facets, provider, build,
-                          *, selection_mode="model", pre_stage=None):
+                          *, selection_mode="model", pre_stage=None,
+                          fixed_evidence=None):
     """At most two useful model calls; no self-review or answer-repair agent.
 
     The ordinary route calls the evidence selector and composer. A genuinely
@@ -594,10 +632,23 @@ def answer_evidence_first(question, history, index, facets, provider, build,
             )
 
     log("Question: " + " ".join(question.split())[:180])
-    candidates, selected, anchors, stage = choose_evidence(
-        question, history, index, facets, provider, log,
-        selection_mode=selection_mode
-    )
+    if fixed_evidence is None:
+        candidates, selected, anchors, stage = choose_evidence(
+            question, history, index, facets, provider, log,
+            selection_mode=selection_mode
+        )
+    else:
+        # Replay only the already-composed Worker packet. This bypasses local
+        # retrieval and selection so the sole model call is answer writing.
+        selected = validate_fixed_evidence(fixed_evidence)
+        candidates = list(selected)
+        anchors = list(selected)
+        stage = {
+            "stage": "fixed_packet_replay", "status": "complete",
+            "selected_ids": [p["source_id"] for p in selected],
+            "candidate_count": len(selected), "elapsed_ms": 0,
+            "model_calls_added": 0,
+        }
     stages = ([pre_stage] if pre_stage else []) + [stage]
     log(f"Selection: {stage['status']} in {stage.get('elapsed_ms', 0)/1000:.1f}s; "
         f"{len(anchors)} key passages + {len(selected)-len(anchors)} context passages.")
@@ -611,7 +662,9 @@ def answer_evidence_first(question, history, index, facets, provider, build,
         "retrieval": {
             "primary": candidates, "merged": selected, "facets": facets,
             "selection_method": (
-                "conceptual topic-ranked source evidence"
+                "fixed Worker composition packet replay"
+                if fixed_evidence is not None
+                else "conceptual topic-ranked source evidence"
                 if selection_mode == "ranked"
                 else "model-selected evidence with argument dependencies"
             ),
