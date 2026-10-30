@@ -2603,7 +2603,7 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
  const model=async(_model,input)=>{
    const system=input.messages?.[0]?.content||'';
    let content;
-   if(system.startsWith('Review every answer sentence separately')){
+   if(system.startsWith('Review the complete answer parts and claims')){
      const payload=JSON.parse(input.messages[1].content);
      content=JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
        directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
@@ -2652,7 +2652,7 @@ test('evidence-v2 public route returns six reviewed highlights for six cited pag
  const model=async(_model,input)=>{
   const system=input.messages?.[0]?.content||'';
   const payload=JSON.parse(input.messages[1].content);
-  if(system.startsWith('Review every answer sentence separately')){
+  if(system.startsWith('Review the complete answer parts and claims')){
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
     parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),
     claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
