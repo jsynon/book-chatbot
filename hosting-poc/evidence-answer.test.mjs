@@ -989,6 +989,9 @@ test('the deterministic polarity guard rejects a reviewed positive claim that re
 
 test('the answer contract allows useful general context while keeping cited claims traceable',()=>{
  assert.match(COMPOSER_PROMPT,/use your broader knowledge/);
+ assert.match(COMPOSER_PROMPT,/exact form: \[S1\] or \[S1, S2\]/);
+ assert.match(COMPOSER_PROMPT,/a book title, author name, or parenthetical \(S1\) is not a citation/);
+ assert.match(COMPOSER_PROMPT,/Do not cite every sentence just because it is factual/);
  assert.match(COMPOSER_PROMPT,/Answer the exact question first/);
  assert.match(COMPOSER_PROMPT,/explain how they relate without treating them as proof/);
  assert.match(COMPOSER_PROMPT,/general background and your own synthesis do not need a library citation/i);
@@ -997,13 +1000,34 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/several developed paragraphs/);
  assert.match(EXPANSION_PROMPT,/broader knowledge/);
  assert.doesNotMatch(EXPANSION_PROMPT,/rely on outside knowledge|only where the supplied verified passage windows/);
- assert.match(REVIEW_PROMPT,/Claims with an empty sourceIds array are general context or synthesis/);
+ assert.match(REVIEW_PROMPT,/Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context/);
+ assert.match(REVIEW_PROMPT,/names a supplied work, author, speaker, or page/);
+ assert.match(REVIEW_PROMPT,/Independent background and synthesis may remain uncited/);
  assert.match(REVIEW_PROMPT,/Judge each part against the exact question/);
  assert.match(REVIEW_PROMPT,/only related background or ends with an unfinished thought/);
- assert.match(REVIEW_PROMPT,/Do not reject them merely because the supplied passages do not establish them/);
+ assert.match(REVIEW_PROMPT,/the supplied passages cannot establish its truth, so do not treat their silence as disproof/);
  assert.match(REVIEW_PROMPT,/exact spans/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(REVIEW_PROMPT,/For a claim with sourceIds empty, return an empty sources array/);
+});
+
+test('an unheaded single-part source claim reaches review and is not treated as verified context',async()=>{
+ const question='What does Hume say about causal necessity?';
+ const ai=makeAI([answer('Hume argues that necessity arises from custom rather than from observing a necessary connection.'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   assert.deepEqual(payload.claims.map(claim=>claim.sourceIds),[[]]);
+   return review([['P1','unanswered']])(_model,{messages});
+  }]);
+ const result=await composeEvidenceAnswer(question,[hume],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question}]},catalog,trace:true
+ });
+ assert.equal(ai.calls.length,2,'the recovered one-part draft reaches the existing reviewer');
+ assert.equal(result.coverage,'none');
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.failureCode,undefined,'an omitted heading is recoverable for one planned part');
+ assert.equal(result.trace.recovery.code,'missing-part-heading');
+ assert.equal(result.citations.length,0);
 });
 
 test('an unrelated uncited explanation remains partial when the reviewer judges it indirect',async()=>{
@@ -2286,15 +2310,17 @@ test('a comparison with cited evidence from both named source groups may be revi
  assert.deepEqual([...new Set(result.evidenceMap.filter(item=>item.partId==='P3').map(item=>item.id))],['S1','S2']);
 });
 
-test('malformed composition is reported as generation failure without retrying or calling review',async()=>{
- const ai=makeAI([answer('The answer omitted all planned part headings and citations.')]);
+test('a one-part uncited answer without its heading is recovered and sent to review',async()=>{
+ const ai=makeAI([answer('The answer omitted all planned part headings and citations.'),
+  review([['P1','unanswered']])]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
-  {plan:onePartPlan,catalog});
- assert.equal(ai.calls.length,1);
- assert.equal(result.outcome,'generation-failed');
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.outcome,'insufficient-evidence');
  assert.equal(result.coverage,'none');
  assert.equal(result.citations.length,0);
- assert.equal(result.failureCode,'model-output-invalid-format');
+ assert.equal(result.failureCode,undefined);
+ assert.equal(result.trace.recovery.code,'missing-part-heading');
 });
 
 test('a composer response truncated by the model is not reviewed or shown as complete',async()=>{
