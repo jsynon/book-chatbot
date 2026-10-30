@@ -18,7 +18,9 @@ import {MAX_SELECTOR_CANDIDATES,orderFallbackCandidates,selectEvidenceCandidates
 import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 const SAFE_SELECTOR_FAILURE_REASONS=new Set(['missing-text','invalid-json','missing-part-decisions',
-  'invalid-part-decision','unknown-candidate-id','coverage-selection-mismatch','missing-part-decision']);
+  'invalid-part-decision','decision-not-object','missing-part-id','unknown-part-id','duplicate-part-id',
+  'candidate-ids-not-array','too-many-candidate-ids','invalid-coverage',
+  'unknown-candidate-id','coverage-selection-mismatch','missing-part-decision']);
 export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v48/';
 // Keep a generous character ceiling that fits the bounded model output while
 // allowing detailed, evidence-supported answers without turning them into 502s.
