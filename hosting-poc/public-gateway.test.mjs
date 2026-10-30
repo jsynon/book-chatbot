@@ -2682,7 +2682,7 @@ test('evidence-v2 public route returns six reviewed highlights for six cited pag
  assert.ok(result.evidenceHighlights.every(item=>item.quoteLocated===undefined));
  assert.equal(pilot.stats().calls,3,'Worker evidence selection precedes the existing compose/review pair');
 });
-test('a valid empty evidence selection returns insufficient evidence without retrieval-order composition',async()=>{
+test('a valid empty evidence selection can still return reviewed general context',async()=>{
  const token='selector-empty-evidence-test-token';
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
    PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
@@ -2692,20 +2692,28 @@ test('a valid empty evidence selection returns insufficient evidence without ret
     selection.parts.map(part=>({partId:part.partId,candidateIds:[],coverage:'none'}))})}}],
     usage:{neurons:2,prompt_tokens:14,completion_tokens:8}};
   },
-  model:async()=>{throw new Error('answer composition must not run after a valid no-evidence decision');}
+  model:async(_model,input)=>{
+   const payload=JSON.parse(input.messages[1].content);
+   if(Array.isArray(payload.claims))return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',sources:[]})),
+    parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
+     directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId).map(claim=>claim.claimId)}))})}}]};
+   return {choices:[{finish_reason:'stop',message:{content:'PART P1\nA useful explanation can still draw on general knowledge when the selected library passages do not address the question.'}}]};
+  }
  });
  const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
  const result=await response.json();
  assert.equal(response.status,200);
- assert.equal(result.outcome,'insufficient-evidence');
- assert.equal(result.coverage,'none');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/general knowledge/);
  assert.deepEqual(result.citations,[]);
  assert.deepEqual(result.sourceSelection.pages,[]);
  assert.equal(result.sourceSelection.status,'no-relevant-evidence');
  assert.equal(result.sourceSelectionStatus,'no-relevant-evidence');
  assert.equal(result.sourceSelection.usage.neurons,2);
- assert.equal(result.usage.calls,1,'the successful selector call is retained in usage');
- assert.equal(pilot.stats().calls,1,'composition and review are skipped when no relevant page was selected');
+ assert.equal(result.usage.calls,3,'the selector, composer, and reviewer calls are retained in usage');
+ assert.equal(pilot.stats().calls,3,'an empty evidence selection still reaches composition and review');
  assert.equal(result.trace.stages[0].status,'no-relevant-evidence');
  assert.deepEqual(result.trace.stages[0].decision.selectedCandidateIds,[]);
 });

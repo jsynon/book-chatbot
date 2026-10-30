@@ -3797,29 +3797,13 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           sourceSelectionUsage=decision.usage;
           const selectedIds=decision.selectedCandidateIds;
           if(!selectedIds.length){
-            // An empty, valid selector decision means this packet did not
-            // establish relevant evidence. Do not turn that judgment into
-            // retrieval-order pages and present them to the composer as if
-            // they had passed semantic selection.
+            // Keep the selector's abstention: do not relabel retrieval-order
+            // pages as relevant. The composer can still answer from broader
+            // knowledge with no library citations when the packet is empty.
             sourceSelectionStatus='no-relevant-evidence';
             selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
               status:sourceSelectionStatus,candidateCount:verifiedCandidates.length,
               candidates:selectorCandidates,decision,selected:[]};
-            const answer='The retrieved passages did not support a reliable answer to this question. Try a more specific passage or work.';
-            const questionParts=plan.parts.map(part=>({part:part.question,status:'unsupported',
-              answerText:'',evidenceIds:[]}));
-            const trace={version:plan.version,model:decision.model,plan,stages:[selectionTrace],
-              evidence:[],rejected:[],final:{answer,questionParts,coverage:'none',
-                missing:'The evidence selector found no supplied passage that directly supports the question.',
-                failure:null,reviewFailure:null,elapsedMs:Math.round(performance.now()-started)}};
-            output={outcome:'insufficient-evidence',answer,coverage:'none',
-              missing:'The evidence selector found no supplied passage that directly supports the question.',
-              questionParts,citations:[],evidenceMap:[],evidenceHighlights:[],
-              reviewStatus:'no-selected-sources',followUpQuestions:[],
-              usage:{calls:0,neurons:0,inputTokens:0,outputTokens:0},
-              model:decision.model,pipeline:plan.version,
-              notice:'No answer was composed because the supplied passages did not provide relevant evidence.',
-              ...(evaluationAuthorized?{trace}:{})};
           }else{
           const byCandidateId=new Map(verifiedCandidates.map((source,index)=>['C'+(index+1),source]));
           let totalBytes=0;
@@ -3873,20 +3857,17 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           console.warn('Reader pilot evidence selection fell back to retrieval order',
             inferenceFailureDiagnostics(error));
         }
-        if(sourceSelectionStatus!=='no-relevant-evidence'){
-          if(!answerSources.length)throw new Error('No verified pages fit the answer evidence budget.');
-          sourceSelectionPages=answerSources.map(source=>({id:source.id,bookId:source.bookId,
-            title:source.title,page:source.page,candidatePartIds:source.candidatePartIds||[]}));
-          output=await composeEvidenceAnswer(data.question,answerSources,env.AI,data.history||[],{
-            plan,catalog:PILOT_BOOKS,selectedBookId,
-            review:answerVariant!=='compose-only',
-            expand:answerVariant==='with-expansion',
-            selectionTrace,
-            // Full prompts and source text are returned only to the dedicated
-            // authenticated evaluation workflow, never to ordinary visitors.
-            trace:authorizedPilotEvaluation(request,env),
-          });
-        }
+        sourceSelectionPages=answerSources.map(source=>({id:source.id,bookId:source.bookId,
+          title:source.title,page:source.page,candidatePartIds:source.candidatePartIds||[]}));
+        output=await composeEvidenceAnswer(data.question,answerSources,env.AI,data.history||[],{
+          plan,catalog:PILOT_BOOKS,selectedBookId,
+          review:answerVariant!=='compose-only',
+          expand:answerVariant==='with-expansion',
+          selectionTrace,
+          // Full prompts and source text are returned only to the dedicated
+          // authenticated evaluation workflow, never to ordinary visitors.
+          trace:authorizedPilotEvaluation(request,env),
+        });
         output.usage={...output.usage,
           calls:(Number(output.usage?.calls)||0)+sourceSelectionUsage.calls,
           neurons:(Number(output.usage?.neurons)||0)+sourceSelectionUsage.neurons,

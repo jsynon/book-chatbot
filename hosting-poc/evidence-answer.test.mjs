@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,REVIEW_PROMPT,parseReviewJson} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
@@ -747,7 +747,7 @@ test('a comparison drops an unrequested conditional author-to-author inference',
  assert.equal(ai.calls.length,2,'the scope guard reuses compose and review without an extra call');
 });
 
-test('comparison handoff rejects the uncited opening and unrequested might-suggest bridge',async()=>{
+test('comparison handoff preserves uncited context while dropping an unrequested author-transfer claim',async()=>{
  const inference='If Kant applied his view of causality to Hume’s account, he might suggest that custom is a necessary transcendental principle. [S1, S2]';
  const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
   'PART P2\nKant identifies causality as an a priori category of relation. [S2]\n'+
@@ -757,18 +757,15 @@ test('comparison handoff rejects the uncited opening and unrequested might-sugge
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
   [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
   {plan:twoSidePlan,catalog,trace:true});
- assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&item.reason==='sentence-missing-citation'));
  assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&item.reason==='unrequested-cross-author-inference'));
- assert.doesNotMatch(result.answer,/differ in their accounts|might suggest/);
- assert.equal(result.questionParts.find(part=>part.part.includes('differ')).status,'partial',
-  'later cited propositions cannot silently replace the rejected required opening sentence');
+ assert.match(result.answer,/differ in their accounts/);
+ assert.doesNotMatch(result.answer,/might suggest/);
+ assert.equal(result.questionParts.find(part=>part.part.includes('differ')).status,'supported',
+  'uncited context can introduce the supported source claims that follow it');
  const comparisonDecision=result.trace.reviewContract.partDecisions.find(item=>item.partId==='P3');
  assert.equal(comparisonDecision.finalStatus,'answered',
   'the trace preserves the reviewer-stage status after exact-span checks');
- assert.equal(comparisonDecision.outputStatus,'partial',
-  'the trace also records the incomplete status actually returned after the uncited required sentence was removed');
- assert.ok(result.trace.coverageGaps.some(item=>item.partId==='P3'&&
-  item.reason==='required-direct-answer-rejected'));
+ assert.equal(comparisonDecision.outputStatus,'supported');
  assert.equal(ai.calls.length,2,'the handoff stays within one compose and one review call');
 });
 
@@ -990,102 +987,19 @@ test('the deterministic polarity guard rejects a reviewed positive claim that re
   issue.sourceId==='S1'&&issue.reason==='source-contradicts-claim-polarity'));
 });
 
-test('the composer uses a short per-part answer contract and the reviewer links exact quotes to claims',()=>{
- assert.match(COMPOSER_PROMPT,/one heading and a concise answer for each supplied part/);
- assert.match(COMPOSER_PROMPT,/A part may use up to three short paragraphs when distinct evidence needs separate explanation/);
- assert.match(COMPOSER_PROMPT,/two or three short paragraphs/);
- assert.match(COMPOSER_PROMPT,/whether from one work or several/);
- assert.match(COMPOSER_PROMPT,/roughly 160–260 words as a guide, not a quota/);
- assert.match(COMPOSER_PROMPT,/If one source directly answers or the evidence is thin, stay concise/);
- assert.match(COMPOSER_PROMPT,/Do not pad, repeat, or add a source just to lengthen the response/);
- assert.doesNotMatch(COMPOSER_PROMPT,/80–140 words/);
- assert.match(COMPOSER_PROMPT,/planner's search queries are retrieval leads, not a list of topics/);
- assert.match(COMPOSER_PROMPT,/one main claim/);
- assert.match(COMPOSER_PROMPT,/Answer each supplied question part directly in its first sentence/);
- assert.match(COMPOSER_PROMPT,/When a part asks why something happens, state the page’s own reason in its terms/);
- assert.match(COMPOSER_PROMPT,/When the question asks only for a comparison, do not append a counterfactual/);
- assert.match(COMPOSER_PROMPT,/interpret it in plain language before describing consequences/);
- assert.match(COMPOSER_PROMPT,/When the supplied pages state the reason or premise that leads to the phrase's meaning, explain that causal step as well as the consequence/);
- assert.match(COMPOSER_PROMPT,/When a later source reports a historical figure's teaching, attribute it as that source's account or attribution/);
- assert.match(COMPOSER_PROMPT,/make the reporting source the grammatical subject/);
- assert.match(COMPOSER_PROMPT,/Write connected prose by default; use numbered or bulleted lists only when the reader explicitly asks for an enumeration/);
- assert.match(COMPOSER_PROMPT,/Keep requested enumerations concise and use them only when the reader explicitly asks/);
- assert.match(REVIEW_PROMPT,/For a later source reporting a historical figure, distinguish the source's report or attribution from a directly verified statement/);
- assert.match(REVIEW_PROMPT,/explicitly framed as the reporting source's account/);
- assert.match(COMPOSER_PROMPT,/each author’s position in a separate cited clause of the opening sentence/);
- assert.match(COMPOSER_PROMPT,/The first sentence of a comparison part must itself be a sourced comparison, with evidence for each side cited in that sentence/);
- assert.match(COMPOSER_PROMPT,/do not bundle distinct speaker claims under one shared citation group/);
- assert.match(COMPOSER_PROMPT,/use the smallest set of pages that directly supports that claim/);
- assert.match(COMPOSER_PROMPT,/Do not add a page just because it was retrieved or belongs to the same author/);
- assert.match(COMPOSER_PROMPT,/If distinct claims rely on different passages, write separate sentences/);
- assert.match(COMPOSER_PROMPT,/Never convert a printed page number into a source ID/);
- assert.match(COMPOSER_PROMPT,/When one sentence links a reason from one page to an outcome established on another, cite both pages/);
- assert.match(COMPOSER_PROMPT,/include each passage that supports a material clause/);
- assert.match(REVIEW_PROMPT,/sourceEvidence list of the highest-ranked same-source span IDs/);
- assert.match(REVIEW_PROMPT,/one flat top-level claims array/);
- assert.match(REVIEW_PROMPT,/only one top-level claims property/);
- assert.match(REVIEW_PROMPT,/one source decision for every source cited by every claim/);
- assert.match(REVIEW_PROMPT,/smallest set of up to 3 distinct relevant spans/);
- assert.match(REVIEW_PROMPT,/support every material clause or premise/);
- assert.doesNotMatch(REVIEW_PROMPT,/Return exactly one best matching span ID/);
- assert.match(COMPOSER_PROMPT,/attribute claims about that page to the commentator or the commentary/);
- assert.match(COMPOSER_PROMPT,/Cite every factual sentence/);
- assert.doesNotMatch(COMPOSER_PROMPT,/END EVIDENCE|unique ID|exact contiguous span/);
- assert.match(REVIEW_PROMPT,/\"claims\":\[\{/);
- assert.match(REVIEW_PROMPT,/\"parts\":\[\{/);
- assert.ok(REVIEW_PROMPT.indexOf('\"claims\":[')<REVIEW_PROMPT.indexOf('\"parts\":['),
-  'the reviewer must emit claim/source decisions before selecting part coverage');
- assert.match(REVIEW_PROMPT,/Review every answer sentence separately/);
- assert.match(REVIEW_PROMPT,/stable claimId/);
- assert.match(REVIEW_PROMPT,/ranked hints, not an allowlist/);
- assert.match(REVIEW_PROMPT,/select another span only if it directly supports the claim/);
- assert.match(REVIEW_PROMPT,/same source's evidence list for the claim's part/);
- assert.doesNotMatch(REVIEW_PROMPT,/Use only supplied span IDs from that source's sourceEvidence list/);
- assert.match(REVIEW_PROMPT,/citation attached to a neighboring clause does not support it/);
- assert.match(REVIEW_PROMPT,/Select span IDs only/);
- assert.match(REVIEW_PROMPT,/"sources":\[\{"sourceId":"S1"/);
- assert.doesNotMatch(REVIEW_PROMPT,/spansBySource/);
- assert.match(REVIEW_PROMPT,/A neighboring doctrine, shared keyword, or citation alone is not support/);
- assert.match(REVIEW_PROMPT,/A reversed negation or attribution is a material contradiction/);
- assert.match(REVIEW_PROMPT,/review every cited source ID separately/);
- assert.match(REVIEW_PROMPT,/material clause or premise/i);
- assert.match(REVIEW_PROMPT,/require an explicit plain-language interpretation/);
- assert.match(REVIEW_PROMPT,/preserves that essential causal step as well as the outcome/);
- assert.match(REVIEW_PROMPT,/directAnswerClaimIds/);
- assert.match(REVIEW_PROMPT,/A consequence, example, or related fact alone is not a direct answer/);
- assert.match(REVIEW_PROMPT,/smallest sufficient set of claims/);
- assert.match(REVIEW_PROMPT,/First finish the claim and source decisions/);
- assert.match(REVIEW_PROMPT,/requiredAnswerClaimId/);
- assert.match(REVIEW_PROMPT,/even if an example or consequence remains/);
- assert.match(REVIEW_PROMPT,/Do not nominate a claim you marked partial or unanswered/);
- assert.match(REVIEW_PROMPT,/Do not list every claim by default/);
- assert.match(REVIEW_PROMPT,/unsupported non-direct claim can be omitted without downgrading/);
- assert.match(REVIEW_PROMPT,/assess each author’s premise only against that author’s evidence/);
- assert.match(REVIEW_PROMPT,/synthesis is answered only when the cited evidence supports the specific relationship/);
- assert.match(REVIEW_PROMPT,/Do not copy source wording into the response/);
+test('the answer contract allows useful general context while keeping cited claims traceable',()=>{
+ assert.match(COMPOSER_PROMPT,/use your broader knowledge/);
+ assert.match(COMPOSER_PROMPT,/General background and your own synthesis do not need a library citation/);
+ assert.doesNotMatch(COMPOSER_PROMPT,/using only the supplied verified passage windows|Cite every factual sentence|rely on outside knowledge/);
+ assert.match(COMPOSER_PROMPT,/Write connected prose by default/);
+ assert.match(COMPOSER_PROMPT,/several developed paragraphs/);
+ assert.match(EXPANSION_PROMPT,/broader knowledge/);
+ assert.doesNotMatch(EXPANSION_PROMPT,/rely on outside knowledge|only where the supplied verified passage windows/);
+ assert.match(REVIEW_PROMPT,/Claims with an empty sourceIds array are general context or synthesis/);
+ assert.match(REVIEW_PROMPT,/Do not reject them merely because the supplied passages do not establish them/);
+ assert.match(REVIEW_PROMPT,/exact spans/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
- assert.match(COMPOSER_PROMPT,/For a hypothetical question about what one author would think of another/);
- assert.match(COMPOSER_PROMPT,/When both authors' passages establish the same specific concept/);
- assert.match(COMPOSER_PROMPT,/End the inference sentence with one citation group containing the smallest relevant evidence from each author's source group/);
- assert.match(COMPOSER_PROMPT,/smallest relevant evidence from each author's source group/);
- assert.match(COMPOSER_PROMPT,/do not attach every retrieved page or every page from an author group/);
- assert.match(COMPOSER_PROMPT,/A comparison alone does not answer the hypothetical part/);
- assert.match(COMPOSER_PROMPT,/a narrow conditional reader inference applying one author's documented view of that concept/);
- assert.match(REVIEW_PROMPT,/does not complete a part that asks what one author would think/);
- assert.match(REVIEW_PROMPT,/inference claim must include relevant evidence from every author source group/);
- assert.match(REVIEW_PROMPT,/do not demand that a source record the hypothetical response itself/);
- assert.match(REVIEW_PROMPT,/If a needed premise or shared point is missing, mark it partial or unanswered/);
- assert.match(REVIEW_PROMPT,/premises must establish the same specific point of contact/);
- assert.match(REVIEW_PROMPT,/The inference claim must include relevant evidence from every author source group/);
- assert.match(COMPOSER_PROMPT,/If provenance names a pseudonymous work voice, identify that voice/);
- assert.match(REVIEW_PROMPT,/Name a known pseudonymous voice in the first answer claim using that work/);
- assert.match(REVIEW_PROMPT,/First-person inability or experience does not establish a general rule/);
- assert.match(REVIEW_PROMPT,/Do not turn a work-specific claim into the author's general doctrine without evidence for that scope/);
- assert.match(REVIEW_PROMPT,/a broad comparison, unrelated quotation, one-sided citation/);
- assert.match(COMPOSER_PROMPT,/Do not narrate the retrieval process, inventory unrelated passages/);
- assert.match(REVIEW_PROMPT,/sourceGroup identifies the planner's author\/source group/);
- assert.match(REVIEW_PROMPT,/Keep broad author answers focused on the requested view/);
- assert.match(REVIEW_PROMPT,/Assess each cited author source against its own premise/);
+ assert.match(REVIEW_PROMPT,/For a claim with sourceIds empty, return an empty sources array/);
 });
 
 const hypotheticalQuestion='What would Nietzsche think about the thought of Kierkegaard?';

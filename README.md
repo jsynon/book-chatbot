@@ -2,7 +2,7 @@
 
 **Read with the books, not instead of them.**
 
-The Antilogicalism Reading Companion is a source-grounded AI tool for exploring the Antilogicalism digital library. Ask questions about one book or across the collection, compare ideas among authors, and follow citations back to the passages so you can read the source in context.
+The Antilogicalism Reading Companion helps readers explore the library and understand ideas in context. Answers can combine cited passages with broader knowledge and synthesis; citations identify claims drawn from the books, while uncited explanation is the model's own context.
 
 ## Use the live companion
 
@@ -13,7 +13,7 @@ Open the [Reading Companion](https://jsynon.github.io/antilogicalism/reading-com
 3. Check the cited passages. Use **Read passage** to inspect the excerpt and follow its link to the original PDF page.
 4. Ask a follow-up question if you want to explore the evidence further.
 
-The public pilot currently searches the published library index, which contains **642 book titles**. Answers may be incomplete or mistaken. A citation helps you verify where the text came from; it does not guarantee that every claim or interpretation in the answer is correct. Treat the response as a guide to reading, and judge it against the cited text.
+The public pilot currently searches the published library index, which contains **642 book titles**. Answers may be incomplete or mistaken. Citations help you verify what the books say, but they do not certify the model's broader explanation or interpretation. Treat the response as a guide to reading, and judge source-based claims against the cited text.
 
 ## Run the local workbench
 
