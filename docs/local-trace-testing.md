@@ -54,6 +54,14 @@ Compare the local draft with the raw Worker composition response first. Show the
 
 This replay is an offline diagnostic, not a new public path. It makes one local Ollama call and no Cloudflare call, does not change prompts or evidence limits in the ordinary path, and does not add question-specific routing. First use a small mixed set of already-run cases; keep the acceptance set frozen. Only after the replay shows whether the difference comes from evidence handling or composition should a runtime change be considered.
 
+Run it against an extracted JSON report with the local v49 corpus and Ollama available:
+
+```powershell
+py -3 scripts/replay_fixed_packet.py .\\private\\live-report.json --case-id acceptance-god-is-love --output ..\\private\\god-is-love-replay.json --model gemma3:12b
+```
+
+The command refuses to write its answer report inside the public repository. Old artifacts that lack the authenticated evidence trace or its canonical page hashes are not replayable.
+
 ## Validation
 
 ```powershell
