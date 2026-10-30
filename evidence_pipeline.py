@@ -47,7 +47,7 @@ def validate_fixed_evidence(evidence):
             raise ValueError("Fixed evidence contains a malformed source page.")
         source_id = passage.get("source_id")
         if (not isinstance(source_id, str)
-                or not re.fullmatch(r"S[1-9]\\d*", source_id)
+                or not re.fullmatch(r"S[1-9]\d*", source_id)
                 or source_id in seen):
             raise ValueError("Fixed evidence source IDs must be unique known page IDs.")
         seen.add(source_id)
