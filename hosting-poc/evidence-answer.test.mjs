@@ -1021,6 +1021,9 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/a book title, author name, or parenthetical \(S1\) is not a citation/);
  assert.match(COMPOSER_PROMPT,/Do not cite every sentence just because it is factual/);
  assert.match(COMPOSER_PROMPT,/Answer the exact question first/);
+ assert.match(COMPOSER_PROMPT,/focused response to the reader rather than a preview of several themes/);
+ assert.match(COMPOSER_PROMPT,/If that opening sentence summarizes or combines positions from supplied passages, cite the page IDs that support those components in the sentence/);
+ assert.match(COMPOSER_PROMPT,/Leave independent background or your own interpretation uncited when it does not present a supplied source's position/);
  assert.match(COMPOSER_PROMPT,/explain how they relate without treating them as proof/);
  assert.match(COMPOSER_PROMPT,/general background and your own synthesis do not need a library citation/i);
  assert.doesNotMatch(COMPOSER_PROMPT,/using only the supplied verified passage windows|Cite every factual sentence|rely on outside knowledge/);
