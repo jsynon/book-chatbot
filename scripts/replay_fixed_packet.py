@@ -34,7 +34,11 @@ class FixedPacketIndex:
     """Minimal index contract for answer_evidence_first with no search method."""
 
     def __init__(self, passages, tokenize):
-        self.passages = passages
+        # Use canonical book/page order for context grouping while preserving
+        # Worker packet order in the separate selected evidence list.
+        self.passages = sorted(
+            passages, key=lambda p: (str(p["book_id"]), min(p["pages"]), p["source_id"])
+        )
         self.tokenize = tokenize
         self.is_cross_library = len({str(p["book_id"]) for p in passages}) > 1
         self.discovery = {"required_author_groups": []}
