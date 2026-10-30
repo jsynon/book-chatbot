@@ -3497,7 +3497,7 @@ export async function planSearchGapQueries(question,bookTitle,gap,ai){
     throw new Error('Invalid retrieval gap request');
   const compact={
     weakParts:gap.weakParts.map((item,index)=>({partId:
-      typeof item?.partId==='string'&&/^P[1-9]\\d*$/.test(item.partId)?item.partId:'P'+(index+1),
+      typeof item?.partId==='string'&&/^P[1-9]\d*$/.test(item.partId)?item.partId:'P'+(index+1),
       part:String(item?.part||'').slice(0,240),
       overlap:Math.max(0,Math.min(20,Number(item?.overlap)||0)),
       matchedTerms:Array.isArray(item?.matchedTerms)?item.matchedTerms.slice(0,8)
@@ -3530,9 +3530,9 @@ export async function planSearchGapQueries(question,bookTitle,gap,ai){
   const queryParts=new Map(),queries=[];
   for(const item of result.queries){
     const legacy=typeof item==='string';
-    const query=String(legacy?item:item?.query||'').trim().replace(/\\s+/g,' ');
+    const query=String(legacy?item:item?.query||'').trim().replace(/\s+/g,' ');
     if(query.length<8||query.length>160||
-       !/^[\\p{L}\\p{N} .,;:'"?!()\\-–]+$/u.test(query))
+       !/^[\p{L}\p{N} .,;:'"?!()\-–]+$/u.test(query))
       throw new Error('Invalid retrieval gap queries');
     if(original.has(query.toLocaleLowerCase()))continue;
     // Older string-shaped responses remain usable. Link them only when there
