@@ -148,6 +148,9 @@ def prepare_packet(payload, trace, library_root, version, catalog):
         book_id = str(source.get("bookId", ""))
         page_number = source.get("page")
         global_page_id = source.get("globalPageId")
+        if (str(row.get("bookId", "")) != book_id
+                or row.get("page") != page_number):
+            raise ReplayError(f"Composition row {source_id} does not match its verified page identity.")
         raw_text = load_raw_page(
             library_root, version, book_id, global_page_id, page_number
         )
@@ -163,6 +166,12 @@ def prepare_packet(payload, trace, library_root, version, catalog):
                      if isinstance(window, dict) and isinstance(window.get("text"), str)
                      and window["text"].strip()]
             replay_text = "\n\n".join(texts)
+            # Confirm each exact model window belongs to the authenticated
+            # page context, including a narrower scopeText when the Worker used one.
+            verified_context = source.get("scopeText") or source.get("text")
+            if not isinstance(verified_context, str) or any(
+                    window not in verified_context for window in texts):
+                raise ReplayError(f"Composition windows for {source_id} do not match its trace page text.")
         else:
             replay_text = row.get("text") if isinstance(row.get("text"), str) else ""
         if not replay_text.strip():
