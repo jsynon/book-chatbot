@@ -122,6 +122,8 @@ def worker_evidence_by_id(trace):
 
 
 def prepare_packet(payload, trace, library_root, version, catalog):
+    from passage_quality import source_form
+
     pages_by_id = worker_evidence_by_id(trace)
     evidence_rows = payload["evidence"]
     if not 1 <= len(evidence_rows) <= LIVE_MAX_SOURCES:
@@ -175,6 +177,7 @@ def prepare_packet(payload, trace, library_root, version, catalog):
         form = source_form(replay_text)
         passages.append({
             **metadata,
+            "title": str(source.get("title") or metadata.get("title") or ""),
             "book_id": book_id,
             "corpus_version": version,
             "pages": [page_number],
@@ -188,6 +191,8 @@ def prepare_packet(payload, trace, library_root, version, catalog):
             "source_id": source_id,
             "book_id": book_id,
             "title": str(source.get("title") or metadata.get("title") or "")[:200],
+            "catalogTitle": str(metadata.get("title") or "")[:200],
+            "titleMatchesCatalog": str(source.get("title") or "").strip() == str(metadata.get("title") or "").strip(),
             "page": page_number,
             "global_page_id": global_page_id,
             "canonical_page_sha256": local_digest,
@@ -321,7 +326,7 @@ def main(argv=None):
         "externalNetworkCalls": 0,
         "cloudflareCalls": 0,
         "localOllamaRequests": 1,
-        "modelCalls": 1,
+        "modelCalls": len(provider.calls),
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(output, ensure_ascii=False, indent=2) + "\n",
