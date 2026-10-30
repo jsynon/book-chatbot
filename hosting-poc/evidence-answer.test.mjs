@@ -1703,6 +1703,20 @@ test('unknown-only and cross-linked citation IDs fail closed without losing the 
  assert.equal('validationReasons' in result,false,'validation diagnostics stay inside the authenticated trace');
 });
 
+test('verified passage locator citations are normalized to their page source IDs',async()=>{
+ const span=buildReviewSpans('S1',hume.text)[0];
+ const ai=makeAI([answer('PART P1\nThe passage links causal expectation to custom after repeated conjunction. ['+span.spanId+']'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.coverage,'full');
+ assert.equal(result.failureCode,undefined);
+ assert.match(result.answer,/\[S1\]/);
+ assert.doesNotMatch(result.answer,/S1-Q/);
+ assert.deepEqual(result.trace.citationRepairs,[{partId:'P1',claimId:'P1-C1',sentenceIndex:1,
+  normalizedSpanIds:[span.spanId],retainedSourceIds:['S1']}]);
+});
+
 test('Boethius page-number collision drops only the unknown ID and reviews the exact source citation',async()=>{
  const title='The Consolation of Philosophy — Boethius';
  const cause={id:'S5',bookId:'21',title,page:12,candidatePartIds:['P1'],
@@ -2354,7 +2368,8 @@ test('malformed composition is reported as generation failure without retrying o
 test('explicit evidence refusals become structured insufficient evidence without a retry',async()=>{
  for(const refusal of [
   'The supplied passages do not address the question about whether reality is simulated.',
-  'The provided text does not contain information regarding whether we are living in a simulation.'
+  'The provided text does not contain information regarding whether we are living in a simulation.',
+  'The provided documents do not contain information regarding whether we are living in a simulation.'
  ]){
   const ai=makeAI([answer('PART P1\n\n'+refusal)]);
   const result=await composeEvidenceAnswer('Are we living in a simulation?',[],ai,[],{

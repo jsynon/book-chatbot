@@ -229,7 +229,10 @@ function explicitlyReportsInsufficientEvidence(raw){
   const text=typeof raw==='string'?raw:
     typeof raw?.response==='string'?raw.response:
     typeof raw?.choices?.[0]?.message?.content==='string'?raw.choices[0].message.content:'';
-  const namesSuppliedEvidence=/\b(?:provided|supplied|retrieved|available)\s+(?:source\s+)?(?:passages?|pages?|texts?|evidence|sources?)\b/iu;
+  // Models vary the noun they use for the bounded packet. Treat a direct
+  // statement that supplied documents contain no answer as abstention too;
+  // this keeps a trustworthy refusal distinct from malformed citations.
+  const namesSuppliedEvidence=/\b(?:provided|supplied|retrieved|available|selected)\s+(?:(?:source|library)\s+)?(?:passages?|pages?|texts?|documents?|books?|evidence|sources?)\b/iu;
   const deniesAnAnswer=/\b(?:do not|don't|does not|doesn't|cannot|can't|fail to|fails to)\s+(?:(?:answer|address|support|establish|speak to)\b|(?:contain|include|provide|offer)\s+(?:any\s+)?(?:relevant\s+)?(?:information|evidence|answer|support)\b)/iu;
   const statesEvidenceIsInsufficient=/\b(?:not enough|insufficient)\s+(?:relevant\s+)?(?:evidence|information|support)\b.{0,100}\b(?:answer|address|establish)\b/iu;
   return (namesSuppliedEvidence.test(text)&&deniesAnAnswer.test(text))||
@@ -351,6 +354,16 @@ function isCrossAuthorTransferHypothesis(text){
 
 function validatePartAnswers(draftParts,sources,plan,question=''){
   const sourceById=new Map(sources.map(source=>[source.id,source]));
+  // The composer sees passage IDs such as S2-Q8 as locators inside verified
+  // pages, while the public citation contract names pages as S2. Resolve only
+  // exact locators generated from the current verified source text; arbitrary
+  // span-like strings remain invalid and cannot create a citation.
+  const spanSourceById=new Map();
+  for(const source of sources){
+    const sourceText=source.scopeText||source.text||source.preview||'';
+    for(const span of buildReviewSpans(source.id,sourceText))
+      spanSourceById.set(span.spanId,source.id);
+  }
   const hypotheticalQuestion=asksForHypotheticalAuthorResponse(question);
   const crossAuthorComparison=plan.intent==='compare';
   const output=[],rejected=[],citationRepairs=[];
@@ -369,20 +382,37 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
       // cannot hide that the required answer sentence was dropped.
       const isRequiredAnswer=paragraphIndex===0&&sentenceIndex===0;
       const groups=citationGroups(unit),groupsWithIds=groups.filter(group=>group.looksLikeCitation);
+      const normalizedSpanIds=[];
       let checkedUnit=unit,reason='';
       const reject=(why)=>{
         rejected.push({partId:part.id,reason:why,...(units.length>1?{sentenceIndex:sentenceIndex+1}:{})});
         if(isRequiredAnswer)requiredAnswerRejected=true;
       };
       if(!groupsWithIds.length)reason='sentence-missing-citation';
-      else if(groupsWithIds.some(group=>!group.ids.length||group.ids.some(id=>!/^S[1-9]\d*$/.test(id))))reason='invalid-citation-format';
+      if(!reason){
+        const replacements=[];
+        for(const group of citationGroups(checkedUnit).filter(item=>item.looksLikeCitation)){
+          const resolved=group.ids.map(id=>{
+            const sourceId=spanSourceById.get(id);
+            if(sourceId)normalizedSpanIds.push(id);
+            return sourceId||id;
+          });
+          if(resolved.some((id,index)=>id!==group.ids[index]))
+            replacements.push({group,ids:[...new Set(resolved)]});
+        }
+        for(const {group,ids} of replacements.reverse())
+          checkedUnit=checkedUnit.slice(0,group.start)+'['+ids.join(', ')+']'+checkedUnit.slice(group.end);
+        if(citationGroups(checkedUnit).filter(group=>group.looksLikeCitation)
+          .some(group=>!group.ids.length||group.ids.some(id=>!/^S[1-9]\d*$/.test(id))))
+          reason='invalid-citation-format';
+      }
       // A model sometimes mistakes a printed page number for a Worker source
       // ID (for example, turning source S5 on page 12 into S5, S12). Drop an
       // unknown ID only when that same citation group also contains a known
       // source. Unknown-only groups and malformed IDs still fail closed.
-      else{
+      if(!reason){
         const replacements=[];
-        for(const group of groupsWithIds){
+        for(const group of citationGroups(checkedUnit).filter(item=>item.looksLikeCitation)){
           const known=group.ids.filter(id=>sourceById.has(id));
           const unknown=group.ids.filter(id=>!sourceById.has(id));
           if(unknown.length&&!known.length){reason='unknown-source-id';break;}
@@ -434,9 +464,10 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
       answers.push({claimId,text:prose,renderedText:checkedUnit,sourceIds:ids,paragraphIndex});
       if(isRequiredAnswer)requiredAnswerClaimId=claimId;
       const removedSourceIds=[...new Set(groupsWithIds.flatMap(group=>group.ids)
-        .filter(id=>!sourceById.has(id)))];
-      if(removedSourceIds.length)citationRepairs.push({partId:part.id,claimId,
-        sentenceIndex:sentenceIndex+1,removedSourceIds,retainedSourceIds:ids});
+        .filter(id=>!sourceById.has(id)&&!normalizedSpanIds.includes(id)))];
+      if(removedSourceIds.length||normalizedSpanIds.length)citationRepairs.push({partId:part.id,claimId,
+        sentenceIndex:sentenceIndex+1,...(normalizedSpanIds.length?{normalizedSpanIds:[...new Set(normalizedSpanIds)]}:{}),
+        ...(removedSourceIds.length?{removedSourceIds}:{}),retainedSourceIds:ids});
       }
     }
     const requiresHypotheticalInference=hypotheticalQuestion&&
