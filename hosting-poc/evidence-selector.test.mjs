@@ -11,6 +11,23 @@ test('selector fallback gives distinct works a page before taking second pages',
   ['10:1','20:1','30:1','10:2','20:2']);
 });
 
+test('selector prompt demonstrates one valid coverage value and accepts a valid decision',async()=>{
+ let systemPrompt='';
+ const request={question:'What does this source argue?',parts:[{partId:'P1',question:'What is the argument?'}],
+  candidates:[{id:'C1',title:'A source',page:1,excerpt:'A sufficiently long source excerpt for testing.'}],
+  ai:{run:async(_model,{messages})=>{
+   systemPrompt=messages.find(message=>message.role==='system')?.content||'';
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[{
+    partId:'P1',candidateIds:['C1'],coverage:'supported'}]})}}]};
+  }}};
+ const result=await selectEvidenceCandidates(request);
+ assert.match(systemPrompt,/"coverage":"supported"/);
+ assert.match(systemPrompt,/exactly one of "supported", "partial", or "none"/);
+ assert.doesNotMatch(systemPrompt,/"coverage":"supported\|partial\|none"/);
+ assert.deepEqual(result.selectedCandidateIds,['C1']);
+ assert.equal(result.parts[0].coverage,'supported');
+});
+
 test('selector invalid-response subtype is safe and distinguishes malformed decisions',async()=>{
  const request={question:'What does this source argue?',parts:[{partId:'P1',question:'What is the argument?'}],
   candidates:[{id:'C1',title:'A source',page:1,excerpt:'A sufficiently long source excerpt for testing.'}],
