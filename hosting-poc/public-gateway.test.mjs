@@ -2172,7 +2172,7 @@ const pilotBaseEnv={
  AI_RATE_LIMITER:{limit:async()=>({success:true})},
  GLOBAL_RATE_LIMITER:{limit:async()=>({success:true})},
 };
-async function pilotScenario({config={},model,turnstileValid=true}={}) {
+async function pilotScenario({config={},model,selector,turnstileValid=true}={}) {
  const fixture=await fingerprintTestFixture();
  let calls=0,verifyCalls=0,limitCalls=0;
  const visitorKeys=[],globalKeys=[];
@@ -2189,6 +2189,7 @@ async function pilotScenario({config={},model,turnstileValid=true}={}) {
    calls++;
    const input=args[1];
    if(input?.max_completion_tokens===500){
+     if(selector)return selector(...args);
      const selection=JSON.parse(input.messages[1].content);
      const candidateIds=selection.candidates.slice(0,6).map(candidate=>candidate.id);
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
@@ -2680,6 +2681,47 @@ test('evidence-v2 public route returns six reviewed highlights for six cited pag
   ['S1','S2','S3','S4','S5','S6']);
  assert.ok(result.evidenceHighlights.every(item=>item.quoteLocated===undefined));
  assert.equal(pilot.stats().calls,3,'Worker evidence selection precedes the existing compose/review pair');
+});
+test('a valid empty evidence selection returns insufficient evidence without retrieval-order composition',async()=>{
+ const token='selector-empty-evidence-test-token';
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
+  selector:async(_model,input)=>{
+   const selection=JSON.parse(input.messages[1].content);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
+    selection.parts.map(part=>({partId:part.partId,candidateIds:[],coverage:'none'}))})}}],
+    usage:{neurons:2,prompt_tokens:14,completion_tokens:8}};
+  },
+  model:async()=>{throw new Error('answer composition must not run after a valid no-evidence decision');}
+ });
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
+ const result=await response.json();
+ assert.equal(response.status,200);
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.coverage,'none');
+ assert.deepEqual(result.citations,[]);
+ assert.deepEqual(result.sourceSelection.pages,[]);
+ assert.equal(result.sourceSelection.status,'no-relevant-evidence');
+ assert.equal(result.sourceSelectionStatus,'no-relevant-evidence');
+ assert.equal(result.sourceSelection.usage.neurons,2);
+ assert.equal(result.usage.calls,1,'the successful selector call is retained in usage');
+ assert.equal(pilot.stats().calls,1,'composition and review are skipped when no relevant page was selected');
+ assert.equal(result.trace.stages[0].status,'no-relevant-evidence');
+ assert.deepEqual(result.trace.stages[0].decision.selectedCandidateIds,[]);
+});
+test('selector provider errors retain a safe reason while the bounded fallback remains reviewable',async()=>{
+ const token='selector-fallback-error-test-token';
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
+  selector:async()=>{throw Object.assign(new Error('PRIVATE provider body'),{status:503});}
+ });
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
+ const result=await response.json();
+ assert.equal(response.status,200);
+ assert.equal(result.sourceSelection.status,'deterministic-fallback');
+ assert.equal(result.trace.stages[0].failureCode,'selector-provider-error');
+ assert.ok(result.sourceSelection.pages.length>0);
+ assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
 });
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
