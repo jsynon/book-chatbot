@@ -815,6 +815,27 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
  }]);
 });
 
+test('an uncited direct synthesis can lead a fuller answer while source claims remain cited',async()=>{
+ const ai=makeAI([answer('PART P1\nCausal necessity can be understood as an expectation formed from regular experience, not a power directly observed in events.\n'+
+  'Hume locates that expectation in repeated conjunction and custom, which lead the mind to infer one event from another. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   assert.equal(payload.parts[0].requiredAnswerClaimId,'P1-C1');
+   const sourceClaim=payload.claims.find(claim=>claim.sourceIds.includes('S1'));
+   const spanId=sourceClaim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:
+    payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',sources:
+     claim.sourceIds.map(sourceId=>({sourceId,spanIds:[spanId]}))}))})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/Causal necessity can be understood as an expectation/);
+ assert.match(result.answer,/Hume locates that expectation.*\[S1\]/);
+ assert.equal(ai.calls.length,2,'synthesis review reuses the existing composition and review calls');
+});
+
 test('review can select relevant exact evidence beyond the claim-ranked hint list',async()=>{
  const text=[
   'Herein lies my very strength; this is my unchanging sport. I turn my wheel that spins its circle fairly; I delight to make the lowest turn to the top, the highest to the bottom.',
@@ -1011,6 +1032,10 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(REVIEW_PROMPT,/names a supplied work, author, speaker, or page/);
  assert.match(REVIEW_PROMPT,/Independent background and synthesis may remain uncited/);
  assert.match(REVIEW_PROMPT,/Judge each part against the exact question/);
+ assert.match(COMPOSER_PROMPT,/first complete sentence of each part is checked as its direct answer/);
+ assert.match(REVIEW_PROMPT,/describes the collection, not the answer to the reader/);
+ assert.match(REVIEW_PROMPT,/complementary passages may support different components of a concise synthesis/);
+ assert.match(REVIEW_PROMPT,/Do not mark a corpus-gap statement or merely adjacent source discussion as an answer/);
  assert.match(REVIEW_PROMPT,/only related background or ends with an unfinished thought/);
  assert.match(REVIEW_PROMPT,/the supplied passages cannot establish its truth, so do not treat their silence as disproof/);
  assert.match(REVIEW_PROMPT,/exact supporting span IDs/);
@@ -1048,6 +1073,31 @@ test('an unrelated uncited explanation remains partial when the reviewer judges 
  assert.equal(result.coverage,'none');
  assert.doesNotMatch(result.answer,/Baudrillard/);
  assert.equal(result.citations.length,0);
+});
+
+test('a collection-gap opening stays partial when the rest is only adjacent cited context',async()=>{
+ const question='Are we living in a simulation?';
+ const source={...hume,candidatePartIds:['P1']};
+ const ai=makeAI([answer('PART P1\nThe library passages do not directly answer whether we live in a simulation.\n'+
+   'Hume’s account of custom offers a related perspective on how people form beliefs. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const cited=payload.claims.find(claim=>claim.sourceIds.includes('S1'));
+   const spanId=cited.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:
+    payload.claims.map(claim=>({claimId:claim.claimId,
+     status:claim===cited?'answered':'partial',sources:claim.sourceIds.map(sourceId=>({sourceId,
+      spanIds:sourceId==='S1'?[spanId]:[]}))}))})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(question,[source],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question}]},catalog,trace:true
+ });
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.notEqual(result.coverage,'full');
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,false,
+  'a note about library coverage cannot satisfy the first-sentence answer gate');
+ assert.match(result.answer,/Hume’s account of custom/,
+  'related context can remain visible without being called an answer');
 });
 
 const hypotheticalQuestion='What would Nietzsche think about the thought of Kierkegaard?';
