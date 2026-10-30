@@ -172,7 +172,6 @@ def prepare_packet(payload, trace, library_root, version, catalog):
         passage_id = hashlib.sha256(
             f"{book_id}\0{version}\0{page_number}\0{source_id}\0{replay_text}".encode("utf-8")
         ).hexdigest()[:24]
-        from passage_quality import source_form
         form = source_form(replay_text)
         passages.append({
             **metadata,
@@ -256,7 +255,6 @@ def main(argv=None):
     from evidence_pipeline import answer_evidence_first
     from inference import OllamaProvider
     from library_catalog import read_catalog
-    from passage_quality import source_form
 
     fallback_source = next(iter(trace.get("evidence", [])), {})
     fallback_book = {
@@ -320,8 +318,9 @@ def main(argv=None):
             "composer prompts, models, output validation, and review stages differ; "
             "this is a controlled diagnostic, not a production parity score."
         ),
-        "networkCalls": 0,
+        "externalNetworkCalls": 0,
         "cloudflareCalls": 0,
+        "localOllamaRequests": 1,
         "modelCalls": 1,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
