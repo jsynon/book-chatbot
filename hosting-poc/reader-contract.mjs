@@ -200,7 +200,10 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
       .filter(sourceIndex=>sourceIndex>=0);
     const matchingQueries=queries.filter(query=>sources.some((source,sourceIndex)=>
       allowedSourceIndexes.includes(sourceIndex)&&sourcePhrases(source).some(phrase=>containsPhrase(query,phrase))));
-    if(!matchingQueries.length&&sources.length===1)matchingQueries.push(...queries);
+    if(normalizedParts.length===1)matchingQueries.push(...queries);
+    // For one direct question, every planner query remains an optional search
+    // lead for that part, even when a conceptual phrasing shares few surface
+    // words. This grants retrieval eligibility only; it is not evidence.
     // The synthetic comparison part is a coverage check over the already
     // planned source-side searches. Searching its generic wording spends a
     // scarce page slot on a broad, often weak hit; source-side passages can
