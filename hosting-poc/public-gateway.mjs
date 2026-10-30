@@ -3341,6 +3341,68 @@ function applyExplicitBibleVerseScope(question,sources){
   return filtered;
 }
 
+// Collapse only substantial, near-identical passages from the same work.
+// Edition labels are ignored for work matching, but separate passages and
+// textually distinct versions remain available to the selector/composer.
+const DUPLICATE_PASSAGE_MIN_WORDS=40;
+const DUPLICATE_PASSAGE_MIN_CONTAINMENT=0.8;
+function normalizedEvidenceWorkTitle(source){
+  let title=String(source?.provenance?.work||source?.title||'').split(/\s+—\s+/)[0];
+  title=title.replace(/\([^)]*\b(?:edition|ed\.?|printing|impression|reprint)\b[^)]*\)/gi,' ');
+  title=title.replace(/\b(?:(?:fully|newly|revised|expanded|abridged)\s+)*(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?)\s+(?:edition|ed\.?|printing|impression|reprint)\b/gi,' ');
+  title=title.replace(/\b(?:fully\s+)?revised\s+edition\b/gi,' ')
+    .replace(/\b(?:printing|impression|reprint)\b/gi,' ')
+    .replace(/[,:;()[\]]/g,' ').replace(/\s+/g,' ').trim();
+  title=title.normalize('NFKC').toLocaleLowerCase();
+  // Catalog Bible titles sometimes include or omit the Apocrypha as an
+  // edition descriptor; the passage overlap check still decides whether the
+  // selected page is actually redundant.
+  if(/\bbible\b/.test(title))title=title.replace(/\s+with\s+(?:the\s+)?apocrypha\b/,'').trim();
+  return title;
+}
+function evidenceWordTokens(text){
+  const normalized=String(text||'').normalize('NFKC')
+    .replace(/([\p{L}])-\s*\n\s*([\p{L}])/gu,'$1$2').toLocaleLowerCase();
+  return normalized.match(/[\p{L}\p{N}]+/gu)||[];
+}
+function evidenceTrigramSet(tokens){
+  const shingles=new Set();
+  for(let i=0;i+2<tokens.length;i++)shingles.add(tokens.slice(i,i+3).join(' '));
+  return shingles;
+}
+function duplicatePassageOverlap(left,right){
+  const leftTitle=normalizedEvidenceWorkTitle(left),rightTitle=normalizedEvidenceWorkTitle(right);
+  if(!leftTitle||leftTitle!==rightTitle)return null;
+  const leftTokens=evidenceWordTokens(left.scopeText||left.text);
+  const rightTokens=evidenceWordTokens(right.scopeText||right.text);
+  if(Math.min(leftTokens.length,rightTokens.length)<DUPLICATE_PASSAGE_MIN_WORDS)return null;
+  const leftShingles=evidenceTrigramSet(leftTokens),rightShingles=evidenceTrigramSet(rightTokens);
+  const shorter=Math.min(leftShingles.size,rightShingles.size);
+  if(!shorter)return null;
+  let shared=0;
+  for(const shingle of leftShingles)if(rightShingles.has(shingle))shared++;
+  const containment=shared/shorter;
+  return containment>=DUPLICATE_PASSAGE_MIN_CONTAINMENT?{workTitle:leftTitle,containment}:null;
+}
+function addSelectedEvidenceSource(answerSources,source,{candidateId,candidatePartIds=[],duplicateTrace,
+  budget,totalBytes,maxSources=6}={}){
+  const duplicate=answerSources.map(existing=>({existing,
+    overlap:duplicatePassageOverlap(existing,source)})).find(item=>item.overlap);
+  if(duplicate){
+    duplicate.existing.candidatePartIds=[...new Set([
+      ...(duplicate.existing.candidatePartIds||[]),...candidatePartIds])];
+    duplicateTrace.push({candidateId,duplicateOf:duplicate.existing.candidateId,
+      workTitle:duplicate.overlap.workTitle,
+      shorterPassageContainment:Number(duplicate.overlap.containment.toFixed(4))});
+    return {added:false,totalBytes};
+  }
+  const bytes=new TextEncoder().encode(source.text).byteLength;
+  if(answerSources.length>=maxSources||bytes>14000||totalBytes+bytes>budget)return {added:false,totalBytes};
+  answerSources.push({...source,id:'S'+(answerSources.length+1),candidateId,candidatePartIds,
+    ...(source.scopeText?{scopeText:source.scopeText}:{})});
+  return {added:true,totalBytes:totalBytes+bytes};
+}
+
 // AI-assisted SOURCE DISCOVERY ONLY. No facts, page numbers, citations or
 // book excerpts here: the website still retrieves the original v48 text and
 // the existing answer endpoint must independently verify exact SHA-256 pages.
@@ -3807,16 +3869,15 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           }else{
           const byCandidateId=new Map(verifiedCandidates.map((source,index)=>['C'+(index+1),source]));
           let totalBytes=0;
+          const duplicateTrace=[];
           for(const id of selectedIds){
             const source=byCandidateId.get(id);
             if(!source)continue;
-            const bytes=new TextEncoder().encode(source.text).byteLength;
-            if(answerSources.length>=6||bytes>14000||totalBytes+bytes>35000)continue;
             const candidatePartIds=decision.parts.filter(part=>part.candidateIds.includes(id))
               .map(part=>part.partId);
-            answerSources.push({...source,id:'S'+(answerSources.length+1),candidatePartIds,
-              ...(source.scopeText?{scopeText:source.scopeText}:{})});
-            totalBytes+=bytes;
+            const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:id,
+              candidatePartIds,duplicateTrace,budget:35000,totalBytes});
+            totalBytes=packed.totalBytes;
           }
           if(!answerSources.length){
             const error=new Error('Evidence selector pages did not fit the answer budget.');
@@ -3826,7 +3887,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
             status:'selected',candidateCount:verifiedCandidates.length,
             candidates:selectorCandidates,decision,selected:answerSources.map(source=>({
-              id:source.id,bookId:source.bookId,page:source.page,candidatePartIds:source.candidatePartIds}))};
+              id:source.id,candidateId:source.candidateId,bookId:source.bookId,page:source.page,
+              candidatePartIds:source.candidatePartIds})),suppressedDuplicates:duplicateTrace};
           sourceSelectionStatus='selected';
           }
         }catch(error){
@@ -3835,17 +3897,17 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           // while clearly marking that the answer used the retriever's order.
           sourceSelectionStatus='deterministic-fallback';
           let totalBytes=0;
+          const duplicateTrace=[];
+          const candidateIds=new Map(verifiedCandidates.map((source,index)=>[source.id,'C'+(index+1)]));
           for(const source of orderFallbackCandidates(verifiedCandidates)){
-            const bytes=new TextEncoder().encode(source.text).byteLength;
             if(answerSources.length>=6)break;
-            if(bytes>14000||totalBytes+bytes>35000)continue;
             // In fallback mode, planned source scope is the only safe part
             // link available; model relevance has not been established.
             const candidatePartIds=plan.parts.filter(part=>!Array.isArray(part.sourceBookIds)||
               part.sourceBookIds.map(String).includes(String(source.bookId))).map(part=>part.id);
-            answerSources.push({...source,id:'S'+(answerSources.length+1),candidatePartIds,
-              ...(source.scopeText?{scopeText:source.scopeText}:{})});
-            totalBytes+=bytes;
+            const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:candidateIds.get(source.id),
+              candidatePartIds,duplicateTrace,budget:35000,totalBytes});
+            totalBytes=packed.totalBytes;
           }
           selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
             status:sourceSelectionStatus,
@@ -3853,7 +3915,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
               'selector-output-truncated','selector-budget-empty'].includes(error?.failureCode)?
               error.failureCode:'selector-error',candidateCount:verifiedCandidates.length,
             ...(SAFE_SELECTOR_FAILURE_REASONS.has(error?.failureReason)?{failureReason:error.failureReason}:{}),
-            selected:answerSources.map(source=>({id:source.id,bookId:source.bookId,page:source.page}))};
+            selected:answerSources.map(source=>({id:source.id,candidateId:source.candidateId,
+              bookId:source.bookId,page:source.page})),suppressedDuplicates:duplicateTrace};
           console.warn('Reader pilot evidence selection fell back to retrieval order',
             inferenceFailureDiagnostics(error));
         }
