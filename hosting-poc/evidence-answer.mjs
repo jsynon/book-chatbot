@@ -900,6 +900,10 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const normalized=normalizePlan(rawPlan,question,options.catalog||{},options.selectedBookId||'');
   const plan=linkEvidenceToParts(normalized,sources);
   const trace={version:CONTRACT_VERSION,model:READER_MODEL,plan,stages:[],rejected:[]};
+  // Keep the retrieval-to-selection handoff beside composition and review in
+  // authenticated traces; this is the point where candidate recall becomes
+  // the evidence budget available to the answer model.
+  if(options.trace&&options.selectionTrace)trace.stages.push(options.selectionTrace);
   const usage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
   const started=Date.now();
   async function run(stage,system,payload,parser){
