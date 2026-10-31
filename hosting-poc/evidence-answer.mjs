@@ -74,7 +74,7 @@ export const COMPOSER_PROMPT=`Answer the reader's exact question with a clear, u
 // Review source-derived claims against exact spans, while uncited context is
 // judged collectively at the part level. The reviewer names the direct claim
 // IDs so coverage is not tied to the first sentence or extra context rows.
-export const REVIEW_PROMPT=`Review the complete answer parts and claims. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide whether an exact span supports the claim as written, including its subject, meaning, scope, and qualification. Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a speaker; do not confuse an author with a pseudonymous speaker, quoted or reported person, editor, translator, or commentator. A source citation is not proof by itself, and a source's silence does not prove a claim false.
+export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark it unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. In either mode, a claim naming a supplied work, author, speaker, or page, reporting what a source says, or otherwise presenting a source-derived position needs a source ID and exact span support. Independent background and synthesis may remain uncited when they are not presented as claims made by a particular source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide whether an exact span supports the claim as written, including its subject, meaning, scope, and qualification. Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a speaker; do not confuse an author with a pseudonymous speaker, quoted or reported person, editor, translator, or commentator. A source citation is not proof by itself, and a source's silence does not prove a claim false.
 
 Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context. If a claim names a supplied work, author, speaker, or page, reports what a source says, or otherwise presents a source-derived position, it needs a source ID and must not pass as general context when uncited. Mark such claims partial or unanswered. Independent background and synthesis may remain uncited when they are not presented as claims made by a particular source. Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness; the supplied passages cannot establish its truth, so do not treat their silence as disproof.
 
@@ -164,6 +164,35 @@ function parseJson(raw,stage){
 }
 // Keep the review parser independently testable against authenticated trace fixtures.
 export function parseReviewJson(raw){return parseJson(raw,'review');}
+
+const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":""}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
+
+function mergeReviewRepairs(rawReview,requested,repair){
+  if(!Array.isArray(repair?.decisions)||repair.decisions.length!==requested.length)
+    return {ok:false,reason:'decision-count-mismatch'};
+  const expected=new Map(requested.map(item=>[item.claimId+'\\u0000'+item.sourceId,item]));
+  const received=new Map();
+  for(const item of repair.decisions){
+    const key=String(item?.claimId||'')+'\\u0000'+String(item?.sourceId||'');
+    const request=expected.get(key);
+    if(!request||received.has(key)||!hasRecognizedStatus(item?.status)||
+       !Array.isArray(item?.spanIds)||
+       item.spanIds.some(spanId=>typeof spanId!=='string'||!request.spanIds.includes(spanId))||
+       !['supported','conflict','unclear','not_applicable'].includes(item?.attributionStatus)||
+       typeof item?.attributedSpeaker!=='string')
+      return {ok:false,reason:'invalid-or-unrequested-decision'};
+    received.set(key,{claimId:request.claimId,sourceId:request.sourceId,status:normalizeStatus(item.status),
+      spanIds:[...new Set(item.spanIds)],attributionStatus:item.attributionStatus,
+      attributedSpeaker:item.attributedSpeaker.trim().slice(0,120)});
+  }
+  if(received.size!==expected.size)return {ok:false,reason:'missing-decision'};
+  const claims=(rawReview?.claims||[]).map(claim=>{
+    const repairs=[...received.values()].filter(item=>item.claimId===claim.claimId);
+    if(!repairs.length)return claim;
+    return {...claim,sources:[...(Array.isArray(claim.sources)?claim.sources:[]),...repairs]};
+  });
+  return {ok:true,review:{...rawReview,claims}};
+}
 
 function linkEvidenceToParts(plan,sources){
   const groups=(plan.sources||[]).filter(source=>['primary','subject'].includes(source.role)&&
@@ -521,7 +550,16 @@ function renderAnswerParagraphs(answers){
     values.push(answer.renderedText||answer.text+' ['+[...new Set(answer.sourceIds)].join(', ')+']');
     paragraphs.set(key,values);
   }
-  return [...paragraphs.values()].map(values=>values.join(' ')).join('\n\n');
+  return normalizeAnswerMarkdown([...paragraphs.values()].map(values=>values.join(' ')).join('\n\n'));
+}
+
+// Repair only unambiguous inline Markdown structures left by composition.
+// These insert line breaks at explicit list markers and bold section labels;
+// they do not rewrite prose, citations, or emphasis inside sentences.
+function normalizeAnswerMarkdown(value){
+  return String(value||'')
+    .replace(/[ \t]+([*+-])[ \t]+(?=\*\*[^*\n]{2,100}\*\*)/gu,'\n$1 ')
+    .replace(/(\*\*[^*\n]{2,100}:\*\*)[ \t]+(?=\S)/gu,'$1\n\n');
 }
 
 function normalizeStatus(value){
@@ -1044,21 +1082,27 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const usage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
   const started=Date.now();
   async function run(stage,system,payload,parser){
-    const callLimit=options.expand===true?3:2;
+    // One extra call is reserved for a targeted source-decision repair. It
+    // runs only when the reviewer omitted a cited-source decision; normal
+    // public answers still use the existing compose and review calls.
+    const callLimit=options.expand===true?4:3;
     if(usage.calls>=callLimit)throw Error('Answer call budget exceeded');
     const messages=[{role:'system',content:system},{role:'user',content:JSON.stringify(payload)}];
     const start=Date.now();usage.calls++;
     let response,timer;
-    const timeoutMs=stage==='review'?60000:45000;
+    const timeoutMs=stage.startsWith('review')?60000:45000;
     const timeoutError=Object.assign(new Error('Inference deadline exceeded'),{
       stage,code:'inference-deadline-exceeded',startedAt:start,timeoutMs
     });
     // Longer answers produce more sentence-level review records. Scale the
     // existing review call's output allowance to that record count; this does
     // not add a call or limit the answer draft's length.
-    const reviewClaimCount=Array.isArray(payload?.claims)?payload.claims.length:0;
+    const reviewRecordCount=stage==='review-repair'?
+      (Array.isArray(payload?.decisions)?payload.decisions.length:0):
+      (Array.isArray(payload?.claims)?payload.claims.length:0);
     const outputTokenBudget=stage==='review'?
-      Math.min(4200,2000+reviewClaimCount*100):1800;
+      Math.min(4200,2000+reviewRecordCount*100):
+      stage==='review-repair'?Math.min(3000,900+reviewRecordCount*160):1800;
     try{response=await Promise.race([ai.run(READER_MODEL,{messages,
       chat_template_kwargs:{enable_thinking:false},max_completion_tokens:outputTokenBudget}),
       new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),timeoutMs);})]);}
@@ -1070,7 +1114,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       finishReason:response?.choices?.[0]?.finish_reason||null});
     if(stage==='compose'&&['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
       throw new ModelFormatError(stage,'The answer draft was truncated before it was complete.','answer-output-truncated');
-    if(stage==='review'&&['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
+    if(stage.startsWith('review')&&['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
       throw new ModelFormatError(stage,'Reviewer output was truncated before a complete decision object was returned.','review-output-truncated');
     return parser(response,stage);
   }
@@ -1213,6 +1257,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         const contextClaims=part.answers.filter(answer=>!answer.sourceIds.length&&
           answer.claimId!==part.requiredAnswerClaimId).map(({claimId,text})=>({claimId,text}));
         return {partId:part.partId,question:part.question,
+          answerMode:evidence.length?'source-and-context':'general-context',
           ...(part.requiredAnswerClaimId?{requiredAnswerClaimId:part.requiredAnswerClaimId}:{}),
           ...(contextClaims.length?{contextClaims}:{}),evidence};
       });
@@ -1232,8 +1277,49 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       })));
       const reviewPayload={question,parts:reviewParts,claims:reviewClaims};
       try{
-        const rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
+        let rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
         review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMapsByPart,question,reviewClaims);
+        const missingDecisions=[...new Map(review.supportIssues
+          .filter(issue=>issue.reason==='missing-claim-source-decision')
+          .map(issue=>[issue.claimId+'\\u0000'+issue.sourceId,issue])).values()];
+        let repairTrace=null;
+        if(!review.issues.length&&missingDecisions.length&&missingDecisions.length<=12){
+          const requested=missingDecisions.map(issue=>{
+            const claim=reviewClaims.find(item=>item.claimId===issue.claimId);
+            const partEvidence=reviewParts.find(item=>item.partId===issue.partId);
+            const sourceEvidence=partEvidence?.evidence.find(item=>item.id===issue.sourceId);
+            const spans=(sourceEvidence?.spans||[]).filter(span=>
+              String(span.spanId||'').startsWith(issue.sourceId+'-'));
+            return {partId:issue.partId,question:partEvidence?.question||'',
+              claimId:issue.claimId,claimText:claim?.text||'',
+              sourceId:issue.sourceId,sourceTitle:sourceEvidence?.title||'',
+              sourcePage:sourceEvidence?.page||null,
+              spans:spans.map(({spanId,text})=>({spanId,text})),
+              spanIds:spans.map(span=>span.spanId)};
+          }).filter(item=>item.claimText&&item.spans.length);
+          if(requested.length===missingDecisions.length){
+            try{
+              const repair=await run('review-repair',REVIEW_REPAIR_PROMPT,
+                {question,decisions:requested},parseReviewJson);
+              const merged=mergeReviewRepairs(rawReview,requested,repair);
+              repairTrace={attempted:true,requestedCount:requested.length,
+                applied:merged.ok,reason:merged.ok?'complete':merged.reason};
+              if(merged.ok){
+                rawReview=merged.review;
+                review=normalizeReview(rawReview,plan,checked.parts,sources,
+                  reviewSpanMapsByPart,question,reviewClaims);
+              }
+            }catch(error){
+              repairTrace={attempted:true,requestedCount:requested.length,applied:false,
+                reason:error.code||'repair-call-failed'};
+            }
+          }else repairTrace={attempted:false,requestedCount:missingDecisions.length,
+            applied:false,reason:'repair-evidence-unavailable'};
+        }else if(missingDecisions.length>12){
+          repairTrace={attempted:false,requestedCount:missingDecisions.length,
+            applied:false,reason:'repair-limit-exceeded'};
+        }
+        if(repairTrace)trace.reviewRepair=repairTrace;
         const syntaxRecovery=rawReview?.[REVIEW_JSON_RECOVERY];
         trace.reviewContract={valid:review.issues.length===0,issues:review.issues,
           supportIssues:review.supportIssues,recovered:[...review.recovered,
@@ -1265,7 +1351,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     return {part,answers,status,evidence:reviewed?.evidence||[],reviewReason:reviewed?.reason||''};
   });
   const included=parts.filter(item=>item.status!=='unanswered'&&item.answers.length);
-  let answer=included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n');
+  let answer=normalizeAnswerMarkdown(included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n'));
   const incompleteAnswer=Boolean(answer&&hasUnfinishedAnswerEnding(answer));
   if(incompleteAnswer){
     answer='';
