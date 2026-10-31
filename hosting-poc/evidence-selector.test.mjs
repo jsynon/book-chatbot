@@ -66,10 +66,7 @@ test('selector reports safe subtypes for malformed part and evidence decisions',
   {failureReason:'evidence-not-array',parts:[{partId:'P1',evidence:'C1'}]},
   {failureReason:'unknown-candidate-id',parts:[{partId:'P1',evidence:[{candidateId:'C9',support:'direct',excerpt:'doubt itself proves the thinker exists'}]}]},
   {failureReason:'invalid-evidence-support',parts:[{partId:'P1',evidence:[{candidateId:'C1',support:'supported',excerpt:'doubt itself proves the thinker exists'}]}]},
-  {failureReason:'invalid-evidence-excerpt',parts:[{partId:'P1',evidence:[{candidateId:'C1',support:'direct',excerpt:'short'}]}]},
-  {failureReason:'duplicate-evidence-candidate',parts:[{partId:'P1',evidence:[
-   {candidateId:'C1',support:'direct',excerpt:'doubt itself proves the thinker exists'},
-   {candidateId:'C1',support:'context',excerpt:'doubt itself proves the thinker exists'}]}]}
+  {failureReason:'invalid-evidence-excerpt',parts:[{partId:'P1',evidence:[{candidateId:'C1',support:'direct',excerpt:'short'}]}]}
  ];
  for(const item of cases){
   const raw=JSON.stringify({parts:item.parts,privatePayload:'PRIVATE SELECTOR TEXT'});
@@ -82,6 +79,25 @@ test('selector reports safe subtypes for malformed part and evidence decisions',
     return true;
    },item.failureReason);
  }
+});
+
+test('selector deduplicates repeated candidate IDs and counts the normalization',async()=>{
+ const cue={candidateId:'C1',support:'direct',excerpt:'doubt itself proves the thinker exists'};
+ const result=await selectEvidenceCandidates(requestWith([{partId:'P1',evidence:[cue,{...cue}]}]));
+ assert.equal(result.duplicateEvidenceEntriesRemoved,1);
+ assert.deepEqual(result.parts[0].candidateIds,['C1']);
+ assert.equal(result.parts[0].coverage,'supported');
+ assert.equal(result.parts[0].evidence.length,1);
+});
+
+test('conflicting duplicate selector cues conservatively become contextual',async()=>{
+ const result=await selectEvidenceCandidates(requestWith([{partId:'P1',evidence:[
+  {candidateId:'C1',support:'direct',excerpt:'doubt itself proves the thinker exists'},
+  {candidateId:'C1',support:'context',excerpt:'doubt itself proves the thinker exists'}
+ ]}]));
+ assert.equal(result.duplicateEvidenceEntriesRemoved,1);
+ assert.equal(result.parts[0].coverage,'partial');
+ assert.deepEqual(result.parts[0].evidence,[{candidateId:'C1',support:'context',excerpt:'',excerptMatched:false}]);
 });
 
 test('valid no-evidence selection remains an explicit empty result',async()=>{
