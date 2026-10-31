@@ -847,6 +847,52 @@ test('a retained direct synthesis remains complete when library evidence is part
  assert.equal(ai.calls.length,2,'synthesis review reuses the existing composition and review calls');
 });
 
+test('known cited claims misplaced in context-retention IDs warn without invalidating source review',async()=>{
+ const ai=makeAI([answer('PART P1\nHume grounds causal necessity in repeated conjunction and custom. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const claim=payload.claims.find(item=>item.sourceIds.includes('S1'));
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:[claim.claimId]}],
+    claims:payload.claims.map(item=>({claimId:item.claimId,status:'answered',sources:
+     item.sourceIds.map(sourceId=>({sourceId,spanIds:[spanId]}))}))})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.reviewContract.valid,true,
+  'the cited claim still passes its independent exact-span review');
+ assert.deepEqual(result.trace.reviewContract.issues,[]);
+ assert.deepEqual(result.trace.reviewContract.warnings,[{
+  partId:'P1',code:'source-claim-in-retained-context-list',claimIds:['P1-C1']
+ }]);
+ assert.equal(result.reviewStatus,'claim-review');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.questionParts[0].answerStatus,'answered');
+ assert.equal(result.answerCompleteness,'full');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(ai.calls.length,2,'misplaced retention IDs are handled without another model call');
+});
+
+test('an unknown retained-context claim ID remains a blocking contract error',async()=>{
+ const ai=makeAI([answer('PART P1\nHume grounds causal necessity in repeated conjunction and custom. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const claim=payload.claims.find(item=>item.sourceIds.includes('S1'));
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:['P1-C999']}],
+    claims:payload.claims.map(item=>({claimId:item.claimId,status:'answered',sources:
+     item.sourceIds.map(sourceId=>({sourceId,spanIds:[spanId]}))}))})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.reviewContract.valid,false);
+ assert.deepEqual(result.trace.reviewContract.issues,['invalid-retained-context-claim-id']);
+ assert.equal(result.reviewStatus,'review-contract-incomplete');
+ assert.equal(result.outcome,'unverified-source-draft');
+});
+
 test('review can select relevant exact evidence beyond the claim-ranked hint list',async()=>{
  const text=[
   'Herein lies my very strength; this is my unchanging sport. I turn my wheel that spins its circle fairly; I delight to make the lowest turn to the top, the highest to the bottom.',
@@ -1093,10 +1139,11 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/exact form: \[S1\] or \[S1, S2\]/);
  assert.match(COMPOSER_PROMPT,/a book title, author name, or parenthetical \(S1\) is not a citation/);
  assert.match(COMPOSER_PROMPT,/Do not cite every sentence just because it is factual/);
- assert.match(COMPOSER_PROMPT,/Answer the exact question early in each part/);
+ assert.match(COMPOSER_PROMPT,/Start each part with a direct, calibrated answer to the exact question/);
+ assert.match(COMPOSER_PROMPT,/For uncertain or disputed questions, distinguish what the evidence establishes from what remains possible/);
  assert.match(COMPOSER_PROMPT,/neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/logical relations.*neither P nor Q.*not both P and Q/);
- assert.match(COMPOSER_PROMPT,/Keep the opening sentence focused on the reader rather than a preview of several themes/);
+ assert.match(COMPOSER_PROMPT,/Keep the opening focused on the reader rather than a preview of themes/);
  assert.match(COMPOSER_PROMPT,/If that opening sentence summarizes or combines positions from supplied passages, cite the page IDs that support those components in the sentence/);
  assert.match(COMPOSER_PROMPT,/Leave independent background or your own interpretation uncited when it does not present a supplied source's position/);
  assert.match(COMPOSER_PROMPT,/explain how they relate without treating them as proof/);
@@ -1119,6 +1166,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(REVIEW_PROMPT,/Return the supporting span IDs/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(REVIEW_PROMPT,/For a claim with sourceIds empty, return an empty sources array/);
+ assert.match(REVIEW_PROMPT,/retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims/);
 });
 
 test('an unheaded single-part source claim reaches review and is not treated as verified context',async()=>{
