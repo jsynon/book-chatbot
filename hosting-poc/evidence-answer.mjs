@@ -170,10 +170,10 @@ const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in
 function mergeReviewRepairs(rawReview,requested,repair){
   if(!Array.isArray(repair?.decisions)||repair.decisions.length!==requested.length)
     return {ok:false,reason:'decision-count-mismatch'};
-  const expected=new Map(requested.map(item=>[item.claimId+'\\u0000'+item.sourceId,item]));
+  const expected=new Map(requested.map(item=>[item.claimId+'|'+item.sourceId,item]));
   const received=new Map();
   for(const item of repair.decisions){
-    const key=String(item?.claimId||'')+'\\u0000'+String(item?.sourceId||'');
+    const key=String(item?.claimId||'')+'|'+String(item?.sourceId||'');
     const request=expected.get(key);
     if(!request||received.has(key)||!hasRecognizedStatus(item?.status)||
        !Array.isArray(item?.spanIds)||
@@ -1282,7 +1282,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMapsByPart,question,reviewClaims);
         const missingDecisions=[...new Map(review.supportIssues
           .filter(issue=>issue.reason==='missing-claim-source-decision')
-          .map(issue=>[issue.claimId+'\\u0000'+issue.sourceId,issue])).values()];
+          .map(issue=>[issue.claimId+'|'+issue.sourceId,issue])).values()];
         let repairTrace=null;
         if(!review.issues.length&&missingDecisions.length&&missingDecisions.length<=6){
           const requested=missingDecisions.map(issue=>{
