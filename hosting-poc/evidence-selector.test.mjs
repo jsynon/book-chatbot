@@ -11,42 +11,69 @@ test('selector fallback gives distinct works a page before taking second pages',
   ['10:1','20:1','30:1','10:2','20:2']);
 });
 
-test('selector prompt demonstrates one valid coverage value and accepts a valid decision',async()=>{
+function requestWith(decisions,{excerpt='The text says that doubt itself proves the thinker exists.',
+  parts=[{partId:'P1',question:'Why does doubt establish existence?'}]}={}){
+ return {question:'What does this source argue?',parts,
+  candidates:[{id:'C1',title:'A source',page:1,excerpt}],
+  ai:{run:async(_model,{messages})=>({
+   choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:decisions})}}],
+   usage:{neurons:1,prompt_tokens:10,completion_tokens:10}
+  })}};
+}
+
+test('selector requires a verbatim excerpt and derives direct coverage from it',async()=>{
  let systemPrompt='';
- const request={question:'What does this source argue?',parts:[{partId:'P1',question:'What is the argument?'}],
-  candidates:[{id:'C1',title:'A source',page:1,excerpt:'A sufficiently long source excerpt for testing.'}],
-  ai:{run:async(_model,{messages})=>{
-   systemPrompt=messages.find(message=>message.role==='system')?.content||'';
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[{
-    partId:'P1',candidateIds:['C1'],coverage:'supported'}]})}}]};
-  }}};
+ const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'direct',
+  excerpt:'doubt itself proves the thinker exists'}]}]);
+ const original=request.ai.run;
+ request.ai.run=async(model,input)=>{systemPrompt=input.messages.find(message=>message.role==='system')?.content||'';
+  assert.equal(input.max_completion_tokens,960);return original(model,input);};
  const result=await selectEvidenceCandidates(request);
- assert.match(systemPrompt,/"coverage":"supported"/);
- assert.match(systemPrompt,/exactly one string: "supported", "partial", or "none"/);
- assert.doesNotMatch(systemPrompt,/"coverage":"supported\|partial\|none"/);
+ assert.match(systemPrompt,/"support":"direct"/);
+ assert.match(systemPrompt,/exact, contiguous excerpt/);
  assert.deepEqual(result.selectedCandidateIds,['C1']);
+ assert.deepEqual(result.parts[0].candidateIds,['C1']);
  assert.equal(result.parts[0].coverage,'supported');
+ assert.equal(result.parts[0].evidence[0].excerptMatched,true);
 });
 
-test('selector reports safe subtypes for malformed part decisions',async()=>{
- const base={question:'What does this source argue?',
-  candidates:[{id:'C1',title:'A source',page:1,excerpt:'A sufficiently long source excerpt for testing.'}]};
+test('a part with only contextual evidence stays partial even if its retrieval hint was linked',async()=>{
+ const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'context',
+  excerpt:'doubt itself proves the thinker exists'}]}]);
+ request.candidates[0].retrievedPartHints=['P1'];
+ const result=await selectEvidenceCandidates(request);
+ assert.equal(result.parts[0].coverage,'partial');
+ assert.equal(result.parts[0].evidence[0].support,'context');
+});
+
+test('a model paraphrase cannot be recorded as a direct supporting excerpt',async()=>{
+ const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'direct',
+  excerpt:'thinking proves that a person exists'}]}]);
+ const result=await selectEvidenceCandidates(request);
+ assert.equal(result.parts[0].coverage,'partial');
+ assert.equal(result.parts[0].evidence[0].support,'context');
+ assert.equal(result.parts[0].evidence[0].excerpt,'');
+ assert.equal(result.parts[0].evidence[0].excerptMatched,false);
+});
+
+test('selector reports safe subtypes for malformed part and evidence decisions',async()=>{
  const cases=[
-  {failureReason:'decision-not-object',decisions:[null]},
-  {failureReason:'missing-part-id',decisions:[{candidateIds:['C1'],coverage:'supported'}]},
-  {failureReason:'unknown-part-id',decisions:[{partId:'P9',candidateIds:['C1'],coverage:'supported'}]},
-  {failureReason:'duplicate-part-id',parts:[{partId:'P1',question:'What is the argument?'},
-   {partId:'P2',question:'What supports the argument?'}],decisions:[
-    {partId:'P1',candidateIds:['C1'],coverage:'supported'},
-    {partId:'P1',candidateIds:['C1'],coverage:'supported'}]},
-  {failureReason:'candidate-ids-not-array',decisions:[{partId:'P1',coverage:'supported'}]},
-  {failureReason:'too-many-candidate-ids',decisions:[{partId:'P1',candidateIds:Array(49).fill('C1'),coverage:'supported'}]},
-  {failureReason:'invalid-coverage',decisions:[{partId:'P1',candidateIds:['C1'],coverage:'supported|partial|none'}]}
+  {failureReason:'decision-not-object',parts:[null]},
+  {failureReason:'missing-part-id',parts:[{evidence:[]}]},
+  {failureReason:'unknown-part-id',parts:[{partId:'P9',evidence:[]}]},
+  {failureReason:'duplicate-part-id',expectedParts:[{partId:'P1',question:'Why does doubt establish existence?'},
+   {partId:'P2',question:'What else does doubt establish?'}],parts:[{partId:'P1',evidence:[]},{partId:'P1',evidence:[]}]},
+  {failureReason:'evidence-not-array',parts:[{partId:'P1',evidence:'C1'}]},
+  {failureReason:'unknown-candidate-id',parts:[{partId:'P1',evidence:[{candidateId:'C9',support:'direct',excerpt:'doubt itself proves the thinker exists'}]}]},
+  {failureReason:'invalid-evidence-support',parts:[{partId:'P1',evidence:[{candidateId:'C1',support:'supported',excerpt:'doubt itself proves the thinker exists'}]}]},
+  {failureReason:'invalid-evidence-excerpt',parts:[{partId:'P1',evidence:[{candidateId:'C1',support:'direct',excerpt:'short'}]}]},
+  {failureReason:'duplicate-evidence-candidate',parts:[{partId:'P1',evidence:[
+   {candidateId:'C1',support:'direct',excerpt:'doubt itself proves the thinker exists'},
+   {candidateId:'C1',support:'context',excerpt:'doubt itself proves the thinker exists'}]}]}
  ];
  for(const item of cases){
-  const parts=item.parts||[{partId:'P1',question:'What is the argument?'}];
-  const raw=JSON.stringify({parts:item.decisions,privatePayload:'PRIVATE SELECTOR TEXT'});
-  await assert.rejects(selectEvidenceCandidates({...base,parts,
+  const raw=JSON.stringify({parts:item.parts,privatePayload:'PRIVATE SELECTOR TEXT'});
+  await assert.rejects(selectEvidenceCandidates({...requestWith([],{parts:item.expectedParts||undefined}),
    ai:{run:async()=>({choices:[{finish_reason:'stop',message:{content:raw}}]})}}),error=>{
     assert.equal(error.failureCode,'selector-invalid-response');
     assert.equal(error.failureReason,item.failureReason);
@@ -57,26 +84,9 @@ test('selector reports safe subtypes for malformed part decisions',async()=>{
  }
 });
 
-test('selector invalid-response subtype is safe and distinguishes malformed decisions',async()=>{
- const request={question:'What does this source argue?',parts:[{partId:'P1',question:'What is the argument?'}],
-  candidates:[{id:'C1',title:'A source',page:1,excerpt:'A sufficiently long source excerpt for testing.'}],
-  ai:{run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[{
-   partId:'P1',candidateIds:['C99'],coverage:'supported'}]})}}]})}};
- await assert.rejects(selectEvidenceCandidates(request),error=>{
-  assert.equal(error.failureCode,'selector-invalid-response');
-  assert.equal(error.failureReason,'unknown-candidate-id');
-  return true;
- });
-});
-
-test('selector reports a coverage-selection mismatch without retaining model text',async()=>{
- const request={question:'What does this source argue?',parts:[{partId:'P1',question:'What is the argument?'}],
-  candidates:[{id:'C1',title:'A source',page:1,excerpt:'A sufficiently long source excerpt for testing.'}],
-  ai:{run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[{
-   partId:'P1',candidateIds:['C1'],coverage:'none'}]})}}]})}};
- await assert.rejects(selectEvidenceCandidates(request),error=>{
-  assert.equal(error.failureReason,'coverage-selection-mismatch');
-  assert.equal(error.message.includes('C1'),false);
-  return true;
- });
+test('valid no-evidence selection remains an explicit empty result',async()=>{
+ const result=await selectEvidenceCandidates(requestWith([{partId:'P1',evidence:[]}]));
+ assert.deepEqual(result.selectedCandidateIds,[]);
+ assert.deepEqual(result.parts[0].candidateIds,[]);
+ assert.equal(result.parts[0].coverage,'none');
 });
