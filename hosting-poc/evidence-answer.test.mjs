@@ -2626,3 +2626,10 @@ test('verse-restricted answers expose the requested verses as evidence and retai
  assert.equal(reviewPayload.parts[0].evidence[0].spans[0].spanId,'S1-Q1');
  assert.equal(reviewPayload.parts[0].evidence[0].contextText,source.text);
 });
+
+
+test('review guidance checks the requested reasoning operation, not just a related principle',()=>{
+ assert.match(REVIEW_PROMPT,/kind of response it requests/);
+ assert.match(REVIEW_PROMPT,/reasoning or mechanism rather than merely stating a related rule or conclusion/);
+ assert.match(REVIEW_PROMPT,/Mark the part partial when a central requested element is missing/);
+});

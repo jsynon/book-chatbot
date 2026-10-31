@@ -2096,6 +2096,23 @@ test('public highlights join only adjacent verified spans for the same claim',()
  assert.equal(highlights[0].quote,first+' '+second);
  assert.deepEqual(highlights[0].quotes.map(item=>item.quote),[first+' '+second]);
 });
+test('public highlights keep the strongest claim-specific excerpt without unrelated filler',()=>{
+ const source={id:'S1',title:'The Odyssey — Homer',page:212};
+ const point='Odysseus turns toward the sun, anxious for it to set, yearning to be home.';
+ const unrelated='The king’s instructions met with warm applause and home they went to sleep, each in his own house.';
+ const relevant='Time and again Odysseus turned his face toward the radiant sun, anxious for it to set, yearning now to be gone and home once more.';
+ const text=unrelated+' A long passage separates these lines. '+relevant;
+ const relevantStart=text.indexOf(relevant);
+ const highlights=selectPublicEvidenceHighlights('Odysseus longs to return home [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point,quote:unrelated,quoteVerified:true,
+   start:0,end:unrelated.length},
+  {id:'S1',claimId:'P1-C1',partId:'P1',point,quote:relevant,quoteVerified:true,
+   start:relevantStart,end:relevantStart+relevant.length}
+ ],3,'How does Odysseus’s desire to return home shape his choices?',{S1:text});
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,relevant);
+ assert.deepEqual(highlights[0].quotes.map(item=>item.quote),[relevant]);
+});
 test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
  const fixture=await fingerprintTestFixture();
  const response=await fixture.response({method:'OPTIONS'});
