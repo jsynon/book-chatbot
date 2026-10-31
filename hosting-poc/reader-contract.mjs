@@ -128,7 +128,13 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   const hypotheticalAuthorResponse=/\b(?:what|how)\s+would\b[^?!.]{0,120}\b(?:think|say|respond|react|view|regard)\b[^?!.]{0,100}\b(?:about|of|on|regarding|concerning|to)\b/i.test(resolvedQuestion);
   const comparisonPattern=/\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|versus|vs\.?|similar(?:ity)?|alike)\b/i;
   const hasMultipleQuestions=(resolvedQuestion.match(/\?/g)||[]).length>1;
-  const explicitMultiPartRequest=asksAnotherFacet||hasMultipleQuestions||comparisonPattern.test(resolvedQuestion);
+  // The planner can distinguish coordinated outcomes that this compact
+  // surface-form check cannot name in advance. Preserve that decision when a
+  // coordinated question arrives with multiple parts, while keeping ordinary
+  // single questions on the one-part path.
+  const plannerDecomposedCoordination=normalizedParts.length>1&&/\b(?:and|or)\b/i.test(resolvedQuestion);
+  const explicitMultiPartRequest=asksAnotherFacet||hasMultipleQuestions||
+    comparisonPattern.test(resolvedQuestion)||plannerDecomposedCoordination;
   // Planner parts become required coverage obligations. Keep a single direct
   // question as one part; use search leads and supported prose for helpful
   // context instead of turning inferred themes into new answer requirements.

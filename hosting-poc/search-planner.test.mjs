@@ -32,20 +32,29 @@ const verify=async url=>{
  return Response.json({success:true,hostname:'jsynon.github.io',action:'companion_ask'});
 };
 
-test('planner instruction preserves independently answerable asks without fragmenting one relation',async()=>{
- const planned={resolvedQuestion:'How does memory shape identity, and what limits does memory have?',
-  intent:'explain',sources:[],parts:['How does memory shape identity?','What limits does memory have?'],
-  scope:'',queries:['memory identity personal continuity','limits of memory self knowledge']};
- const result=await planSearchQueries(planned.resolvedQuestion,'',{
-  run:async(_model,options)=>{
-   const prompt=options.messages[0].content;
-   assert.match(prompt,/independently answerable outcomes/i);
-   assert.match(prompt,/keep a cause and its consequence/i);
-   assert.match(prompt,/do not split examples, lists/i);
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]};
-  }});
- assert.deepEqual(result.plan.parts.map(part=>part.question),planned.parts);
+test('planner separates distinct outcomes and keeps one causal request together',async()=>{
+ const cases=[
+  {question:"How does migration affect a city's economy and its family life?",
+   parts:["How does migration affect a city's economy?","How does migration affect a city's family life?"]},
+  {question:"How does a change in income affect a family's housing choices?",
+   parts:["How does a change in income affect a family's housing choices?"]}
+ ];
+ for(const item of cases){
+  const planned={resolvedQuestion:item.question,intent:'explain',sources:[],parts:item.parts,
+   scope:'',queries:['migration and the city','migration and family life']};
+  const result=await planSearchQueries(item.question,'',{
+   run:async(_model,options)=>{
+    const prompt=options.messages[0].content;
+    assert.match(prompt,/two distinct targets/i);
+    assert.match(prompt,/each cause and its consequence together/i);
+    assert.match(prompt,/single relationship between two ideas together/i);
+    assert.match(prompt,/do not split examples, lists/i);
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]};
+   }});
+  assert.deepEqual(result.plan.parts.map(part=>part.question),item.parts);
+ }
 });
+
 test('bounded search planner produces distinct, well-formed corpus search queries',async()=>{
  const answer=await planSearchQueries(question,'Crime and Punishment — Dostoevsky',mockAI);
  assert.deepEqual(answer.queries,good.queries);
