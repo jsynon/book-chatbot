@@ -109,6 +109,7 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
   if(!Array.isArray(parsed?.parts)||parsed.parts.length!==compactParts.length)
     throw selectorError('selector-invalid-response','Evidence selector omitted question-part decisions.',null,'missing-part-decisions');
   const byPart=new Map();
+  let duplicateEvidenceEntriesRemoved=0;
   for(const item of parsed.parts){
     if(!item||typeof item!=='object'||Array.isArray(item))
       throw selectorError('selector-invalid-response','Evidence selector returned an invalid part decision.',null,'decision-not-object');
@@ -122,7 +123,7 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
       throw selectorError('selector-invalid-response','Evidence selector evidence was not an array.',null,'evidence-not-array');
     if(item.evidence.length>MAX_SELECTOR_CANDIDATES)
       throw selectorError('selector-invalid-response','Evidence selector returned an unbounded evidence list.',null,'too-many-evidence-items');
-    const seenForPart=new Set(),evidence=[];
+    const evidenceByCandidate=new Map();
     for(const entry of item.evidence){
       if(!entry||typeof entry!=='object'||Array.isArray(entry)||
          typeof entry.candidateId!=='string'||typeof entry.support!=='string'||
@@ -135,19 +136,31 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
       const excerpt=normalizedEvidenceExcerpt(entry.excerpt);
       if(excerpt.length<12||excerpt.length>320)
         throw selectorError('selector-invalid-response','Evidence selector excerpt was outside the allowed size.',null,'invalid-evidence-excerpt');
-      if(seenForPart.has(entry.candidateId))
-        throw selectorError('selector-invalid-response','Evidence selector repeated a candidate for one part.',null,'duplicate-evidence-candidate');
-      seenForPart.add(entry.candidateId);
       // A model-selected citation cue is useful only when it can be found in
       // the actual excerpt. A mismatched quote remains a contextual lead, not
       // direct evidence; it cannot falsely make a part look fully covered.
       const suppliedExcerpt=normalizedEvidenceExcerpt(
         compactCandidates.find(candidate=>candidate.id===entry.candidateId)?.excerpt);
       const excerptMatched=suppliedExcerpt.includes(excerpt);
-      evidence.push({candidateId:entry.candidateId,
+      const normalizedEntry={candidateId:entry.candidateId,
         support:excerptMatched?entry.support:'context',
-        excerpt:excerptMatched?excerpt:'',excerptMatched});
+        excerpt:excerptMatched?excerpt:'',excerptMatched};
+      const previous=evidenceByCandidate.get(entry.candidateId);
+      if(!previous){
+        evidenceByCandidate.set(entry.candidateId,normalizedEntry);
+        continue;
+      }
+      // Repeated IDs are a recoverable selector formatting mistake. Merge
+      // identical cues; when they disagree, retain the page only as context.
+      duplicateEvidenceEntriesRemoved++;
+      const cuesAgree=previous.support===normalizedEntry.support&&
+        previous.excerptMatched&&normalizedEntry.excerptMatched&&
+        previous.excerpt===normalizedEntry.excerpt;
+      if(!cuesAgree)evidenceByCandidate.set(entry.candidateId,{
+        candidateId:entry.candidateId,support:'context',excerpt:'',excerptMatched:false
+      });
     }
+    const evidence=[...evidenceByCandidate.values()];
     const candidateIdsForPart=evidence.map(entry=>entry.candidateId);
     const coverage=evidence.some(entry=>entry.support==='direct')?'supported':
       evidence.length?'partial':'none';
@@ -198,6 +211,7 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
     .filter(id=>!selectedSet.has(id));
   const normalizedParts=orderedParts.map(part=>({...part,candidateIds:keptByPart.get(part.partId)}));
   return {selectedCandidateIds,parts:normalizedParts,
+    ...(duplicateEvidenceEntriesRemoved?{duplicateEvidenceEntriesRemoved}:{}),
     ...(droppedCandidateIds.length?{selectionTrim:{
       reason:'six-page-packet-limit',reportedDistinctCandidates:selectedSet.size+droppedCandidateIds.length,
       keptCandidateIds:selectedCandidateIds,droppedCandidateIds
