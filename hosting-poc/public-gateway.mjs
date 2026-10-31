@@ -3965,7 +3965,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           [{partId:'P1',question:data.question}];
         const selectorCandidates=verifiedCandidates.map((source,index)=>({
           id:'C'+(index+1),title:source.title.slice(0,200),page:source.page,
-          excerpt:sourceExcerpt(source.scopeText||source.text,data.question,1200)}));
+          excerpt:sourceExcerpt(source.scopeText||source.text,data.question,1200),
+          ...(Array.isArray(source.candidatePartIds)?{
+            retrievedPartHints:source.candidatePartIds.filter(id=>
+              selectionParts.some(part=>part.partId===id))}: {})}));
         let answerSources=[],selectionTrace;
         const started=performance.now();
         try{
