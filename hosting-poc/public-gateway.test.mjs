@@ -2188,13 +2188,13 @@ async function pilotScenario({config={},model,selector,turnstileValid=true}={}) 
  const ai={run:async(...args)=>{
    calls++;
    const input=args[1];
-   if(input?.max_completion_tokens===500){
+   if(input?.max_completion_tokens===960){
      if(selector)return selector(...args);
      const selection=JSON.parse(input.messages[1].content);
      const candidateIds=selection.candidates.slice(0,6).map(candidate=>candidate.id);
      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
-       selection.parts.map(part=>({partId:part.partId,candidateIds,
-         coverage:candidateIds.length?'supported':'none'}))})}}],
+       selection.parts.map(part=>({partId:part.partId,evidence:candidateIds.map(candidateId=>({
+         candidateId,support:'direct',excerpt:selection.candidates.find(candidate=>candidate.id===candidateId).excerpt.slice(0,200)}))}))})}}],
        usage:{neurons:1,prompt_tokens:10,completion_tokens:10}};
    }
    return (model||fixture.run)(...args);
@@ -2689,7 +2689,7 @@ test('a valid empty evidence selection can review a useful single-part answer wi
   selector:async(_model,input)=>{
    const selection=JSON.parse(input.messages[1].content);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
-    selection.parts.map(part=>({partId:part.partId,candidateIds:[],coverage:'none'}))})}}],
+    selection.parts.map(part=>({partId:part.partId,evidence:[]}))})}}],
     usage:{neurons:2,prompt_tokens:14,completion_tokens:8}};
   },
   model:async(_model,input)=>{
@@ -2742,7 +2742,7 @@ test('selector fallback trace retains only an approved invalid-response subtype'
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
    PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
   selector:async()=>({choices:[{finish_reason:'stop',message:{content:
-   '{"parts":[{"partId":"P1","candidateIds":["C99"],"coverage":"supported"}]}'}}]})
+   '{"parts":[{"partId":"P1","evidence":[{"candidateId":"C99","support":"direct","excerpt":"a verbatim source excerpt long enough"}]}]}'}}]})
  });
  const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
  const result=await response.json();
@@ -2756,13 +2756,13 @@ test('selector trace exposes the specific coverage-shape failure without model t
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
    PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
   selector:async()=>({choices:[{finish_reason:'stop',message:{content:
-   '{"parts":[{"partId":"P1","candidateIds":["C1"],"coverage":"supported|partial|none"}],"privatePayload":"PRIVATE SELECTOR TEXT"}'}}]})
+   '{"parts":[{"partId":"P1","evidence":[{"candidateId":"C1","support":"supported|partial|none","excerpt":"a verbatim source excerpt long enough"}]}],"privatePayload":"PRIVATE SELECTOR TEXT"}'}}]})
  });
  const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
  const result=await response.json();
  assert.equal(response.status,200);
  assert.equal(result.trace.stages[0].failureCode,'selector-invalid-response');
- assert.equal(result.trace.stages[0].failureReason,'invalid-coverage');
+ assert.equal(result.trace.stages[0].failureReason,'invalid-evidence-support');
  assert.equal(JSON.stringify(result).includes('PRIVATE SELECTOR TEXT'),false);
 });
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{

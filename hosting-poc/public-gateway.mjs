@@ -20,7 +20,9 @@ import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} fr
 const SAFE_SELECTOR_FAILURE_REASONS=new Set(['missing-text','invalid-json','missing-part-decisions',
   'invalid-part-decision','decision-not-object','missing-part-id','unknown-part-id','duplicate-part-id',
   'candidate-ids-not-array','too-many-candidate-ids','invalid-coverage',
-  'unknown-candidate-id','coverage-selection-mismatch','missing-part-decision']);
+  'unknown-candidate-id','coverage-selection-mismatch','missing-part-decision',
+  'evidence-not-array','too-many-evidence-items','invalid-evidence-item',
+  'invalid-evidence-support','invalid-evidence-excerpt','duplicate-evidence-candidate']);
 export const INDEX_ROOT = 'https://jsynon.github.io/antilogicalism-library-data/data-v48/';
 // Keep a generous character ceiling that fits the bounded model output while
 // allowing detailed, evidence-supported answers without turning them into 502s.
@@ -3492,13 +3494,16 @@ function duplicatePassageOverlap(left,right,question){
     verseContainment:containment,leftScriptureShare:leftBible.scriptureShare,
     rightScriptureShare:rightBible.scriptureShare};
 }
-function addSelectedEvidenceSource(answerSources,source,{candidateId,candidatePartIds=[],duplicateTrace,
+function addSelectedEvidenceSource(answerSources,source,{candidateId,candidatePartIds=[],candidatePartSupport=[],duplicateTrace,
   budget,totalBytes,maxSources=6,question}={}){
   const duplicate=answerSources.map(existing=>({existing,
     overlap:duplicatePassageOverlap(existing,source,question)})).find(item=>item.overlap);
   if(duplicate){
     duplicate.existing.candidatePartIds=[...new Set([
       ...(duplicate.existing.candidatePartIds||[]),...candidatePartIds])];
+    duplicate.existing.candidatePartSupport=[...(duplicate.existing.candidatePartSupport||[]),
+      ...candidatePartSupport].filter((entry,index,all)=>all.findIndex(item=>
+        item.partId===entry.partId&&item.support===entry.support&&item.excerpt===entry.excerpt)===index);
     duplicateTrace.push({candidateId,duplicateOf:duplicate.existing.candidateId,
       reason:duplicate.overlap.reason,
       ...(duplicate.overlap.workTitle?{workTitle:duplicate.overlap.workTitle}:{}),
@@ -3513,7 +3518,7 @@ function addSelectedEvidenceSource(answerSources,source,{candidateId,candidatePa
   }
   const bytes=new TextEncoder().encode(source.text).byteLength;
   if(answerSources.length>=maxSources||bytes>14000||totalBytes+bytes>budget)return {added:false,totalBytes};
-  answerSources.push({...source,id:'S'+(answerSources.length+1),candidateId,candidatePartIds,
+  answerSources.push({...source,id:'S'+(answerSources.length+1),candidateId,candidatePartIds,candidatePartSupport,
     ...(source.scopeText?{scopeText:source.scopeText}:{})});
   return {added:true,totalBytes:totalBytes+bytes};
 }
@@ -3993,8 +3998,11 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             if(!source)continue;
             const candidatePartIds=decision.parts.filter(part=>part.candidateIds.includes(id))
               .map(part=>part.partId);
+            const candidatePartSupport=decision.parts.flatMap(part=>part.evidence
+              .filter(entry=>entry.candidateId===id).map(entry=>({partId:part.partId,
+                support:entry.support,...(entry.excerptMatched?{excerpt:entry.excerpt}:{})})));
             const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:id,
-              candidatePartIds,duplicateTrace,budget:35000,totalBytes,question:data.question});
+              candidatePartIds,candidatePartSupport,duplicateTrace,budget:35000,totalBytes,question:data.question});
             totalBytes=packed.totalBytes;
           }
           if(!answerSources.length){
@@ -4006,7 +4014,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             status:'selected',candidateCount:verifiedCandidates.length,
             candidates:selectorCandidates,decision,selected:answerSources.map(source=>({
               id:source.id,candidateId:source.candidateId,bookId:source.bookId,page:source.page,
-              candidatePartIds:source.candidatePartIds})),suppressedDuplicates:duplicateTrace};
+              candidatePartIds:source.candidatePartIds,candidatePartSupport:source.candidatePartSupport})),
+            suppressedDuplicates:duplicateTrace};
           sourceSelectionStatus='selected';
           }
         }catch(error){
