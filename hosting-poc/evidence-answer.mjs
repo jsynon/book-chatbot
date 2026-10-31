@@ -559,6 +559,7 @@ function renderAnswerParagraphs(answers){
 function normalizeAnswerMarkdown(value){
   return String(value||'')
     .replace(/[ \t]+([*+-])[ \t]+(?=\*\*[^*\n]{2,100}\*\*)/gu,'\n$1 ')
+    .replace(/[ \t]+(?=\d{1,2}[.)][ \t]+\*\*)/gu,'\n')
     .replace(/(\*\*[^*\n]{2,100}:\*\*)[ \t]+(?=\S)/gu,'$1\n\n');
 }
 
@@ -1283,12 +1284,15 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           .filter(issue=>issue.reason==='missing-claim-source-decision')
           .map(issue=>[issue.claimId+'\\u0000'+issue.sourceId,issue])).values()];
         let repairTrace=null;
-        if(!review.issues.length&&missingDecisions.length&&missingDecisions.length<=12){
+        if(!review.issues.length&&missingDecisions.length&&missingDecisions.length<=6){
           const requested=missingDecisions.map(issue=>{
             const claim=reviewClaims.find(item=>item.claimId===issue.claimId);
             const partEvidence=reviewParts.find(item=>item.partId===issue.partId);
             const sourceEvidence=partEvidence?.evidence.find(item=>item.id===issue.sourceId);
+            const claimSpanIds=new Set(claim?.sourceEvidence
+              ?.find(item=>item.sourceId===issue.sourceId)?.spanIds||[]);
             const spans=(sourceEvidence?.spans||[]).filter(span=>
+              claimSpanIds.has(span.spanId)&&
               String(span.spanId||'').startsWith(issue.sourceId+'-'));
             return {partId:issue.partId,question:partEvidence?.question||'',
               claimId:issue.claimId,claimText:claim?.text||'',
@@ -1315,7 +1319,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             }
           }else repairTrace={attempted:false,requestedCount:missingDecisions.length,
             applied:false,reason:'repair-evidence-unavailable'};
-        }else if(missingDecisions.length>12){
+        }else if(missingDecisions.length>6){
           repairTrace={attempted:false,requestedCount:missingDecisions.length,
             applied:false,reason:'repair-limit-exceeded'};
         }
