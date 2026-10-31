@@ -1048,13 +1048,30 @@ test('the deterministic polarity guard rejects a reviewed positive claim that re
   issue.sourceId==='S1'&&issue.reason==='source-contradicts-claim-polarity'));
 });
 
+test('the logical-scope guard distinguishes neither-or from not-both paraphrases',async()=>{
+ const source={id:'S1',bookId:'72',title:'Case Review',page:18,
+  text:'It is not right to state that a contract is valid nor invalid before the missing evidence is reviewed.',
+  preview:'It is not right to state that a contract is valid nor invalid before the missing evidence is reviewed.'};
+ const ai=makeAI([answer('PART P1\nIt is incorrect to say the contract is both valid and invalid before the evidence is reviewed. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does the report say about the contract?',[source],ai,[],
+  {plan:{intent:'explain',sources:[{label:'Case Review',role:'primary',bookIds:['72']}],
+   parts:[{id:'P1',question:'What does the report say about the contract?',sourceBookIds:['72']}]},
+   catalog:{'72':'Case Review'},trace:true});
+ assert.equal(result.coverage,'none');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S1'&&issue.reason==='source-negation-scope-mismatch'));
+});
+
 test('the answer contract allows useful general context while keeping cited claims traceable',()=>{
  assert.match(COMPOSER_PROMPT,/use your broader knowledge/);
  assert.match(COMPOSER_PROMPT,/exact form: \[S1\] or \[S1, S2\]/);
  assert.match(COMPOSER_PROMPT,/a book title, author name, or parenthetical \(S1\) is not a citation/);
  assert.match(COMPOSER_PROMPT,/Do not cite every sentence just because it is factual/);
- assert.match(COMPOSER_PROMPT,/Answer the exact question first/);
- assert.match(COMPOSER_PROMPT,/focused response to the reader rather than a preview of several themes/);
+ assert.match(COMPOSER_PROMPT,/Answer the exact question early in each part/);
+ assert.match(COMPOSER_PROMPT,/neither P nor Q.*not both P and Q/);
+ assert.match(REVIEW_PROMPT,/logical relations.*neither P nor Q.*not both P and Q/);
+ assert.match(COMPOSER_PROMPT,/Keep the opening sentence focused on the reader rather than a preview of several themes/);
  assert.match(COMPOSER_PROMPT,/If that opening sentence summarizes or combines positions from supplied passages, cite the page IDs that support those components in the sentence/);
  assert.match(COMPOSER_PROMPT,/Leave independent background or your own interpretation uncited when it does not present a supplied source's position/);
  assert.match(COMPOSER_PROMPT,/explain how they relate without treating them as proof/);
@@ -1074,7 +1091,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(REVIEW_PROMPT,/Do not mark a corpus-gap statement or merely adjacent source discussion as an answer/);
  assert.match(REVIEW_PROMPT,/only related background or ends with an unfinished thought/);
  assert.match(REVIEW_PROMPT,/the supplied passages cannot establish its truth, so do not treat their silence as disproof/);
- assert.match(REVIEW_PROMPT,/exact supporting span IDs/);
+ assert.match(REVIEW_PROMPT,/Return the supporting span IDs/);
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(REVIEW_PROMPT,/For a claim with sourceIds empty, return an empty sources array/);
 });
@@ -2008,6 +2025,7 @@ test('a reviewer cannot mark an answer supported without selecting a span from i
   partId:'P1',claimId:'P1-C1',sourceId:'S2',claimText:'Kant lists causality among the categories of relation.',
   claimStatus:'answered',sourceStatus:'partial',attributionStatus:'missing',attributedSpeaker:'',
   candidateSpanIds:['S2-Q1'],reviewerSpanIds:[],acceptedSpanIds:[],acceptedQuote:'',acceptedQuotes:[],accepted:false,
+  recoveredMissingDecision:false,
   validationReason:'missing-claim-source-span'
  }]);
  assert.equal(result.evidenceMap.length,0);
@@ -2050,7 +2068,7 @@ test('the active reviewer resolves a selected span to exact bounded source text'
   candidateSpanIds:result.trace.reviewContract.reviewDecisions[0].candidateSpanIds,
   reviewerSpanIds:[spans[0].spanId],acceptedSpanIds:[spans[0].spanId],
   acceptedQuote:spans[0].text.slice(0,280),acceptedQuotes:[spans[0].text.slice(0,280)],
-  accepted:true,validationReason:null
+  accepted:true,recoveredMissingDecision:false,validationReason:null
  }]);
 });
 
