@@ -40,7 +40,7 @@ test('selector reports safe subtypes for malformed part decisions',async()=>{
     {partId:'P1',candidateIds:['C1'],coverage:'supported'},
     {partId:'P1',candidateIds:['C1'],coverage:'supported'}]},
   {failureReason:'candidate-ids-not-array',decisions:[{partId:'P1',coverage:'supported'}]},
-  {failureReason:'too-many-candidate-ids',decisions:[{partId:'P1',candidateIds:Array(7).fill('C1'),coverage:'supported'}]},
+  {failureReason:'too-many-candidate-ids',decisions:[{partId:'P1',candidateIds:Array(49).fill('C1'),coverage:'supported'}]},
   {failureReason:'invalid-coverage',decisions:[{partId:'P1',candidateIds:['C1'],coverage:'supported|partial|none'}]}
  ];
  for(const item of cases){
