@@ -31,6 +31,8 @@ test('selector requires a verbatim excerpt and derives direct coverage from it',
  const result=await selectEvidenceCandidates(request);
  assert.match(systemPrompt,/"support":"direct"/);
  assert.match(systemPrompt,/exact, contiguous excerpt/);
+ assert.match(systemPrompt,/requested operation/);
+ assert.match(systemPrompt,/reasoning or mechanism/);
  assert.deepEqual(result.selectedCandidateIds,['C1']);
  assert.deepEqual(result.parts[0].candidateIds,['C1']);
  assert.equal(result.parts[0].coverage,'supported');
