@@ -260,7 +260,7 @@ function normalizeNumericPartHeadings(text,plan){
     if(numeric){
       numericMatches.push({index,number:Number(numeric[1]),raw:line});
       partHeadingLines.push(index);
-    }else if(/^PART\s+(?:P?[1-9]\d*)\b/i.test(line)){
+    }else if(/^PART\s+(?:P?\d+)\b/i.test(line)){
       partHeadingLines.push(index);
     }
   }
