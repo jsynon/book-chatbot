@@ -3450,9 +3450,20 @@ function bibleVerseReferences(source){
     total+evidenceWordTokens(lines[index]).length,0);
   return {refs:confirmed,scriptureShare:wordCount?scriptureWordCount/wordCount:0};
 }
+function sameEvidenceWorkTitle(leftTitle,rightTitle){
+  if(!leftTitle||!rightTitle)return false;
+  if(leftTitle===rightTitle)return true;
+  // Anthologies often repeat a work under a larger collection title (for
+  // example, a standalone essay and the same essay inside a collected volume).
+  // Require a complete title phrase of useful length plus near-identical text
+  // below, so a shared generic word never collapses distinct source material.
+  const shorter=leftTitle.length<=rightTitle.length?leftTitle:rightTitle;
+  const longer=leftTitle.length<=rightTitle.length?rightTitle:leftTitle;
+  return shorter.length>=8&&(` ${longer} `).includes(` ${shorter} `);
+}
 function duplicatePassageOverlap(left,right,question){
   const leftTitle=normalizedEvidenceWorkTitle(left),rightTitle=normalizedEvidenceWorkTitle(right);
-  if(leftTitle&&leftTitle===rightTitle){
+  if(sameEvidenceWorkTitle(leftTitle,rightTitle)){
     const leftTokens=evidenceWordTokens(left.scopeText||left.text);
     const rightTokens=evidenceWordTokens(right.scopeText||right.text);
     if(Math.min(leftTokens.length,rightTokens.length)>=DUPLICATE_PASSAGE_MIN_WORDS){
