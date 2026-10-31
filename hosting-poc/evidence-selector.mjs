@@ -32,6 +32,17 @@ function parseSelectorOutput(raw){
   return parsed;
 }
 
+function sourceWorkKey(title){
+  // Treat common edition labels as the same work while retaining the author
+  // portion of the catalog title. This is a soft tie-break, never a page cap.
+  return String(title||'').normalize('NFKC').toLowerCase()
+    .replace(/\([^)]*(?:edition|printing|version|19\d{2}|20\d{2})[^)]*\)/g,' ')
+    .replace(/\b(?:19|20)\d{2}\b/g,' ')
+    .replace(/\b(?:revised|updated|expanded|second|third)\s+(?=edition|printing|version)\b/g,' ')
+    .replace(/\b(?:edition|printing|version)\b/g,' ')
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+}
+
 /*
  * The Worker calls this only after candidate page fingerprints pass. The
  * selector sees bounded excerpts and returns IDs; the caller maps those IDs
@@ -112,8 +123,9 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
   }
   if(byPart.size!==partIds.size)
     throw selectorError('selector-invalid-response','Evidence selector omitted a part decision.',null,'missing-part-decision');
-  const selectedCandidateIds=[],selectedSet=new Set(),keptByPart=new Map();
+  const selectedCandidateIds=[],selectedSet=new Set(),selectedWorkKeys=new Set(),keptByPart=new Map();
   const orderedParts=compactParts.map(part=>byPart.get(part.partId));
+  const candidateById=new Map(compactCandidates.map(candidate=>[candidate.id,candidate]));
   for(const part of orderedParts)keptByPart.set(part.partId,[]);
   const addCandidate=(part,id)=>{
     const kept=keptByPart.get(part.partId);
@@ -121,24 +133,33 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
     if(!selectedSet.has(id)){
       if(selectedCandidateIds.length>=MAX_SELECTOR_SOURCES)return false;
       selectedSet.add(id);selectedCandidateIds.push(id);
+      selectedWorkKeys.add(sourceWorkKey(candidateById.get(id)?.title));
     }
     return true;
   };
-  // Give every part with usable evidence its highest-ranked page first, then
-  // fill the shared six-page budget round-robin in the selector's own order.
-  // This keeps a broad question from losing a whole part to an overlong list.
+  // Reserve each nonempty question part's top page first. When the model's
+  // ranked list exceeds the shared packet, make one breadth pass over its
+  // remaining useful pages before filling from the original ranking. This is
+  // a preference, not a source quota: repeated pages fill any remaining slots.
   for(const part of orderedParts){
     const first=part.candidateIds[0];
     if(first)addCandidate(part,first);
   }
-  for(let offset=1;selectedCandidateIds.length<MAX_SELECTOR_SOURCES;offset++){
-    let added=false;
+  const maxRank=Math.max(0,...orderedParts.map(part=>part.candidateIds.length));
+  for(let offset=1;offset<maxRank&&selectedCandidateIds.length<MAX_SELECTOR_SOURCES;offset++){
     for(const part of orderedParts){
       const id=part.candidateIds[offset];
-      if(id&&addCandidate(part,id))added=true;
+      const workKey=id?sourceWorkKey(candidateById.get(id)?.title):'';
+      if(id&&workKey&&!selectedWorkKeys.has(workKey))addCandidate(part,id);
       if(selectedCandidateIds.length>=MAX_SELECTOR_SOURCES)break;
     }
-    if(!added)break;
+  }
+  for(let offset=1;offset<maxRank&&selectedCandidateIds.length<MAX_SELECTOR_SOURCES;offset++){
+    for(const part of orderedParts){
+      const id=part.candidateIds[offset];
+      if(id)addCandidate(part,id);
+      if(selectedCandidateIds.length>=MAX_SELECTOR_SOURCES)break;
+    }
   }
   const droppedCandidateIds=[...new Set(orderedParts.flatMap(part=>part.candidateIds))]
     .filter(id=>!selectedSet.has(id));
