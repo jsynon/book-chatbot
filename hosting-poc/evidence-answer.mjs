@@ -751,8 +751,9 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       let claimStatus=decision.status;
       if(!citedIds.size){
         // This sentence is general context or synthesis. The reviewer judges
-        // its usefulness and attribution, while exact-span checks remain
-        // reserved for claims that cite a library page.
+        // uncited context collectively through the part decision; applying
+        // each context claim's status again can strip the explanation after
+        // the reviewer has already accepted the complete answer.
         if(decision.sources.length){
           // A malformed reviewer decision for an uncited sentence must not
           // invalidate unrelated, correctly reviewed claims. Drop the invalid
@@ -764,7 +765,10 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             contextOnly:true,accepted:false,validationReason:'context-claim-has-source-decisions'});
           continue;
         }
-        if(claimStatus==='answered'){
+        const partLevelStatus=reviewerPart?.status||'unanswered';
+        const accepted=partLevelStatus==='answered'||
+          (partLevelStatus==='partial'&&claimStatus==='answered');
+        if(accepted){
           const retainedAnswer={...answer,sourceIds:[],
             renderedText:answer.renderedText||answer.text};
           acceptedAnswers.push(retainedAnswer);
@@ -772,7 +776,9 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         }
         reviewDecisions.push({partId:part.id,claimId:answer.claimId,
           claimText:String(answer.text||'').slice(0,320),claimStatus,
-          contextOnly:true,accepted:claimStatus==='answered',validationReason:null});
+          reviewerPartStatus:partLevelStatus,contextOnly:true,
+          reviewLevel:'part',accepted,
+          validationReason:accepted?null:'part-level-context-not-supported'});
         continue;
       }
       const sourceDecisions=new Map();
@@ -806,6 +812,9 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const sourceDecision=sourceDecisions.get(sourceId);
         const selected=selectedBySource.get(sourceId)||[];
         const rawDecision=decision.sources.find(item=>String(item?.sourceId||'')===sourceId);
+        // A cited source with no explicit decision is an incomplete review,
+        // not merely a weak claim. Keep it out of verified-source outcomes.
+        if(!sourceDecision)issues.push('missing-claim-source-decision');
         const namedAttribution=hasNamedSpeakerAttribution(answer.text);
         const attributionStatus=sourceDecision?.attributionStatus;
         const modelAttributionIssue=namedAttribution&&attributionStatus==='conflict'?
