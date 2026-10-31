@@ -74,7 +74,7 @@ export const COMPOSER_PROMPT=`Answer the reader's exact question with a clear, u
 // Review source-derived claims against exact spans, while uncited context is
 // judged collectively at the part level. The reviewer names the direct claim
 // IDs so coverage is not tied to the first sentence or extra context rows.
-export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark it unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. In either mode, a claim naming a supplied work, author, speaker, or page, reporting what a source says, or otherwise presenting a source-derived position needs a source ID and exact span support. Independent background and synthesis may remain uncited when they are not presented as claims made by a particular source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide whether an exact span supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a speaker; do not confuse an author with a pseudonymous speaker, quoted or reported person, editor, translator, or commentator. A source citation is not proof by itself, and a source's silence does not prove a claim false.
+export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark it unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. In either mode, a claim naming a supplied work, author, speaker, or page, reporting what a source says, or otherwise presenting a source-derived position needs a source ID and exact span support. Independent background and synthesis may remain uncited when they are not presented as claims made by a particular source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide whether an exact span supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a speaker; do not confuse an author with a pseudonymous speaker, quoted or reported person, editor, translator, or commentator. A source citation is not proof by itself, and a source's silence does not prove a claim false.
 
 Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context. If a claim names a supplied work, author, speaker, or page, reports what a source says, or otherwise presents a source-derived position, it needs a source ID and must not pass as general context when uncited. Mark such claims partial or unanswered. Independent background and synthesis may remain uncited when they are not presented as claims made by a particular source. Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness; the supplied passages cannot establish its truth, so do not treat their silence as disproof.
 
@@ -694,25 +694,26 @@ function hasDirectPolarityContradiction(claimText,sourceText){
   const sentenceParts=value=>String(value||'').split(/[.!?…]+/u).filter(Boolean);
   const negativeClauses=sentenceParts(sourceText).flatMap(sentence=>
     [...sentence.matchAll(/\b(?:cannot|can't|could not|couldn't|unable to|not able to|impossible to)\b([^;]*)/giu)]
-      .map(match=>match[1]));
+      .map(match=>match[1].split(/\b(?:because|since|while|whereas|although|but|and)\b/iu,1)[0]));
   if(!negativeClauses.length)return false;
-  const positiveClauses=sentenceParts(claimText).flatMap(sentence=>
-    [...sentence.matchAll(/\b(?:can|could|able to|ability to|capable of|possible to)\b([^;]*)/giu)]
-      .map(match=>match[1]));
-  if(!positiveClauses.length)return false;
-  const claimPhrases=positiveClauses.map(polarityTerms).filter(terms=>terms.size>=3);
-  if(!claimPhrases.length)return false;
-  const matchingPositiveSource=sentenceParts(sourceText).flatMap(sentence=>
-    [...sentence.matchAll(/\b(?:can|could|able to|ability to|capable of|possible to)\b([^;]*)/giu)]
-      .map(match=>match[1])).map(polarityTerms);
-  for(const claimTerms of claimPhrases){
-    const conflicting=negativeClauses.some(clause=>{
-      const sourceTerms=polarityTerms(clause);
-      return sourceTerms.size>=3&&phraseOverlap(claimTerms,sourceTerms)>=0.6;
-    });
-    const sourceAlsoAffirms=matchingPositiveSource.some(clause=>
-      phraseOverlap(claimTerms,clause)>=0.6);
-    if(conflicting&&!sourceAlsoAffirms)return true;
+  const positivePattern=/\b(?:can|could|able to|ability to|capable of|possible to)\b([^;]*)/giu;
+  // Compare polarity within each answer sentence. Pooling modal phrases from
+  // the whole answer let an unrelated “can …” clause trigger a false conflict
+  // against a source's “cannot …” clause (notably in multi-claim summaries).
+  for(const sentence of sentenceParts(claimText)){
+    const claimPhrases=[...sentence.matchAll(positivePattern)].map(match=>polarityTerms(
+      match[1].split(/\b(?:because|since|while|whereas|although|but|and)\b/iu,1)[0]))
+      .filter(terms=>terms.size>=3);
+    for(const claimTerms of claimPhrases){
+      const conflicting=negativeClauses.some(clause=>{
+        const sourceTerms=polarityTerms(clause);
+        return sourceTerms.size>=3&&phraseOverlap(claimTerms,sourceTerms)>=0.6;
+      });
+      const sourceAlsoAffirms=sentenceParts(sourceText).some(sourceSentence=>
+        [...sourceSentence.matchAll(positivePattern)].some(match=>
+          phraseOverlap(claimTerms,polarityTerms(match[1]))>=0.6));
+      if(conflicting&&!sourceAlsoAffirms)return true;
+    }
   }
   return false;
 }
@@ -1256,11 +1257,14 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           // The reviewer may choose any span in this bounded packet, but the
           // server rejects span IDs that were not actually sent for this part.
           partSpanMaps.set(page.id,new Map(orderedSpans.map(span=>[span.spanId,span])));
+          const selectionSupport=(source?.candidatePartSupport||[]).filter(item=>item.partId===part.partId)
+            .map(item=>({relation:item.support,...(item.excerpt?{excerpt:item.excerpt}:{})}));
           return {id:page.id,title:page.title,page:page.page,
             provenance:sourceProvenance(source,plan,spanText),
             ...(sourceVoiceGuidance(sourceProvenance(source,plan,spanText))?
               {attributionRequirement:sourceVoiceGuidance(sourceProvenance(source,plan,spanText))}:{}),
             spans:orderedSpans.map(({spanId,text})=>({spanId,text})),
+            ...(selectionSupport.length?{selectionSupport}:{}),
             ...(source?.scopeText?{contextText:String(page.text||'').slice(0,2500)}: {})};
         });
         reviewSpanMapsByPart.set(part.partId,partSpanMaps);
@@ -1399,7 +1403,11 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       const source=sources.find(value=>value.id===support.sourceId);if(!source)continue;
       const sourceAnchor=support.anchorQuote||support.quote;
       evidenceMap.push({id:source.id,claimId:support.claimId||'C1',point:support.point||item.part.question,partId:item.part.id,
-        quoteVerified:true,quote:sourceAnchor,reason:item.reviewReason});
+        quoteVerified:true,quote:sourceAnchor,
+        // Preserve exact offsets from the verified page so the UI can join
+        // adjacent reviewed sentences without guessing at source wording.
+        ...(Number.isInteger(support.start)&&Number.isInteger(support.end)?
+          {start:support.start,end:support.end}:{}),reason:item.reviewReason});
       evidenceHighlights.push({source_id:source.id,page:source.page,quote:sourceAnchor});
     }
   }

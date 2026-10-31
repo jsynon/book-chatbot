@@ -1048,6 +1048,23 @@ test('the deterministic polarity guard rejects a reviewed positive claim that re
   issue.sourceId==='S1'&&issue.reason==='source-contradicts-claim-polarity'));
 });
 
+test('the deterministic polarity guard accepts the Consolation paraphrase and does not mix unrelated modal clauses',async()=>{
+ const source={id:'S1',bookId:'21',title:'The Consolation of Philosophy — Boethius',page:77,
+  text:'The happiness of a life cannot be fixed among the goods of fortune, because what can be snatched away is not the highest good.',
+  preview:'What can be snatched away is not the highest good.'};
+ const ai=makeAI([answer('PART P1\nBoethius argues that the highest good cannot be taken away. Other goods can be snatched away by fortune and circumstance. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Boethius say about the highest good and fortune?',
+  [source],ai,[],{catalog:{21:source.title},
+   plan:{intent:'explain',sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
+    parts:[{id:'P1',question:'What does Boethius say about the highest good and fortune?',sourceBookIds:['21']}]},trace:true});
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='source-contradicts-claim-polarity'),false,
+  'the source agrees that what fortune can take away is not the highest good');
+});
+
 test('the logical-scope guard distinguishes neither-or from not-both paraphrases',async()=>{
  const source={id:'S1',bookId:'72',title:'Case Review',page:18,
   text:'It is not right to state that a contract is valid nor invalid before the missing evidence is reviewed.',
@@ -1289,7 +1306,9 @@ test('a hypothetical can cite one relevant page per author when more group pages
 test('review sees a bounded per-source packet and cannot select an unsent full-source span',async()=>{
  const text=Array.from({length:24},(_,index)=>
   `This unrelated passage discusses ordinary philosophical subjects number ${index+1}.`).join('\n\n\n');
- const source={...hume,text,preview:text,candidatePartIds:['P1']};
+ const source={...hume,text,preview:text,candidatePartIds:['P1'],
+  candidatePartSupport:[{partId:'P1',support:'context',excerpt:'A cue from the earlier selector.'},
+   {partId:'P2',support:'direct',excerpt:'A cue belonging to a different planned part.'}]};
  const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],candidateSourceIds:['S1']} ]};
  const draft='PART P1\nHume explains causal necessity through custom and habit in repeated experience. [S1]';
  const runWithSpan=async spanId=>{
@@ -1307,6 +1326,9 @@ test('review sees a bounded per-source packet and cannot select an unsent full-s
  };
  const offered=await runWithSpan('S1-Q1');
  const spans=offered.payload.parts[0].evidence[0].spans;
+ assert.deepEqual(offered.payload.parts[0].evidence[0].selectionSupport,
+  [{relation:'context',excerpt:'A cue from the earlier selector.'}],
+  'review receives only this part’s selector clue, clearly separated from exact review spans');
  assert.equal(spans.length,8,'the reviewer packet has a fixed per-source cap');
  assert.ok(offered.result.trace.reviewContract.valid);
  assert.equal(offered.ai.calls.length,2);
