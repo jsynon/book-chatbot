@@ -68,51 +68,52 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
         point:String(item.point||''),claimId:String(item.claimId||''),partId:String(item.partId||''),
         start:Number.isInteger(item.start)?item.start:null,end:Number.isInteger(item.end)?item.end:null,index}))
       .filter(item=>usefulQuote(item.quote));
-    // Reviewer-approved spans are already exact and source-verified. Rank
-    // them by their linked claim first, then use the original question as a
-    // secondary signal so a phrase asked about can outrank nearby context.
-    // This is quote ordering only; neither lexical score proves support.
-    candidates.sort((left,right)=>{
-      const score=item=>{
-        const pointTerms=terms(item.point),quoteTerms=terms(item.quote);
-        if(!quoteTerms.size)return 0;
-        const similarity=referenceTerms=>{
-          if(!referenceTerms.size)return 0;
-          let overlap=0;for(const term of referenceTerms)if(quoteTerms.has(term))overlap++;
-          return overlap/Math.sqrt(referenceTerms.size*quoteTerms.size);
-        };
-        const pointScore=similarity(pointTerms),questionScore=similarity(questionTerms);
-        return questionTerms.size?pointScore*0.35+questionScore*0.65:pointScore;
+    // Reviewer-approved spans are exact and source-verified. Rank them against
+    // their linked claim first; the reader's full question is a tie-breaker.
+    // These lexical scores order excerpts only and never prove support.
+    const relevance=item=>{
+      const pointTerms=terms(item.point),quoteTerms=terms(item.quote);
+      if(!quoteTerms.size)return {pointScore:0,questionScore:0};
+      const similarity=referenceTerms=>{
+        if(!referenceTerms.size)return 0;
+        let overlap=0;for(const term of referenceTerms)if(quoteTerms.has(term))overlap++;
+        return overlap/Math.sqrt(referenceTerms.size*quoteTerms.size);
       };
-      return score(right)-score(left)||readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
+      return {pointScore:similarity(pointTerms),questionScore:similarity(questionTerms)};
+    };
+    candidates.sort((left,right)=>{
+      const leftScore=relevance(left),rightScore=relevance(right);
+      return rightScore.pointScore-leftScore.pointScore||
+        rightScore.questionScore-leftScore.questionScore||
+        readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
     });
-    // One exact quote may support several claims. Deduplicate only after
-    // ranking so its strongest claim link survives and repeated copies cannot
-    // consume all three excerpt slots ahead of distinct approved passages.
+    // Keep the strongest excerpt for each distinct answer claim. Retain another
+    // span from that claim only when it is immediately adjacent, so it can be
+    // joined into one readable passage. Spare display slots are not filled with
+    // weaker, unrelated spans merely because they were also approved on-page.
     const seenQuotes=new Set();
     const distinctCandidates=candidates.filter(item=>{
       if(seenQuotes.has(item.quote))return false;
       seenQuotes.add(item.quote);return true;
     });
-    // Prefer one distinct claim in each slot before using extra excerpts for
-    // a claim that already has one. This keeps a clear answer sentence's own
-    // reviewed passage available when another claim has several overlapping
-    // spans on the same page.
+    const sourceText=String(sourceTexts?.[id]||'');
+    const claimKey=item=>item.claimId?item.partId+'|'+item.claimId:'span:'+item.index;
     const selected=[],selectedClaims=new Set();
     for(const item of distinctCandidates){
-      if(item.claimId&&selectedClaims.has(item.claimId))continue;
-      selected.push(item);
-      if(item.claimId)selectedClaims.add(item.claimId);
-      if(selected.length===3)break;
-    }
-    if(selected.length<3){
-      for(const item of distinctCandidates){
-        if(selected.some(value=>value.quote===item.quote))continue;
-        selected.push(item);
-        if(selected.length===3)break;
+      const key=claimKey(item);
+      if(selectedClaims.has(key)){
+        const adjacent=sourceText&&selected.some(previous=>
+          claimKey(previous)===key&&previous.start!==null&&previous.end!==null&&
+          item.start!==null&&item.end!==null&&item.start<=previous.end+3&&
+          previous.start<=item.end+3&&
+          Math.max(previous.end,item.end)-Math.min(previous.start,item.start)<=900);
+        if(adjacent)selected.push(item);
+        continue;
       }
+      if(selectedClaims.size>=3)continue;
+      selected.push(item);
+      selectedClaims.add(key);
     }
-    const sourceText=String(sourceTexts?.[id]||'');
     if(!sourceText||selected.length<2)return [id,selected];
     // Join only immediately adjacent spans that were already reviewer-approved
     // for the same claim. The combined quote is sliced verbatim from the
