@@ -33,7 +33,11 @@ Workflow run [#41230269589](https://github.com/jsynon/antilogicalism/actions/run
 
 ## Next validation and roadmap
 
-Replay the saved run-42 reviewer inputs and outputs offline against this contract change. Confirm that the six known source-claim IDs produce warnings, remain subject to exact-source validation, and no longer force unrelated part decisions into unreviewed partial status; confirm that unknown IDs still fail closed. Inspect the simulation composition guidance and compare the Buddha alternatives by page text before changing selection. After local checks pass, deploy and run a targeted live check before repeating the full acceptance set. Score answer and highlight quality separately from structural pass. The milestone remains an average answer score of at least 8/10, no answer below 6/10, and no serious citation or meaning-reversal failure. If the handoffs are clean, move to a different, previously unseen question set rather than tuning only the calibration questions.
+The next change targets the traced browser-to-Worker handoffs without adding a live answer route or another always-on model call. The browser's conditional retrieval-coverage signal now requires both a minimum overlap and a modest share of a part's distinctive terms in one coherent text span. Coverage reports retain all planned parts with matched terms, ratios, required threshold, and a reason, making skipped or triggered gap search auditable. The Worker planner prompt distinguishes independently answerable requests from a single relation, cause, or explanatory clause; it adds no author or source prescriptions.
+
+After merging and publishing the Worker and site changes, run the one-dispatch **Reading Companion handoff validation** workflow once. It combines the technology-change and Odyssey cases with three unseen controls: three All Books and two selected-book questions. Inspect whether the technology case triggers the existing conditional search, whether separate demands appear in plan parts, and whether useful evidence reaches the final packet. Score answer quality, source relevance, citations, and structural integrity separately. If these handoffs improve without false-positive retries or source steering, move on to a new question set rather than tuning the regression cases further.
+
+The milestone remains an average answer score of at least 8/10, no answer below 6/10, and no serious citation or meaning-reversal failure.
 
 ## Public enablement
 
