@@ -12,12 +12,14 @@ const kant={id:'S2',bookId:'40',title:catalog[40],page:53,url:'https://example.t
  text:'Causality is one of the categories of relation. The categories are pure conceptions of the understanding and are a priori.',
  preview:'Causality is one of the categories of relation.'};
 function answer(text){return {response:text,usage:{neurons:8,prompt_tokens:100,completion_tokens:60}};}
-function review(statuses,{evidenceByPart={},includeEvidence=true}={}){
+function review(statuses,{evidenceByPart={},includeEvidence=true,directAnswerClaimIdsByPart={}}={}){
  return (_model,{messages})=>{
   const payload=JSON.parse(messages[1].content);
   const statusByPart=new Map(statuses);
   const parts=payload.parts.map(part=>({partId:part.partId,
-   status:statusByPart.get(part.partId)||'partial'}));
+   status:statusByPart.get(part.partId)||'partial',
+   ...(Object.hasOwn(directAnswerClaimIdsByPart,part.partId)?
+    {directAnswerClaimIds:directAnswerClaimIdsByPart[part.partId]}:{})}));
   const claims=payload.claims.map(claim=>{
    const status=statusByPart.get(claim.partId)||'partial';
    const defaultEvidence=claim.sourceIds.map(sourceId=>({sourceId,spanIds:[sourceId+'-Q1']}));
@@ -796,8 +798,8 @@ test('a consequence-only sentence cannot pass a phrase-meaning part as a direct 
  assert.equal(result.questionParts[0].status,'partial');
  assert.equal(result.coverage,'partial');
  assert.deepEqual(result.trace.reviewContract.partDecisions,[{
-  partId:'P1',reviewerStatus:'partial',finalStatus:'partial',directAnswerClaimIds:['P1-C1'],
-  acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true,outputStatus:'partial'
+  partId:'P1',reviewerStatus:'partial',finalStatus:'partial',directAnswerClaimIds:[],
+  acceptedDirectAnswerClaimIds:[],directAnswerCovered:false,outputStatus:'partial'
  }]);
  assert.equal(ai.calls.length,2,'the direct-answer check uses the existing compose and review calls');
 });
@@ -823,7 +825,8 @@ test('an uncited direct synthesis can lead a fuller answer while source claims r
    assert.equal(payload.parts[0].requiredAnswerClaimId,'P1-C1');
    const sourceClaim=payload.claims.find(claim=>claim.sourceIds.includes('S1'));
    const spanId=sourceClaim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    directAnswerClaimIds:['P1-C1']}],claims:
     payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',sources:
      claim.sourceIds.map(sourceId=>({sourceId,spanIds:[spanId]}))}))})};
   }],{decorateReview:false});
@@ -971,16 +974,19 @@ test('a rejected nominated direct-answer claim keeps the part partial despite an
  assert.match(result.answer,/Fear of death makes Hamlet hesitate to act/);
 });
 
-test('a legacy direct-answer ID cannot override the Worker’s first-sentence mapping',async()=>{
+test('a cross-part direct-answer ID cannot satisfy this part',async()=>{
  const ai=makeAI([answer('PART P1\nThe phrase means fear of death can make people hesitate to act. [S1]'),
   directAnswerReview(['P2-C1'])],{decorateReview:false});
  const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
   plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
- assert.equal(result.questionParts[0].status,'supported');
- assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerClaimIds[0],'P1-C1');
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerClaimIds[0],'P2-C1');
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,false);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P1'&&issue.reason==='invalid-direct-answer-claim-id'));
 });
 
-test('the compact review contract infers the direct answer from the first checked sentence',async()=>{
+test('a missing direct-answer nomination leaves an otherwise reviewed part partial',async()=>{
  const ai=makeAI([answer('PART P1\nThe phrase means fear of death can make people hesitate to act. [S1]'),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content);
@@ -991,12 +997,39 @@ test('the compact review contract infers the direct answer from the first checke
   }],{decorateReview:false});
  const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
   plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.equal(result.coverage,'partial');
+ assert.deepEqual(result.trace.reviewContract.partDecisions[0].directAnswerClaimIds,[]);
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,false);
+ assert.match(REVIEW_PROMPT,/directAnswerClaimIds/);
+ assert.match(REVIEW_PROMPT,/candidate, not a mandatory answer/);
+ assert.doesNotMatch(REVIEW_PROMPT,/sourceId":"S1","status"/);
+});
+
+test('a surviving later claim can answer the part when the opening claim is rejected',async()=>{
+ const ai=makeAI([answer('PART P1\nAwareness of consequences explains the phrase. [S1]\n'+
+  'Fear of death makes Hamlet hesitate to act. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const first=payload.claims.find(claim=>claim.claimId==='P1-C1');
+   const direct=payload.claims.find(claim=>claim.claimId==='P1-C2');
+   const firstSpan=first.sourceEvidence[0].spanIds[0];
+   const directSpan=direct.sourceEvidence[0].spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    directAnswerClaimIds:['P1-C2']}],claims:payload.claims.map(claim=>({
+    claimId:claim.claimId,status:claim.claimId==='P1-C2'?'answered':'partial',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,
+     spanIds:claim.claimId==='P1-C2'?[directSpan]:[firstSpan]}))}))})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(hamletMeaningQuestion,[hamletMeaningSource],ai,[],{
+  plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.coverage,'full');
- assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerClaimIds[0],'P1-C1');
+ assert.doesNotMatch(result.answer,/Awareness of consequences explains the phrase/);
+ assert.match(result.answer,/Fear of death makes Hamlet hesitate to act/);
+ assert.deepEqual(result.trace.reviewContract.partDecisions[0].directAnswerClaimIds,['P1-C2']);
+ assert.deepEqual(result.trace.reviewContract.partDecisions[0].acceptedDirectAnswerClaimIds,['P1-C2']);
  assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,true);
- assert.match(REVIEW_PROMPT,/Do not repeat a source status or direct-answer claim IDs/);
- assert.doesNotMatch(REVIEW_PROMPT,/sourceId":"S1","status"/);
 });
 
 test('the deterministic polarity guard rejects a reviewed positive claim that reverses an exact source negation',async()=>{
@@ -1035,7 +1068,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(REVIEW_PROMPT,/names a supplied work, author, speaker, or page/);
  assert.match(REVIEW_PROMPT,/Independent background and synthesis may remain uncited/);
  assert.match(REVIEW_PROMPT,/Judge each part against the exact question/);
- assert.match(COMPOSER_PROMPT,/first complete sentence of each part is checked as its direct answer/);
+ assert.match(COMPOSER_PROMPT,/reviewer will assess which claim or claims directly answer the question/);
  assert.match(REVIEW_PROMPT,/describes the collection, not the answer to the reader/);
  assert.match(REVIEW_PROMPT,/complementary passages may support different components of a concise synthesis/);
  assert.match(REVIEW_PROMPT,/Do not mark a corpus-gap statement or merely adjacent source discussion as an answer/);
@@ -1775,7 +1808,7 @@ test('unknown-only required answer citation stays rejected and cannot be replace
   parts:[{id:'P1',question:'Why is Fortune not constant?',sourceBookIds:['21'],candidateSourceIds:['S1']}]};
  const ai=makeAI([
   answer('PART P1\nFortune changes because nothing born remains constant. [S12] The speaker also recalls an earlier injustice. [S1]'),
-  review([['P1','answered']])
+  review([['P1','answered']],{directAnswerClaimIdsByPart:{P1:[]}})
  ]);
  const result=await composeEvidenceAnswer('Why is Fortune not constant?',[source],ai,[],
   {plan,catalog:{...catalog,21:title},trace:true});
@@ -1785,7 +1818,8 @@ test('unknown-only required answer citation stays rejected and cannot be replace
  assert.match(result.answer,/earlier injustice\. \[S1\]/);
  assert.doesNotMatch(result.answer,/nothing born remains constant/);
  assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'unknown-source-id',sentenceIndex:1}]);
- assert.deepEqual(result.trace.coverageGaps,[{partId:'P1',reason:'required-direct-answer-rejected'}]);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P1'&&issue.reason==='direct-answer-claim-missing'));
  assert.deepEqual(result.trace.citationRepairs,[]);
 });
 
@@ -1814,7 +1848,7 @@ test('author initials stay attached to the cited direct answer without merging l
 test('an invalid citation on an initialism-bearing direct answer still leaves the part partial',async()=>{
  const ai=makeAI([answer('PART P1\nW.E.B. Du Bois defines double consciousness as viewing oneself through other people’s eyes. [S99] '+
   'He describes the condition as a divided identity with conflicting strivings. [S3]'),
-  review([['P1','answered']])]);
+  review([['P1','answered']],{directAnswerClaimIdsByPart:{P1:[]}})]);
  const result=await composeEvidenceAnswer(duBoisInitialismQuestion,[duBoisInitialismSource],ai,[],{
   plan:duBoisInitialismPlan,catalog:{454:duBoisInitialismSource.title},trace:true
  });
@@ -1823,7 +1857,8 @@ test('an invalid citation on an initialism-bearing direct answer still leaves th
  assert.doesNotMatch(result.answer,/W\.E\.B\. Du Bois defines/);
  assert.match(result.answer,/divided identity with conflicting strivings\. \[S3\]/);
  assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'unknown-source-id',sentenceIndex:1}]);
- assert.deepEqual(result.trace.coverageGaps,[{partId:'P1',reason:'required-direct-answer-rejected'}]);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.partId==='P1'&&issue.reason==='direct-answer-claim-missing'));
 });
 
 test('a citation linked to another question part is rejected even when its source ID exists',async()=>{
