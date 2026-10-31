@@ -35,8 +35,8 @@ function makeAI(responses,{decorateReview=true}={}){
  return {calls,run:async(model,request)=>{calls.push({model,request});const next=responses.shift();
    if(next instanceof Error)throw next;
    const result=typeof next==='function'?next(model,request):next;
-   // Most fixtures predate the direct-answer field and test other review rules.
-   // Give those valid mock reviews one claim per part; focused contract tests opt out.
+   // Most fixtures predate the explicit answer/context decisions. Give legacy
+   // fixtures realistic reviewer selections; focused contract tests opt out.
    const systemText=String(request?.messages?.[0]?.content||'');
    if(decorateReview&&systemText.includes('directAnswerClaimIds')&&typeof result?.response==='string'){
     try{
@@ -44,9 +44,12 @@ function makeAI(responses,{decorateReview=true}={}){
      const payload=JSON.parse(request.messages[1].content);
      if(Array.isArray(reviewObject.parts)&&Array.isArray(reviewObject.claims)){
       for(const part of reviewObject.parts){
-       if(Array.isArray(part.directAnswerClaimIds))continue;
-       part.directAnswerClaimIds=payload.claims
+       const contextClaims=payload.parts.find(item=>item.partId===part.partId)?.contextClaims||[];
+       if(!Array.isArray(part.directAnswerClaimIds))part.directAnswerClaimIds=payload.claims
         .filter(claim=>claim.partId===part.partId).slice(0,1).map(claim=>claim.claimId);
+       if(!Array.isArray(part.retainedContextClaimIds))part.retainedContextClaimIds=
+        part.status==='answered'?contextClaims.map(claim=>claim.claimId):part.status==='partial'?
+         part.directAnswerClaimIds.filter(id=>contextClaims.some(claim=>claim.claimId===id)):[];
       }
       return {...result,response:JSON.stringify(reviewObject)};
      }
@@ -798,8 +801,9 @@ test('a consequence-only sentence cannot pass a phrase-meaning part as a direct 
  assert.equal(result.questionParts[0].status,'partial');
  assert.equal(result.coverage,'partial');
  assert.deepEqual(result.trace.reviewContract.partDecisions,[{
-  partId:'P1',reviewerStatus:'partial',finalStatus:'partial',directAnswerClaimIds:[],
-  acceptedDirectAnswerClaimIds:[],directAnswerCovered:false,outputStatus:'partial'
+  partId:'P1',reviewerStatus:'partial',finalStatus:'partial',reviewerAnswerStatus:'partial',
+  finalAnswerStatus:'partial',directAnswerClaimIds:[],acceptedDirectAnswerClaimIds:[],
+  directAnswerCovered:false,outputStatus:'partial',outputAnswerStatus:'partial'
  }]);
  assert.equal(ai.calls.length,2,'the direct-answer check uses the existing compose and review calls');
 });
@@ -812,12 +816,14 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.coverage,'full');
  assert.deepEqual(result.trace.reviewContract.partDecisions,[{
-  partId:'P1',reviewerStatus:'answered',finalStatus:'answered',directAnswerClaimIds:['P1-C1'],
-  acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true,outputStatus:'supported'
+  partId:'P1',reviewerStatus:'answered',finalStatus:'answered',reviewerAnswerStatus:'answered',
+  finalAnswerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+  acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true,outputStatus:'supported',
+  outputAnswerStatus:'answered'
  }]);
 });
 
-test('an uncited direct synthesis can lead a fuller answer while source claims remain cited',async()=>{
+test('a retained direct synthesis remains complete when library evidence is partial',async()=>{
  const ai=makeAI([answer('PART P1\nCausal necessity can be understood as an expectation formed from regular experience, not a power directly observed in events.\n'+
   'Hume locates that expectation in repeated conjunction and custom, which lead the mind to infer one event from another. [S1]'),
   (_model,{messages})=>{
@@ -825,15 +831,17 @@ test('an uncited direct synthesis can lead a fuller answer while source claims r
    assert.equal(payload.parts[0].requiredAnswerClaimId,'P1-C1');
    const sourceClaim=payload.claims.find(claim=>claim.sourceIds.includes('S1'));
    const spanId=sourceClaim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    directAnswerClaimIds:['P1-C1']}],claims:
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'answered',
+    directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:
     payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',sources:
      claim.sourceIds.map(sourceId=>({sourceId,spanIds:[spanId]}))}))})};
   }],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
- assert.equal(result.questionParts[0].status,'supported');
- assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'partial','library support remains visibly partial');
+ assert.equal(result.questionParts[0].answerStatus,'answered','the reviewer assessed completeness separately');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.answerCompleteness,'full');
  assert.match(result.answer,/Causal necessity can be understood as an expectation/);
  assert.match(result.answer,/Hume locates that expectation.*\[S1\]/);
  assert.equal(ai.calls.length,2,'synthesis review reuses the existing composition and review calls');
@@ -1118,7 +1126,8 @@ test('an unheaded single-part source claim reaches review and is not treated as 
  const ai=makeAI([answer('Hume argues that necessity arises from custom rather than from observing a necessary connection.'),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content);
-   assert.deepEqual(payload.claims.map(claim=>claim.sourceIds),[[]]);
+   assert.deepEqual(payload.claims,[],'uncited context is assessed from the explicit context list');
+   assert.equal(payload.parts[0].contextClaims.length,1);
    return review([['P1','unanswered']])(_model,{messages});
   }]);
  const result=await composeEvidenceAnswer(question,[hume],ai,[],{
@@ -1796,13 +1805,14 @@ test('unknown-only and cross-linked citation IDs fail closed without losing the 
 
 test('verified passage locator citations are normalized to their page source IDs',async()=>{
  const span=buildReviewSpans('S1',hume.text)[0];
- const ai=makeAI([answer('PART P1\nThe passage links causal expectation to custom after repeated conjunction. ['+span.spanId+']'),
+ const ai=makeAI([answer('PART P1\nHume [cannot] directly observe causal necessity; he links causal expectation to custom after repeated conjunction. ['+span.spanId+']'),
   review([['P1','answered']])]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.coverage,'full');
  assert.equal(result.failureCode,undefined);
  assert.match(result.answer,/\[S1\]/);
+ assert.match(result.answer,/\[cannot\]/,'ordinary bracketed prose must not be rewritten as a citation');
  assert.doesNotMatch(result.answer,/S1-Q/);
  assert.deepEqual(result.trace.citationRepairs,[{partId:'P1',claimId:'P1-C1',sentenceIndex:1,
   normalizedSpanIds:[span.spanId],retainedSourceIds:['S1']}]);
