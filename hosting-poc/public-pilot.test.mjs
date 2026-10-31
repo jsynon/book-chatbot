@@ -388,8 +388,10 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
    if(system.startsWith('Review the complete answer parts and claims')){
      const payload=JSON.parse(input.messages[1].content);
      content=JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
+       answerStatus:'answered',
        directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
-        .slice(0,1).map(claim=>claim.claimId)})),
+        .slice(0,1).map(claim=>claim.claimId),
+       retainedContextClaimIds:(part.contextClaims||[]).map(claim=>claim.claimId)})),
        claims:payload.claims.map(answer=>({claimId:answer.claimId,status:'answered',
         spanIds:answer.sourceIds.map(sourceId=>sourceId+'-Q1')}))});
    }else if(system.startsWith('Answer the reader\'s exact question')){
@@ -478,8 +480,9 @@ test('a valid empty evidence selection can review a useful single-part answer wi
    const payload=JSON.parse(input.messages[1].content);
    if(Array.isArray(payload.claims))return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
     claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',sources:[]})),
-    parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
-     directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId).map(claim=>claim.claimId)}))})}}]};
+    parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'answered',
+     directAnswerClaimIds:(part.contextClaims||[]).slice(0,1).map(claim=>claim.claimId),
+     retainedContextClaimIds:(part.contextClaims||[]).map(claim=>claim.claimId)}))})}}]};
    return {choices:[{finish_reason:'stop',message:{content:
     'There is no established evidence that we are living in a computer simulation. The idea remains a philosophical possibility, but imagining it or reasoning about simulated observers does not show that it is true.\n\nA serious version of the hypothesis would need observable predictions that distinguish a simulated universe from an ordinary physical one. At present, no confirmed observation settles that question, so the careful answer is that we do not know. Related ideas about virtual or socially shaped experience can offer context, but they do not establish a literal simulation.'}}]};
   }
