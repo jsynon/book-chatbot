@@ -97,8 +97,11 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
       throw selectorError('selector-invalid-response','Evidence selector repeated a part decision.',null,'duplicate-part-id');
     if(!Array.isArray(item.candidateIds))
       throw selectorError('selector-invalid-response','Evidence selector candidate IDs were not an array.',null,'candidate-ids-not-array');
-    if(item.candidateIds.length>MAX_SELECTOR_SOURCES)
-      throw selectorError('selector-invalid-response','Evidence selector exceeded the page limit.',null,'too-many-candidate-ids');
+    // Accept an overlong list only after validating every ID below. The final
+    // packet is still capped; rejecting the whole decision would discard valid
+    // semantic choices and silently switch this request to retrieval order.
+    if(item.candidateIds.length>MAX_SELECTOR_CANDIDATES)
+      throw selectorError('selector-invalid-response','Evidence selector returned an unbounded candidate list.',null,'too-many-candidate-ids');
     if(!['supported','partial','none'].includes(item.coverage))
       throw selectorError('selector-invalid-response','Evidence selector returned an invalid coverage value.',null,'invalid-coverage');
     if(item.candidateIds.some(id=>typeof id!=='string'||!candidateIds.has(id)))
@@ -109,12 +112,42 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
   }
   if(byPart.size!==partIds.size)
     throw selectorError('selector-invalid-response','Evidence selector omitted a part decision.',null,'missing-part-decision');
-  const selectedCandidateIds=[];
-  for(const part of compactParts)for(const id of byPart.get(part.partId).candidateIds){
-    if(!selectedCandidateIds.includes(id)&&selectedCandidateIds.length<MAX_SELECTOR_SOURCES)
-      selectedCandidateIds.push(id);
+  const selectedCandidateIds=[],selectedSet=new Set(),keptByPart=new Map();
+  const orderedParts=compactParts.map(part=>byPart.get(part.partId));
+  for(const part of orderedParts)keptByPart.set(part.partId,[]);
+  const addCandidate=(part,id)=>{
+    const kept=keptByPart.get(part.partId);
+    if(!kept.includes(id))kept.push(id);
+    if(!selectedSet.has(id)){
+      if(selectedCandidateIds.length>=MAX_SELECTOR_SOURCES)return false;
+      selectedSet.add(id);selectedCandidateIds.push(id);
+    }
+    return true;
+  };
+  // Give every part with usable evidence its highest-ranked page first, then
+  // fill the shared six-page budget round-robin in the selector's own order.
+  // This keeps a broad question from losing a whole part to an overlong list.
+  for(const part of orderedParts){
+    const first=part.candidateIds[0];
+    if(first)addCandidate(part,first);
   }
-  return {selectedCandidateIds,parts:compactParts.map(part=>byPart.get(part.partId)),
+  for(let offset=1;selectedCandidateIds.length<MAX_SELECTOR_SOURCES;offset++){
+    let added=false;
+    for(const part of orderedParts){
+      const id=part.candidateIds[offset];
+      if(id&&addCandidate(part,id))added=true;
+      if(selectedCandidateIds.length>=MAX_SELECTOR_SOURCES)break;
+    }
+    if(!added)break;
+  }
+  const droppedCandidateIds=[...new Set(orderedParts.flatMap(part=>part.candidateIds))]
+    .filter(id=>!selectedSet.has(id));
+  const normalizedParts=orderedParts.map(part=>({...part,candidateIds:keptByPart.get(part.partId)}));
+  return {selectedCandidateIds,parts:normalizedParts,
+    ...(droppedCandidateIds.length?{selectionTrim:{
+      reason:'six-page-packet-limit',reportedDistinctCandidates:selectedSet.size+droppedCandidateIds.length,
+      keptCandidateIds:selectedCandidateIds,droppedCandidateIds
+    }}:{}),
     usage:{calls:1,neurons:Math.max(0,Number(response?.usage?.neurons)||0),
       inputTokens:Math.max(0,Number(response?.usage?.prompt_tokens)||0),
       outputTokens:Math.max(0,Number(response?.usage?.completion_tokens)||0)},

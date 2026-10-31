@@ -3346,6 +3346,9 @@ function applyExplicitBibleVerseScope(question,sources){
 // textually distinct versions remain available to the selector/composer.
 const DUPLICATE_PASSAGE_MIN_WORDS=40;
 const DUPLICATE_PASSAGE_MIN_CONTAINMENT=0.8;
+const DUPLICATE_BIBLE_MIN_SHARED_VERSES=3;
+const DUPLICATE_BIBLE_MIN_VERSE_CONTAINMENT=0.8;
+const DUPLICATE_BIBLE_MIN_SCRIPTURE_SHARE=0.75;
 function normalizedEvidenceWorkTitle(source){
   let title=String(source?.provenance?.work||source?.title||'').split(/\s+—\s+/)[0];
   title=title.replace(/\([^)]*\b(?:edition|ed\.?|printing|impression|reprint)\b[^)]*\)/gi,' ');
@@ -3370,30 +3373,131 @@ function evidenceTrigramSet(tokens){
   for(let i=0;i+2<tokens.length;i++)shingles.add(tokens.slice(i,i+3).join(' '));
   return shingles;
 }
-function duplicatePassageOverlap(left,right){
+function bibleTranslationComparisonRequested(question){
+  const text=String(question||'');
+  return /\b(?:compar(?:e|es|ed|ing)|contrast(?:s|ed|ing)?|differ(?:s|ed|ence|ent)?)\b.{0,100}\b(?:translation|version|rendering|wording|translate)\w*\b/i.test(text)||
+    /\b(?:translation|version|rendering|wording)\w*\b.{0,100}\b(?:compar(?:e|es|ed|ing)|contrast(?:s|ed|ing)?|differ(?:s|ed|ence|ent)?)\b/i.test(text);
+}
+function isBibleEvidenceSource(source){
+  return /\b(?:bible|scripture|testament)\b/i.test(String(source?.title||''));
+}
+function bibleVerseReferences(source){
+  if(!isBibleEvidenceSource(source))return {refs:new Set(),scriptureShare:0};
+  const sourceText=String(source.scopeText||source.text||'');
+  const lines=sourceText.split(/\r?\n/);
+  const bookNames=[...CANONICAL_BIBLE_BOOKS].sort((a,b)=>b.length-a.length);
+  const refs=new Set(),verseLineByRef=new Map();
+  let current=null;
+  for(let lineIndex=0;lineIndex<lines.length;lineIndex++){
+    const line=lines[lineIndex];
+    const normalized=normalizedSourceGroupText(line);
+    let heading=null;
+    for(const book of bookNames){
+      if(!normalized.startsWith(book+' '))continue;
+      const remainder=normalized.slice(book.length).trim();
+      // Catalog OCR may append a translation label or punctuation to a
+      // chapter heading, so match the chapter prefix without requiring the
+      // entire heading line to contain only its reference.
+      const match=remainder.match(/^(\d{1,3})(?:\s*[:.]\s*(\d{1,3}))?(?=\s|$)/);
+      if(match){heading={book,chapter:Number(match[1])};
+        if(match[2])refs.add(`${book} ${heading.chapter}:${Number(match[2])}`);
+        break;
+      }
+    }
+    if(heading){current=heading;continue;}
+    if(!current)continue;
+    // Verse-number paragraphs are sequential; commentary cross-references
+    // such as “4.7–21” are not. Requiring a short sequence avoids treating
+    // incidental note references as the page's primary scripture passage.
+    const markers=[...line.matchAll(/(?:^|[^\p{L}\p{N}])(\d{1,3})[.)]?[ \t]+(?=[\p{L}“"'‘])/gu)]
+      .map(match=>Number(match[1])).filter(verse=>verse>0&&verse<=176);
+    for(const verse of markers){
+      const ref=`${current.book} ${current.chapter}:${verse}`;
+      refs.add(ref);
+      verseLineByRef.set(ref,lineIndex);
+    }
+  }
+  const byChapter=new Map();
+  for(const ref of refs){
+    const match=ref.match(/^(.*) (\d{1,3}):(\d{1,3})$/);
+    if(!match)continue;
+    const key=`${match[1]} ${match[2]}`;
+    const verses=byChapter.get(key)||[];verses.push(Number(match[3]));byChapter.set(key,verses);
+  }
+  const confirmed=new Set();
+  const confirmedLines=new Set();
+  for(const [chapter,verses] of byChapter){
+    const ordered=[...new Set(verses)].sort((a,b)=>a-b);
+    let run=[];
+    const commit=()=>{
+      if(run.length>=DUPLICATE_BIBLE_MIN_SHARED_VERSES){
+        for(const verse of run){
+          const ref=`${chapter}:${verse}`;
+          confirmed.add(ref);
+          const lineIndex=verseLineByRef.get(ref);
+          if(lineIndex!==undefined)confirmedLines.add(lineIndex);
+        }
+      }
+    };
+    for(const verse of ordered){
+      if(run.length&&verse!==run[run.length-1]+1){commit();run=[];}
+      run.push(verse);
+    }
+    commit();
+  }
+  const wordCount=evidenceWordTokens(sourceText).length;
+  const scriptureWordCount=[...confirmedLines].reduce((total,index)=>
+    total+evidenceWordTokens(lines[index]).length,0);
+  return {refs:confirmed,scriptureShare:wordCount?scriptureWordCount/wordCount:0};
+}
+function duplicatePassageOverlap(left,right,question){
   const leftTitle=normalizedEvidenceWorkTitle(left),rightTitle=normalizedEvidenceWorkTitle(right);
-  if(!leftTitle||leftTitle!==rightTitle)return null;
-  const leftTokens=evidenceWordTokens(left.scopeText||left.text);
-  const rightTokens=evidenceWordTokens(right.scopeText||right.text);
-  if(Math.min(leftTokens.length,rightTokens.length)<DUPLICATE_PASSAGE_MIN_WORDS)return null;
-  const leftShingles=evidenceTrigramSet(leftTokens),rightShingles=evidenceTrigramSet(rightTokens);
-  const shorter=Math.min(leftShingles.size,rightShingles.size);
-  if(!shorter)return null;
-  let shared=0;
-  for(const shingle of leftShingles)if(rightShingles.has(shingle))shared++;
-  const containment=shared/shorter;
-  return containment>=DUPLICATE_PASSAGE_MIN_CONTAINMENT?{workTitle:leftTitle,containment}:null;
+  if(leftTitle&&leftTitle===rightTitle){
+    const leftTokens=evidenceWordTokens(left.scopeText||left.text);
+    const rightTokens=evidenceWordTokens(right.scopeText||right.text);
+    if(Math.min(leftTokens.length,rightTokens.length)>=DUPLICATE_PASSAGE_MIN_WORDS){
+      const leftShingles=evidenceTrigramSet(leftTokens),rightShingles=evidenceTrigramSet(rightTokens);
+      const shorter=Math.min(leftShingles.size,rightShingles.size);
+      let shared=0;
+      if(shorter)for(const shingle of leftShingles)if(rightShingles.has(shingle))shared++;
+      const containment=shorter?shared/shorter:0;
+      if(containment>=DUPLICATE_PASSAGE_MIN_CONTAINMENT)
+        return {reason:'same-work-text',workTitle:leftTitle,containment};
+    }
+  }
+  if(bibleTranslationComparisonRequested(question))return null;
+  const leftBible=bibleVerseReferences(left),rightBible=bibleVerseReferences(right);
+  // Verse references alone are not enough: an annotated page can contain a
+  // scripture excerpt plus independent notes. Collapse cross-edition pages
+  // only when both selected texts are mostly the numbered passage itself.
+  if(leftBible.scriptureShare<DUPLICATE_BIBLE_MIN_SCRIPTURE_SHARE||
+    rightBible.scriptureShare<DUPLICATE_BIBLE_MIN_SCRIPTURE_SHARE)return null;
+  const leftRefs=leftBible.refs,rightRefs=rightBible.refs;
+  if(Math.min(leftRefs.size,rightRefs.size)<DUPLICATE_BIBLE_MIN_SHARED_VERSES)return null;
+  const sharedRefs=[...leftRefs].filter(ref=>rightRefs.has(ref));
+  const containment=sharedRefs.length/Math.min(leftRefs.size,rightRefs.size);
+  if(containment<DUPLICATE_BIBLE_MIN_VERSE_CONTAINMENT)return null;
+  return {reason:'same-canonical-bible-passage',sharedPassageRefs:sharedRefs,
+    verseContainment:containment,leftScriptureShare:leftBible.scriptureShare,
+    rightScriptureShare:rightBible.scriptureShare};
 }
 function addSelectedEvidenceSource(answerSources,source,{candidateId,candidatePartIds=[],duplicateTrace,
-  budget,totalBytes,maxSources=6}={}){
+  budget,totalBytes,maxSources=6,question}={}){
   const duplicate=answerSources.map(existing=>({existing,
-    overlap:duplicatePassageOverlap(existing,source)})).find(item=>item.overlap);
+    overlap:duplicatePassageOverlap(existing,source,question)})).find(item=>item.overlap);
   if(duplicate){
     duplicate.existing.candidatePartIds=[...new Set([
       ...(duplicate.existing.candidatePartIds||[]),...candidatePartIds])];
     duplicateTrace.push({candidateId,duplicateOf:duplicate.existing.candidateId,
-      workTitle:duplicate.overlap.workTitle,
-      shorterPassageContainment:Number(duplicate.overlap.containment.toFixed(4))});
+      reason:duplicate.overlap.reason,
+      ...(duplicate.overlap.workTitle?{workTitle:duplicate.overlap.workTitle}:{}),
+      ...(duplicate.overlap.containment!==undefined?
+        {shorterPassageContainment:Number(duplicate.overlap.containment.toFixed(4))}:{}),
+      ...(duplicate.overlap.sharedPassageRefs?
+        {sharedPassageRefs:duplicate.overlap.sharedPassageRefs.slice(0,40),
+          verseContainment:Number(duplicate.overlap.verseContainment.toFixed(4)),
+          scriptureShare:[Number(duplicate.overlap.leftScriptureShare.toFixed(4)),
+            Number(duplicate.overlap.rightScriptureShare.toFixed(4))]}:{})});
     return {added:false,totalBytes};
   }
   const bytes=new TextEncoder().encode(source.text).byteLength;
@@ -3876,7 +3980,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             const candidatePartIds=decision.parts.filter(part=>part.candidateIds.includes(id))
               .map(part=>part.partId);
             const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:id,
-              candidatePartIds,duplicateTrace,budget:35000,totalBytes});
+              candidatePartIds,duplicateTrace,budget:35000,totalBytes,question:data.question});
             totalBytes=packed.totalBytes;
           }
           if(!answerSources.length){
@@ -3906,7 +4010,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             const candidatePartIds=plan.parts.filter(part=>!Array.isArray(part.sourceBookIds)||
               part.sourceBookIds.map(String).includes(String(source.bookId))).map(part=>part.id);
             const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:candidateIds.get(source.id),
-              candidatePartIds,duplicateTrace,budget:35000,totalBytes});
+              candidatePartIds,duplicateTrace,budget:35000,totalBytes,question:data.question});
             totalBytes=packed.totalBytes;
           }
           selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
