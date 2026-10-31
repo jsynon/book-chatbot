@@ -249,8 +249,48 @@ function hasUnfinishedAnswerEnding(text){
   return /(?:[:,;—,]|\b(?:including|such as|for example|because|and|or|but))\s*$/iu.test(value);
 }
 
+function normalizeNumericPartHeadings(text,plan){
+  const lines=text.split(/\r?\n/);
+  const numericHeading=/^PART\s+([1-9]\d*)(?:\s*[:.\-—]\s*(.*)|\s+(.*))?$/i;
+  const numericMatches=[];
+  const partHeadingLines=[];
+  for(let index=0;index<lines.length;index++){
+    const line=lines[index].trim();
+    const numeric=line.match(numericHeading);
+    if(numeric){
+      numericMatches.push({index,number:Number(numeric[1]),raw:line});
+      partHeadingLines.push(index);
+    }else if(/^PART\s+(?:P?[1-9]\d*)\b/i.test(line)){
+      partHeadingLines.push(index);
+    }
+  }
+  if(!numericMatches.length)return {text,recovered:[],invalid:false};
+  const expected=plan.parts.map(part=>{
+    const match=String(part.id).match(/^P([1-9]\d*)$/);
+    return match?Number(match[1]):null;
+  });
+  // Repair only a complete, ordered numeric sequence. Mixed, duplicate,
+  // skipped, or extra headings remain malformed instead of being guessed.
+  const safe=numericMatches.length===expected.length&&
+    partHeadingLines.length===numericMatches.length&&
+    expected.every((number,index)=>number!==null&&numericMatches[index].number===number);
+  if(!safe)return {text,recovered:[],invalid:true,
+    rawHeadings:partHeadingLines.map(index=>lines[index].trim())};
+  const recovered=numericMatches.map(item=>({
+    raw:item.raw,normalized:item.raw.replace(/^(\s*PART\s+)([1-9]\d*)/i,'$1P$2')
+  }));
+  for(const item of numericMatches)
+    lines[item.index]=lines[item.index].replace(/^(\s*PART\s+)([1-9]\d*)/i,'$1P$2');
+  return {text:lines.join('\n'),recovered,invalid:false};
+}
+
 function parsePartAnswers(raw,plan,stage='compose'){
-  const text=responseText(raw,stage).replace(/^```[a-z0-9_-]*\s*/i,'').replace(/\s*```$/,'');
+  const originalText=responseText(raw,stage).replace(/^\x60\x60\x60[a-z0-9_-]*\s*/i,'').replace(/\s*\x60\x60\x60$/,'');
+  const normalized=normalizeNumericPartHeadings(originalText,plan);
+  if(normalized.invalid)return {parts:plan.parts.map(part=>({partId:part.id,text:''})),
+    recoveredWithoutHeading:false,missingAllHeadings:false,recoveredLegacyRecords:false,
+    invalidPartHeadingSequence:true,rawPartHeadings:normalized.rawHeadings};
+  const text=normalized.text;
   const known=new Set(plan.parts.map(part=>part.id));
   const bodies=new Map(plan.parts.map(part=>[part.id,[]]));
   let active=null,headingCount=0;
@@ -277,9 +317,8 @@ function parsePartAnswers(raw,plan,stage='compose'){
     return {partId:part.id,text:cleaned.text};
   });
   return {parts,recoveredWithoutHeading,missingAllHeadings:headingCount===0&&plan.parts.length>1,
-    recoveredLegacyRecords};
+    recoveredLegacyRecords,recoveredPartHeadings:normalized.recovered,stage};
 }
-
 function citationGroups(text){
   return [...String(text||'').matchAll(/\[([^\]]+)\]/g)].map(match=>({
     raw:match[0],ids:match[1].split(',').map(value=>value.trim()),start:match.index,end:match.index+match[0].length,
@@ -1066,15 +1105,37 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     })};
     const composed=await run('compose',COMPOSER_PROMPT,composePayload,
       response=>parsePartAnswers(response,plan));
+    const recordHeadingRecovery=(parsed,stage)=>{
+      if(Array.isArray(parsed?.recoveredPartHeadings)&&parsed.recoveredPartHeadings.length){
+        trace.formatRecoveries ||= [];
+        trace.formatRecoveries.push({stage,code:'numeric-part-heading-alias',recovered:true,
+          headings:parsed.recoveredPartHeadings});
+      }
+      if(parsed?.invalidPartHeadingSequence){
+        trace.formatRecoveries ||= [];
+        trace.formatRecoveries.push({stage,code:'invalid-numeric-part-heading-sequence',recovered:false,
+          headings:parsed.rawPartHeadings||[]});
+      }
+    };
+    recordHeadingRecovery(composed,'compose');
     let draft=composed;
+    if(composed.invalidPartHeadingSequence)failure={stage:'compose',code:'model-output-invalid-format',
+      message:'The answer draft used numeric part headings that did not match the complete planned sequence.'};
     if(options.expand===true&&composed.parts.some(part=>part.text.trim())){
       // Keep this experiment between the first draft and evidence review. The
       // expander sees only the original verified windows and existing draft;
       // ordinary public requests never enable this extra inference call.
       try{
-        draft=await run('expand',EXPANSION_PROMPT,{question,plan,
+        const expanded=await run('expand',EXPANSION_PROMPT,{question,plan,
           parts:composed.parts.map(part=>({partId:part.partId,text:part.text})),
           evidence:composePayload.evidence},response=>parsePartAnswers(response,plan,'expand'));
+        if(expanded.invalidPartHeadingSequence){
+          recordHeadingRecovery(expanded,'expand');
+          throw new ModelFormatError('expand',
+            'The expansion used numeric part headings that did not match the complete planned sequence.');
+        }
+        draft=expanded;
+        recordHeadingRecovery(draft,'expand');
         trace.expansion={attempted:true,changed:draft.parts.some((part,index)=>
           part.text.trim()!==composed.parts[index]?.text.trim())};
       }catch(error){
