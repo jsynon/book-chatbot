@@ -78,4 +78,8 @@ For broad All Books questions, the browser sends up to 24 hydrated candidate pag
 
 The reviewer identifies which claim or claims directly answer each question part. The Worker checks that every nominated claim belongs to that part; cited claims must survive exact source-span, attribution, and negation review. Uncited nominations remain under the existing part-level context review. The first sentence is a candidate, not a mandatory answer, so a later claim can answer the question when it passes review. This uses the existing review call and does not add a topic-specific route.
 
+If a review response omits a decision for a cited source but otherwise returns normally, the Worker records a recovered, fail-closed partial decision for that citation. The omitted source cannot support a claim; independently reviewed claims and sources remain usable. Review inference has a longer timeout than composition because its packet contains claim-by-source evidence checks. A timeout still leaves the answer unverified rather than treating it as reviewed. The composer also answers from broader knowledge when retrieved passages are adjacent to the question, while keeping those explanations distinct from source-derived claims.
+
+Evidence selection suppresses near-identical passages across edition or anthology records only when the page text strongly overlaps and the titles identify the same work. Distinct translations and materially different passages remain available; explicit Bible translation comparisons bypass cross-translation suppression.
+
 **Guiding principle:** use AI to help readers find, question, and understand the books, while keeping the books themselves at the center.
