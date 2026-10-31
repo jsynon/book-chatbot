@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import * as support from './public-gateway.test-support.mjs';
+import {deduplicateRetrievedEvidenceCandidates} from './public-gateway.mjs';
 const {gzipSync,gateway,handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights,HOST,PDF,manifest,pages,question,payload,fetcher,request,env,fingerprintTestFixture,pilotBaseEnv,pilotScenario}=support;
 
 test('inference failure diagnostics classify provider errors without exposing raw exception text',()=>{
@@ -2064,6 +2065,36 @@ test('v1.13 carries an explicit verse-range scope into review and composition pr
  assert.match(answerSystem,/requested work or passage scope/);
  assert(prompts[0][1].content.includes(question));
  assert(prompts[1][1].content.includes(question));
+});
+
+test('retrieval candidates suppress duplicate copies before selector while preserving requested edition comparisons',()=>{
+ const text='A sufficiently long and distinctive passage is repeated word for word across two catalog copies, preserving the same source content for the reader. This additional sentence ensures the example exceeds the minimum passage size used for conservative duplicate detection, with several more exact words here.';
+ const candidates=[
+  {id:'A',title:'On Liberty — John Stuart Mill',provenance:{work:'On Liberty'},page:6,text,score:98},
+  {id:'B',title:'Essays: English and American — Various Authors',provenance:{work:'On Liberty'},page:211,text,score:94}
+ ];
+ const deduped=deduplicateRetrievedEvidenceCandidates(candidates,'What does Mill say about liberty?');
+ assert.deepEqual(deduped.candidates.map(item=>item.id),['A']);
+ assert.deepEqual(deduped.suppressed.map(item=>[item.candidateId,item.duplicateOf,item.reason]),
+  [['B','A','same-work-text']]);
+ assert.equal(deduplicateRetrievedEvidenceCandidates(candidates,
+  'Compare the wording of the two editions of On Liberty.').candidates.length,2,
+  'an explicit edition-comparison request keeps both copies for selection');
+});
+
+test('public highlights join only adjacent verified spans for the same claim',()=>{
+ const source={id:'S1',title:'On Liberty — John Stuart Mill',page:6};
+ const first='The first complete sentence explains the principle.';
+ const second='The second sentence immediately continues its explanation.';
+ const text=first+' '+second+' A distant sentence remains separate.';
+ const start2=first.length+1;
+ const highlights=selectPublicEvidenceHighlights('Mill explains a principle [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:'Mill explains the principle.',quote:first,quoteVerified:true,start:0,end:first.length},
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:'Mill continues the same explanation.',quote:second,quoteVerified:true,start:start2,end:start2+second.length}
+ ],3,'Mill principle',{S1:text});
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,first+' '+second);
+ assert.deepEqual(highlights[0].quotes.map(item=>item.quote),[first+' '+second]);
 });
 test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
  const fixture=await fingerprintTestFixture();

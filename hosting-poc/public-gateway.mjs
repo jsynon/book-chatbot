@@ -31,7 +31,7 @@ const FRONTEND_ORIGIN = 'https://jsynon.github.io';
 const EXPECTED_TURNSTILE_HOST = 'jsynon.github.io';
 const TURNSTILE_ACTION = 'companion_ask';
 
-export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=6,question=''){
+export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=6,question='',sourceTexts={}){
   const byId=new Map(citations.map(source=>[String(source?.id||''),source]));
   const citationOrder=[...new Set([...citationIds(answer),...citations.map(source=>String(source?.id||''))])]
     .filter(id=>byId.has(id));
@@ -65,7 +65,8 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     const candidates=evidenceMap.filter(item=>item?.id===id&&item.quoteVerified===true&&
       typeof (item.anchorQuote||item.quote)==='string'&&(item.anchorQuote||item.quote).trim())
       .map((item,index)=>({quote:removeLeadingRunningHeader(item.anchorQuote||item.quote),
-        point:String(item.point||''),claimId:String(item.claimId||''),partId:String(item.partId||''),index}))
+        point:String(item.point||''),claimId:String(item.claimId||''),partId:String(item.partId||''),
+        start:Number.isInteger(item.start)?item.start:null,end:Number.isInteger(item.end)?item.end:null,index}))
       .filter(item=>usefulQuote(item.quote));
     // Reviewer-approved spans are already exact and source-verified. Rank
     // them by their linked claim first, then use the original question as a
@@ -111,7 +112,25 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
         if(selected.length===3)break;
       }
     }
-    return [id,selected];
+    const sourceText=String(sourceTexts?.[id]||'');
+    if(!sourceText||selected.length<2)return [id,selected];
+    // Join only immediately adjacent spans that were already reviewer-approved
+    // for the same claim. The combined quote is sliced verbatim from the
+    // fingerprint-verified page; this improves passage readability without
+    // inventing boundaries or weakening claim-level attribution.
+    const ordered=[...selected].sort((left,right)=>
+      (left.start??Number.MAX_SAFE_INTEGER)-(right.start??Number.MAX_SAFE_INTEGER));
+    const merged=[];
+    for(const item of ordered){
+      const previous=merged.at(-1);
+      if(previous&&item.start!==null&&item.end!==null&&previous.start!==null&&
+        previous.claimId===item.claimId&&previous.partId===item.partId&&
+        item.start<=previous.end+3&&item.end-previous.start<=900){
+        previous.end=Math.max(previous.end,item.end);
+        previous.quote=sourceText.slice(previous.start,previous.end).trim();
+      }else merged.push({...item});
+    }
+    return [id,merged];
   }));
   // The six-item cap applies to cited pages, not to individual approved
   // excerpts. Keep up to three exact spans per page so one citation can
@@ -3380,6 +3399,12 @@ function bibleTranslationComparisonRequested(question){
   return /\b(?:compar(?:e|es|ed|ing)|contrast(?:s|ed|ing)?|differ(?:s|ed|ence|ent)?)\b.{0,100}\b(?:translation|version|rendering|wording|translate)\w*\b/i.test(text)||
     /\b(?:translation|version|rendering|wording)\w*\b.{0,100}\b(?:compar(?:e|es|ed|ing)|contrast(?:s|ed|ing)?|differ(?:s|ed|ence|ent)?)\b/i.test(text);
 }
+function evidenceEditionComparisonRequested(question){
+  const text=String(question||'');
+  const compare=/\b(?:compar(?:e|es|ed|ing)|contrast(?:s|ed|ing)?|differ(?:s|ed|ence|ent)?)\b/i;
+  const edition=/\b(?:edition|translation|version|rendering|wording|textual variant)\w*\b/i;
+  return (compare.test(text)&&edition.test(text));
+}
 function isBibleEvidenceSource(source){
   return /\b(?:bible|scripture|testament)\b/i.test(String(source?.title||''));
 }
@@ -3464,6 +3489,10 @@ function sameEvidenceWorkTitle(leftTitle,rightTitle){
   return shorter.length>=8&&(` ${longer} `).includes(` ${shorter} `);
 }
 function duplicatePassageOverlap(left,right,question){
+  // Keep parallel editions available when the reader explicitly asks how
+  // versions or wording differ. Otherwise a near-identical passage can be
+  // represented by its strongest retrieved copy before semantic selection.
+  if(evidenceEditionComparisonRequested(question))return null;
   const leftTitle=normalizedEvidenceWorkTitle(left),rightTitle=normalizedEvidenceWorkTitle(right);
   if(sameEvidenceWorkTitle(leftTitle,rightTitle)){
     const leftTokens=evidenceWordTokens(left.scopeText||left.text);
@@ -3493,6 +3522,27 @@ function duplicatePassageOverlap(left,right,question){
   return {reason:'same-canonical-bible-passage',sharedPassageRefs:sharedRefs,
     verseContainment:containment,leftScriptureShare:leftBible.scriptureShare,
     rightScriptureShare:rightBible.scriptureShare};
+}
+export function deduplicateRetrievedEvidenceCandidates(candidates,question){
+  const retained=[],suppressed=[];
+  for(const candidate of candidates){
+    const duplicate=retained.map(existing=>({existing,
+      overlap:duplicatePassageOverlap(existing,candidate,question)})).find(item=>item.overlap);
+    if(!duplicate){retained.push(candidate);continue;}
+    // Keep the first retrieval-ranked page, while retaining any planner-part
+    // associations supplied by the alternate copy of the same passage.
+    duplicate.existing.candidatePartIds=[...new Set([
+      ...(duplicate.existing.candidatePartIds||[]),...(candidate.candidatePartIds||[])])];
+    duplicate.existing.candidatePartSupport=[...(duplicate.existing.candidatePartSupport||[]),
+      ...(candidate.candidatePartSupport||[])].filter((entry,index,all)=>all.findIndex(item=>
+        item.partId===entry.partId&&item.support===entry.support&&item.excerpt===entry.excerpt)===index);
+    suppressed.push({candidateId:candidate.id,duplicateOf:duplicate.existing.id,
+      reason:duplicate.overlap.reason,
+      ...(duplicate.overlap.workTitle?{workTitle:duplicate.overlap.workTitle}:{}),
+      ...(duplicate.overlap.containment!==undefined?
+        {shorterPassageContainment:Number(duplicate.overlap.containment.toFixed(4))}:{})});
+  }
+  return {candidates:retained,suppressed};
 }
 function addSelectedEvidenceSource(answerSources,source,{candidateId,candidatePartIds=[],candidatePartSupport=[],duplicateTrace,
   budget,totalBytes,maxSources=6,question}={}){
@@ -3947,7 +3997,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     catch{
       return reply({error:'The selected passages could not be verified'},422,origin);
     }
-    let output,sourceSelectionStatus='legacy',sourceSelectionPages=[],sourceSelectionCandidateCount=sourcePages.length,
+    let output,answerSources=[],sourceSelectionStatus='legacy',sourceSelectionPages=[],sourceSelectionCandidateCount=sourcePages.length,
       sourceSelectionUsage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
     const evaluationAuthorized=authorizedPilotEvaluation(request,env);
     const answerVariant=evaluationAuthorized&&['compose-only','with-expansion'].includes(data.answerVariant)?
@@ -3966,15 +4016,18 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           ...source,...(scopedById.get(source.id)!==source.text?
             {scopeText:scopedById.get(source.id)}:{})}));
         sourceSelectionCandidateCount=verifiedCandidates.length;
+        const candidateDeduplication=deduplicateRetrievedEvidenceCandidates(
+          verifiedCandidates,data.question);
+        const selectionCandidates=candidateDeduplication.candidates;
         const selectionParts=plan.parts.length?plan.parts.map(part=>({partId:part.id,question:part.question.slice(0,400)})):
           [{partId:'P1',question:data.question}];
-        const selectorCandidates=verifiedCandidates.map((source,index)=>({
+        const selectorCandidates=selectionCandidates.map((source,index)=>({
           id:'C'+(index+1),title:source.title.slice(0,200),page:source.page,
           excerpt:sourceExcerpt(source.scopeText||source.text,data.question,1200),
           ...(Array.isArray(source.candidatePartIds)?{
             retrievedPartHints:source.candidatePartIds.filter(id=>
               selectionParts.some(part=>part.partId===id))}: {})}));
-        let answerSources=[],selectionTrace;
+        let selectionTrace;
         const started=performance.now();
         try{
           const decision=await selectEvidenceCandidates({question:data.question,parts:selectionParts,
@@ -3988,9 +4041,11 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             sourceSelectionStatus='no-relevant-evidence';
             selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
               status:sourceSelectionStatus,candidateCount:verifiedCandidates.length,
+              selectionCandidateCount:selectionCandidates.length,
+              suppressedCandidateDuplicates:candidateDeduplication.suppressed,
               candidates:selectorCandidates,decision,selected:[]};
           }else{
-          const byCandidateId=new Map(verifiedCandidates.map((source,index)=>['C'+(index+1),source]));
+          const byCandidateId=new Map(selectionCandidates.map((source,index)=>['C'+(index+1),source]));
           let totalBytes=0;
           const duplicateTrace=[];
           for(const id of selectedIds){
@@ -4012,6 +4067,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           }
           selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
             status:'selected',candidateCount:verifiedCandidates.length,
+            selectionCandidateCount:selectionCandidates.length,
+            suppressedCandidateDuplicates:candidateDeduplication.suppressed,
             candidates:selectorCandidates,decision,selected:answerSources.map(source=>({
               id:source.id,candidateId:source.candidateId,bookId:source.bookId,page:source.page,
               candidatePartIds:source.candidatePartIds,candidatePartSupport:source.candidatePartSupport})),
@@ -4025,8 +4082,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           sourceSelectionStatus='deterministic-fallback';
           let totalBytes=0;
           const duplicateTrace=[];
-          const candidateIds=new Map(verifiedCandidates.map((source,index)=>[source.id,'C'+(index+1)]));
-          for(const source of orderFallbackCandidates(verifiedCandidates)){
+          const candidateIds=new Map(selectionCandidates.map((source,index)=>[source.id,'C'+(index+1)]));
+          for(const source of orderFallbackCandidates(selectionCandidates)){
             if(answerSources.length>=6)break;
             // In fallback mode, planned source scope is the only safe part
             // link available; model relevance has not been established.
@@ -4038,9 +4095,11 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           }
           selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
             status:sourceSelectionStatus,
+            candidateCount:verifiedCandidates.length,selectionCandidateCount:selectionCandidates.length,
+            suppressedCandidateDuplicates:candidateDeduplication.suppressed,
             failureCode:['selector-provider-error','selector-invalid-request','selector-invalid-response',
               'selector-output-truncated','selector-budget-empty'].includes(error?.failureCode)?
-              error.failureCode:'selector-error',candidateCount:verifiedCandidates.length,
+              error.failureCode:'selector-error',
             ...(SAFE_SELECTOR_FAILURE_REASONS.has(error?.failureReason)?{failureReason:error.failureReason}:{}),
             selected:answerSources.map(source=>({id:source.id,candidateId:source.candidateId,
               bookId:source.bookId,page:source.page})),suppressedDuplicates:duplicateTrace};
@@ -4121,8 +4180,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     // Highlights stay bound to answer-used citations and reviewed, exact spans
     // from fingerprint-verified source pages. Missing anchors stay missing;
     // a catalog preview is not evidence for a claim.
+    const sourceTexts=Object.fromEntries(answerSources.map(source=>[source.id,source.scopeText||source.text]));
     const evidenceHighlights=selectPublicEvidenceHighlights(output.answer,
-      output.citations||[],output.evidenceMap||[],6,data.question);
+      output.citations||[],output.evidenceMap||[],6,data.question,sourceTexts);
     // Suggestions only populate the next question; they are not model claims
     // or an implicit extra billable AI call. Fresh retrieval occurs each turn.
     const followUpQuestions=output.outcome==='verified-source-draft'?

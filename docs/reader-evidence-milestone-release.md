@@ -17,19 +17,18 @@ Trust boundaries to preserve: verified corpus identity; exact cited-source spans
 
 ## Most recent saved acceptance run
 
-Workflow run [#39](https://github.com/jsynon/antilogicalism/actions/runs/41219189815) completed 11 cases with no request failures or planner fallback. Ten cases passed structural checks; simulation produced an explicitly reviewed source-free general-context answer; Aristotle was the remaining miss after a review timeout. The Worker selector repeated a candidate ID in the Aristotle trace, which caused retrieval-order fallback. Buddha cited three useful passages from one work; source diversity remains a qualitative judgment, not a quota. Human answer-quality labels were absent.
-
-Offline replay of run #39 refreshed labels and structural summaries with zero AI and network calls. It passes 10/11; the Aristotle review miss remains. The replay cannot rerun the selector or review model and cannot change answer quality.
+Workflow run [#41222973282](https://github.com/jsynon/antilogicalism/actions/runs/41222973282), artifact `13051235956`, completed all 11 cases without request failures. Two used planner fallback; seven passed structural checks. Offline replay also produced 7/11 structural passes. The trace review found a false Boethius downgrade from the deterministic polarity guard after the model reviewer accepted the claim; a Descartes per-part selector/reviewer handoff mismatch; duplicate Mill passage copies reaching selection; and exact but occasionally clipped or fragmented highlights. These are handoff and presentation findings, not reasons to encode case-specific routing.
 
 ## Current corrective changes
 
 - Worker PR #333 normalizes repeated selector candidate IDs. Identical verified cues are merged; conflicting cues become context-only. The trace records duplicate count. Malformed entries, unknown IDs, and unverified excerpts remain guarded.
-- Site PR #310 preserves the saved general-context classification during replay and splits repeated single-space inline bullet runs into readable prose blocks without treating ordinary italics as bullets.
-- Local full suites passed: Worker 341 tests; site 233 tests. These results establish regression coverage, not a live quality improvement.
+- The current candidate narrows polarity matching to related clauses, passes selector relation cues into the existing part-specific review as non-authoritative context, deduplicates near-identical verified pages before selection, and merges adjacent reviewed highlight spans only when claim and part match. It adds no model call or question-specific route.
+- The site evaluator now links a highlight to answer sentences using the reviewer's claim point and the same source, marks uncertain matches unresolved, and carries a separate pending human highlight rubric. Exact quote location remains a mechanical check, not a relevance score.
+- Local full suites passed on the implementation branches: Worker 344 tests; site 234 tests. These results establish regression coverage, not a live quality improvement.
 
 ## Next validation and roadmap
 
-After both PRs merge and deploy, run the current acceptance set once. Check that the Worker selector stays in semantic-selection mode when candidate IDs repeat, and inspect whether Aristotle review completes. Review answer quality and citations separately from structural pass. If those handoffs are clean, move to a different, previously unseen question set; do not keep tuning only the calibration questions. Preserve human labels for the five dimensions: directness/coverage, explanation/fullness, source relevance, citation support, and readability.
+After both PRs merge and deploy, rerun the acceptance set once. Inspect the Boethius reviewer decision versus final status, the Descartes part/claim/span mapping, duplicate candidate suppression, and the merged highlight cards. Score answer and highlight quality separately from structural pass. If those handoffs are clean, move to a different, previously unseen question set; do not keep tuning only the calibration questions. Preserve human labels for the five answer dimensions: directness/coverage, explanation/fullness, source relevance, citation support, and readability.
 
 ## Public enablement
 
