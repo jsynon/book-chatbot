@@ -2737,6 +2737,26 @@ test('selector provider errors retain a safe reason while the bounded fallback r
  assert.ok(result.sourceSelection.pages.length>0);
  assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
 });
+test('repeated selector candidate IDs are normalized without retrieval-order fallback',async()=>{
+ const token='selector-duplicate-evidence-test-token';
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
+  selector:async(_model,input)=>{
+   const payload=JSON.parse(input.messages[1].content);
+   const candidate=payload.candidates[0];
+   const cue={candidateId:candidate.id,support:'direct',excerpt:candidate.excerpt.slice(0,120)};
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
+    payload.parts.map(part=>({partId:part.partId,evidence:[cue,{...cue}]}))})}}]};
+  }
+ });
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
+ const result=await response.json();
+ assert.equal(response.status,200);
+ assert.equal(result.trace.stages[0].status,'selected');
+ assert.equal(result.sourceSelection.status,'selected');
+ assert.equal(result.trace.stages[0].decision.duplicateEvidenceEntriesRemoved,1);
+ assert.notEqual(result.sourceSelection.status,'deterministic-fallback');
+});
 test('selector fallback trace retains only an approved invalid-response subtype',async()=>{
  const token='selector-invalid-subtype-test-token';
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
