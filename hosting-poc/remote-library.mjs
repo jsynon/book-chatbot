@@ -136,8 +136,17 @@ export class RemoteLibrary {
     if (!/^(?:manifest|terms-[a-z0-9]{2}|book-[0-9]+)\.json$/.test(filename)) {
       throw new Error('Unexpected corpus filename.');
     }
-    const response = await this.fetcher(this.root + filename + '.gz', {cache:'no-store'});
-    if (!response.ok) throw new Error('Corpus request returned HTTP ' + response.status + '.');
+    let response;
+    for(let attempt=0;attempt<2;attempt++){
+      try{response=await this.fetcher(this.root + filename + '.gz', {cache:'no-store'});}
+      catch(error){
+        if(attempt===0)continue;
+        throw new Error('Corpus request failed after one retry.',{cause:error});
+      }
+      if(response.ok)break;
+      if(response.status>=500&&attempt===0)continue;
+      throw new Error('Corpus request returned HTTP ' + response.status + '.');
+    }
     const bytes = new Uint8Array(await response.arrayBuffer());
     // GitHub Pages may transmit the compressed bytes or already decode them.
     let raw;

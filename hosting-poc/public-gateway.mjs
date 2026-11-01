@@ -1157,6 +1157,33 @@ export const FINGERPRINT_ROOTS=Object.freeze({
 // Keep the legacy export pointed at v48 for any internal consumers that still
 // rely on the original collection. New client sources declare their version.
 export const FINGERPRINT_ROOT=FINGERPRINT_ROOTS[48].root;
+export class FingerprintVerificationError extends Error {
+  constructor(code,message,{retryable=false}={}){
+    super(message);
+    this.name='FingerprintVerificationError';
+    this.code=code;
+    this.retryable=retryable;
+  }
+}
+async function fetchFingerprintPacket(fetcher,url){
+  let lastError;
+  for(let attempt=0;attempt<2;attempt++){
+    let response;
+    try{response=await fetcher(url,{cache:'no-store'});}
+    catch(error){
+      lastError=error;
+      if(attempt===0)continue;
+      throw new FingerprintVerificationError('fingerprint-service-unavailable',
+        'Trusted fingerprint packet is unavailable',{retryable:true});
+    }
+    if(response.ok)return response;
+    if(response.status>=500&&attempt===0)continue;
+    throw new FingerprintVerificationError('fingerprint-service-unavailable',
+      'Trusted fingerprint packet is unavailable',{retryable:response.status>=500});
+  }
+  throw new FingerprintVerificationError('fingerprint-service-unavailable',
+    'Trusted fingerprint packet is unavailable',{retryable:true,cause:lastError});
+}
 export async function verifiedFingerprintSources(question,items,fetcher=(url,opts)=>globalThis.fetch(url,opts),
   {maxSources=6,maxTotalBytes=35000}={}) {
   if(!Array.isArray(items)||!items.length||items.length>maxSources)
@@ -1187,8 +1214,8 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
     if(totalBytes>maxTotalBytes)throw new Error('Too much text submitted');
     const chunk=Math.floor((page-1)/32),key=libraryVersion+'/'+bookId+'/'+chunk;
     if(!packets.has(key)){
-      const response=await fetcher(fingerprintContract.root+'books/'+bookId+'/'+chunk+'.json',{cache:'no-store'});
-      if(!response.ok)throw new Error('Trusted fingerprint packet is unavailable');
+      const response=await fetchFingerprintPacket(fetcher,
+        fingerprintContract.root+'books/'+bookId+'/'+chunk+'.json');
       const raw=new Uint8Array(await response.arrayBuffer());
       if(raw.byteLength>12000)throw new Error('Fingerprint packet exceeds size cap');
       packets.set(key,{fingerprint:JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(raw)),
@@ -1213,7 +1240,8 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
       throw new Error('Fingerprint metadata or text length mismatch');
     const digest=await crypto.subtle.digest('SHA-256',bytes);
     const actual=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
-    if(actual!==match.sha256)throw new Error('Source text SHA-256 mismatch');
+    if(actual!==match.sha256)throw new FingerprintVerificationError(
+      'source-fingerprint-mismatch','Source text SHA-256 mismatch');
     sources.push({id:'S'+(sources.length+1),libraryVersion,bookId,title:p.title,
       page,globalPageId:match.globalPageId,
       url:'https://drive.google.com/file/d/'+p.pdfDriveId+
@@ -4078,8 +4106,12 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     let sourcePages;
     try{sourcePages=await verifiedFingerprintSources(data.question,data.sources,fetcher,
       {maxSources:MAX_SELECTOR_CANDIDATES,maxTotalBytes:300000});}
-    catch{
-      return reply({error:'The selected passages could not be verified'},422,origin);
+    catch(error){
+      const unavailable=error?.code==='fingerprint-service-unavailable';
+      return reply({error:unavailable?'Trusted source fingerprints are temporarily unavailable':
+        'The selected passages could not be verified',
+        stage:'source-verification',code:error?.code||'source-verification-failed'},
+        unavailable?503:422,origin);
     }
     let output,answerSources=[],sourceSelectionStatus='legacy',sourceSelectionPages=[],sourceSelectionCandidateCount=sourcePages.length,
       sourceSelectionUsage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
@@ -4384,8 +4416,12 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       const reason=String(error?.message||error);
       const invalid=/SHA-256 mismatch|length mismatch|Invalid source claim|Duplicate source claim|Unacceptable page text size|Too much text submitted/.test(reason);
       // Never forward unverified text to AI; never return user input or token.
-      return reply({error:invalid?'Page did not match the trusted fingerprint':'Trusted fingerprint sources unavailable',
-        stage:'source-verification'},invalid?422:503);
+      const unavailable=error?.code==='fingerprint-service-unavailable';
+      return reply({error:invalid?'Page did not match the trusted fingerprint':
+        unavailable?'Trusted source fingerprints are temporarily unavailable':
+          'Trusted fingerprint sources unavailable',
+        stage:'source-verification',code:error?.code||'source-verification-failed'},
+        invalid?422:503);
     }
     let output;
     try{output=await composeVerifiedAnswer(data.question,verified,env.AI);}

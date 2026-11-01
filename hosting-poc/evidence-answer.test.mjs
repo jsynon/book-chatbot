@@ -1196,8 +1196,9 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(EXPANSION_PROMPT,/broader knowledge/);
  assert.doesNotMatch(EXPANSION_PROMPT,/rely on outside knowledge|only where the supplied verified passage windows/);
  assert.match(REVIEW_PROMPT,/Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context/);
- assert.match(REVIEW_PROMPT,/names a supplied work, author, speaker, or page/);
- assert.match(REVIEW_PROMPT,/Independent background and synthesis may remain uncited/);
+ assert.match(REVIEW_PROMPT,/Require a source ID and exact span only when a claim attributes a position to a supplied work/);
+ assert.match(REVIEW_PROMPT,/Merely mentioning a work or person in independent background does not require a citation/);
+ assert.match(REVIEW_PROMPT,/independent background and synthesis may remain uncited/i);
  assert.match(REVIEW_PROMPT,/Judge each part against the exact question/);
  assert.match(COMPOSER_PROMPT,/reviewer will assess which claim or claims directly answer the question/);
  assert.match(REVIEW_PROMPT,/describes the collection, not the answer to the reader/);
@@ -2483,6 +2484,8 @@ test('reviewer preserves a separate exact span from each cited source when each 
  ])),{S1:1,S4:1,S6:1},'each of the three cited sources contributes exactly one reviewed span');
  assert.ok(mappedSpans.every(item=>sources.find(source=>source.id===item.id).text.includes(item.quote)));
  assert.deepEqual(new Set(result.evidenceHighlights.map(item=>item.source_id)),mappedSourceIds);
+ assert.deepEqual(result.questionParts[0].evidenceIds.sort(),['S1','S4','S6']);
+ assert.match(result.answer,/\[S1, S4, S6\]/);
  assert.equal(result.coverage,'full');
  assert.equal(ai.calls.length,2);
 });

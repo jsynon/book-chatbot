@@ -80,14 +80,15 @@ export async function fingerprintTestFixture({libraryVersion=48}={}) {
        usage:{neurons:9}};
  };
  const response=async({overrideBody=body,overrideToken=secret,
-    origin='http://127.0.0.1:8766',aiRun=run,method='POST',overrideAI}={})=>{
+    origin='http://127.0.0.1:8766',aiRun=run,method='POST',overrideAI,
+    overrideFetcher=fetcher}={})=>{
      const request=new Request(url,{method,headers:{
        Origin:origin,Authorization:'Bearer '+overrideToken,
        'Content-Type':'application/json'},
        ...(method==='POST'?{body:JSON.stringify(overrideBody)}:{})});
      const environment=env({PUBLIC_ENABLED:'false',SOURCE_PROBE_TOKEN:secret,
        AI:overrideAI===undefined?{run:aiRun}:overrideAI});
-     return handleRequest(request,environment,fetcher);
+     return handleRequest(request,environment,overrideFetcher);
  };
  return {body,secret,response,fetcher,stats:()=>({aiCount,fetchCount}),run};
 }

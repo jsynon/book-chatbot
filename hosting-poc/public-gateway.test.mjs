@@ -1550,6 +1550,42 @@ test('v1.9.4 rejects modified same-length text before any inference',async()=>{
  assert.equal((await result.json()).stage,'source-verification');
  assert.equal(fixture.stats().aiCount,0);
 });
+test('fingerprint service retries one transient outage and keeps the six-page verifier gate',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let attempts=0;
+ const result=await fixture.response({overrideFetcher:async(...args)=>{
+   attempts++;
+   if(attempts===1)return new Response('temporary outage',{status:503});
+   return fixture.fetcher(...args);
+ }});
+ assert.equal(result.status,200);
+ assert.equal(attempts,2);
+ assert.equal(fixture.stats().aiCount,2);
+});
+test('fingerprint service retries one network exception',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let attempts=0;
+ const result=await fixture.response({overrideFetcher:async(...args)=>{
+   attempts++;
+   if(attempts===1)throw new TypeError('temporary network failure');
+   return fixture.fetcher(...args);
+ }});
+ assert.equal(result.status,200);
+ assert.equal(attempts,2);
+});
+test('fingerprint service outage returns retryable 503 without running inference',async()=>{
+ const fixture=await fingerprintTestFixture();
+ let attempts=0;
+ const result=await fixture.response({overrideFetcher:async()=>{
+   attempts++;
+   return new Response('temporarily unavailable',{status:503});
+ }});
+ assert.equal(result.status,503);
+ assert.equal(attempts,2,'only one bounded retry is allowed');
+ assert.deepEqual(await result.json(),{error:'Trusted source fingerprints are temporarily unavailable',
+   stage:'source-verification',code:'fingerprint-service-unavailable'});
+ assert.equal(fixture.stats().aiCount,0);
+});
 test('v1.9.4 denies unauthorized and unapproved-origin requests before fetching or AI',async()=>{
  const fixture=await fingerprintTestFixture();
  assert.equal((await fixture.response({overrideToken:'wrong'})).status,401);
