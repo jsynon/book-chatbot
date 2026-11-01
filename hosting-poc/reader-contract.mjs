@@ -1,7 +1,8 @@
-// Worker-side plan and citation contract. The site/evaluator copy lives in
-// antilogicalism/reading-companion/reader-contract.mjs. These are separate
-// implementations, not byte-identical files; compare shared fields and
-// normalization behavior across both when changing a contract.
+// Worker-side plan and citation contract. The site copy lives in
+// antilogicalism/reading-companion/reader-contract.mjs. They are not
+// byte-identical: coordinated multi-part normalization and optional-query
+// linkage currently differ. Compare both copies before changing shared plan
+// or citation behavior; this Worker copy also owns server-side quote cleanup.
 export const CONTRACT_VERSION='reader-evidence-v2';
 export const RETRIEVAL_LIMIT=12;
 export function citationIds(text){
