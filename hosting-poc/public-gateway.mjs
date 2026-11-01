@@ -2117,7 +2117,7 @@ export function removeConflictingSpeakerAttributions(answer,evidenceMap,sources=
       // passage has no trustworthy speaker name in the review map. This
       // includes pronoun-led paraphrases such as “She goes so far as to
       // declare…”, which a sentence-leading “She says…” check misses.
-      const unverifiedAttribution=/\\b(?:he|she|they)\\b[^.!?]{0,110}\\b(?:say(?:s|ing)?|state(?:s|d)?|argue(?:s|d)?|claim(?:s|ed)?|believe(?:s|d)?|maintain(?:s|ed)?|write(?:s|s)?|report(?:s|ed)?|observe(?:s|d)?|conclude(?:s|d)?|suggest(?:s|ed)?|assert(?:s|ed)?|contend(?:s|ed)?|declare(?:s|d)?)\\b/i;
+      const unverifiedAttribution=/\b(?:he|she|they)\b[^.!?]{0,110}\b(?:say(?:s|ing)?|state(?:s|d)?|argue(?:s|d)?|claim(?:s|ed)?|believe(?:s|d)?|maintain(?:s|ed)?|writes?|report(?:s|ed)?|observe(?:s|d)?|conclude(?:s|d)?|suggest(?:s|ed)?|assert(?:s|ed)?|contend(?:s|ed)?|declare(?:s|d)?)\b/i;
       if(unverifiedCitations.length&&unverifiedAttribution.test(sentence)&&
         !hasQualifiedReportedDialogueClaim(sentence,sourceById.get(unverifiedCitations[0]))){
         conflicts.push({sentence:sentence.trim(),speaker:'',
