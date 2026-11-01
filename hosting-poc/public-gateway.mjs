@@ -1330,13 +1330,22 @@ function sourceGroupMetadata(){
     }
   }
   const surnameOwners=new Map();
+  const authorTokenOwners=new Map();
   for(const author of authorBooks.values()){
     if(!surnameOwners.has(author.surname))surnameOwners.set(author.surname,new Set());
     surnameOwners.get(author.surname).add(normalizedSourceGroupText(author.name));
+    for(const token of normalizedSourceGroupText(author.name).split(' ')){
+      if(token.length<5||['saint','santa','santo'].includes(token))continue;
+      if(!authorTokenOwners.has(token))authorTokenOwners.set(token,new Set());
+      authorTokenOwners.get(token).add(normalizedSourceGroupText(author.name));
+    }
   }
-  for(const author of authorBooks.values())
+  for(const author of authorBooks.values()){
     author.surnameOwners=surnameOwners.get(author.surname)?.size||0;
-  return {titleBooks,authorBooks,surnameOwners};
+    author.uniqueNameTokens=[...normalizedSourceGroupText(author.name).split(' ')]
+      .filter(token=>token.length>=5&&authorTokenOwners.get(token)?.size===1);
+  }
+  return {titleBooks,authorBooks,surnameOwners,authorTokenOwners};
 }
 function requestedSourceGroups(question,sources){
   const {titleBooks,authorBooks,surnameOwners}=sourceGroupMetadata();
@@ -1365,7 +1374,16 @@ function requestedSourceGroups(question,sources){
       author.surname+'(?=$|[^\\p{L}\\p{N}])','iu');
     const surnameMatch=(surnameOwners.get(author.surname)?.size===1)&&
       (surnamePattern.test(text)||lowercaseSurnamePattern.test(text));
-    if(!fullMatch&&!surnameMatch)continue;
+    const uniqueNameMatch=(author.uniqueNameTokens||[]).some(token=>{
+      // First-name or non-surname matching is a convenience for distinctive
+      // catalog names such as Augustine of Hippo. Require a proper-name form
+      // so a common token such as "change" cannot become another author group.
+      const display=token.slice(0,1).toLocaleUpperCase()+token.slice(1);
+      const escaped=display.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+      return new RegExp('(?:^|[^\\p{L}\\p{N}])'+escaped+
+        '(?=$|[^\\p{L}\\p{N}])','u').test(text);
+    });
+    if(!fullMatch&&!surnameMatch&&!uniqueNameMatch)continue;
     if(workGroups.some(group=>[...author.bookIds].some(id=>group.bookIds.has(id))))continue;
     groups.push({kind:'author',key:normalizedSourceGroupText(author.name),
       label:author.name,bookIds:author.bookIds});

@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {handleRequest,planSearchQueries,planSearchGapQueries,composeVerifiedAnswer,validConversationHistory} from './public-gateway.mjs';
+import {normalizePlan} from './reader-contract.mjs';
 
 const HOST='https://antilogicalism-companion-public.jsynon.workers.dev';
 const question='How does Raskolnikov attempt to justify murder and how does the novel challenge his reasoning?';
@@ -187,6 +188,50 @@ test('search planner retains explicitly named authors and works for source scopi
  });
  assert.match(systemPrompt,/explicitly requested authors or works/i);
  assert.match(systemPrompt,/Do not invent authors, works, answers, or citations/i);
+});
+test('catalog source matching resolves a uniquely named author token',async()=>{
+ const question='How do Augustine, Aquinas, and Kant differ in their understanding of moral responsibility?';
+ const result=await planSearchQueries(question,'',{
+  run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   intent:'compare',parts:['How does Augustine understand responsibility?',
+    'How does Aquinas understand responsibility?','How does Kant understand responsibility?'],
+   queries:['Augustine responsibility grace will','Aquinas responsibility reason free will',
+    'Kant responsibility autonomy duty']
+  })}}]})
+ });
+ const augustine=result.plan.sources.find(source=>/Augustine/i.test(source.label));
+ assert.ok(augustine?.bookIds.length,'the catalog name "Augustine of Hippo" resolves from the uniquely named token');
+ assert.deepEqual(result.plan.sources.map(source=>source.label).filter(label=>/Augustine|Aquinas|Kant/i.test(label)).length,3);
+});
+test('normalization rejects a planner identity mapped to another catalog author',()=>{
+ const catalog={
+  '34':'A Treatise of Human Nature — David Hume',
+  '40':'Critique of Pure Reason — Immanuel Kant'
+ };
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'Kant',role:'primary',bookIds:['34','40']}
+ ],parts:['How does Kant understand causality?'],queries:[]},
+ 'How does Kant understand causality?',catalog);
+ assert.deepEqual(plan.sources.map(source=>source.bookIds),[['40']]);
+});
+test('normalization removes a repeated comparison wrapper while preserving source parts',()=>{
+ const catalog={
+  '4':'Metaphysics — Aristotle','529':'On the Origin of Species — Charles Darwin',
+  '9':'Physics — Aristotle','530':'The Descent of Man — Charles Darwin'
+ };
+ const question='How do Aristotle and Darwin differ in explaining change?';
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'Aristotle',role:'primary',bookIds:['4','9']},
+  {label:'Charles Darwin',role:'primary',bookIds:['529','530']}
+ ],parts:[
+  "How does Aristotle explain change?",
+  "How does Darwin explain change?",
+  "What are the differences between Aristotle's and Darwin's accounts of change?",
+  'How do the named sources compare in response to this question: '+question
+ ],queries:['Aristotle change','Darwin change']},question,catalog);
+ assert.deepEqual(plan.parts.map(part=>part.id),['P1','P2','P3']);
+ assert.match(plan.parts[2].question,/differences between/i);
+ assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[['4','9'],['529','530'],['4','9','529','530']]);
 });
 test('epistemic comparison planning searches for the argument behind a principle',async()=>{
  let systemPrompt='';

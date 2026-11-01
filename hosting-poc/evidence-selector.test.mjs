@@ -21,22 +21,25 @@ function requestWith(decisions,{excerpt='The text says that doubt itself proves 
   })}};
 }
 
-test('selector requires a verbatim excerpt and derives direct coverage from it',async()=>{
+test('selector uses compact candidate IDs and derives direct coverage from explicit decisions',async()=>{
  let systemPrompt='';
  const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'direct',
   excerpt:'doubt itself proves the thinker exists'}]}]);
  const original=request.ai.run;
  request.ai.run=async(model,input)=>{systemPrompt=input.messages.find(message=>message.role==='system')?.content||'';
-  assert.equal(input.max_completion_tokens,960);return original(model,input);};
+  assert.equal(input.max_completion_tokens,960);
+  const payload=JSON.parse(input.messages[1].content);
+  assert.ok(payload.candidates[0].excerpt,'the model still sees the bounded source excerpt');
+  return original(model,input);};
  const result=await selectEvidenceCandidates(request);
  assert.match(systemPrompt,/"support":"direct"/);
- assert.match(systemPrompt,/exact, contiguous excerpt/);
+ assert.doesNotMatch(systemPrompt,/exact, contiguous excerpt/);
  assert.match(systemPrompt,/requested operation/);
  assert.match(systemPrompt,/reasoning or mechanism/);
  assert.deepEqual(result.selectedCandidateIds,['C1']);
  assert.deepEqual(result.parts[0].candidateIds,['C1']);
  assert.equal(result.parts[0].coverage,'supported');
- assert.equal(result.parts[0].evidence[0].excerptMatched,true);
+ assert.deepEqual(result.parts[0].evidence,[{candidateId:'C1',support:'direct'}]);
 });
 
 test('a part with only contextual evidence stays partial even if its retrieval hint was linked',async()=>{
@@ -48,14 +51,15 @@ test('a part with only contextual evidence stays partial even if its retrieval h
  assert.equal(result.parts[0].evidence[0].support,'context');
 });
 
-test('a model paraphrase cannot be recorded as a direct supporting excerpt',async()=>{
- const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'direct',
-  excerpt:'thinking proves that a person exists'}]}]);
- const result=await selectEvidenceCandidates(request);
- assert.equal(result.parts[0].coverage,'partial');
- assert.equal(result.parts[0].evidence[0].support,'context');
- assert.equal(result.parts[0].evidence[0].excerpt,'');
- assert.equal(result.parts[0].evidence[0].excerptMatched,false);
+test('selector accepts fenced JSON with surrounding text but does not repair truncated decisions',async()=>{
+ const complete='Here is the result: ```json\n'+JSON.stringify({parts:[{partId:'P1',evidence:[
+  {candidateId:'C1',support:'direct'}]}]})+'\n```';
+ const result=await selectEvidenceCandidates({...requestWith([]),ai:{run:async()=>({
+  choices:[{finish_reason:'stop',message:{content:complete}}]})}});
+ assert.equal(result.parts[0].coverage,'supported');
+ await assert.rejects(selectEvidenceCandidates({...requestWith([]),ai:{run:async()=>({
+  choices:[{finish_reason:'stop',message:{content:'{"parts":[{"partId":"P1","evidence":['}}]})}}),
+  error=>error.failureReason==='invalid-json');
 });
 
 test('selector reports safe subtypes for malformed part and evidence decisions',async()=>{
@@ -68,7 +72,7 @@ test('selector reports safe subtypes for malformed part and evidence decisions',
   {failureReason:'evidence-not-array',parts:[{partId:'P1',evidence:'C1'}]},
   {failureReason:'unknown-candidate-id',parts:[{partId:'P1',evidence:[{candidateId:'C9',support:'direct',excerpt:'doubt itself proves the thinker exists'}]}]},
   {failureReason:'invalid-evidence-support',parts:[{partId:'P1',evidence:[{candidateId:'C1',support:'supported',excerpt:'doubt itself proves the thinker exists'}]}]},
-  {failureReason:'invalid-evidence-excerpt',parts:[{partId:'P1',evidence:[{candidateId:'C1',support:'direct',excerpt:'short'}]}]}
+  {failureReason:'invalid-evidence-item',parts:[{partId:'P1',evidence:[{candidateId:'C1'}]}]}
  ];
  for(const item of cases){
   const raw=JSON.stringify({parts:item.parts,privatePayload:'PRIVATE SELECTOR TEXT'});
@@ -99,7 +103,7 @@ test('conflicting duplicate selector cues conservatively become contextual',asyn
  ]}]));
  assert.equal(result.duplicateEvidenceEntriesRemoved,1);
  assert.equal(result.parts[0].coverage,'partial');
- assert.deepEqual(result.parts[0].evidence,[{candidateId:'C1',support:'context',excerpt:'',excerptMatched:false}]);
+ assert.deepEqual(result.parts[0].evidence,[{candidateId:'C1',support:'context'}]);
 });
 
 test('valid no-evidence selection remains an explicit empty result',async()=>{

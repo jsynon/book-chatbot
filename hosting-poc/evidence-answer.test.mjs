@@ -601,7 +601,7 @@ test('an all-books plan does not promote a partial claim after removing a failed
    ]}]})};
  }]);
  const result=await composeEvidenceAnswer('What guides human life?',[unrelated,supporting],ai,[],{
-  catalog,plan,trace:true
+  catalog:{...catalog,140:'Fear and Trembling — Søren Kierkegaard'},plan,trace:true
  });
  assert.match(result.answer,/did not support a reliable answer/i);
  assert.equal(result.questionParts[0].status,'unsupported');
@@ -1743,7 +1743,7 @@ test('a named Hamlet part admits the primary collected text and excludes unrelat
  const question='In Hamlet’s “To be, or not to be” soliloquy, what does he mean by conscience?';
  const catalog={212:'The Complete Works of William Shakespeare — William Shakespeare'};
  const plan=normalizePlan({intent:'interpret',sources:[
-  {label:'Hamlet',role:'primary',bookIds:['212']}
+  {label:'William Shakespeare',role:'primary',bookIds:['212']}
  ],parts:['What does Hamlet mean by conscience in this soliloquy?']},question,catalog);
  const linked=linkEvidenceToParts(plan,[
   {id:'S1',bookId:'212',candidatePartIds:['P1']},
@@ -2181,6 +2181,40 @@ test('review sees one spare candidate while verified acceptance stays capped at 
   'the spare candidate does not raise the existing three-span acceptance limit');
  assert.equal(result.evidenceMap.length,3);
  assert.equal(ai.calls.length,2,'the wider candidate list adds no model call');
+});
+
+test('large claim reviews send one ranked span hint per citation while keeping the full bounded span packet',async()=>{
+ const sourceText=['Custom guides human life.','Habit shapes inference.',
+  'Repeated experience forms expectations.','One event follows another regularly.',
+  'The mind learns from repeated conjunctions.','Custom directs ordinary expectations.',
+  'Experience produces familiar associations.','Inference follows established habits.',
+  'Repeated cases shape anticipation.'].join('\n\n');
+ const source={...hume,id:'S1',text:sourceText,preview:sourceText};
+ const answerText='PART P1\n'+Array.from({length:9},(_,index)=>
+  ['Custom guides human life.','Habit shapes inference.','Repeated experience forms expectations.',
+   'One event follows another regularly.','The mind learns from repeated conjunctions.',
+   'Custom directs ordinary expectations.','Experience produces familiar associations.',
+   'Inference follows established habits.','Repeated cases shape anticipation.'][index]+' [S1]')
+  .join('\n\n');
+ let reviewPayload,reviewSystem='';
+ const ai=makeAI([answer(answerText),(_model,{messages})=>{
+  reviewSystem=messages[0].content;
+  reviewPayload=JSON.parse(messages[1].content);
+  const spanId=reviewPayload.parts[0].evidence[0].spans[0].spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:['P1-C1']}],claims:reviewPayload.claims.map(claim=>({
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:[spanId]}]}))})};
+ }]);
+ await composeEvidenceAnswer('What guides human life?', [source],ai,[],{
+  plan:onePartPlan,catalog,trace:true
+ });
+ assert.equal(reviewPayload.claims.length,9);
+ assert.ok(reviewPayload.claims.every(claim=>claim.sourceEvidence[0].spanIds.length===1));
+ assert.ok(reviewPayload.parts[0].evidence[0].spans.length>1,
+  'the reviewer still receives the full bounded set of exact source spans');
+ assert.match(reviewSystem,/One source cannot supply another source’s missing support/);
+ assert.equal(ai.calls.length,2,'adaptive review packing adds no model call');
 });
 
 test('the reviewer can retain several exact spans from one source for one fully supported claim',async()=>{
