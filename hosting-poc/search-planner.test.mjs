@@ -65,6 +65,7 @@ test('conditional gap planner returns optional distinct search terms and sees bo
  const response=await planSearchGapQueries('How do we know reality exists?','',{
   weakParts:[{partId:'P1',part:'How do we know reality exists?',overlap:0,
    matchedTerms:['simulation'],coverageReason:'index-like-candidates-not-counted',
+   sourceBookIds:['16','17','999999'],
    coverageSource:{bookId:'114',page:1264,globalPageId:'114:1264'}}],
   originalQueries:['reality existence knowledge'],
   candidates:[{title:'A source',excerpt:'A bounded passage excerpt.'}]
@@ -76,6 +77,9 @@ test('conditional gap planner returns optional distinct search terms and sees bo
   assert.match(prompt,/index-like page is not evidence/i);
   assert.match(prompt,/underlying concepts, assumptions, or kinds of reasoning/i);
   assert.match(prompt,/distinct from direct evidence for the contemporary claim/i);
+  assert.match(prompt,/preserve a relevant author or work name/i);
+  assert.match(prompt,/Augustine of Hippo/);
+  assert.doesNotMatch(prompt,/999999/);
   assert.match(prompt,/A bounded passage excerpt/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
    {partId:'P1',query:'empirical knowledge of external world'},

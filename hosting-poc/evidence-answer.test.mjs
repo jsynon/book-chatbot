@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,normalizeAnswerMarkdown} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
@@ -1026,6 +1026,45 @@ test('a rejected nominated direct-answer claim keeps the part partial despite an
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.partId==='P1'&&issue.reason==='direct-answer-claim-not-supported'));
  assert.match(result.answer,/Fear of death makes Hamlet hesitate to act/);
+});
+
+test('an overinclusive direct-answer set can retain a supported answer claim when the reviewer still judges the part complete',async()=>{
+ const ai=makeAI([answer('PART P1\nHume explains causal necessity through custom formed by repeated conjunction. [S1]\n'+
+  'He also connects the debate to a broad historical account of science. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const directIds=payload.claims.filter(claim=>claim.sourceIds.includes('S1'))
+    .slice(0,2).map(claim=>claim.claimId);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:directIds}],claims:payload.claims.map(claim=>{
+     const essential=claim.claimId===directIds[0];
+     const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1')?.spanIds[0];
+     return {claimId:claim.claimId,status:essential?'answered':'partial',sources:
+      claim.sourceIds.map(sourceId=>({sourceId,status:essential?'answered':'partial',
+       spanIds:essential&&spanId?[spanId]:[]}))};
+    })})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.questionParts[0].answerStatus,'answered');
+ assert.match(result.answer,/custom formed by repeated conjunction/);
+ assert.doesNotMatch(result.answer,/broad historical account/);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='claim-source-not-supported'));
+});
+
+test('answer coverage prompt requires every explicit element while allowing qualified general knowledge',()=>{
+ assert.match(COMPOSER_PROMPT,/Address every explicit request within that part/i);
+ assert.match(COMPOSER_PROMPT,/appropriately qualified answer from general knowledge/i);
+});
+
+test('Markdown cleanup drops only a bare unfinished bold list heading',()=>{
+ const normalized=normalizeAnswerMarkdown('Supported point.\n\n* **Valid heading:** detail\n* **Unfinished heading');
+ assert.match(normalized,/\*\*Valid heading:\*\*/);
+ assert.match(normalized,/detail/);
+ assert.doesNotMatch(normalized,/Unfinished heading/);
+ assert.match(normalized,/Supported point/);
 });
 
 test('a cross-part direct-answer ID cannot satisfy this part',async()=>{
