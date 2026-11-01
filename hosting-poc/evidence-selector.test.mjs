@@ -130,3 +130,64 @@ test('semantic selection preserves a page for each covered part within the six-p
  assert.ok(result.selectedCandidateIds.length<=6,'the packet never exceeds the existing six-page limit');
  assert.deepEqual(result.parts.map(part=>part.candidateIds[0]),['C1','C7']);
 });
+
+test('a shared selected page stays linked to every part it supports under the six-page cap',async()=>{
+ const candidates=Array.from({length:8},(_,index)=>({
+  id:'C'+(index+1),title:'Work '+(index+1),page:1,
+  excerpt:'A distinct verified passage that can support a planned answer part.'
+ }));
+ const request={question:'How do the parts relate?',parts:[
+  {partId:'P1',question:'What does the first passage explain?'},
+  {partId:'P2',question:'What does the second passage explain?'}],candidates,
+  ai:{run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[
+   {partId:'P1',evidence:[
+    {candidateId:'C1',support:'context'},{candidateId:'C3',support:'direct'},
+    {candidateId:'C4',support:'context'}]},
+   {partId:'P2',evidence:[
+    {candidateId:'C2',support:'context'},{candidateId:'C3',support:'direct'},
+    {candidateId:'C5',support:'context'},{candidateId:'C6',support:'context'}]}
+  ]})}}]})}};
+ const result=await selectEvidenceCandidates(request);
+ assert.equal(result.selectedCandidateIds.length,6);
+ assert.ok(result.parts.find(part=>part.partId==='P2').candidateIds.includes('C3'),
+  'the already-selected shared page must retain its link to P2 without consuming another slot');
+ assert.equal(result.parts.find(part=>part.partId==='P2').coverage,'supported');
+ assert.deepEqual(result.parts.find(part=>part.partId==='P2').evidence.map(item=>item.candidateId),
+  result.parts.find(part=>part.partId==='P2').candidateIds);
+});
+
+test('coverage is recalculated after candidates are removed by the six-page cap',async()=>{
+ const candidates=Array.from({length:8},(_,index)=>({
+  id:'C'+(index+1),title:'Unique Work '+(index+1),page:1,
+  excerpt:'A distinct verified passage that can support a planned answer part.'
+ }));
+ const request={question:'What does the source explain?',parts:[
+  {partId:'P1',question:'What does the first set explain?'},
+  {partId:'P2',question:'What does the second passage explain?'}],candidates,
+  ai:{run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[
+   {partId:'P1',evidence:[
+    ...['C1','C3','C4','C5','C6'].map(candidateId=>({candidateId,support:'context'})),
+    {candidateId:'C7',support:'direct'}]},
+   {partId:'P2',evidence:[{candidateId:'C2',support:'context'}]}
+  ]})}}]})}};
+ const result=await selectEvidenceCandidates(request);
+ const firstPart=result.parts.find(part=>part.partId==='P1');
+ assert.equal(result.selectedCandidateIds.length,6);
+ assert.ok(!result.selectedCandidateIds.includes('C7'));
+ assert.ok(!firstPart.evidence.some(item=>item.candidateId==='C7'));
+ assert.equal(firstPart.coverage,'partial',
+  'a direct candidate outside the submitted packet must not make the part look supported');
+});
+
+test('selector fallback prioritizes hinted uncovered parts before breadth filling',()=>{
+ const candidates=[
+  {id:'p1a',bookId:'10',page:1,candidatePartIds:['P1']},
+  {id:'p1b',bookId:'10',page:2,candidatePartIds:['P1']},
+  {id:'p2a',bookId:'10',page:3,candidatePartIds:['P2']},
+  {id:'other',bookId:'20',page:1,candidatePartIds:[]}
+ ];
+ assert.deepEqual(orderFallbackCandidates(candidates).slice(0,2)
+  .map(candidate=>candidate.id),['p1a','p2a']);
+ assert.deepEqual(orderFallbackCandidates(candidates)
+  .map(candidate=>candidate.id),['p1a','p2a','p1b','other']);
+});
