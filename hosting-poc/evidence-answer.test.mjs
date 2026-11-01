@@ -1188,6 +1188,44 @@ test('evidence-free parts invite a direct general-context answer without adding 
  assert.match(result.answer,/Nietzsche analyzes nihilism/);
 });
 
+
+test('a reviewed direct general-context claim is retained without duplicating it in context IDs',async()=>{
+ const question='How did Hume explain causal necessity?';
+ const ai=makeAI([answer('PART P1\\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const directId=payload.parts[0].contextClaims[0].claimId;
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'answered',
+    directAnswerClaimIds:[directId],retainedContextClaimIds:[]}],claims:[]})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(question,[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question,candidateSourceIds:[]}]},catalog,trace:true});
+ assert.equal(result.answerCompleteness,'full');
+ assert.equal(result.questionParts[0].answerStatus,'answered');
+ assert.equal(result.questionParts[0].status,'partial','library coverage stays separate from answer completeness');
+ assert.match(result.answer,/causal necessity/);
+ assert.equal(result.citations.length,0);
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,true);
+ assert.equal(ai.calls.length,2);
+});
+
+test('a direct general-context nomination is not enough when answerStatus is partial',async()=>{
+ const question='How did Hume explain causal necessity?';
+ const ai=makeAI([answer('PART P1\\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const directId=payload.parts[0].contextClaims[0].claimId;
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'partial',
+    directAnswerClaimIds:[directId],retainedContextClaimIds:[]}],claims:[]})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(question,[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question,candidateSourceIds:[]}]},catalog,trace:true});
+ assert.equal(result.answerCompleteness,'none');
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,false);
+ assert.match(result.answer,/did not support a reliable answer/);
+ assert.doesNotMatch(result.answer,/Hume explains causal necessity/);
+});
+
 test('an unheaded single-part source claim reaches review and is not treated as verified context',async()=>{
  const question='What does Hume say about causal necessity?';
  const ai=makeAI([answer('Hume argues that necessity arises from custom rather than from observing a necessary connection.'),
