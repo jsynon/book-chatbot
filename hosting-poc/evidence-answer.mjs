@@ -1,3 +1,11 @@
+/* Worker-side answer construction and review.
+ *
+ * The public gateway calls this after verifying candidate-page fingerprints
+ * and selecting the bounded evidence packet. This module composes the answer,
+ * reviews source-linked claims, and contains the conditional review-repair and
+ * evaluation-only expansion paths. Deterministic source and citation checks
+ * remain outside model judgment: a passing review is not a truth guarantee.
+ */
 import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,sourceProvenance,catalogIdentity,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans} from './review-spans.mjs';
 
