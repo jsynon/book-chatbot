@@ -1183,6 +1183,19 @@ test('omits speaker-attributed claims that cite dialogue without a verified spea
  assert(result.conflicts.every(item=>item.reason==='unverified-dialogue-speaker'));
  assert.equal(result.answer,'');
 });
+test('rejects a pronoun-led Austen dialogue attribution when no speaker was anchored',()=>{
+ const source={id:'S1',bookId:'341',title:'Pride and Prejudice — Jane Austen',page:192,
+  preview:'“Good gracious! Mr. Darcy!—and so it does, I vow. Well, any friend of Mr. Bingley’s will always be welcome here, to be sure; but else I must say that I hate the very sight of him.” Jane looked at Elizabeth with surprise and concern. Both sisters were uncomfortable enough, and their mother talked on of her dislike of Mr. Darcy.'};
+ const evidence=[{id:'S1',point:'Elizabeth declares that she hates the very sight of Darcy.',
+  quoteVerified:true,speakerUnverified:true}];
+ const answer='She even goes so far as to declare that she hates the very sight of him [S1]. Jane and Elizabeth are both uncomfortable during the visit [S1].';
+ const result=removeConflictingSpeakerAttributions(answer,evidence,[source]);
+ assert.equal(result.conflicts.length,1);
+ assert.equal(result.conflicts[0].reason,'unverified-dialogue-speaker');
+ assert.doesNotMatch(result.answer,/goes so far as to declare/i);
+ assert.match(result.answer,/Jane and Elizabeth are both uncomfortable/,
+  'the guard should remove the unsupported attribution without dropping unrelated narrative');
+});
 test('a dialogue claim marked unverified cannot survive as unqualified when the excerpt corrects it',()=>{
  const source={id:'S1',preview:'A speaker summarizes Mara’s view. Mara says, “That is not quite my contention.” The narrator calls the summary an exaggerated distortion of her position.'};
  const evidence=[{id:'S1',point:'The excerpt contains a disputed summary of Mara’s position.',

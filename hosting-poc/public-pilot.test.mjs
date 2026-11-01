@@ -1629,7 +1629,7 @@ test('answer composition explicitly requests plain text instead of Markdown arti
  assert.match(source,/Answer each requested part directly/);
  assert.match(source,/Develop the explanation/);
  assert.match(source,/let answer length follow the evidence/);
- assert.match(source,/when the excerpts support them/);
+ assert.match(source,/examples the excerpts support/);
  assert.match(source,/cite each source-based sentence/);
  assert.match(source,/cite each work/);
  assert.match(source,/including an opening summary/);
@@ -1680,7 +1680,8 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.doesNotMatch(calls[1].messages[1].content,/speaker: Kierkegaard/);
  assert.ok(calls[1].messages[0].content.length<3700,'composition guidance should stay compact');
  assert.match(calls[1].messages[0].content,/Answer each requested part directly/);
- assert.match(calls[1].messages[0].content,/Attribute claims to the visible speaker/);
+ assert.match(calls[1].messages[0].content,/a catalog author is not automatically the speaker/);
+ assert.match(calls[1].messages[0].content,/Leave unclear dialogue attribution open/);
  assert.match(calls[1].messages[0].content,/Preserve meaningful qualifications/);
  assert.match(calls[1].messages[0].content,/cite each source-based sentence/);
  assert.match(calls[1].messages[0].content,/Use prior conversation only to resolve references/);
