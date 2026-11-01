@@ -1,4 +1,7 @@
-// Browser/Worker/evaluator contract. Keep frontend and Worker copies byte-identical.
+// Worker-side plan and citation contract. The site/evaluator copy lives in
+// antilogicalism/reading-companion/reader-contract.mjs. These are separate
+// implementations, not byte-identical files; compare shared fields and
+// normalization behavior across both when changing a contract.
 export const CONTRACT_VERSION='reader-evidence-v2';
 export const RETRIEVAL_LIMIT=12;
 export function citationIds(text){
