@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 4505)
+Total output lines: 120
+
 /* Worker-side answer construction and review.
  *
  * The public gateway calls this after verifying candidate-page fingerprints
@@ -81,8 +84,7 @@ export const COMPOSER_PROMPT=`Answer the reader's exact question with a clear, u
 
 // Review source-derived claims against exact spans, while uncited context is
 // judged collectively at the part level. The reviewer names the direct claim
-// IDs so coverage is not tied to the first sentence or extra context rows.
-export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. In either mode, a claim naming a supplied work, author, speaker, or page, reporting what a source says, or otherwise presenting a source-derived position needs a source ID and exact span support. Independent background and synthesis may remain uncited when they are not presented as claims made by a particular source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a speaker; do not confuse an author with a pseudonymous speaker, quoted or reported person, editor, translator, or commentator. A source citation is not proof by itself, and a source's silence does not prove a claim false.
+// IDs so coverage is not tied to the first sentence or extra context …5 tokens truncated…REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. In either mode, a claim naming a supplied work, author, speaker, or page, reporting what a source says, or otherwise presenting a source-derived position needs a source ID and exact span support. Independent background and synthesis may remain uncited when they are not presented as claims made by a particular source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a speaker; do not confuse an author with a pseudonymous speaker, quoted or reported person, editor, translator, or commentator. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
 
 Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context. If a claim names a supplied work, author, speaker, or page, reports what a source says, or otherwise presents a source-derived position, it needs a source ID and must not pass as general context when uncited. Mark such claims partial or unanswered. Independent background and synthesis may remain uncited when they are not presented as claims made by a particular source. Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness; the supplied passages cannot establish its truth, so do not treat their silence as disproof.
 
@@ -756,6 +758,14 @@ function hasNamedSpeakerAttribution(value){
   // writing, teaching, or argument to a named person requires the extra field.
   return /^(?:the\s+)?[\p{Lu}][\p{L}\p{M}'’.-]*(?:\s+[\p{Lu}][\p{L}\p{M}'’.-]*){0,3}\s+(?:says?|said|teaches?|taught|argues?|argued|writes?|wrote|claims?|claimed|describes?|described)\b/u.test(String(value||'').trim());
 }
+function hasExplicitSpeakerCue(sourceText,speaker){
+  const name=String(speaker||'').trim();
+  if(!name)return false;
+  const escaped=name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const cue='(?:says?|said|replies?|replied|asks?|asked|argues?|argued|writes?|wrote|claims?|claimed|teaches?|taught)';
+  return new RegExp(`(?:^|[\\n.!?;]\\s*)${escaped}\\s+(?:${cue})\\b|(?:^|[\\n.!?;]\\s*)${escaped}\\s*[:—–]`, 'iu')
+    .test(String(sourceText||''));
+}
 
 function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question,reviewClaims=[]){
   const suppliedParts=new Map(),suppliedClaims=new Map(),issues=[],warnings=[],recovered=[];
@@ -922,10 +932,15 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           'source-attribution-conflict':
           namedAttribution&&attributionStatus==='unclear'?'source-attribution-unclear':
           namedAttribution&&attributionStatus==='not_applicable'?'source-attribution-not-applicable':'';
+        const claimedSpeaker=String(sourceDecision?.attributedSpeaker||'').trim();
+        const unanchoredSpeakerIssue=namedAttribution&&attributionStatus==='supported'&&claimedSpeaker&&
+          !hasExplicitSpeakerCue(selected.map(item=>item.quote).join(' ')+' '+
+            String(sourceById.get(sourceId)?.text||sourceById.get(sourceId)?.preview||''),claimedSpeaker)?
+          'source-attribution-unanchored':'';
         const provenanceAttributionIssue=sourceDecision?.status==='answered'?
           sourceVoiceAttributionIssue(answer.text,sourceById.get(sourceId),plan,
             precedingAnswers,sourceById):'';
-        const attributionIssue=modelAttributionIssue||provenanceAttributionIssue;
+        const attributionIssue=modelAttributionIssue||unanchoredSpeakerIssue||provenanceAttributionIssue;
         const selectedQuote=selected.map(item=>item.quote).join(' ');
         const polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
           hasDirectPolarityContradiction(answer.text,selectedQuote)?
