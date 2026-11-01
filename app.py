@@ -1,13 +1,14 @@
-"""Local HTTP application for the Antilogicalism Reading Companion.
+"""Local-only HTTP server and pipeline switchboard for the Reading Companion.
 
-Version 1.2 defaults to evidence-first synthesis: a model selects decisive
-source passages, then a second call explains them with deterministic citations.
-The v1.1 direct mode and the historical claim/review mode remain available
-as baselines while we evaluate output quality. Both paths use the same source-text repository and
-Ollama installation. No hosted model provider is required.
+The default `BOOK_CHATBOT_PIPELINE=evidence` path uses the evidence-first
+selector and composer. The Developer interface can also select `direct`
+(one-pass synthesis), `grounded` (claim review and repair), or `legacy`
+(the older single-book baseline). These are local comparison modes; none
+selects or changes the public Cloudflare Worker path.
 
-Older validation helpers still live in this module for historical comparison.
-The supported v1 path is implemented in direct_pipeline.py.
+All modes use the local Ollama provider and the same catalog/source readers,
+but they do not share the same answer-generation or review behavior. For the
+live public path, see `hosting-poc/public-gateway.mjs`.
 """
 
 from __future__ import annotations
