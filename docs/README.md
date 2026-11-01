@@ -78,6 +78,5 @@ For full-library retrieval, keep local checkouts of `antilogicalism` and `antilo
 
 - [Local workbench setup and limits](local-workbench-refresh.md)
 - [Offline trace comparison and fixed-packet replay](local-trace-testing.md)
-- [Question-steering audit](question-steering-audit.md) — historical audit of removed narrow routes and retained safeguards
 
 **Guiding principle:** use AI to help readers find, question, and understand the books, while keeping the books themselves accessible and central.
