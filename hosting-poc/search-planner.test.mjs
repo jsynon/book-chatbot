@@ -90,6 +90,25 @@ test('conditional gap planner returns optional distinct search terms and sees bo
   {query:'reality existence perception',partIds:['P1']}]);
  assert.equal(response.usage.neurons,2);
 });
+test('gap planning receives compact diagnostics when only shared part terms matched',async()=>{
+ const result=await planSearchGapQueries('How does Odysseus’s return home shape his choices and the poem’s picture of heroism?','',{
+  weakParts:[{partId:'P2',part:'How does the poem’s picture of heroism relate to Odysseus’s return home?',
+   overlap:3,matchedTerms:['odysseus','return','home'],distinctiveTerms:['poem','picture','heroism'],
+   matchedDistinctiveTerms:[],sharedMatchedTerms:['odysseus','return','home'],
+   coverageReason:'only-shared-part-terms'}],
+  originalQueries:['Odysseus return home choices'],candidates:[]
+ },{run:async(_model,options)=>{
+  const prompt=options.messages.map(message=>message.content).join('\\n');
+  assert.match(prompt,/only-shared-part-terms/);
+  assert.match(prompt,/distinctiveTerms.*heroism/);
+  assert.match(prompt,/matchedDistinctiveTerms.*\[\]/);
+  assert.match(prompt,/sharedMatchedTerms.*odysseus/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
+   {partId:'P2',query:'Odysseus courage endurance heroic conduct'}]})}}]};
+ }});
+ assert.deepEqual(result.queries,['Odysseus courage endurance heroic conduct']);
+ assert.deepEqual(result.queryPartLinks,[{query:'Odysseus courage endurance heroic conduct',partIds:['P2']}]);
+});
 test('conditional gap planner rejects malformed and repeated original queries',async()=>{
  const result=await planSearchGapQueries('What is knowledge?','',{
   weakParts:[{part:'What is knowledge?',overlap:0}],originalQueries:['empirical knowledge of external world'],candidates:[]

@@ -112,3 +112,21 @@ test('valid no-evidence selection remains an explicit empty result',async()=>{
  assert.deepEqual(result.parts[0].candidateIds,[]);
  assert.equal(result.parts[0].coverage,'none');
 });
+
+test('semantic selection preserves a page for each covered part within the six-page packet',async()=>{
+ const parts=[
+  {partId:'P1',question:'How does the author explain a return home?'},
+  {partId:'P2',question:'How does the poem present heroism?'}
+ ];
+ const candidates=Array.from({length:7},(_,index)=>({id:'C'+(index+1),
+  title:'Work '+(index+1),page:index+1,excerpt:'A substantive source passage with enough words to inspect.'}));
+ const result=await selectEvidenceCandidates({question:'How does the poem present heroism and return home?',parts,candidates,
+  ai:{run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[
+   {partId:'P1',evidence:[{candidateId:'C1',support:'direct'},{candidateId:'C2',support:'context'}]},
+   {partId:'P2',evidence:[{candidateId:'C7',support:'direct'},{candidateId:'C6',support:'context'}]}
+  ]})}}]})}});
+ assert.ok(result.selectedCandidateIds.includes('C1'));
+ assert.ok(result.selectedCandidateIds.includes('C7'));
+ assert.ok(result.selectedCandidateIds.length<=6,'the packet never exceeds the existing six-page limit');
+ assert.deepEqual(result.parts.map(part=>part.candidateIds[0]),['C1','C7']);
+});
