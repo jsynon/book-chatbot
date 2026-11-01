@@ -2,6 +2,8 @@
 
 **Read with the books, not instead of them.**
 
+![Architecture diagram of the Reading Companion and its answer pipeline](docs/reading-companion-architecture.png)
+
 The Antilogicalism Reading Companion helps readers explore the library and understand ideas in context. Answers can combine cited passages with broader knowledge and synthesis; citations identify claims drawn from the books, while uncited explanation is the model's own context.
 
 ## Use the live companion
