@@ -137,6 +137,8 @@ jobs:
         run: node --test hosting-poc/remote-library.test.mjs
       - name: Test protected hosted inference gateway contracts
         run: node --test hosting-poc/worker-grounded-test.test.mjs
+      - name: Test evidence composition and claim review contracts
+        run: node --test hosting-poc/evidence-answer.test.mjs
       - name: Test fail-closed public gateway and trusted source contracts
         run: node --test hosting-poc/public-gateway.test.mjs
       - name: Test AI-assisted source retrieval planning security and schema

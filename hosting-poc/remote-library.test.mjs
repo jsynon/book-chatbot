@@ -44,6 +44,36 @@ test('default browser fetch preserves its global receiver',async()=>{
  }finally{globalThis.fetch=original;}
 });
 
+test('corpus JSON retries one transient server failure but does not retry missing files',async()=>{
+ let attempts=0;
+ const recovering=new RemoteLibrary('https://example.test/data-v48/',async(url,options)=>{
+  attempts++;
+  assert.equal(options.cache,'no-store');
+  return attempts===1?new Response('temporary outage',{status:503}):fakeFetch(url,options);
+ });
+ const manifestResult=await recovering.manifest();
+ assert.equal(manifestResult.version,48);
+ assert.equal(attempts,2);
+
+ let missingAttempts=0;
+ const missing=new RemoteLibrary('https://example.test/data-v48/',async()=>{
+  missingAttempts++;
+  return new Response('missing',{status:404});
+ });
+ await assert.rejects(missing.jsonGzip('book-999.json'),/HTTP 404/);
+ assert.equal(missingAttempts,1);
+});
+
+test('corrupt corpus payload is not retried as a transient fetch failure',async()=>{
+ let attempts=0;
+ const library=new RemoteLibrary('https://example.test/data-v48/',async()=>{
+  attempts++;
+  return new Response('not json',{status:200});
+ });
+ await assert.rejects(library.jsonGzip('manifest.json'),/JSON/);
+ assert.equal(attempts,1);
+});
+
 test('detects index locator entries without rejecting historical prose', () => {
  const index='638 INDEX - Athenian 221, Peithias, leader, 338; 191 at Mytilene, 222 at 252; Peloponnesians, their colonies, 594; Athens, 439, 440; allies 493, 494; assembly 503, 504; position 105, 106; ships 290, 291; book 110, 111; war 455, 456';
  assert.equal(isNavigationPage(index),true);
