@@ -1,7 +1,7 @@
 {
-  // EXAMPLE ONLY. Copy to wrangler.jsonc after reviewing instructions.
-  // Keep your EXISTING protected test Worker unchanged.
-  // Do not deploy a public Worker until the CPU/source integrity smoke is complete.
+  // Example configuration only; it is not the live account configuration.
+  // Review account-specific bindings and secrets before using it. The public
+  // and evaluation flags below stay disabled unless intentionally enabled.
   "name": "antilogicalism-companion-public",
   "main": "./hosting-poc/public-gateway.mjs",
   "compatibility_date": "2026-10-18",
