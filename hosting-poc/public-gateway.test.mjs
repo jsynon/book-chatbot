@@ -2118,9 +2118,9 @@ test('public highlights join only adjacent verified spans for the same claim',()
  const second='The second sentence immediately continues its explanation.';
  const text=first+' '+second+' A distant sentence remains separate.';
  const start2=first.length+1;
- const highlights=selectPublicEvidenceHighlights('Mill explains a principle [S1].',[source],[
+ const highlights=selectPublicEvidenceHighlights('Mill explains the principle [S1].',[source],[
   {id:'S1',claimId:'P1-C1',partId:'P1',point:'Mill explains the principle.',quote:first,quoteVerified:true,start:0,end:first.length},
-  {id:'S1',claimId:'P1-C1',partId:'P1',point:'Mill continues the same explanation.',quote:second,quoteVerified:true,start:start2,end:start2+second.length}
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:'Mill explains the principle.',quote:second,quoteVerified:true,start:start2,end:start2+second.length}
  ],3,'Mill principle',{S1:text});
  assert.equal(highlights.length,1);
  assert.equal(highlights[0].quote,first+' '+second);
@@ -2133,7 +2133,7 @@ test('public highlights keep the strongest claim-specific excerpt without unrela
  const relevant='Time and again Odysseus turned his face toward the radiant sun, anxious for it to set, yearning now to be gone and home once more.';
  const text=unrelated+' A long passage separates these lines. '+relevant;
  const relevantStart=text.indexOf(relevant);
- const highlights=selectPublicEvidenceHighlights('Odysseus longs to return home [S1].',[source],[
+ const highlights=selectPublicEvidenceHighlights(point+' [S1].',[source],[
   {id:'S1',claimId:'P1-C1',partId:'P1',point,quote:unrelated,quoteVerified:true,
    start:0,end:unrelated.length},
   {id:'S1',claimId:'P1-C1',partId:'P1',point,quote:relevant,quoteVerified:true,
@@ -2154,6 +2154,17 @@ test('public highlights omit returned source pages that the final answer does no
     quote:'Odysseus longed for home throughout his journey.',quoteVerified:true}
   ],6,'How does the principle work?',{});
  assert.deepEqual(highlights.map(item=>item.source_id),['S1']);
+});
+test('public highlights keep only accepted claim links represented in the final answer',()=>{
+ const source={id:'S1',title:'On Liberty — John Stuart Mill',page:6};
+ const supported='The principle requires each person to have a protected sphere of liberty.';
+ const tangent='Utility also matters to Mill’s account of justice and mercy.';
+ const highlights=selectPublicEvidenceHighlights(supported+' [S1]',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:supported,quote:supported,quoteVerified:true},
+  {id:'S1',claimId:'P1-C2',partId:'P1',point:tangent,quote:tangent,quoteVerified:true}
+ ],6,'How does Mill define liberty?',{});
+ assert.deepEqual(highlights.map(item=>item.quote),[supported]);
+ assert.deepEqual(highlights[0].quotes.map(item=>item.claim_id),['P1-C1']);
 });
 test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
  const fixture=await fingerprintTestFixture();
