@@ -37,6 +37,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     .match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>term.replace(/(?:ing|ed|s)$/u,'')).filter(term=>
       term.length>=3&&!stopWords.has(term)));
   const questionTerms=terms(question);
+  const normalizedAnswer=normalizedEvidenceQuote(answer);
   const readableQuote=value=>{
     const quote=String(value||'');
     if(!quote)return 0;
@@ -64,6 +65,15 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       .map((item,index)=>({quote:removeLeadingRunningHeader(item.anchorQuote||item.quote),
         point:String(item.point||''),claimId:String(item.claimId||''),partId:String(item.partId||''),
         start:Number.isInteger(item.start)?item.start:null,end:Number.isInteger(item.end)?item.end:null,index}))
+      // The evidence-v2 map carries the accepted answer claim text in `point`.
+      // Require that claim to survive in the final answer before displaying
+      // its quote; a different claim from the same cited page is not a valid
+      // highlight just because it shares the citation or topic.
+      .filter(item=>{
+        if(!item.claimId)return true;
+        const answerClaim=normalizedEvidenceQuote(item.point);
+        return answerClaim.length>=12&&normalizedAnswer.includes(answerClaim);
+      })
       .filter(item=>usefulQuote(item.quote));
     // Reviewer-approved spans are exact and source-verified. Rank them against
     // the reader's named evidence first, then use the linked claim as context.
