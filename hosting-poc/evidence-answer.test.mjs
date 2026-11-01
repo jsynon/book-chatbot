@@ -1188,10 +1188,9 @@ test('evidence-free parts invite a direct general-context answer without adding 
  assert.match(result.answer,/Nietzsche analyzes nihilism/);
 });
 
-
 test('a reviewed direct general-context claim is retained without duplicating it in context IDs',async()=>{
  const question='How did Hume explain causal necessity?';
- const ai=makeAI([answer('PART P1\\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
+ const ai=makeAI([answer('PART P1\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content);
    const directId=payload.parts[0].contextClaims[0].claimId;
@@ -1211,7 +1210,7 @@ test('a reviewed direct general-context claim is retained without duplicating it
 
 test('a direct general-context nomination is not enough when answerStatus is partial',async()=>{
  const question='How did Hume explain causal necessity?';
- const ai=makeAI([answer('PART P1\\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
+ const ai=makeAI([answer('PART P1\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content);
    const directId=payload.parts[0].contextClaims[0].claimId;
