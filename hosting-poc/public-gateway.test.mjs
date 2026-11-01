@@ -770,6 +770,15 @@ test('speaker attribution guard downgrades the affected answer part without anot
  assert.match(result.answer,/Mara’s own statement/);
  assert.match(result.answer,/Elias separately says/);
 });
+test('a nearby author mention cannot verify a different quoted speaker',()=>{
+ const source={id:'S1',preview:'James explains the debate. Stumpf says, “Experience alone does not settle the question.”'};
+ const parsed=parseReview(JSON.stringify({coverage:'full',evidence:[{
+  id:'S1',point:'Stumpf adds that experience does not settle the question.',
+  quote:'Experience alone does not settle the question.',speaker:'James'
+ }]}),[source]);
+ assert.equal(parsed.evidenceMap[0].speaker,undefined);
+ assert.equal(parsed.evidenceMap[0].speakerUnverified,true);
+});
 test('multi-author full coverage is downgraded when one requested author group is absent',()=>{
  const question='How do Aristotle and Darwin explain change?';
  const sources=[
@@ -2133,6 +2142,18 @@ test('public highlights keep the strongest claim-specific excerpt without unrela
  assert.equal(highlights.length,1);
  assert.equal(highlights[0].quote,relevant);
  assert.deepEqual(highlights[0].quotes.map(item=>item.quote),[relevant]);
+});
+test('public highlights omit returned source pages that the final answer does not cite',()=>{
+ const cited={id:'S1',title:'On Liberty — John Stuart Mill',page:6};
+ const unused={id:'S2',title:'The Odyssey — Homer',page:212};
+ const quote='The principle requires a clear and complete explanation.';
+ const highlights=selectPublicEvidenceHighlights('Mill explains the principle [S1].',
+  [cited,unused],[
+   {id:'S1',claimId:'P1-C1',partId:'P1',point:'Mill explains the principle.',quote,quoteVerified:true},
+   {id:'S2',claimId:'P2-C1',partId:'P2',point:'Odysseus returns home.',
+    quote:'Odysseus longed for home throughout his journey.',quoteVerified:true}
+  ],6,'How does the principle work?',{});
+ assert.deepEqual(highlights.map(item=>item.source_id),['S1']);
 });
 test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
  const fixture=await fingerprintTestFixture();
