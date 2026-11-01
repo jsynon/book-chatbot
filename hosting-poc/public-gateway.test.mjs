@@ -54,6 +54,27 @@ test('inference failure diagnostics classify provider errors without exposing ra
  assert.equal(capacityError.providerCode,'3040');
 });
 
+test('dialogue on another part of a page does not make an author prose quote unanchored',()=>{
+ const source=[{id:'S1',bookId:'208',title:'The World as Will and Representation, Volume I — Arthur Schopenhauer',
+  page:239,preview:'Perception may be brought about through the senses, or in the absence of the object through imagination.\n\nLater, the traveler said, “I must return home,” and the host replied, “You may leave at dawn.”'}];
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
+  id:'S1',point:'Schopenhauer distinguishes sense perception from imagination.',
+  quote:'Perception may be brought about through the senses, or in the absence of the object through imagination.',
+  speaker:'Arthur Schopenhauer'}]}),source);
+ assert.equal(review.evidenceMap[0].quoteVerified,true);
+ assert.equal(review.evidenceMap[0].speakerUnverified,undefined,
+  'speaker risk is evaluated at the exact quoted passage, not page-wide');
+});
+
+test('a directly quoted dialogue turn without a verified speaker remains unanchored',()=>{
+ const source=[{id:'S1',bookId:'186',title:'The Odyssey — Homer',page:212,
+  preview:'Odysseus said, “I long to return home.”'}];
+ const review=parseReview(JSON.stringify({coverage:'full',missing:'',evidence:[{
+  id:'S1',point:'The character describes his wish to return home.',
+  quote:'Odysseus said, “I long to return home.”',speaker:'unknown'}]}),source);
+ assert.equal(review.evidenceMap[0].speakerUnverified,true);
+});
+
 test('unexpected answer-pipeline errors retain a safe stage and failure class',()=>{
  const error=new TypeError('private provider body and passage text');
  error.stack='TypeError: private provider body and passage text\n'+
