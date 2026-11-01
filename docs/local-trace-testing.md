@@ -1,72 +1,61 @@
-# Local testing architecture: trace comparison
+# Offline trace comparison
 
-The local Python/Ollama app and the public Cloudflare Worker **do not execute the same code**. This workflow provides an offline comparison boundary rather than falsely labeling local results production-equivalent.
+The Python/Ollama workbench and the public Cloudflare Worker do not execute the same code. The tools here compare saved artifacts and replay a fixed evidence packet locally; they do not make the workbench production-equivalent.
 
-## 1. Capture representative artifacts
+## Keep evaluation artifacts private
 
-Use the existing local benchmark runner and save its JSON reports under `reports/`. The live website's authenticated evaluation workflow produces separate JSON artifacts with Worker planning, retrieval, answer and reviewer traces. Download or extract those artifacts into a local private folder outside the public website repository. Do not upload secrets, raw session credentials or private evaluation traces into GitHub.
+The live website's authenticated evaluation workflow can save Worker planning, retrieval, answer, and review traces. Store downloaded artifacts and generated reports outside the public repositories. Do not commit private traces, credentials, full source packets, or unreviewed answers. Preserve each original artifact unchanged.
 
-For useful comparisons, record the exact question, book scope, dataset version, model, pipeline mode, source revision, and Worker version. A test with different retrieval or source versions is informative but cannot isolate model-quality differences. Keep the original artifact unchanged.
+For a useful comparison, record the question, book scope, corpus version, Worker source revision, model, pipeline mode, and workflow run. If those inputs differ, the comparison cannot isolate a single cause.
 
-## 2. Compare offline
+## Compare saved traces
+
+From the repository root:
 
 ```powershell
-py -3 scripts/compare_traces.py .\reports\local-case.json .\reports\worker-case.json --output .\reports\comparison.json --html .\reports\comparison.html
+py -3 scripts/compare_traces.py .\private\local-case.json .\private\worker-case.json --output .\private\comparison.json --html .\private\comparison.html
 ```
 
-Open `comparison.html` in a browser. The report shows exact field paths discovered in each JSON, stage-by-stage, and identifies missing or changed metadata. It **does not** re-run search, call Ollama, or contact Cloudflare. It supports differing nested formats without assuming that local and Worker traces have matching schemas.
+Open the HTML report locally. It lists discovered JSON fields and stage-by-stage differences without assuming that the Worker and local schemas match. It does not rerun retrieval, call Ollama, or contact Cloudflare.
 
-Common credential-related field names are excluded from the generated report. This is a best-effort filter, **not a complete data sanitizer**: source passage text and some nested metadata may still be sensitive. Keep HTML and JSON outputs local. The report intentionally does not dump the entire answer or full page text.
+Credential-related field names are excluded, but this is not a complete sanitizer. Source text and nested metadata may remain sensitive, so keep both outputs private. The report intentionally avoids dumping complete answers and page text.
 
-## 3. Evaluate actual answer quality separately
+## Replay a fixed Worker packet locally
 
-Use `py -3 scripts/review_cross_discipline.py --output <local-report-directory>` for the existing manual rubric (accuracy, completeness, explanatory value, citation support, readability). Inspect exact quoted spans and original PDF pages. Review status is not inferred from structural pass rates.
+`scripts/replay_fixed_packet.py` takes an extracted live evaluation artifact, verifies that it uses library v49, joins the saved Worker evidence to the local v49 corpus, and checks page fingerprints and composition windows before making one Ollama call. It bypasses local search and selection. It makes no Cloudflare request and refuses to write its report inside this repository.
 
-The Worker evaluation suite and seven-question development cases remain distinct from the private unseen acceptance set. Do not train or tune against acceptance questions.
+```powershell
+py -3 scripts/replay_fixed_packet.py .\private\worker-report.json --case-id <case-id> --output ..\private\replay.json --model gemma3:12b
+```
 
-## 4. Isolation and remaining integration
+Use a case ID from the artifact. The input must include the authenticated evidence trace and submitted source metadata. Older artifacts without canonical page hashes are not replayable. Keep the input and output private.
 
-This adapter is **saved-trace import**, not an alternate local implementation of the Worker. It diagnoses stage and evidence handoffs; it does not establish production parity or semantic quality. Keep the Worker as the canonical implementation of live retrieval, evidence ranking, source fingerprints and citation contracts. Do not copy its ranking heuristics into Python.
+Compare the local draft first with the raw Worker composition response. Show the final reviewed Worker answer separately because the local workbench has no equivalent semantic review stage. The packet is fixed, but the models, prompts, plan context, and output checks still differ. Treat this as a diagnostic comparison, not exact parity.
 
-## 5. Source-reviewed pipeline comparison
+## Review answer quality
 
-The active paths were compared against the repositories' main revisions on 2026-10-30: website `9c81d04` and Worker `6a5c816`. The comparison below records where their behavior differs; it is not a claim that one model or answer is better.
+The local cross-disciplinary review tool supports human scoring of accuracy, completeness, explanatory value, citation support, and readability:
 
-| Stage | Public live path | Local workbench `evidence` path |
+```powershell
+py -3 scripts/review_cross_discipline.py --output <private-report-directory>
+```
+
+This local rubric uses 0–3 scores. Live workflow labels and score scales may differ; preserve each report's own rubric and do not compare the numeric totals as if they were on one scale. Inspect cited spans and original pages. Structural pass rates and model reviewer decisions are not substitutes for answer-quality review.
+
+## Pipeline comparison snapshot
+
+The table below records a source-reviewed comparison of particular repository revisions from October 30, 2026. It is a historical snapshot, not a guarantee of current limits or behavior. Check the live repositories and run metadata before using the values to interpret a new artifact.
+
+| Stage | Public Worker snapshot | Local workbench snapshot |
 |---|---|---|
-| Planning | A planner call supplies the public path's structured question and source plan. A separate gap-planning call is conditional on weak retrieval coverage. | Ordinary questions go directly to retrieval. On questions classified as genuinely hypothetical, the conceptual plan uses the first call in place of evidence selection. |
-| Candidate retrieval | Browser retrieval sends up to 24 pages across four books in baseline, or up to 48 across six books in the expanded profile, subject to a 250 KB upload cap. | `PassageIndex` searches up to 24 candidates and curates navigation matter before selection. |
-| Evidence packet | The Worker verifies all candidates against v49 fingerprints, then a model selects at most six pages within the 35 KB answer budget. The authenticated `compare-selection` workflow compares a six-page incoming pool with the full retrieved pool under the same Worker selector. | A model selects up to six anchor passages. The workbench can add up to three nearby context passages, within a 17,200-character evidence budget, before writing. |
-| Answer and checks | The Worker composes an answer and makes a separate claim/evidence review call; deterministic citation and source-integrity checks also run. | One composition call follows selection. Citation and exact-quote checks are deterministic; there is no separate semantic reviewer. |
-| Typical inference calls | Four calls for a reviewed All Books question: planning, selection, composition, review. Weak retrieval may add one gap-planning call. | Two calls on an ordinary evidence-first question (selection and writing). A conceptual-planning question still uses at most two, with planning replacing selection. |
+| Planning | A planner call structures the question; a gap-planning call may run when retrieval coverage is weak. | Ordinary questions go directly to retrieval. Some hypothetical questions use a planning call in place of evidence selection. |
+| Candidate retrieval | Browser retrieval returns a bounded set of pages and books. | `PassageIndex` searches candidates and curates navigation matter before selection. |
+| Evidence packet | The Worker verifies pages against published fingerprints, then selects a bounded answer packet. | A model selects anchor passages and the workbench may add nearby context passages. |
+| Answer and checks | The Worker composes an answer, reviews claims and evidence, and runs deterministic integrity checks. | A composition call follows selection; citation and quote checks are deterministic, without a separate semantic reviewer. |
 
-The local workbench defaults to corpus v48, while the live evaluation is on v49. Before comparing answers, configure the workbench for v49 and verify the source packet itself: matching a book/page identifier is not enough if the underlying page text differs.
+The public corpus was v49 and the local workbench default was v48 at the time of that snapshot. Matching book and page IDs alone do not prove that the page text matches; compare corpus versions and fingerprints.
 
-## 6. Next controlled experiment: compare candidate recall, then replay a fixed packet
+## What the comparison can establish
 
-The public path now applies semantic selection inside the Worker after fingerprint verification, using the wider retrieved candidate pool. The authenticated `compare-selection` workflow compares a six-page browser input with the full candidate pool while holding the Worker selector, composition, and review stages constant. First inspect that artifact for candidate recall and human-scored answer quality. The fixed-packet replay below remains useful for separating evidence differences from answer-composition differences after the live handoff is understood.
+Saved-trace comparison can locate a difference in planning, candidate handoff, selection, composition, or review. Fixed-packet replay can help isolate answer composition after evidence is held constant. Neither tool establishes semantic truth or production parity. Review source relevance and answer quality separately, and keep unseen acceptance questions frozen.
 
-The authenticated `evidenceTrace.evidence` contains the full Worker-verified page text and canonical SHA-256. `submittedSources` supplies the corresponding book/page/global-page IDs plus a short excerpt, which lets the replay join the trace identity to the local v49 shard. The trace also preserves the exact Worker composition request and its selected passage windows, so no extra live run or website artifact change is needed.
-
-Implement `scripts/replay_fixed_packet.py` as a **local-only** command. For each source page, it loads the local v49 shard by book ID, global page ID, and printed page, then hashes the raw page text against the Worker's canonical fingerprint. It extracts the passage-window text from the saved composition request and sends those windows to the existing workbench composer under the same source IDs and order. It bypasses local retrieval and selection, and fails closed if the trace, page, version, hash, or window text is missing or mismatched. The report records question/source/window hashes, sizes, model, call count, and latency without copying source pages into a second artifact. Keep the input trace and output report private.
-
-Compare the local draft with the raw Worker composition response first. Show the final reviewed Worker answer separately because the workbench has no equivalent review stage. The page identities and window text are held fixed, but model, prompts, structured plan context, and output checks still differ; this is a controlled pipeline comparison, not exact token-level parity. Score both manually on the existing five dimensions (accuracy, question coverage, explanation quality, citation support, citation completeness). Do not infer quality from structural status, citation counts, or a review model's label.
-
-This replay is an offline diagnostic, not a new public path. It makes one local Ollama call and no Cloudflare call, and does not add question-specific routing. Use a small mixed set of already-run cases; keep the acceptance set frozen. The live selection change is already implemented as a general stage-boundary change, so use replay to clarify the remaining difference in composition and review rather than to justify another retrieval heuristic.
-
-Run it against an extracted JSON report with the local v49 corpus and Ollama available:
-
-```powershell
-py -3 scripts/replay_fixed_packet.py .\\private\\live-report.json --case-id acceptance-god-is-love --output ..\\private\\god-is-love-replay.json --model gemma3:12b
-```
-
-The command refuses to write its answer report inside the public repository. Old artifacts that lack the authenticated evidence trace or its canonical page hashes are not replayable.
-
-## Validation
-
-```powershell
-py -3 -m unittest discover -s tests
-node --test hosting-poc/*.test.mjs
-```
-
-Verify that the generated HTML can be opened offline, unknown trace fields do not crash the comparison, and public deployment files remain unchanged.
