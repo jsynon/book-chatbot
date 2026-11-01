@@ -1477,6 +1477,32 @@ test('quoted-speaker conflicts are preserved as a source-attribution rejection',
  assert.equal(result.trace.reviewContract.reviewDecisions[0].attributedSpeaker,'Y. Chambers');
 });
 
+test('a positive reviewer speaker label must be anchored in the supplied source',async()=>{
+ const source={id:'S1',bookId:'81',title:'The Brothers Karamazov — Fyodor Dostoevsky',page:311,
+  text:'Ivan wonders whether the suffering of innocent children can be justified. The problem remains unresolved.',
+  preview:'Ivan wonders whether the suffering of innocent children can be justified.'};
+ const question='What does Alyosha say about Ivan’s view?';
+ const plan={...onePartPlan,intent:'explain',
+  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['81']}],
+  parts:[{id:'P1',question,sourceBookIds:['81'],candidateSourceIds:['S1']}]};
+ const ai=makeAI([answer('PART P1\nAlyosha says Ivan asks whether the suffering of innocent children can be justified. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
+     attributionStatus:'supported',attributedSpeaker:'Alyosha'}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer(question,[source],ai,[],{
+  plan,catalog:{81:source.title},trace:true
+ });
+ assert.equal(ai.calls.length,2,'the existing review call is sufficient to check speaker attribution');
+ assert.equal(result.coverage,'none','an unanchored positive reviewer label cannot verify the claim');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S1'&&issue.reason==='source-attribution-unanchored'));
+});
+
 test('known editorial and pseudonymous source voices must be named or mediated',async()=>{
  const run=async({source,title,bookId,question,draft,catalog,sourceLabel})=>{
   let composePayload,reviewPayload;
