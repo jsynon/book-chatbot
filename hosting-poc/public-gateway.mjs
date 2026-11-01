@@ -29,13 +29,15 @@ const TURNSTILE_ACTION = 'companion_ask';
 
 export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=6,question='',sourceTexts={}){
   const byId=new Map(citations.map(source=>[String(source?.id||''),source]));
-  const citationOrder=[...new Set([...citationIds(answer),...citations.map(source=>String(source?.id||''))])]
+  // Only expose evidence from pages actually cited in the final answer.
+  const citationOrder=[...new Set(citationIds(answer))]
     .filter(id=>byId.has(id));
   const stopWords=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might not of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
   const terms=value=>new Set((String(value||'').normalize('NFKC').toLocaleLowerCase()
     .match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>term.replace(/(?:ing|ed|s)$/u,'')).filter(term=>
       term.length>=3&&!stopWords.has(term)));
   const questionTerms=terms(question);
+  const normalizedAnswer=normalizedEvidenceQuote(answer);
   const readableQuote=value=>{
     const quote=String(value||'');
     if(!quote)return 0;
@@ -63,6 +65,15 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       .map((item,index)=>({quote:removeLeadingRunningHeader(item.anchorQuote||item.quote),
         point:String(item.point||''),claimId:String(item.claimId||''),partId:String(item.partId||''),
         start:Number.isInteger(item.start)?item.start:null,end:Number.isInteger(item.end)?item.end:null,index}))
+      // The evidence-v2 map carries the accepted answer claim text in `point`.
+      // Require that claim to survive in the final answer before displaying
+      // its quote; a different claim from the same cited page is not a valid
+      // highlight just because it shares the citation or topic.
+      .filter(item=>{
+        if(!item.claimId)return true;
+        const answerClaim=normalizedEvidenceQuote(item.point);
+        return answerClaim.length>=12&&normalizedAnswer.includes(answerClaim);
+      })
       .filter(item=>usefulQuote(item.quote));
     // Reviewer-approved spans are exact and source-verified. Rank them against
     // the reader's named evidence first, then use the linked claim as context.
@@ -2354,7 +2365,7 @@ function removeStaleQuestionPartNotice(answer,questionParts){
     .join('\n\n').trim();
 }
 
-const SPEECH_ATTRIBUTION_VERBS='(?:said|says|asked|answered|replied|muttered|began|continued|cried|shouted|exclaimed|whispered|inquired|remarked|observed|added|interrupted|declared|asserted|suggested|argued|maintained)';
+const SPEECH_ATTRIBUTION_VERBS='(?:said|says|asked|answers?|repl(?:ied|ies)|muttered|began|continued|cried|shouted|exclaimed|whispered|inquired|remarked|observed|add(?:ed|s)|interrupted|declared|asserted|suggested|argued|maintained)';
 function hasDialogueSpeech(text) {
   const value=String(text||'');
   const hasQuotedTurn=/(?:“[^”]{2,}”|‘[^’]{2,}’|"[^"]{2,}"|'[^']{2,}')/u.test(value);
@@ -2371,12 +2382,23 @@ function dialogueContextForQuote(text,quote){
     paragraphEnd<0?value.length:paragraphEnd);
 }
 function speakerIsExplicitlyAnchored(text,quote,speaker) {
-  const anchor=completeEvidenceAnchor(text,quote,600);
-  if(!anchor)return false;
-  const name=speaker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const nameBeforeVerb=new RegExp(`(?<![\\p{L}])${name}(?![\\p{L}])[^.!?]{0,100}\\b${SPEECH_ATTRIBUTION_VERBS}\\b`,'iu');
-  const verbBeforeName=new RegExp(`\\b${SPEECH_ATTRIBUTION_VERBS}\\b[^.!?]{0,35}(?<![\\p{L}])${name}(?![\\p{L}])`,'iu');
-  return nameBeforeVerb.test(anchor)||verbBeforeName.test(anchor);
+  const value=String(text||''),needle=String(quote||'');
+  const quoteStart=value.indexOf(needle);
+  if(quoteStart<0)return false;
+  // Bind the speaker to the quote's own local clause. A name and speech verb
+  // elsewhere in the 600-character evidence anchor can describe the author,
+  // not the speaker of this quoted turn.
+  const before=value.slice(Math.max(0,quoteStart-180),quoteStart)
+    .split(/[.!?;\n]/u).at(-1)||'';
+  const after=value.slice(quoteStart+needle.length,quoteStart+needle.length+100)
+    .split(/[.!?;\n]/u)[0]||'';
+  const name=speaker.replace(/[.*+?^${}()|[\\]\\]/g,'\\$&');
+  const nameBeforeVerb=new RegExp(`(?<![\\p{L}])${name}(?![\\p{L}])[^.!?:]{0,70}\\b${SPEECH_ATTRIBUTION_VERBS}\\b[^.!?:]{0,30}$`,'iu');
+  const verbBeforeName=new RegExp(`\\b${SPEECH_ATTRIBUTION_VERBS}\\b[^.!?:]{0,30}(?<![\\p{L}])${name}(?![\\p{L}])[^.!?:]{0,30}$`,'iu');
+  const nameAfterVerb=new RegExp(`^\\s*[,—–-]?\\s*(?<![\\p{L}])${name}(?![\\p{L}])[^.!?:]{0,35}\\b${SPEECH_ATTRIBUTION_VERBS}\\b`,'iu');
+  const verbBeforeNameAfterQuote=new RegExp(`\\b${SPEECH_ATTRIBUTION_VERBS}\\b[^.!?:]{0,30}(?<![\\p{L}])${name}(?![\\p{L}])`,'iu');
+  return nameBeforeVerb.test(before)||verbBeforeName.test(before)||nameAfterVerb.test(after)||
+    verbBeforeNameAfterQuote.test(after);
 }
 function quotedPhrasesMatchSources(answer,sources) {
   const matches=[...answer.matchAll(/“([^”]{12,320})”|"([^"]{12,320})"|‘([^’]{12,320})’/g)];
