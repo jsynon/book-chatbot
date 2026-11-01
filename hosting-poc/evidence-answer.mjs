@@ -866,7 +866,16 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           continue;
         }
         const partLevelStatus=reviewerPart?.status||'unanswered';
-        const accepted=(reviewerPart?.retainedContextClaimIds||[]).includes(answer.claimId);
+        // A direct answer is tracked separately from the retained context
+        // list. The reviewer may correctly nominate it in
+        // directAnswerClaimIds without duplicating that ID in the context
+        // list, whose schema is limited to supporting/background claims.
+        // Accept that path only when the reviewer explicitly judged the
+        // complete part answered; all cited claims still go through exact
+        // source and span validation below.
+        const accepted=(reviewerPart?.retainedContextClaimIds||[]).includes(answer.claimId)||
+          (reviewerPart?.answerStatus==='answered'&&
+            (reviewerPart?.directAnswerClaimIds||[]).includes(answer.claimId));
         if(accepted){
           const retainedAnswer={...answer,sourceIds:[],
             renderedText:answer.renderedText||answer.text};
