@@ -218,6 +218,20 @@ test('normalization rejects a planner identity mapped to another catalog author'
  'How does Kant understand causality?',catalog);
  assert.deepEqual(plan.sources.map(source=>source.bookIds),[['40']]);
 });
+test('normalization rejects an ambiguous author token as a catalog identity',()=>{
+ const catalog={
+  '901':'Computing Machinery and Intelligence — Alan Turing',
+  '902':'The Principles of Mathematical Logic — Raymond Turing',
+  '40':'Critique of Pure Reason — Immanuel Kant'
+ };
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'Turing',role:'primary',bookIds:['901','902']},
+  {label:'Kant',role:'primary',bookIds:['40']}
+ ],parts:['How do Turing and Kant differ?'],queries:[]},
+ 'How do Turing and Kant differ?',catalog);
+ assert.deepEqual(plan.sources.map(source=>source.bookIds),[['40']],
+  'a shared surname token must not authorize either distinct catalog author');
+});
 test('normalization removes a repeated comparison wrapper while preserving source parts',()=>{
  const catalog={
   '4':'Metaphysics — Aristotle','529':'On the Origin of Species — Charles Darwin',

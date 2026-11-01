@@ -65,7 +65,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
         start:Number.isInteger(item.start)?item.start:null,end:Number.isInteger(item.end)?item.end:null,index}))
       .filter(item=>usefulQuote(item.quote));
     // Reviewer-approved spans are exact and source-verified. Rank them against
-    // their linked claim first; the reader's full question is a tie-breaker.
+    // the reader's named evidence first, then use the linked claim as context.
     // These lexical scores order excerpts only and never prove support.
     const relevance=item=>{
       const pointTerms=terms(item.point),quoteTerms=terms(item.quote);
@@ -79,14 +79,18 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     };
     candidates.sort((left,right)=>{
       const leftScore=relevance(left),rightScore=relevance(right);
-      return rightScore.pointScore-leftScore.pointScore||
-        rightScore.questionScore-leftScore.questionScore||
+      const questionDifference=rightScore.questionScore-leftScore.questionScore;
+      // A strong match to wording the reader explicitly singled out (for
+      // example, a phrase they ask to interpret) may outrank a generic claim
+      // paraphrase. Small lexical differences remain a tie-breaker so broad
+      // words such as "home" do not displace the best claim-specific passage.
+      return Math.abs(questionDifference)>=0.15?questionDifference:
+        rightScore.pointScore-leftScore.pointScore||questionDifference||
         readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
     });
-    // Keep the strongest excerpt for each distinct answer claim. Retain another
-    // span from that claim only when it is immediately adjacent, so it can be
-    // joined into one readable passage. Spare display slots are not filled with
-    // weaker, unrelated spans merely because they were also approved on-page.
+    // Keep the strongest excerpt for each distinct answer claim. A second
+    // reviewer-approved excerpt may remain as context when offsets are absent;
+    // further excerpts require adjacency and stay bounded.
     const seenQuotes=new Set();
     const distinctCandidates=candidates.filter(item=>{
       if(seenQuotes.has(item.quote))return false;
@@ -94,21 +98,23 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     });
     const sourceText=String(sourceTexts?.[id]||'');
     const claimKey=item=>item.claimId?item.partId+'|'+item.claimId:'span:'+item.index;
-    const selected=[],selectedClaims=new Set();
+    const selected=[],selectedClaims=new Map();
     for(const item of distinctCandidates){
       const key=claimKey(item);
-      if(selectedClaims.has(key)){
+      const count=selectedClaims.get(key)||0;
+      if(count){
         const adjacent=sourceText&&selected.some(previous=>
           claimKey(previous)===key&&previous.start!==null&&previous.end!==null&&
           item.start!==null&&item.end!==null&&item.start<=previous.end+3&&
           previous.start<=item.end+3&&
           Math.max(previous.end,item.end)-Math.min(previous.start,item.start)<=900);
-        if(adjacent)selected.push(item);
-        continue;
+        const primary=selected.find(previous=>claimKey(previous)===key);
+        const primaryNamesRequestedEvidence=primary&&relevance(primary).questionScore>=0.35;
+        if(!adjacent&&!(count===1&&primaryNamesRequestedEvidence))continue;
       }
-      if(selectedClaims.size>=3)continue;
+      if(!selectedClaims.has(key)&&selectedClaims.size>=3)continue;
       selected.push(item);
-      selectedClaims.add(key);
+      selectedClaims.set(key,count+1);
     }
     if(!sourceText||selected.length<2)return [id,selected];
     // Join only immediately adjacent spans that were already reviewer-approved

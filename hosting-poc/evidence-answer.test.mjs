@@ -1175,6 +1175,9 @@ test('the logical-scope guard distinguishes neither-or from not-both paraphrases
 
 test('the answer contract allows useful general context while keeping cited claims traceable',()=>{
  assert.match(COMPOSER_PROMPT,/use your broader knowledge/);
+ assert.match(COMPOSER_PROMPT,/use broader knowledge freely for relevant context, explanation, definitions, and synthesis/i);
+ assert.match(COMPOSER_PROMPT,/In \"general-context\" mode, give a substantive direct answer from general knowledge/i);
+ assert.match(COMPOSER_PROMPT,/Each part includes an answerMode/);
  assert.match(COMPOSER_PROMPT,/exact form: \[S1\] or \[S1, S2\]/);
  assert.match(COMPOSER_PROMPT,/a book title, author name, or parenthetical \(S1\) is not a citation/);
  assert.match(COMPOSER_PROMPT,/Do not cite every sentence just because it is factual/);
@@ -1206,6 +1209,59 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(REVIEW_PROMPT,/For a claim with sourceIds empty, return an empty sources array/);
  assert.match(REVIEW_PROMPT,/retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims/);
+});
+
+test('evidence-free parts invite a direct general-context answer without adding a model call',async()=>{
+ const question='How did Dostoevsky and Nietzsche approach nihilism?';
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,candidateSourceIds:[]}]};
+ const ai=makeAI([answer('PART P1\nDostoevsky explores nihilism through characters who confront the loss of religious and moral foundations. Nietzsche analyzes nihilism as the collapse of inherited values and asks how new values might be created.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(question,[],ai,[],{plan,catalog,trace:true});
+ const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
+ const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
+ assert.equal(composePayload.parts[0].answerMode,'general-context');
+ assert.equal(reviewPayload.parts[0].answerMode,'general-context');
+ assert.equal(ai.calls.length,2,'general context uses the existing compose and review calls');
+ assert.equal(result.outcome,'general-context-answer');
+ assert.equal(result.citations.length,0,'general context does not invent library citations');
+ assert.match(result.answer,/Nietzsche analyzes nihilism/);
+});
+
+test('a reviewed direct general-context claim is retained without duplicating it in context IDs',async()=>{
+ const question='How did Hume explain causal necessity?';
+ const ai=makeAI([answer('PART P1\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const directId=payload.parts[0].contextClaims[0].claimId;
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'answered',
+    directAnswerClaimIds:[directId],retainedContextClaimIds:[]}],claims:[]})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(question,[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question,candidateSourceIds:[]}]},catalog,trace:true});
+ assert.equal(result.answerCompleteness,'full');
+ assert.equal(result.questionParts[0].answerStatus,'answered');
+ assert.equal(result.questionParts[0].status,'partial','library coverage stays separate from answer completeness');
+ assert.match(result.answer,/causal necessity/);
+ assert.equal(result.citations.length,0);
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,true);
+ assert.equal(ai.calls.length,2);
+});
+
+test('a direct general-context nomination is not enough when answerStatus is partial',async()=>{
+ const question='How did Hume explain causal necessity?';
+ const ai=makeAI([answer('PART P1\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const directId=payload.parts[0].contextClaims[0].claimId;
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'partial',
+    directAnswerClaimIds:[directId],retainedContextClaimIds:[]}],claims:[]})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(question,[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question,candidateSourceIds:[]}]},catalog,trace:true});
+ assert.equal(result.answerCompleteness,'none');
+ assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,false);
+ assert.match(result.answer,/did not support a reliable answer/);
+ assert.doesNotMatch(result.answer,/Hume explains causal necessity/);
 });
 
 test('an unheaded single-part source claim reaches review and is not treated as verified context',async()=>{
@@ -1514,6 +1570,32 @@ test('quoted-speaker conflicts are preserved as a source-attribution rejection',
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.sourceId==='S1'&&issue.reason==='source-attribution-conflict'));
  assert.equal(result.trace.reviewContract.reviewDecisions[0].attributedSpeaker,'Y. Chambers');
+});
+
+test('a positive reviewer speaker label must be anchored in the supplied source',async()=>{
+ const source={id:'S1',bookId:'81',title:'The Brothers Karamazov — Fyodor Dostoevsky',page:311,
+  text:'Ivan wonders whether the suffering of innocent children can be justified. The problem remains unresolved.',
+  preview:'Ivan wonders whether the suffering of innocent children can be justified.'};
+ const question='What does Alyosha say about Ivan’s view?';
+ const plan={...onePartPlan,intent:'explain',
+  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['81']}],
+  parts:[{id:'P1',question,sourceBookIds:['81'],candidateSourceIds:['S1']}]};
+ const ai=makeAI([answer('PART P1\nAlyosha says Ivan asks whether the suffering of innocent children can be justified. [S1]'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claim=payload.claims[0];
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
+     attributionStatus:'supported',attributedSpeaker:'Alyosha'}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer(question,[source],ai,[],{
+  plan,catalog:{81:source.title},trace:true
+ });
+ assert.equal(ai.calls.length,2,'the existing review call is sufficient to check speaker attribution');
+ assert.equal(result.coverage,'none','an unanchored positive reviewer label cannot verify the claim');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S1'&&issue.reason==='source-attribution-unanchored'));
 });
 
 test('known editorial and pseudonymous source voices must be named or mediated',async()=>{
