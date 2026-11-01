@@ -115,8 +115,43 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   const bounded=(v,max)=>typeof v==='string'?v.trim().slice(0,max):'';
   const resolvedQuestion=bounded(raw?.resolvedQuestion,600)||question;
   const entities=Array.isArray(raw?.sources)?raw.sources.filter(s=>s&&typeof s==='object'&&!Array.isArray(s)).slice(0,8):[];
-  const sources=entities.map(s=>({label:bounded(s.label,120),role:['primary','subject','commentary'].includes(s.role)?s.role:'primary',
-    bookIds:[...new Set((Array.isArray(s.bookIds)?s.bookIds:[]).map(String).filter(id=>Object.hasOwn(catalog,id)))]}));
+  const identity=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .replace(/[’‘]/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
+  const authorNames=Object.values(catalog).flatMap(title=>catalogIdentity(title).authors)
+    .map(identity).filter(Boolean);
+  const tokenOwners=new Map();
+  for(const name of authorNames)for(const token of name.split(' ')){
+    const owners=tokenOwners.get(token)||new Set();owners.add(name);tokenOwners.set(token,owners);
+  }
+  const labelMatchesTitle=(label,title)=>{
+    const labelKey=identity(label),titleIdentity=catalogIdentity(title);
+    return [titleIdentity.work,...titleIdentity.aliases].some(alias=>{
+      const key=identity(alias);return key===labelKey||(' '+key+' ').includes(' '+labelKey+' ');
+    });
+  };
+  const labelMatchesAuthor=(label,title)=>{
+    const labelKey=identity(label);
+    if(!labelKey)return false;
+    return catalogIdentity(title).authors.some(name=>{
+      const authorKey=identity(name);
+      if(authorKey===labelKey)return true;
+      const authorTokens=authorKey.split(' ');
+      return labelKey.split(' ').some(token=>authorTokens.includes(token)&&
+        token.length>2&&tokenOwners.get(token)?.size===1);
+    });
+  };
+  // The browser returns this plan to the Worker with its candidate pages.
+  // Treat plan source IDs as claims: a known ID is still rejected when its
+  // catalog byline/title does not match the planner's proposed identity.
+  const sources=entities.map(s=>{
+    const label=bounded(s.label,120),role=['primary','subject','commentary'].includes(s.role)?s.role:'primary';
+    const bookIds=[...new Set((Array.isArray(s.bookIds)?s.bookIds:[]).map(String).filter(id=>{
+      if(!Object.hasOwn(catalog,id))return false;
+      const title=catalog[id];
+      return labelMatchesAuthor(label,title)||labelMatchesTitle(label,title);
+    }))];
+    return {label,role,bookIds};
+  }).filter(source=>source.bookIds.length);
   if(selectedBookId)sources.splice(0,sources.length,{label:catalog[selectedBookId],role:'primary',bookIds:[selectedBookId]});
   const intent=['explain','compare','interpret','locate'].includes(raw?.intent)?raw.intent:'explain';
   const queries=Array.isArray(raw?.queries)?raw.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[];
@@ -221,6 +256,20 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
       question:bounded('How do the named sources compare in response to this question: '+resolvedQuestion,240)});
     partSourceGroups.push(comparisonBookIds);
   }
+  // Drop only an unambiguous repeated comparison wrapper or an exact repeated
+  // part. The wrapper restates the original question after a substantive
+  // comparison part has already preserved that requested relation.
+  const seenParts=[];
+  const retainedPartSourceGroups=[];
+  const comparisonPartPattern=/\b(?:compar\w*|differ\w*|versus|vs\.?|similar\w*|alike)\b/i;
+  normalizedParts=normalizedParts.filter((part,originalIndex)=>{
+    const key=identity(part.question);
+    if(seenParts.some(previous=>identity(previous.question)===key))return false;
+    const wrapper=part.question.match(/^How do the named sources compare in response to this question:\s*(.+)$/i);
+    if(wrapper&&seenParts.some(previous=>comparisonPartPattern.test(previous.question)))return false;
+    seenParts.push(part);retainedPartSourceGroups.push(partSourceGroups[originalIndex]||null);return true;
+  }).map((part,index)=>({...part,id:'P'+(index+1)}));
+  partSourceGroups.splice(0,partSourceGroups.length,...retainedPartSourceGroups);
   const partsWithSources=normalizedParts.map((part,index)=>{
     const allowedIds=partSourceGroups[index]||[];
     const allowedSourceIndexes=sources.map((source,sourceIndex)=>source.bookIds.some(id=>allowedIds.includes(id))?sourceIndex:-1)
