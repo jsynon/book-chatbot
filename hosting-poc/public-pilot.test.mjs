@@ -140,7 +140,7 @@ test('repeated claim links do not crowd a distinct verified highlight off a sour
  const inferencePoint='Hume explains that inference from cause to effect comes from custom rather than reasoning.';
  const heatPoint='Hume explains how constant conjunction, such as heat and flame, leads us to expect one event from another.';
  const highlights=selectPublicEvidenceHighlights(
-  'How does Hume explain inference from cause to effect?', [citation],[
+  'How does Hume explain inference from cause to effect? [S5]', [citation],[
    {id:'S5',claimId:'P1-C1',partId:'P1',point:inferencePoint,quote:custom,quoteVerified:true},
    {id:'S5',claimId:'P1-C3',partId:'P1',point:inferencePoint,quote:custom,quoteVerified:true},
    {id:'S5',claimId:'P2-C1',partId:'P2',point:inferencePoint,quote:custom,quoteVerified:true},
