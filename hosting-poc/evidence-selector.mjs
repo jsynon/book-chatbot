@@ -187,6 +187,13 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
     for(const part of orderedParts){
       const id=part.candidateIds[offset];
       const workKey=id?sourceWorkKey(candidateById.get(id)?.title):'';
+      // A selected page can support more than one part. Preserve that link
+      // even when the page's work is already represented; this adds no page
+      // to the shared packet and must not be blocked by the breadth preference.
+      if(id&&selectedSet.has(id)){
+        addCandidate(part,id);
+        continue;
+      }
       if(id&&workKey&&!selectedWorkKeys.has(workKey))addCandidate(part,id);
       if(selectedCandidateIds.length>=MAX_SELECTOR_SOURCES)break;
     }
@@ -200,7 +207,15 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
   }
   const droppedCandidateIds=[...new Set(orderedParts.flatMap(part=>part.candidateIds))]
     .filter(id=>!selectedSet.has(id));
-  const normalizedParts=orderedParts.map(part=>({...part,candidateIds:keptByPart.get(part.partId)}));
+  const normalizedParts=orderedParts.map(part=>{
+    const candidateIds=keptByPart.get(part.partId);
+    // Coverage must describe the final bounded packet, not candidates that
+    // were considered but could not be sent to composition.
+    const evidence=part.evidence.filter(entry=>candidateIds.includes(entry.candidateId));
+    const coverage=evidence.some(entry=>entry.support==='direct')?'supported':
+      evidence.length?'partial':'none';
+    return {...part,candidateIds,evidence,coverage};
+  });
   return {selectedCandidateIds,parts:normalizedParts,
     ...(duplicateEvidenceEntriesRemoved?{duplicateEvidenceEntriesRemoved}:{}),
     ...(droppedCandidateIds.length?{selectionTrim:{
@@ -216,9 +231,28 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
 /* A selector outage still needs a bounded packet. Round-robin across works
  * preserves source breadth from the retrieval ranking without claiming that
  * those fallback pages passed semantic selection. */
-export function orderFallbackCandidates(candidates){
+export function orderFallbackCandidates(candidates,partIds=[]){
   const byBook=new Map(),ordered=[];
-  for(const candidate of Array.isArray(candidates)?candidates:[]){
+  const values=Array.isArray(candidates)?candidates:[];
+  const hintedPartIds=Array.isArray(partIds)&&partIds.length?partIds:[...new Set(values.flatMap(value=>
+    Array.isArray(value?.candidatePartIds)?value.candidatePartIds:
+      Array.isArray(value?.retrievedPartHints)?value.retrievedPartHints:[]))];
+  const candidateKeys=new Map(values.map((candidate,index)=>[
+    candidate,typeof candidate?.id==='string'&&candidate.id?candidate.id:
+      String(candidate?.bookId||'')+':'+String(candidate?.page||'')+':'+index]));
+  const selected=new Set();
+  // Retrieval links are hints rather than proof, but they let an outage
+  // fallback reserve a page for each part when the bounded pool has one.
+  for(const partId of hintedPartIds){
+    const candidate=values.find(value=>{
+      const hints=Array.isArray(value?.candidatePartIds)?value.candidatePartIds:
+        Array.isArray(value?.retrievedPartHints)?value.retrievedPartHints:[];
+      return hints.includes(partId)&&!selected.has(candidateKeys.get(value));
+    });
+    if(candidate){ordered.push(candidate);selected.add(candidateKeys.get(candidate));}
+  }
+  for(const candidate of values){
+    if(selected.has(candidateKeys.get(candidate)))continue;
     const bookId=String(candidate?.bookId||'');
     const key=bookId||'__unidentified__';
     const pages=byBook.get(key)||[];
@@ -230,7 +264,9 @@ export function orderFallbackCandidates(candidates){
     let added=false;
     for(const [bookId,pages] of byBook){
       if(depth>=pages.length)continue;
-      ordered.push(pages[depth]);added=true;
+      const candidate=pages[depth];
+      if(selected.has(candidateKeys.get(candidate)))continue;
+      ordered.push(candidate);selected.add(candidateKeys.get(candidate));added=true;
     }
     if(!added)break;
   }
