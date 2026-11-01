@@ -1,10 +1,10 @@
-# Local workbench refresh (October 2026)
+# Local workbench setup and limits
 
-The Python/Ollama workbench at http://127.0.0.1:8765/ is **local-only**. Developer tools remain under /developer. Nothing here invokes or deploys the public Cloudflare Worker.
+The Python/Ollama workbench at http://127.0.0.1:8765/ is local-only. Developer tools are available under /developer. The workbench does not invoke or deploy the public Cloudflare Worker.
 
 ## Setup
 
-Keep book-chatbot, antilogicalism and antilogicalism-library-data as sibling directories. Start Ollama, and install the configured model (default `ollama pull gemma3:12b`). From book-chatbot, run:
+Keep book-chatbot, antilogicalism, and antilogicalism-library-data as sibling directories. Start Ollama and install the configured model (default `ollama pull gemma3:12b`). From book-chatbot, run:
 
 ```powershell
 py -3 local_preflight.py
@@ -12,32 +12,32 @@ py -3 -m unittest discover -s tests
 py -3 app.py
 ```
 
-Use `start.bat` as an alternative launcher. If your local library snapshot is v49, set `$env:BOOK_CHATBOT_DATA_VERSION="v49"` **before** launching. The workbench defaults to v48 for compatibility and does not automatically assume a future version is complete. Inspect preflight output for the actual folder and model availability.
+Use `start.bat` as an alternative launcher on Windows. The workbench currently defaults to corpus v48 for compatibility. If your local library snapshot is v49, set `$env:BOOK_CHATBOT_DATA_VERSION="v49"` before launching. Check preflight output for the actual data folder and model availability.
 
 ## Interface
 
-The local reader now includes a light/dark appearance toggle in the top navigation. Its preference is saved only in the local browser's storage and follows the operating-system theme until a preference is chosen. It uses a local CSS overlay rather than importing the entire public application's JavaScript or modifying its chat handlers. Developer Mode and the Reader Mode continue to share the same appearance setting.
+The local reader includes a light/dark appearance toggle. Its preference is saved in local browser storage and otherwise follows the operating-system theme. The theme layer is separate from the public website's chat handlers.
 
-This is a visual alignment, **not** a guarantee of pixel-for-pixel equivalence with the changing public website. Compare both modes at desktop and mobile widths after starting the application.
+This is a visual alignment, not a guarantee of pixel-for-pixel equivalence with the changing public website. Compare both modes at desktop and mobile widths when making interface changes.
 
 ## Architecture and limitations
 
-- `app.py`: legacy local API and pipeline controls; full-library search uses separate local Python modules.
-- `index.html`: local interface, source browsing, model selection and batch tests.
+- `app.py`: local API and pipeline controls.
+- `index.html`: local interface, source browsing, model selection, and batch tests.
 - `local-workbench-theme.css` and `local-workbench-theme.js`: isolated appearance layer.
-- `local_preflight.py`: read-only check for Ollama, chosen model, and shared data folders.
-- `hosting-poc/`: JavaScript Worker pipeline, **not** executed by the local Ollama app.
+- `local_preflight.py`: read-only check for Ollama, the selected model, and shared data folders.
+- `hosting-poc/`: JavaScript Worker pipeline; the local Ollama app does not execute it.
 
-A local answer cannot validate Worker planning, fingerprint checks, or production citation review. For end-to-end production evaluation use the website's authenticated workflow. Keep its seven-question development set separate from the unseen acceptance set. Do not treat an OCR fingerprint as proof of semantic support.
+A local answer cannot validate Worker planning, fingerprint checks, or production citation review. Use the website's authenticated workflow for end-to-end evaluation of the public Worker. Keep development questions separate from the unseen acceptance set. An OCR fingerprint proves identity with the indexed text, not semantic support.
 
-## Follow-up engineering work
+## Comparing local and live answers
 
-A complete parity workbench would need a controlled adapter for the browser retriever and Worker evidence pipeline, plus recorded trace import, source alignment and result diffing. Do not silently replace Python evidence validation with Worker assumptions or copy credentials into the local UI.
+Offline saved-trace comparison and fixed-packet replay are available in [Offline trace comparison](local-trace-testing.md). They help inspect stage handoffs and compare composition on fixed evidence, but do not make the local and live pipelines equivalent.
 
-## Checks before merging
+## Checks before merging workbench changes
 
 1. Run Python tests and `node --test hosting-poc/*.test.mjs`.
-2. Confirm localhost routes return the two new assets.
-3. Confirm light/dark mode on / and /developer, desktop and mobile.
-4. Confirm Enter-to-submit, Ollama model selection, sources, and benchmark controls still work.
-5. Confirm no Worker code, deployment configuration, production rate limits, or Turnstile behavior changed.
+2. Confirm localhost routes serve the interface and theme assets.
+3. Check light and dark modes on `/` and `/developer`, at desktop and mobile widths.
+4. Check Enter-to-submit, Ollama model selection, sources, and benchmark controls.
+5. Confirm no Worker deployment configuration, production rate limits, or Turnstile behavior changed unless that was part of the change.

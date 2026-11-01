@@ -1,5 +1,7 @@
 # Question-steering audit
 
+> Historical audit snapshot. This records specific changes and trace findings from its review period; it is not a complete description of the current pipeline. Use the [architecture and development guide](README.md) for the current overview.
+
 This audit follows the live path across `book-chatbot` (Worker and workbench) and `antilogicalism` (planner caller, index retrieval, and evaluation). The goal is to improve evidence coverage and trustworthy answers without turning observed benchmark questions into runtime routes.
 
 ## What changed

@@ -1,17 +1,13 @@
-/* Antilogicalism Reading Companion — v1.9.0 public-hosting foundation.
+/* Antilogicalism Reading Companion Cloudflare Worker.
  *
- * NOT the live website Worker. Deploy only after the free-plan checks,
- * Turnstile secret and Wrangler rate-limit bindings are configured.
- * PUBLIC_ENABLED defaults OFF and every missing control fails closed.
+ * This gateway serves the public site's answer API and protected evaluation
+ * routes. Public requests remain guarded by origin checks, visitor verification,
+ * rate limits, source-page fingerprint checks, and bounded answer processing.
  *
- * Public clients submit a question, a fresh Turnstile token, and numeric
- * book/page locators — NEVER their own passage text, title or PDF URL.
- * The Worker fetches trusted v48 source shards, binds PDF citations to
- * manifest metadata, then runs bounded answer generation with a conditional quote repair.
- *
- * Important: authentic source text != a factually supported AI answer.
- * This gateway does not provide claim-level entailment verification.
- * The Free Workers CPU limit (10ms) requires real deployment measurement.
+ * The browser submits a question and a bounded pool of candidate pages. The
+ * Worker verifies those pages against published fingerprints before selecting
+ * evidence and composing/reviewing an answer. Fingerprints establish source
+ * identity; they do not prove that a claim follows from the source.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
 import {MAX_SELECTOR_CANDIDATES,orderFallbackCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
