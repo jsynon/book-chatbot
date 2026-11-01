@@ -1227,6 +1227,35 @@ test('evidence-free parts invite a direct general-context answer without adding 
  assert.match(result.answer,/Nietzsche analyzes nihilism/);
 });
 
+test('a multi-part source-and-context answer keeps direct general knowledge for an evidence gap',async()=>{
+ const question='How does Hume explain causal necessity, and how does the Odyssey picture heroism?';
+ const plan={...onePartPlan,parts:[
+  {...onePartPlan.parts[0],id:'P1',question:'How does Hume explain causal necessity?',candidateSourceIds:['S1']},
+  {id:'P2',question:'How does the Odyssey picture heroism?',sourceBookIds:[],
+   searchQueries:[],candidateSourceIds:[]}
+ ]};
+ const ai=makeAI([answer('PART P1\nHume links causal necessity to custom formed through repeated conjunction. [S1]\n\n'+
+  'PART P2\nThe Odyssey presents heroism through endurance, judgment, and the difficult return home.'),
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content);
+   const response=review([['P1','answered'],['P2','partial']])(_model,{messages});
+   const parsed=JSON.parse(response.response);
+   const contextClaim=payload.parts.find(part=>part.partId==='P2')?.contextClaims?.[0]?.claimId;
+   parsed.parts.find(part=>part.partId==='P2').answerStatus='answered';
+   parsed.parts.find(part=>part.partId==='P2').directAnswerClaimIds=contextClaim?[contextClaim]:[];
+   parsed.parts.find(part=>part.partId==='P2').retainedContextClaimIds=contextClaim?[contextClaim]:[];
+   return {...response,response:JSON.stringify(parsed)};
+  }]);
+ const result=await composeEvidenceAnswer(question,[hume],ai,[],{plan,catalog,trace:true});
+ const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
+ assert.equal(composePayload.parts.find(part=>part.partId==='P2').answerMode,'source-and-context');
+ assert.equal(result.questionParts[1].answerStatus,'answered');
+ assert.equal(result.answerCompleteness,'full');
+ assert.match(result.answer,/The Odyssey presents heroism/);
+ assert.match(result.answer,/Hume links causal necessity.*\[S1\]/);
+ assert.equal(ai.calls.length,2,'the existing compose and review calls are sufficient');
+});
+
 test('a reviewed direct general-context claim is retained without duplicating it in context IDs',async()=>{
  const question='How did Hume explain causal necessity?';
  const ai=makeAI([answer('PART P1\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
