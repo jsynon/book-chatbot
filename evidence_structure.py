@@ -1,15 +1,13 @@
-"""Deterministic question-part coverage for the final v1.4 quality milestone.
+"""Reserve retrieved passages for question parts that lack lexical coverage.
 
-This is a SMALL, BOUNDED retrieval step between the original first and
-second Ollama calls, never another model, embedding index or book-specific
-answer rule. It takes the reader's EXISTING question parts, tests whether the
-selected ORIGINAL passages contain evidence for each part, and can reserve at
-most one better matching indexed passage per missing part. It does not infer
-source meaning, identify speakers, manufacture a claim or certify an answer.
+This bounded helper is used by the local evidence-first pipeline. It checks
+existing question parts against already retrieved passages and may reserve one
+better-matching indexed passage for a weak part. It does not infer meaning,
+identify speakers, create claims, or certify that a passage supports an answer.
 
-This module deliberately does not expand abstract subjects into named people
-or episodes. If the original question does not identify a historical dispute,
-lexical retrieval may still be insufficient; the trace records the limitation.
+Coverage is a retrieval diagnostic only. A weak match can still be relevant,
+and a lexical match can still be irrelevant; answer quality requires reading
+the selected passage in context.
 """
 import math
 import re
