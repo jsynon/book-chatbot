@@ -1136,6 +1136,9 @@ test('the logical-scope guard distinguishes neither-or from not-both paraphrases
 
 test('the answer contract allows useful general context while keeping cited claims traceable',()=>{
  assert.match(COMPOSER_PROMPT,/use your broader knowledge/);
+ assert.match(COMPOSER_PROMPT,/use broader knowledge freely for relevant context, explanation, definitions, and synthesis/i);
+ assert.match(COMPOSER_PROMPT,/In \"general-context\" mode, give a substantive direct answer from general knowledge/i);
+ assert.match(COMPOSER_PROMPT,/Each part includes an answerMode/);
  assert.match(COMPOSER_PROMPT,/exact form: \[S1\] or \[S1, S2\]/);
  assert.match(COMPOSER_PROMPT,/a book title, author name, or parenthetical \(S1\) is not a citation/);
  assert.match(COMPOSER_PROMPT,/Do not cite every sentence just because it is factual/);
@@ -1167,6 +1170,22 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(REVIEW_PROMPT,/Return one valid JSON object only/);
  assert.match(REVIEW_PROMPT,/For a claim with sourceIds empty, return an empty sources array/);
  assert.match(REVIEW_PROMPT,/retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims/);
+});
+
+test('evidence-free parts invite a direct general-context answer without adding a model call',async()=>{
+ const question='How did Dostoevsky and Nietzsche approach nihilism?';
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,candidateSourceIds:[]}]};
+ const ai=makeAI([answer('PART P1\nDostoevsky explores nihilism through characters who confront the loss of religious and moral foundations. Nietzsche analyzes nihilism as the collapse of inherited values and asks how new values might be created.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(question,[],ai,[],{plan,catalog,trace:true});
+ const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
+ const reviewPayload=JSON.parse(ai.calls[1].request.messages[1].content);
+ assert.equal(composePayload.parts[0].answerMode,'general-context');
+ assert.equal(reviewPayload.parts[0].answerMode,'general-context');
+ assert.equal(ai.calls.length,2,'general context uses the existing compose and review calls');
+ assert.equal(result.outcome,'general-context-answer');
+ assert.equal(result.citations.length,0,'general context does not invent library citations');
+ assert.match(result.answer,/Nietzsche analyzes nihilism/);
 });
 
 test('an unheaded single-part source claim reaches review and is not treated as verified context',async()=>{
