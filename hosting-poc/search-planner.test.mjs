@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {handleRequest,planSearchQueries,planSearchGapQueries,composeVerifiedAnswer,validConversationHistory} from './public-gateway.mjs';
-import {normalizePlan} from './reader-contract.mjs';
+import {catalogFallbackPlan,normalizePlan} from './reader-contract.mjs';
 
 const HOST='https://antilogicalism-companion-public.jsynon.workers.dev';
 const question='How does Raskolnikov attempt to justify murder and how does the novel challenge his reasoning?';
@@ -251,6 +251,38 @@ test('normalization rejects an ambiguous author token as a catalog identity',()=
  'How do Turing and Kant differ?',catalog);
  assert.deepEqual(plan.sources.map(source=>source.bookIds),[['40']],
   'a shared surname token must not authorize either distinct catalog author');
+});
+
+test('planner fallback keeps every unambiguous requested author and the original question',()=>{
+ const question='How do Augustine, Aquinas, and Kant differ on moral responsibility?';
+ const catalog={
+  '1':'Confessions — Augustine of Hippo','2':'City of God — Augustine of Hippo',
+  '3':'Summa Theologica — Thomas Aquinas','4':'Critique of Practical Reason — Immanuel Kant',
+  '5':'Computing Machinery and Intelligence — Alan Turing',
+  '6':'The Principles of Mathematical Logic — Raymond Turing'
+ };
+ const plan=normalizePlan(catalogFallbackPlan(question,catalog),question,catalog);
+ assert.equal(plan.intent,'compare');
+ assert.deepEqual(plan.sources.map(source=>source.label),[
+  'Augustine of Hippo','Thomas Aquinas','Immanuel Kant']);
+ assert.deepEqual(plan.sources.map(source=>source.bookIds),[['1','2'],['3'],['4']]);
+ assert.deepEqual(plan.parts.map(part=>part.question),[question]);
+ assert.deepEqual(plan.parts[0].sourceBookIds,['1','2','3','4']);
+});
+
+test('missing or identity-invalid planner data falls back only to unambiguous catalog matches',()=>{
+ const catalog={
+  '1':'Confessions — Augustine of Hippo','2':'Summa Theologica — Thomas Aquinas',
+  '3':'Computing Machinery and Intelligence — Alan Turing',
+  '4':'The Principles of Mathematical Logic — Raymond Turing'
+ };
+ const fallback=normalizePlan(null,'How do Augustine and Aquinas differ?',catalog);
+ assert.deepEqual(fallback.sources.map(source=>source.bookIds),[['1'],['2']]);
+ const malformed=normalizePlan({sources:[{label:'Aristotle',bookIds:['1','2']} ]},
+  'How do Augustine and Aquinas differ?',catalog);
+ assert.deepEqual(malformed.sources.map(source=>source.bookIds),[['1'],['2']]);
+ const ambiguous=normalizePlan(null,'What did Turing say about intelligence?',catalog);
+ assert.deepEqual(ambiguous.sources,[]);
 });
 test('normalization removes a repeated comparison wrapper while preserving source parts',()=>{
  const catalog={
