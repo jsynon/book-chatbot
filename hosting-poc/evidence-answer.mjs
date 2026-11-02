@@ -604,11 +604,11 @@ export function normalizeAnswerMarkdown(value){
 function normalizeStatus(value){
   const raw=String(value||'').toLowerCase();
   return ['answered','supported','complete'].includes(raw)?'answered':
-    ['partial','incomplete'].includes(raw)?'partial':
+    ['partial','incomplete','unclear'].includes(raw)?'partial':
     ['unanswered','unsupported','none'].includes(raw)?'unanswered':'partial';
 }
 function hasRecognizedStatus(value){
-  return ['answered','supported','complete','partial','incomplete','unanswered','unsupported','none']
+  return ['answered','supported','complete','partial','incomplete','unclear','unanswered','unsupported','none']
     .includes(String(value||'').toLowerCase());
 }
 function reviewSpanSourceId(spanId){
@@ -1187,17 +1187,20 @@ function compactReviewPayload(question,parts,claims){
     ...(sourceContexts.size?{sourceContexts:[...sourceContexts.values()]}:{}),claims:compactClaims};
 }
 
-function reviewPayloadMetrics(payload,serializedPayload){
+function reviewPayloadMetrics(payload,serializedPayload,systemPrompt){
   const parts=Array.isArray(payload?.parts)?payload.parts:[];
   const evidence=parts.flatMap(part=>Array.isArray(part?.evidence)?part.evidence:[]);
   const spanReferences=evidence.reduce((count,item)=>count+
     (Array.isArray(item?.spanIds)?item.spanIds.length:Array.isArray(item?.spans)?item.spans.length:0),0);
+  const systemPromptCharacters=typeof systemPrompt==='string'?systemPrompt.length:0;
+  const userPayloadCharacters=typeof serializedPayload==='string'?serializedPayload.length:0;
   return {partCount:parts.length,claimCount:Array.isArray(payload?.claims)?payload.claims.length:0,
     sourceCount:new Set(evidence.map(item=>item?.id).filter(id=>typeof id==='string')).size,
     sourceMetadataCount:Object.keys(payload?.sourceCatalog||{}).length,
     spanCount:Array.isArray(payload?.spanCatalog)?payload.spanCatalog.length:spanReferences,
     spanReferenceCount:spanReferences,
-    serializedCharacters:typeof serializedPayload==='string'?serializedPayload.length:0};
+    serializedCharacters:userPayloadCharacters,systemPromptCharacters,
+    requestCharacters:userPayloadCharacters+systemPromptCharacters};
 }
 
 export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
@@ -1222,7 +1225,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     const start=Date.now();usage.calls++;
     let response,timer;
     const payloadMetrics=stage.startsWith('review')?
-      reviewPayloadMetrics(payload,serializedPayload):null;
+      reviewPayloadMetrics(payload,serializedPayload,system):null;
     const timeoutMs=stage.startsWith('review')?60000:45000;
     const timeoutError=Object.assign(new Error('Inference deadline exceeded'),{
       stage,code:'inference-deadline-exceeded',startedAt:start,timeoutMs
