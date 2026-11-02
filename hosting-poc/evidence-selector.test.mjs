@@ -202,15 +202,15 @@ test('valid partial selection recovers only retrieved candidates linked to uncov
   {id:'C3',retrievedPartHints:['P3']},
   {id:'C4',retrievedPartHints:[]}
  ]);
- assert.deepEqual(result.selectedCandidateIds,['C1','C2','C3']);
+ assert.deepEqual(result.selectedCandidateIds,['C1','C3']);
  assert.deepEqual(result.recoveredPartLinks,[
-  {partId:'P2',candidateId:'C2',reason:'retrieved-part-hint'},
+  {partId:'P2',candidateId:'C1',reason:'retrieved-part-hint'},
   {partId:'P3',candidateId:'C3',reason:'retrieved-part-hint'}
  ]);
  assert.deepEqual(result.skippedPartRecoveries,[]);
 });
 
-test('partial-selection recovery does not reuse selector-rejected candidates or exceed six pages',()=>{
+test('partial-selection recovery reuses selected candidates and does not exceed six pages',()=>{
  const six=Array.from({length:6},(_,index)=>'C'+(index+1));
  const result=recoverUncoveredPartCandidates({selectedCandidateIds:six,parts:[
   {partId:'P1',candidateIds:six},{partId:'P2',candidateIds:[]}
@@ -219,16 +219,25 @@ test('partial-selection recovery does not reuse selector-rejected candidates or 
   {id:'C2',retrievedPartHints:['P2']}
  ]);
  assert.deepEqual(result.selectedCandidateIds,six);
- assert.deepEqual(result.recoveredPartLinks,[]);
- assert.deepEqual(result.skippedPartRecoveries,[{partId:'P2',reason:'six-page-packet-limit'}]);
+ assert.deepEqual(result.recoveredPartLinks,[
+  {partId:'P2',candidateId:'C2',reason:'retrieved-part-hint'}
+ ]);
+ assert.deepEqual(result.skippedPartRecoveries,[]);
+ const bounded=recoverUncoveredPartCandidates({selectedCandidateIds:six,parts:[
+  {partId:'P1',candidateIds:six},{partId:'P2',candidateIds:[]}
+ ]},[{id:'C7',retrievedPartHints:['P2']}]);
+ assert.deepEqual(bounded.selectedCandidateIds,six);
+ assert.deepEqual(bounded.recoveredPartLinks,[]);
+ assert.deepEqual(bounded.skippedPartRecoveries,[{partId:'P2',reason:'six-page-packet-limit'}]);
 
  const rejected=recoverUncoveredPartCandidates({selectedCandidateIds:['C1'],parts:[
   {partId:'P1',candidateIds:['C1']},{partId:'P2',candidateIds:[]}
  ]},[{id:'C1',retrievedPartHints:['P2']}]);
- assert.deepEqual(rejected.recoveredPartLinks,[]);
- assert.deepEqual(rejected.skippedPartRecoveries,[
-  {partId:'P2',reason:'no-unselected-part-linked-candidate'}
+ assert.deepEqual(rejected.selectedCandidateIds,['C1']);
+ assert.deepEqual(rejected.recoveredPartLinks,[
+  {partId:'P2',candidateId:'C1',reason:'retrieved-part-hint'}
  ]);
+ assert.deepEqual(rejected.skippedPartRecoveries,[]);
 });
 
 test('context-only part gets one bounded retrieval-linked recovery candidate, while direct support is left alone',()=>{
@@ -241,9 +250,9 @@ test('context-only part gets one bounded retrieval-linked recovery candidate, wh
   {id:'C3',retrievedPartHints:['P2']},
   {id:'C4',retrievedPartHints:['P2']}
  ]);
- assert.deepEqual(result.selectedCandidateIds,['C1','C2','C3']);
+ assert.deepEqual(result.selectedCandidateIds,['C1','C2']);
  assert.deepEqual(result.recoveredPartLinks,[
-  {partId:'P2',candidateId:'C3',reason:'retrieved-part-hint'}
+  {partId:'P2',candidateId:'C2',reason:'retrieved-part-hint'}
  ]);
  assert.deepEqual(result.skippedPartRecoveries,[]);
 });
