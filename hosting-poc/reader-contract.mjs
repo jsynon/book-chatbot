@@ -155,7 +155,11 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   if(selectedBookId)sources.splice(0,sources.length,{label:catalog[selectedBookId],role:'primary',bookIds:[selectedBookId]});
   const intent=['explain','compare','interpret','locate'].includes(raw?.intent)?raw.intent:'explain';
   const queries=Array.isArray(raw?.queries)?raw.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[];
-  const parts=(Array.isArray(raw?.parts)?raw.parts:[]).slice(0,6).map((p,i)=>({id:'P'+(i+1),question:bounded(typeof p==='string'?p:p?.question,240)})).filter(p=>p.question);
+  const parts=(Array.isArray(raw?.parts)?raw.parts:[]).slice(0,6).map((p,i)=>({
+    id:'P'+(i+1),question:bounded(typeof p==='string'?p:p?.question,240),
+    plannedSearchQueries:Array.isArray(p?.searchQueries)?[...new Set(p.searchQueries
+      .slice(0,5).map(query=>bounded(query,400)).filter(Boolean))]:[]
+  })).filter(p=>p.question);
   let normalizedParts=parts.length?parts:[{id:'P1',question}];
   const identityText=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
     .replace(/[’‘]/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
@@ -177,8 +181,10 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   // Planner parts become required coverage obligations. Keep a single direct
   // question as one part; use search leads and supported prose for helpful
   // context instead of turning inferred themes into new answer requirements.
-  if(!explicitMultiPartRequest&&!hypotheticalAuthorResponse)
-    normalizedParts=[{id:'P1',question:resolvedQuestion}];
+  if(!explicitMultiPartRequest&&!hypotheticalAuthorResponse){
+    const plannedSearchQueries=[...new Set(normalizedParts.flatMap(part=>part.plannedSearchQueries||[]))];
+    normalizedParts=[{id:'P1',question:resolvedQuestion,plannedSearchQueries}];
+  }
   const sourcePhrases=source=>{
     const phrases=[source.label];
     for(const token of String(source.label||'').split(/[^\p{L}\p{N}]+/u))
@@ -292,8 +298,10 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     const contextualQuery=contextDependent&&intent!=='compare'&&!syntheticComparison
       ?[resolvedQuestion.slice(0,200),part.question.slice(0,200)].filter(Boolean).join(' ').slice(0,400)
       :part.question;
-    return {...part,sourceBookIds:partSourceGroups[index],
-      searchQueries:[...new Set([...matchingQueries,...(syntheticComparison||sourceSidePart?[]:[contextualQuery])])].slice(0,5)};
+    const {plannedSearchQueries=[],...normalizedPart}=part;
+    return {...normalizedPart,sourceBookIds:partSourceGroups[index],
+      searchQueries:[...new Set([...plannedSearchQueries,...matchingQueries,
+       ...(syntheticComparison||sourceSidePart?[]:[contextualQuery])])].slice(0,5)};
   });
   return {version:CONTRACT_VERSION,resolvedQuestion,intent,
     sources,parts:partsWithSources,scope:bounded(raw?.scope,200),

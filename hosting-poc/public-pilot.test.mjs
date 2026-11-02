@@ -586,6 +586,30 @@ test('repeated selector candidate IDs are normalized without retrieval-order fal
  assert.equal(result.trace.stages[0].decision.duplicateEvidenceEntriesRemoved,1);
  assert.notEqual(result.sourceSelection.status,'deterministic-fallback');
 });
+test('planned part search facets reach Worker evidence selection',async()=>{
+ const token='part-search-facets-selector-test-token';
+ let selectorPayload=null;
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
+  selector:async(_model,input)=>{
+   selectorPayload=JSON.parse(input.messages[1].content);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
+    selectorPayload.parts.map(part=>({partId:part.partId,evidence:[{
+     candidateId:selectorPayload.candidates[0].id,support:'direct'}]}))})}}]};
+  }});
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'How does Thucydides explain the deeper cause of the war?',answerVariant:'compose-only',
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'How does Thucydides explain the deeper cause of the war?',
+    sourceBookIds:['152'],searchQueries:['Thucydides deeper cause fear growth Athens Sparta']}]}
+ }});
+ assert.equal(response.status,200);
+ assert.equal(selectorPayload.parts[0].searchQueries[0],
+  'Thucydides deeper cause fear growth Athens Sparta');
+ assert.ok(selectorPayload.parts[0].searchQueries.includes(
+  'How does Thucydides explain the deeper cause of the war?'));
+ assert.match(selectorPayload.candidates[0].excerpt,/Thucydides|cause|war/i);
+});
 test('selector fallback trace retains only an approved invalid-response subtype',async()=>{
  const token='selector-invalid-subtype-test-token';
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
