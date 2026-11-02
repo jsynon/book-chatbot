@@ -20,7 +20,7 @@ The public interface searches the published indexes and sends a bounded pool of 
 
 The main stages are:
 
-1. **Plan the search.** A model interprets the question and prepares useful search queries and, when needed, answer parts. A multi-source comparison keeps source-side coverage and the requested synthesis distinct; duplicate generic comparison wrappers are removed. The question remains the anchor; the plan does not prescribe authors or conclusions.
+1. **Plan the search.** A model interprets the question and prepares useful search queries and, when needed, answer parts. A multi-source comparison keeps source-side coverage and the requested synthesis distinct; duplicate generic comparison wrappers are removed. If planning fails or returns no usable plan, the browser and Worker build a bounded fallback from unambiguous author names and work titles in the loaded catalog, preserve the full question, and honor selected-book scope. Unknown or ambiguous names do not create source IDs. This fallback makes no additional model call.
 2. **Find and select evidence.** Browser retrieval gathers candidate pages. The Worker verifies their fingerprints, then a model selects a bounded packet and relates pages to the planned parts. Search matches and part links are retrieval aids, not proof of relevance.
 3. **Compose an explanation.** The model writes from the selected passages and may use general knowledge to explain or connect ideas. Claims about a supplied book or author need citations; broader context can be uncited and should remain distinguishable from source-derived claims.
 4. **Review and check integrity.** A model reviews coverage, attribution, cited claims, and evidence. It checks every explicit demand in each answer part and marks a part incomplete when a substantive request is missing. Deterministic checks validate source identity, scope, citation IDs, and quote locations. Both model review and text fingerprints have limits: neither establishes that an interpretation is true.
@@ -47,7 +47,7 @@ Do not tune runtime behavior to a small set of known questions. Use varied devel
 | `hosting-poc/public-gateway.mjs` | Worker routes, public request gates, fingerprint verification, and response handling, including ranking reviewer-approved highlights without adding nonadjacent secondary quotes for the same claim. |
 | `hosting-poc/evidence-selector.mjs` | Bounded selection of verified candidate pages and safe fallback behavior. |
 | `hosting-poc/evidence-answer.mjs` | Evidence assembly, answer composition and review, citation checks, compact source/span catalogs for claim review, and evaluation-only expansion. |
-| `hosting-poc/reader-contract.mjs` | Worker planning, citation, and source contract. Keep shared behavior aligned with the website copy in `antilogicalism/reading-companion/reader-contract.mjs`. |
+| `hosting-poc/reader-contract.mjs` | Worker planning, catalog-backed fallback, citation, and source contract. Keep shared behavior aligned with the website copy in `antilogicalism/reading-companion/reader-contract.mjs`. |
 | `hosting-poc/*.test.mjs` | Offline Worker and pipeline regression tests. |
 | `scripts/compare_traces.py` | Offline comparison of saved local and Worker traces. |
 | `scripts/replay_fixed_packet.py` | Local-only replay of a saved, verified Worker evidence packet through the local composer. |
