@@ -163,6 +163,19 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   let normalizedParts=parts.length?parts:[{id:'P1',question}];
   const identityText=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
     .replace(/[’‘]/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
+  const plannerQueryStopWords=new Set(['a','an','and','are','as','at','be','by','do','does','for','from','how',
+    'in','into','is','it','of','on','or','that','the','their','them','they','this','to','what','when','where',
+    'which','who','why','with']);
+  const queryTerms=value=>[...new Set(identityText(value).split(' ').map(term=>
+    term.length>5&&term.endsWith('s')?term.slice(0,-1):term)
+    .filter(term=>term.length>2&&!plannerQueryStopWords.has(term)))];
+  const plannerQueryAffinity=(query,part)=>{
+    const terms=queryTerms(query),partTerms=new Set(queryTerms(part));
+    if(terms.length<2||partTerms.size<2)return 0;
+    const overlap=terms.filter(term=>partTerms.has(term)).length;
+    const ratio=overlap/Math.min(terms.length,partTerms.size);
+    return overlap>=2&&ratio>=0.3?overlap+ratio:0;
+  };
   const containsPhrase=(haystack,phrase)=>{
     const normalized=identityText(phrase);
     return normalized.length>=4&&(' '+identityText(haystack)+' ').includes(' '+normalized+' ');
@@ -299,8 +312,15 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
       ?[resolvedQuestion.slice(0,200),part.question.slice(0,200)].filter(Boolean).join(' ').slice(0,400)
       :part.question;
     const {plannedSearchQueries=[],...normalizedPart}=part;
+    // Global planner queries can contain the clearest wording for a requested
+    // subpart even when they omit the catalog title/author. Link the single
+    // strongest lexical match as a bounded hint; it remains a retrieval cue,
+    // never evidence or a new coverage obligation.
+    const linkedPlannerQuery=normalizedParts.length>1?queries.map((query,queryIndex)=>({query,queryIndex,
+      affinity:plannerQueryAffinity(query,part.question)})).filter(item=>item.affinity>0)
+      .sort((a,b)=>b.affinity-a.affinity||a.queryIndex-b.queryIndex)[0]?.query:undefined;
     return {...normalizedPart,sourceBookIds:partSourceGroups[index],
-      searchQueries:[...new Set([...plannedSearchQueries,...matchingQueries,
+      searchQueries:[...new Set([...(linkedPlannerQuery?[linkedPlannerQuery]:[]),...plannedSearchQueries,...matchingQueries,
        ...(syntheticComparison||sourceSidePart?[]:[contextualQuery])])].slice(0,5)};
   });
   return {version:CONTRACT_VERSION,resolvedQuestion,intent,
