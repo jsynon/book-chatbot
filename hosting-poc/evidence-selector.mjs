@@ -253,19 +253,23 @@ export function recoverUncoveredPartCandidates(decision,candidates){
       part.candidateIds.length>0;
     if(!partId||hasDirectEvidence||legacyHasCandidates)continue;
     const eligible=candidateRows.filter(row=>typeof row?.id==='string'&&
-      !modelSelected.has(row.id)&&
       Array.isArray(row.retrievedPartHints)&&row.retrievedPartHints.includes(partId));
-    const candidate=eligible.find(row=>recoveredSet.has(row.id))||eligible[0];
+    // Reuse a page already in the six-page packet before adding another one.
+    // A retrieval hint only restores the missing part-to-page handoff; it does
+    // not turn the selector's context/omission into a support judgment.
+    const candidate=eligible.find(row=>modelSelected.has(row.id))||
+      eligible.find(row=>recoveredSet.has(row.id))||eligible[0];
     if(!candidate){
-      skippedPartRecoveries.push({partId,reason:'no-unselected-part-linked-candidate'});
+      skippedPartRecoveries.push({partId,reason:'no-part-linked-candidate'});
       continue;
     }
     const alreadyRecovered=recoveredSet.has(candidate.id);
-    if(!alreadyRecovered&&selectedCandidateIds.length>=MAX_SELECTOR_SOURCES){
+    if(!modelSelected.has(candidate.id)&&!alreadyRecovered&&
+       selectedCandidateIds.length>=MAX_SELECTOR_SOURCES){
       skippedPartRecoveries.push({partId,reason:'six-page-packet-limit'});
       continue;
     }
-    if(!alreadyRecovered){
+    if(!modelSelected.has(candidate.id)&&!alreadyRecovered){
       selectedCandidateIds.push(candidate.id);
       recoveredSet.add(candidate.id);
     }

@@ -12,12 +12,12 @@ function parsePayload(messages){
  const contexts=new Map((payload.sourceContexts||[]).map(context=>[context.sourceId,context.text]));
  const sourceCatalog=new Map(Object.entries(payload.sourceCatalog||{}));
  for(const part of payload.parts||[])for(const evidence of part.evidence||[]){
-  const sourceDetails=sourceCatalog.get(evidence.sourceDetailsId);
+  const sourceDetails=sourceCatalog.get(evidence.sourceDetailsId||evidence.id);
   if(sourceDetails)Object.assign(evidence,sourceDetails);
   if(Array.isArray(evidence.spanIds))Object.defineProperty(evidence,'spans',{enumerable:false,
    value:evidence.spanIds.map(id=>spans.get(id)).filter(Boolean)});
-  if(evidence.contextSourceId)Object.defineProperty(evidence,'contextText',{enumerable:false,
-   value:contexts.get(evidence.contextSourceId)});
+  if(contexts.has(evidence.id))Object.defineProperty(evidence,'contextText',{enumerable:false,
+   value:contexts.get(evidence.id)});
  }
  return payload;
 }
@@ -376,7 +376,9 @@ test('compact review decisions validate exact spans without rationale text or re
  assert.equal(result.failureCode,undefined);
  assert.deepEqual(result.evidenceMap.map(item=>item.quote),[reviewPayload.parts[0].evidence[0].spans[0].text]);
  assert.deepEqual(Object.keys(reviewPayload.claims[0]).sort(),['claimId','partId','sourceEvidence','sourceIds','text']);
- assert.deepEqual(reviewPayload.claims[0].sourceEvidence[0].sourceGroup,{label:'David Hume',role:'primary'});
+ assert.deepEqual(reviewPayload.sourceCatalog.S1.sourceGroup,{label:'David Hume',role:'primary'});
+ assert.deepEqual(reviewPayload.claims[0].sourceEvidence[0],{sourceId:'S1',
+  spanIds:reviewPayload.claims[0].sourceEvidence[0].spanIds});
  assert.equal('candidateSourceIds' in reviewPayload.parts[0],false);
  assert.equal('sha256' in reviewPayload.parts[0].evidence[0],false);
 });
@@ -405,7 +407,10 @@ test('review payload sends repeated exact spans and shared context text once wit
   'the shared span catalog removes duplicate span text across parts');
  assert.equal(rawReviewPayload.sourceContexts.length,1,
   'the same source context text is transmitted only once');
- assert.ok(sourceRefs.every(item=>item.contextSourceId==='S1'));
+ assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'contextSourceId')),
+  'the evidence id already links to its optional source context');
+ assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'sourceDetailsId')),
+  'the evidence id already keys shared metadata when no per-part metadata variant exists');
  assert.deepEqual(rawReviewPayload.spanCatalog.map(span=>span.spanId),
   [...new Set(sourceRefs.flatMap(item=>item.spanIds))],
   'the catalog contains one text record per distinct exact span');
@@ -421,10 +426,23 @@ test('review payload sends repeated exact spans and shared context text once wit
   'part-scoped source references retain IDs and span links without repeating source metadata');
  assert.ok(JSON.stringify(rawReviewPayload).length<JSON.stringify({
   ...rawReviewPayload,parts:rawReviewPayload.parts.map(part=>({...part,evidence:part.evidence.map(item=>({
-   ...item,...rawReviewPayload.sourceCatalog[item.sourceDetailsId]}))})),sourceCatalog:undefined
+   ...item,...rawReviewPayload.sourceCatalog[item.sourceDetailsId||item.id]}))})),sourceCatalog:undefined
  }).length,'shared source metadata reduces the serialized review request');
+ const previousShape={...rawReviewPayload,
+  parts:rawReviewPayload.parts.map(part=>({...part,evidence:part.evidence.map(item=>({...item,
+   sourceDetailsId:item.id,...(rawReviewPayload.sourceContexts?.some(context=>context.sourceId===item.id)?
+    {contextSourceId:item.id}:{})}))})),
+  claims:rawReviewPayload.claims.map(claim=>({...claim,sourceEvidence:claim.sourceEvidence.map(item=>({...item,
+   sourceGroup:rawReviewPayload.sourceCatalog[item.sourceId].sourceGroup}))}))};
+ assert.ok(JSON.stringify(rawReviewPayload).length<JSON.stringify(previousShape).length,
+  'the compact shape removes repeated source-group, metadata-pointer, and context-pointer fields');
+ const linksIntact=rawReviewPayload.claims.every(claim=>claim.sourceEvidence.every(item=>
+  item.sourceId in rawReviewPayload.sourceCatalog&&item.spanIds.every(id=>
+   rawReviewPayload.parts.some(part=>part.evidence.some(evidence=>evidence.id===item.sourceId&&
+    evidence.spanIds.includes(id))))));
+ assert.ok(linksIntact,'payload compaction keeps each claim source and its part-scoped span hints intact');
  assert.match(REVIEW_PROMPT,/Never borrow a span from another part/);
- assert.match(REVIEW_PROMPT,/look them up using the evidence entry's sourceDetailsId/);
+ assert.match(REVIEW_PROMPT,/look them up using sourceDetailsId when present, otherwise use the evidence entry's id/);
 });
 
 
@@ -1479,7 +1497,8 @@ test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both 
  assert.match(result.answer,/Johannes de Silentio/);
  assert.match(result.answer,/establishes truth about God/);
  assert.match(result.answer,/\[S1, S2\]/);
- assert.deepEqual(reviewPayload.claims.find(claim=>claim.partId==='P3').sourceEvidence.map(item=>item.sourceGroup),[
+ const p3Claim=reviewPayload.claims.find(claim=>claim.partId==='P3');
+ assert.deepEqual(p3Claim.sourceEvidence.map(item=>reviewPayload.sourceCatalog[item.sourceId].sourceGroup),[
   {label:'Friedrich Nietzsche',role:'primary'},
   {label:'Søren Kierkegaard',role:'primary'}
  ]);
