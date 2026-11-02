@@ -100,9 +100,10 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
         rightScore.pointScore-leftScore.pointScore||questionDifference||
         readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
     });
-    // Keep the strongest excerpt for each distinct answer claim. A second
-    // reviewer-approved excerpt may remain as context when offsets are absent;
-    // further excerpts require adjacency and stay bounded.
+    // Keep the strongest excerpt for each distinct answer claim. Additional
+    // excerpts from that same claim are shown only when they are adjacent and
+    // can be joined into one continuous, source-exact passage. A merely related
+    // second quote should not dilute the primary highlight.
     const seenQuotes=new Set();
     const distinctCandidates=candidates.filter(item=>{
       if(seenQuotes.has(item.quote))return false;
@@ -120,9 +121,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
           item.start!==null&&item.end!==null&&item.start<=previous.end+3&&
           previous.start<=item.end+3&&
           Math.max(previous.end,item.end)-Math.min(previous.start,item.start)<=900);
-        const primary=selected.find(previous=>claimKey(previous)===key);
-        const primaryNamesRequestedEvidence=primary&&relevance(primary).questionScore>=0.35;
-        if(!adjacent&&!(count===1&&primaryNamesRequestedEvidence))continue;
+        if(!adjacent)continue;
       }
       if(!selectedClaims.has(key)&&selectedClaims.size>=3)continue;
       selected.push(item);
