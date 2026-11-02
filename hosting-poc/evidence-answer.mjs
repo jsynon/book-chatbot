@@ -82,7 +82,7 @@ export const COMPOSER_PROMPT=`Answer the reader's exact question with a clear, u
 // Review source-derived claims against exact spans, while uncited context is
 // judged collectively at the part level. The reviewer names the direct claim
 // IDs so coverage is not tied to the first sentence or extra context rows.
-export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode. Each part/source evidence entry lists the spanIds allowed for that part and source; exact span text appears once in the top-level spanCatalog. Read a span's text from spanCatalog, and use it only when its ID is listed in the current part's evidence entry. If contextSourceId is present, read the corresponding background text from sourceContexts; it is context, not exact claim evidence. Never borrow a span from another part merely because the same span ID is listed there. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. When a claim says how one thing affects or relates to another, the span must support that connection; merely mentioning both things or a related consequence is not enough. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author or speaker. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
+export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode. Each part/source evidence entry lists the spanIds allowed for that part and source; exact span text appears once in the top-level spanCatalog. Read a span's text from spanCatalog, and use it only when its ID is listed in the current part's evidence entry. Source title, page, and provenance are stored once in sourceCatalog; look them up using the evidence entry's sourceDetailsId. If contextSourceId is present, read the corresponding background text from sourceContexts; it is context, not exact claim evidence. Never borrow a span from another part merely because the same span ID is listed there. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. When a claim says how one thing affects or relates to another, the span must support that connection; merely mentioning both things or a related consequence is not enough. A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author or speaker. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
 
 Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context. If a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim, it needs a source ID and exact span support. Merely mentioning a work or person in independent background does not require a citation. Mark uncited source-derived claims partial or unanswered; independent background and synthesis may remain uncited. Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness; the supplied passages cannot establish its truth, so do not treat their silence as disproof.
 
@@ -1143,17 +1143,37 @@ function comparisonEvidenceComplete(part,plan,sources,answers){
 }
 
 function compactReviewPayload(question,parts,claims){
-  const spanCatalog=new Map(),sourceContexts=new Map();
+  const spanCatalog=new Map(),sourceContexts=new Map(),sourceCatalog=new Map();
   const compactParts=parts.map(part=>({...part,evidence:part.evidence.map(evidence=>{
-    const {spans,contextText,...metadata}=evidence;
+    const {spans,contextText,title,page,provenance,attributionRequirement,...metadata}=evidence;
+    const descriptor={
+      ...(typeof title==='string'?{title}:{}),
+      ...(Number.isSafeInteger(page)?{page}:{}),
+      ...(provenance?{provenance}:{}),
+      ...(typeof attributionRequirement==='string'?{attributionRequirement}:{})
+    };
+    const sourceId=String(evidence.id||'');
+    const descriptorText=JSON.stringify(descriptor);
+    let sourceDetailsId=sourceId;
+    if(sourceCatalog.has(sourceDetailsId)&&
+       JSON.stringify(sourceCatalog.get(sourceDetailsId))!==descriptorText){
+      sourceDetailsId=sourceId+'|'+part.partId;
+      let suffix=2;
+      while(sourceCatalog.has(sourceDetailsId)&&
+        JSON.stringify(sourceCatalog.get(sourceDetailsId))!==descriptorText){
+        sourceDetailsId=sourceId+'|'+part.partId+'|'+suffix++;
+      }
+    }
+    sourceCatalog.set(sourceDetailsId,descriptor);
     for(const span of spans||[])if(!spanCatalog.has(span.spanId))
       spanCatalog.set(span.spanId,{spanId:span.spanId,text:span.text});
     if(typeof contextText==='string'&&contextText)
       sourceContexts.set(evidence.id,{sourceId:evidence.id,text:contextText});
-    return {...metadata,spanIds:(spans||[]).map(span=>span.spanId),
+    return {...metadata,sourceDetailsId,spanIds:(spans||[]).map(span=>span.spanId),
       ...(typeof contextText==='string'&&contextText?{contextSourceId:evidence.id}:{})};
   })}));
-  return {question,parts:compactParts,spanCatalog:[...spanCatalog.values()],
+  return {question,parts:compactParts,sourceCatalog:Object.fromEntries(sourceCatalog),
+    spanCatalog:[...spanCatalog.values()],
     ...(sourceContexts.size?{sourceContexts:[...sourceContexts.values()]}:{}),claims};
 }
 
@@ -1164,6 +1184,7 @@ function reviewPayloadMetrics(payload,serializedPayload){
     (Array.isArray(item?.spanIds)?item.spanIds.length:Array.isArray(item?.spans)?item.spans.length:0),0);
   return {partCount:parts.length,claimCount:Array.isArray(payload?.claims)?payload.claims.length:0,
     sourceCount:new Set(evidence.map(item=>item?.id).filter(id=>typeof id==='string')).size,
+    sourceMetadataCount:Object.keys(payload?.sourceCatalog||{}).length,
     spanCount:Array.isArray(payload?.spanCatalog)?payload.spanCatalog.length:spanReferences,
     spanReferenceCount:spanReferences,
     serializedCharacters:typeof serializedPayload==='string'?serializedPayload.length:0};
