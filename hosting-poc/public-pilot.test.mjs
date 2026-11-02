@@ -108,7 +108,7 @@ test('public highlights retain readable line-wrapped verified passages and trim 
  assert.ok(result.every(item=>evidenceMap.some(source=>source.id===item.source_id&&source.quote.includes(item.quote))),
   'every displayed excerpt must remain an exact substring of its reviewer-verified quote');
 });
-test('public highlights prefer the reviewed span most relevant to its linked claim',()=>{
+test('public highlights omit nonadjacent secondary quotes for the same claim',()=>{
  const citations=[
   {id:'S3',title:'On the Genealogy of Morals — Friedrich Nietzsche',page:10,url:'https://example.test/nietzsche#page=10'},
   {id:'S2',title:'Last Writings — Kitarō Nishida',page:18,url:'https://example.test/nishida#page=18'}
@@ -118,15 +118,18 @@ test('public highlights prefer the reviewed span most relevant to its linked cla
  const sokuHi='Soku hi exhibits the dynamic tension of affirmation and negation without synthesis.';
  const editorial='Introduction: sunyata is correlated with dependent co-arising in Nagarjuna.';
  const evidenceMap=[
-  {id:'S3',point:'Christianity is a destructive, life-hostile principle that emerged from resentment.',quote:irrelevant,quoteVerified:true},
-  {id:'S3',point:'Christianity is a destructive, life-hostile principle that emerged from resentment.',quote:resentment,quoteVerified:true},
-  {id:'S2',point:'Sunyata is expressed through the paradoxical logic soku hi, sustaining a dynamic tension of affirmation and negation.',quote:editorial,quoteVerified:true},
-  {id:'S2',point:'Sunyata is expressed through the paradoxical logic soku hi, sustaining a dynamic tension of affirmation and negation.',quote:sokuHi,quoteVerified:true}
+  {id:'S3',claimId:'P1-C1',partId:'P1',point:'Christianity is a destructive, life-hostile principle that emerged from resentment.',quote:irrelevant,quoteVerified:true},
+  {id:'S3',claimId:'P1-C1',partId:'P1',point:'Christianity is a destructive, life-hostile principle that emerged from resentment.',quote:resentment,quoteVerified:true},
+  {id:'S2',claimId:'P2-C1',partId:'P2',point:'Sunyata is expressed through the paradoxical logic soku hi, sustaining a dynamic tension of affirmation and negation.',quote:editorial,quoteVerified:true},
+  {id:'S2',claimId:'P2-C1',partId:'P2',point:'Sunyata is expressed through the paradoxical logic soku hi, sustaining a dynamic tension of affirmation and negation.',quote:sokuHi,quoteVerified:true}
  ];
- const result=selectPublicEvidenceHighlights('Nietzsche on Christianity [S3]. Sunyata [S2].',citations,evidenceMap,2);
+ const result=selectPublicEvidenceHighlights(
+  'Christianity is a destructive, life-hostile principle that emerged from resentment [S3]. '+
+  'Sunyata is expressed through the paradoxical logic soku hi, sustaining a dynamic tension of affirmation and negation [S2].',
+  citations,evidenceMap,2);
  assert.deepEqual(result.map(item=>item.quote),[resentment,sokuHi]);
  assert.deepEqual(result.map(item=>item.quotes.map(quote=>quote.quote)),[
-  [resentment,irrelevant],[sokuHi,editorial]
+  [resentment],[sokuHi]
  ]);
  assert.equal(result[0].quotes[0].point,
   'Christianity is a destructive, life-hostile principle that emerged from resentment.');
@@ -153,7 +156,7 @@ test('repeated claim links do not crowd a distinct verified highlight off a sour
   'a distinct approved example is available among the page excerpts');
  assert.equal(highlights[0].quotes.find(item=>item.quote===custom).point,inferencePoint);
 });
-test('public primary highlight favors a phrase named in the question over nearby context',()=>{
+test('public primary highlight favors the reader-named phrase over nonadjacent context',()=>{
  const question='In Hamlet’s “To be, or not to be” soliloquy, what does he mean when he says that conscience makes cowards of us all?';
  const source={id:'S3',title:'The Complete Works of William Shakespeare — William Shakespeare',
   page:454,url:'https://example.test/shakespeare#page=454'};
@@ -168,8 +171,8 @@ test('public primary highlight favors a phrase named in the question over nearby
   ],6,question);
  assert.equal(highlights[0].quote,direct,
   'the exact phrase asked about should lead the source highlights for this question');
- assert.deepEqual(highlights[0].quotes.map(item=>item.quote),[direct,nearby],
-  'the neighboring context remains available as an alternate approved excerpt');
+ assert.deepEqual(highlights[0].quotes.map(item=>item.quote),[direct],
+  'a nonadjacent secondary excerpt does not dilute the direct highlight for the same claim');
 });
 
 test('v1.9.5 public pilot verifies hash, Turnstile and rate limits before bounded AI',async()=>{
@@ -465,6 +468,47 @@ test('evidence-v2 public route returns six reviewed highlights for six cited pag
   ['S1','S2','S3','S4','S5','S6']);
  assert.ok(result.evidenceHighlights.every(item=>item.quoteLocated===undefined));
  assert.equal(pilot.stats().calls,3,'Worker evidence selection precedes the existing compose/review pair');
+});
+test('malformed selector JSON uses bounded deterministic fallback without retrying',async()=>{
+ const token='malformed-selector-fallback-test-token';
+ const model=async(_model,input)=>{
+  const system=input.messages?.[0]?.content||'';
+  const payload=JSON.parse(input.messages[1].content);
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'answered',
+     directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
+      .slice(0,1).map(claim=>claim.claimId)})),
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+      spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1),
+      attributionStatus:'supported',attributedSpeaker:'Thucydides'}))}))
+   })}}]};
+  }
+  return {choices:[{finish_reason:'stop',message:{content:
+   'PART P1\nThucydides identifies anxiety over political change as the deeper cause [S1].'
+  }}]};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model,
+  selector:async()=>({choices:[{finish_reason:'stop',message:{content:'{"parts":['}}]})});
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What does Thucydides identify as the deeper cause of the war?',
+  answerVariant:'with-review',
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What does Thucydides identify as the deeper cause of the war?',
+    sourceBookIds:['152']}]}
+ }});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ const selectorTrace=result.trace.stages.find(stage=>stage.stage==='evidence-selection');
+ assert.equal(result.sourceSelection.status,'deterministic-fallback');
+ assert.equal(selectorTrace.failureCode,'selector-invalid-response');
+ assert.equal(selectorTrace.failureReason,'invalid-json');
+ assert.ok(selectorTrace.selected.length<=6,'fallback retains the six-page evidence ceiling');
+ assert.ok(result.answer.includes('[S1]'),'the selected verified source remains usable');
+ assert.equal(pilot.stats().calls,3,
+  'malformed selector output is not retried; only selector, compose, and review calls run');
 });
 test('a valid empty evidence selection can review a useful single-part answer without a heading',async()=>{
  const token='selector-empty-evidence-test-token';
