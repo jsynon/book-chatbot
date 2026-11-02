@@ -420,6 +420,10 @@ test('review payload sends repeated exact spans and shared context text once wit
   'repeated source title, page, and provenance metadata is represented once');
  assert.equal(reviewStage.payloadMetrics.spanReferenceCount,
   sourceRefs.reduce((n,item)=>n+item.spanIds.length,0));
+ assert.equal(reviewStage.payloadMetrics.systemPromptCharacters,REVIEW_PROMPT.length);
+ assert.equal(reviewStage.payloadMetrics.requestCharacters,
+  reviewStage.payloadMetrics.serializedCharacters+REVIEW_PROMPT.length,
+  'workload diagnostics include both the fixed review instructions and variable evidence payload');
  assert.deepEqual(Object.keys(rawReviewPayload.sourceCatalog),['S1']);
  assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'title')&&!Object.hasOwn(item,'page')&&
   !Object.hasOwn(item,'provenance')&&!Object.hasOwn(item,'attributionRequirement')),
@@ -1630,6 +1634,9 @@ test('review deadline failure stays fail-closed and records the failed stage wit
  assert.ok(failedStage.payloadMetrics.claimCount>0);
  assert.ok(failedStage.payloadMetrics.spanCount>0);
  assert.ok(failedStage.payloadMetrics.serializedCharacters>0);
+ assert.ok(failedStage.payloadMetrics.systemPromptCharacters>0);
+ assert.equal(failedStage.payloadMetrics.requestCharacters,
+  failedStage.payloadMetrics.serializedCharacters+failedStage.payloadMetrics.systemPromptCharacters);
  assert.equal('messages' in failedStage,false,'failed traces record payload sizes, not a duplicate raw payload');
  assert.equal(result.evidenceHighlights.length,0,'unreviewed draft evidence does not become verified highlights');
 });
@@ -2456,6 +2463,26 @@ test('a reviewer partial decision stays incomplete without becoming a review con
  assert.equal(result.reviewStatus,'claim-review');
  assert.equal(result.outcome,'insufficient-evidence');
  assert.equal(result.questionParts[0].status,'unsupported');
+});
+
+test('an unclear reviewer claim is normalized to partial and remains fail-closed',async()=>{
+ const ai=makeAI([answer('PART P1\nHume explains causal necessity through custom. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+    directAnswerClaimIds:[payload.claims[0].claimId],retainedContextClaimIds:[]}],
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'unclear',sources:
+     claim.sourceIds.map(sourceId=>({sourceId,status:'unclear',spanIds:[]}))}))})};
+  }]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true
+ });
+ assert.equal(ai.calls.length,2,'the compatibility mapping reuses the existing compose and review calls');
+ assert.deepEqual(result.trace.reviewContract.issues,[],
+  'a valid uncertainty label must not invalidate the review contract');
+ assert.equal(result.trace.reviewContract.reviewDecisions[0].claimStatus,'partial');
+ assert.equal(result.coverage,'none','uncertainty must not be upgraded into source support');
+ assert.equal(result.outcome,'insufficient-evidence');
 });
 
 test('a reviewer cannot mark an answer supported without selecting a span from its cited page',async()=>{
