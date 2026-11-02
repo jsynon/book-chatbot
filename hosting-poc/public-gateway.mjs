@@ -4136,17 +4136,25 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         const candidateDeduplication=deduplicateRetrievedEvidenceCandidates(
           verifiedCandidates,data.question);
         const selectionCandidates=candidateDeduplication.candidates;
-        const selectionParts=plan.parts.length?plan.parts.map(part=>({partId:part.id,question:part.question.slice(0,400)})):
+        const selectionParts=plan.parts.length?plan.parts.map(part=>({partId:part.id,
+          question:part.question.slice(0,400),searchQueries:(part.searchQueries||[])
+            .slice(0,3).map(query=>query.slice(0,240))})):
           [{partId:'P1',question:data.question}];
-        const selectorCandidates=selectionCandidates.map((source,index)=>({
+        const selectorCandidates=selectionCandidates.map((source,index)=>{
+          const linkedParts=plan.parts.filter(part=>Array.isArray(source.candidatePartIds)&&
+            source.candidatePartIds.includes(part.id));
+          const facetText=linkedParts.flatMap(part=>[part.question,...(part.searchQueries||[])])
+            .filter(value=>typeof value==='string'&&value.trim()).join(' ');
+          return {
           id:'C'+(index+1),title:source.title.slice(0,200),page:source.page,
-          excerpt:sourceExcerpt(source.scopeText||source.text,data.question,1200),
+          excerpt:sourceExcerpt(source.scopeText||source.text,[data.question,facetText].filter(Boolean).join(' '),1200),
           ...(Array.isArray(source.candidatePartIds)?{
             retrievedPartHints:source.candidatePartIds.filter(id=>{
               const part=plan.parts.find(item=>item.id===id);
               return Boolean(part)&&(!Array.isArray(part.sourceBookIds)||!part.sourceBookIds.length||
                 part.sourceBookIds.map(String).includes(String(source.bookId)));
-            })}: {})}));
+            })}: {})};
+        });
         let selectionTrace;
         const started=performance.now();
         try{
