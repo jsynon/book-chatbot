@@ -1236,6 +1236,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/For uncertain or disputed questions, distinguish what the evidence establishes from what remains possible/);
  assert.match(COMPOSER_PROMPT,/neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/logical relations.*neither P nor Q.*not both P and Q/);
+ assert.match(REVIEW_PROMPT,/When a claim says how one thing affects or relates to another, the span must support that connection/);
  assert.match(COMPOSER_PROMPT,/Keep the opening focused on the reader rather than a preview of themes/);
  assert.match(COMPOSER_PROMPT,/If that opening sentence summarizes or combines positions from supplied passages, cite the page IDs that support those components in the sentence/);
  assert.match(COMPOSER_PROMPT,/Leave independent background or your own interpretation uncited when it does not present a supplied source's position/);
