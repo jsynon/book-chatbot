@@ -10,7 +10,8 @@
  * identity; they do not prove that a claim follows from the source.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {MAX_SELECTOR_CANDIDATES,orderFallbackCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
+import {MAX_SELECTOR_CANDIDATES,orderFallbackCandidates,recoverUncoveredPartCandidates,
+  selectEvidenceCandidates} from './evidence-selector.mjs';
 import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 const SAFE_SELECTOR_FAILURE_REASONS=new Set(['missing-text','invalid-json','missing-part-decisions',
@@ -3666,13 +3667,14 @@ function addSelectedEvidenceSource(answerSources,source,{candidateId,candidatePa
           verseContainment:Number(duplicate.overlap.verseContainment.toFixed(4)),
           scriptureShare:[Number(duplicate.overlap.leftScriptureShare.toFixed(4)),
             Number(duplicate.overlap.rightScriptureShare.toFixed(4))]}:{})});
-    return {added:false,totalBytes};
+    return {added:false,totalBytes,source:duplicate.existing};
   }
   const bytes=new TextEncoder().encode(source.text).byteLength;
-  if(answerSources.length>=maxSources||bytes>14000||totalBytes+bytes>budget)return {added:false,totalBytes};
+  if(answerSources.length>=maxSources||bytes>14000||totalBytes+bytes>budget)
+    return {added:false,totalBytes,source:null};
   answerSources.push({...source,id:'S'+(answerSources.length+1),candidateId,candidatePartIds,candidatePartSupport,
     ...(source.scopeText?{scopeText:source.scopeText}:{})});
-  return {added:true,totalBytes:totalBytes+bytes};
+  return {added:true,totalBytes:totalBytes+bytes,source:answerSources.at(-1)};
 }
 
 // AI-assisted SOURCE DISCOVERY ONLY. No facts, page numbers, citations or
@@ -4141,15 +4143,22 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           id:'C'+(index+1),title:source.title.slice(0,200),page:source.page,
           excerpt:sourceExcerpt(source.scopeText||source.text,data.question,1200),
           ...(Array.isArray(source.candidatePartIds)?{
-            retrievedPartHints:source.candidatePartIds.filter(id=>
-              selectionParts.some(part=>part.partId===id))}: {})}));
+            retrievedPartHints:source.candidatePartIds.filter(id=>{
+              const part=plan.parts.find(item=>item.id===id);
+              return Boolean(part)&&(!Array.isArray(part.sourceBookIds)||!part.sourceBookIds.length||
+                part.sourceBookIds.map(String).includes(String(source.bookId)));
+            })}: {})}));
         let selectionTrace;
         const started=performance.now();
         try{
           const decision=await selectEvidenceCandidates({question:data.question,parts:selectionParts,
             candidates:selectorCandidates,ai:env.AI});
           sourceSelectionUsage=decision.usage;
-          const selectedIds=decision.selectedCandidateIds;
+          const selectionRecovery=decision.selectedCandidateIds.length?
+            recoverUncoveredPartCandidates(decision,selectorCandidates):{
+              selectedCandidateIds:decision.selectedCandidateIds,recoveredPartLinks:[],skippedPartRecoveries:[]
+            };
+          const selectedIds=selectionRecovery.selectedCandidateIds;
           if(!selectedIds.length){
             // Keep the selector's abstention: do not relabel retrieval-order
             // pages as relevant. The composer can still answer from broader
@@ -4164,17 +4173,28 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           const byCandidateId=new Map(selectionCandidates.map((source,index)=>['C'+(index+1),source]));
           let totalBytes=0;
           const duplicateTrace=[];
+          const recoveredPartLinks=[];
+          const skippedPartRecoveries=[...selectionRecovery.skippedPartRecoveries];
           for(const id of selectedIds){
             const source=byCandidateId.get(id);
             if(!source)continue;
-            const candidatePartIds=decision.parts.filter(part=>part.candidateIds.includes(id))
-              .map(part=>part.partId);
+            const recoveredForCandidate=selectionRecovery.recoveredPartLinks.filter(link=>link.candidateId===id);
+            const candidatePartIds=[...new Set([
+              ...decision.parts.filter(part=>part.candidateIds.includes(id)).map(part=>part.partId),
+              ...recoveredForCandidate.map(link=>link.partId)
+            ])];
             const candidatePartSupport=decision.parts.flatMap(part=>part.evidence
               .filter(entry=>entry.candidateId===id).map(entry=>({partId:part.partId,
                 support:entry.support,...(entry.excerptMatched?{excerpt:entry.excerpt}:{})})));
             const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:id,
               candidatePartIds,candidatePartSupport,duplicateTrace,budget:35000,totalBytes,question:data.question});
             totalBytes=packed.totalBytes;
+            for(const link of recoveredForCandidate){
+              if(packed.source)recoveredPartLinks.push({...link,candidateId:packed.source.candidateId,
+                retrievedCandidateId:id});
+              else skippedPartRecoveries.push({partId:link.partId,candidateId:id,
+                reason:'answer-packet-budget'});
+            }
           }
           if(!answerSources.length){
             const error=new Error('Evidence selector pages did not fit the answer budget.');
@@ -4188,6 +4208,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             candidates:selectorCandidates,decision,selected:answerSources.map(source=>({
               id:source.id,candidateId:source.candidateId,bookId:source.bookId,page:source.page,
               candidatePartIds:source.candidatePartIds,candidatePartSupport:source.candidatePartSupport})),
+            ...(recoveredPartLinks.length?{recoveredPartLinks}:{}),
+            ...(skippedPartRecoveries.length?{skippedPartRecoveries}:{}),
             suppressedDuplicates:duplicateTrace};
           sourceSelectionStatus='selected';
           }

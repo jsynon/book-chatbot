@@ -82,7 +82,7 @@ export const COMPOSER_PROMPT=`Answer the reader's exact question with a clear, u
 // Review source-derived claims against exact spans, while uncited context is
 // judged collectively at the part level. The reviewer names the direct claim
 // IDs so coverage is not tied to the first sentence or extra context rows.
-export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author or speaker. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
+export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode. Each part/source evidence entry lists the spanIds allowed for that part and source; exact span text appears once in the top-level spanCatalog. Read a span's text from spanCatalog, and use it only when its ID is listed in the current part's evidence entry. If contextSourceId is present, read the corresponding background text from sourceContexts; it is context, not exact claim evidence. Never borrow a span from another part merely because the same span ID is listed there. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author or speaker. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
 
 Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context. If a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim, it needs a source ID and exact span support. Merely mentioning a work or person in independent background does not require a citation. Mark uncited source-derived claims partial or unanswered; independent background and synthesis may remain uncited. Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness; the supplied passages cannot establish its truth, so do not treat their silence as disproof.
 
@@ -1124,6 +1124,33 @@ function comparisonEvidenceComplete(part,plan,sources,answers){
   return groups.every(group=>group.bookIds.some(id=>cited.has(String(id))));
 }
 
+function compactReviewPayload(question,parts,claims){
+  const spanCatalog=new Map(),sourceContexts=new Map();
+  const compactParts=parts.map(part=>({...part,evidence:part.evidence.map(evidence=>{
+    const {spans,contextText,...metadata}=evidence;
+    for(const span of spans||[])if(!spanCatalog.has(span.spanId))
+      spanCatalog.set(span.spanId,{spanId:span.spanId,text:span.text});
+    if(typeof contextText==='string'&&contextText)
+      sourceContexts.set(evidence.id,{sourceId:evidence.id,text:contextText});
+    return {...metadata,spanIds:(spans||[]).map(span=>span.spanId),
+      ...(typeof contextText==='string'&&contextText?{contextSourceId:evidence.id}:{})};
+  })}));
+  return {question,parts:compactParts,spanCatalog:[...spanCatalog.values()],
+    ...(sourceContexts.size?{sourceContexts:[...sourceContexts.values()]}:{}),claims};
+}
+
+function reviewPayloadMetrics(payload,serializedPayload){
+  const parts=Array.isArray(payload?.parts)?payload.parts:[];
+  const evidence=parts.flatMap(part=>Array.isArray(part?.evidence)?part.evidence:[]);
+  const spanReferences=evidence.reduce((count,item)=>count+
+    (Array.isArray(item?.spanIds)?item.spanIds.length:Array.isArray(item?.spans)?item.spans.length:0),0);
+  return {partCount:parts.length,claimCount:Array.isArray(payload?.claims)?payload.claims.length:0,
+    sourceCount:new Set(evidence.map(item=>item?.id).filter(id=>typeof id==='string')).size,
+    spanCount:Array.isArray(payload?.spanCatalog)?payload.spanCatalog.length:spanReferences,
+    spanReferenceCount:spanReferences,
+    serializedCharacters:typeof serializedPayload==='string'?serializedPayload.length:0};
+}
+
 export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
   const rawPlan=options.plan||inferSelectedHypotheticalPlan(question,sources);
   const normalized=normalizePlan(rawPlan,question,options.catalog||{},options.selectedBookId||'');
@@ -1141,9 +1168,12 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     // public answers still use the existing compose and review calls.
     const callLimit=options.expand===true?4:3;
     if(usage.calls>=callLimit)throw Error('Answer call budget exceeded');
-    const messages=[{role:'system',content:system},{role:'user',content:JSON.stringify(payload)}];
+    const serializedPayload=JSON.stringify(payload);
+    const messages=[{role:'system',content:system},{role:'user',content:serializedPayload}];
     const start=Date.now();usage.calls++;
     let response,timer;
+    const payloadMetrics=stage.startsWith('review')?
+      reviewPayloadMetrics(payload,serializedPayload):null;
     const timeoutMs=stage.startsWith('review')?60000:45000;
     const timeoutError=Object.assign(new Error('Inference deadline exceeded'),{
       stage,code:'inference-deadline-exceeded',startedAt:start,timeoutMs
@@ -1160,16 +1190,38 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     try{response=await Promise.race([ai.run(READER_MODEL,{messages,
       chat_template_kwargs:{enable_thinking:false},max_completion_tokens:outputTokenBudget}),
       new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),timeoutMs);})]);}
-    finally{clearTimeout(timer);}
+    catch(error){
+      if(payloadMetrics){
+        const failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
+          error.code:'review-request-failed';
+        trace.stages.push({stage,elapsedMs:Date.now()-start,status:'failed',failureCode,
+          timeoutMs,payloadMetrics});
+      }
+      throw error;
+    }finally{clearTimeout(timer);}
     usage.neurons+=Math.max(0,Number(response?.usage?.neurons)||0);
     usage.inputTokens+=Math.max(0,Number(response?.usage?.prompt_tokens)||0);
     usage.outputTokens+=Math.max(0,Number(response?.usage?.completion_tokens)||0);
     trace.stages.push({stage,elapsedMs:Date.now()-start,messages,response,
-      finishReason:response?.choices?.[0]?.finish_reason||null});
+      finishReason:response?.choices?.[0]?.finish_reason||null,
+      ...(payloadMetrics?{payloadMetrics}:{})});
     if(stage==='compose'&&['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
       throw new ModelFormatError(stage,'The answer draft was truncated before it was complete.','answer-output-truncated');
-    if(stage.startsWith('review')&&['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
-      throw new ModelFormatError(stage,'Reviewer output was truncated before a complete decision object was returned.','review-output-truncated');
+    if(stage.startsWith('review')){
+      try{
+        if(['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
+          throw new ModelFormatError(stage,'Reviewer output was truncated before a complete decision object was returned.','review-output-truncated');
+        return parser(response,stage);
+      }catch(error){
+        const stageTrace=trace.stages.at(-1);
+        if(stageTrace?.stage===stage){
+          stageTrace.status='failed';
+          stageTrace.failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
+            error.code:'review-response-invalid';
+        }
+        throw error;
+      }
+    }
     return parser(response,stage);
   }
   const pageById=new Map(sources.map(source=>[source.id,{id:source.id,bookId:source.bookId,
@@ -1346,7 +1398,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             {question:part.question,answer:text}).slice(0,reviewHintLimit)
               .map(span=>span.spanId)}))
       })));
-      const reviewPayload={question,parts:reviewParts,claims:reviewClaims};
+      const reviewPayload=compactReviewPayload(question,reviewParts,reviewClaims);
       try{
         let rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
         review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMapsByPart,question,reviewClaims);

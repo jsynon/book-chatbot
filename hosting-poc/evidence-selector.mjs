@@ -228,6 +228,48 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
     model:READER_MODEL,finishReason};
 }
 
+/*
+ * A valid selector response can cover some parts while leaving others empty.
+ * In that case, use only already-retrieved candidates explicitly linked to an
+ * uncovered part. These links are retrieval leads, not semantic support
+ * judgments; the caller records them separately and the claim reviewer still
+ * decides whether any citation supports the answer.
+ */
+export function recoverUncoveredPartCandidates(decision,candidates){
+  const parts=Array.isArray(decision?.parts)?decision.parts:[];
+  const candidateRows=Array.isArray(candidates)?candidates:[];
+  const selectedCandidateIds=[...new Set(Array.isArray(decision?.selectedCandidateIds)?
+    decision.selectedCandidateIds.filter(id=>typeof id==='string'):[])];
+  const modelSelected=new Set(selectedCandidateIds);
+  const recoveredSet=new Set();
+  const recoveredPartLinks=[];
+  const skippedPartRecoveries=[];
+  for(const part of parts){
+    const partId=String(part?.partId||'');
+    if(!partId||Array.isArray(part?.candidateIds)&&part.candidateIds.length)continue;
+    const eligible=candidateRows.filter(row=>typeof row?.id==='string'&&
+      !modelSelected.has(row.id)&&
+      Array.isArray(row.retrievedPartHints)&&row.retrievedPartHints.includes(partId));
+    const candidate=eligible.find(row=>recoveredSet.has(row.id))||eligible[0];
+    if(!candidate){
+      skippedPartRecoveries.push({partId,reason:'no-unselected-part-linked-candidate'});
+      continue;
+    }
+    const alreadyRecovered=recoveredSet.has(candidate.id);
+    if(!alreadyRecovered&&selectedCandidateIds.length>=MAX_SELECTOR_SOURCES){
+      skippedPartRecoveries.push({partId,reason:'six-page-packet-limit'});
+      continue;
+    }
+    if(!alreadyRecovered){
+      selectedCandidateIds.push(candidate.id);
+      recoveredSet.add(candidate.id);
+    }
+    recoveredPartLinks.push({partId,candidateId:candidate.id,
+      reason:'retrieved-part-hint'});
+  }
+  return {selectedCandidateIds,recoveredPartLinks,skippedPartRecoveries};
+}
+
 /* A selector outage still needs a bounded packet. Round-robin across works
  * preserves source breadth from the retrieval ranking without claiming that
  * those fallback pages passed semantic selection. */

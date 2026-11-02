@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {orderFallbackCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
+import {orderFallbackCandidates,recoverUncoveredPartCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
 
 test('selector fallback gives distinct works a page before taking second pages',()=>{
  const candidates=[
@@ -190,4 +190,52 @@ test('selector fallback prioritizes hinted uncovered parts before breadth fillin
   .map(candidate=>candidate.id),['p1a','p2a']);
  assert.deepEqual(orderFallbackCandidates(candidates)
   .map(candidate=>candidate.id),['p1a','p2a','p1b','other']);
+});
+
+test('valid partial selection recovers only retrieved candidates linked to uncovered parts',()=>{
+ const result=recoverUncoveredPartCandidates({selectedCandidateIds:['C1'],parts:[
+  {partId:'P1',candidateIds:['C1']},{partId:'P2',candidateIds:[]},{partId:'P3',candidateIds:[]}
+ ]},[
+  {id:'C1',retrievedPartHints:['P2']},
+  {id:'C2',retrievedPartHints:['P2']},
+  {id:'C3',retrievedPartHints:['P3']},
+  {id:'C4',retrievedPartHints:[]}
+ ]);
+ assert.deepEqual(result.selectedCandidateIds,['C1','C2','C3']);
+ assert.deepEqual(result.recoveredPartLinks,[
+  {partId:'P2',candidateId:'C2',reason:'retrieved-part-hint'},
+  {partId:'P3',candidateId:'C3',reason:'retrieved-part-hint'}
+ ]);
+ assert.deepEqual(result.skippedPartRecoveries,[]);
+});
+
+test('partial-selection recovery does not reuse selector-rejected candidates or exceed six pages',()=>{
+ const six=Array.from({length:6},(_,index)=>'C'+(index+1));
+ const result=recoverUncoveredPartCandidates({selectedCandidateIds:six,parts:[
+  {partId:'P1',candidateIds:six},{partId:'P2',candidateIds:[]}
+ ]},[
+  {id:'C7',retrievedPartHints:['P2']},
+  {id:'C2',retrievedPartHints:['P2']}
+ ]);
+ assert.deepEqual(result.selectedCandidateIds,six);
+ assert.deepEqual(result.recoveredPartLinks,[]);
+ assert.deepEqual(result.skippedPartRecoveries,[{partId:'P2',reason:'six-page-packet-limit'}]);
+
+ const rejected=recoverUncoveredPartCandidates({selectedCandidateIds:['C1'],parts:[
+  {partId:'P1',candidateIds:['C1']},{partId:'P2',candidateIds:[]}
+ ]},[{id:'C1',retrievedPartHints:['P2']}]);
+ assert.deepEqual(rejected.recoveredPartLinks,[]);
+ assert.deepEqual(rejected.skippedPartRecoveries,[
+  {partId:'P2',reason:'no-unselected-part-linked-candidate'}
+ ]);
+});
+
+test('one retrieved candidate may provide a recovery link to multiple uncovered parts',()=>{
+ const result=recoverUncoveredPartCandidates({selectedCandidateIds:['C1'],parts:[
+  {partId:'P1',candidateIds:['C1']},{partId:'P2',candidateIds:[]},{partId:'P3',candidateIds:[]}
+ ]},[{id:'C2',retrievedPartHints:['P2','P3']}]);
+ assert.deepEqual(result.selectedCandidateIds,['C1','C2']);
+ assert.deepEqual(result.recoveredPartLinks.map(link=>[link.partId,link.candidateId]),[
+  ['P2','C2'],['P3','C2']
+ ]);
 });

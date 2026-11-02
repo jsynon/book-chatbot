@@ -441,7 +441,7 @@ test('evidence-v2 public route returns six reviewed highlights for six cited pag
     parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),
     claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
      spanIds:claim.sourceIds.map(sourceId=>payload.parts.find(part=>part.partId===claim.partId)
-      .evidence.find(item=>item.id===sourceId).spans[0].spanId)}))
+      .evidence.find(item=>item.id===sourceId).spanIds[0])}))
    })}}]};
   }
   const sourceIds=payload.evidence.map(source=>source.id);
