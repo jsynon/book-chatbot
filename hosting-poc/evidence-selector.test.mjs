@@ -36,6 +36,7 @@ test('selector uses compact candidate IDs and derives direct coverage from expli
  assert.doesNotMatch(systemPrompt,/exact, contiguous excerpt/);
  assert.match(systemPrompt,/requested operation/);
  assert.match(systemPrompt,/reasoning or mechanism/);
+ assert.match(systemPrompt,/For a question about the role of one thing in another/);
  assert.deepEqual(result.selectedCandidateIds,['C1']);
  assert.deepEqual(result.parts[0].candidateIds,['C1']);
  assert.equal(result.parts[0].coverage,'supported');
@@ -228,6 +229,33 @@ test('partial-selection recovery does not reuse selector-rejected candidates or 
  assert.deepEqual(rejected.skippedPartRecoveries,[
   {partId:'P2',reason:'no-unselected-part-linked-candidate'}
  ]);
+});
+
+test('context-only part gets one bounded retrieval-linked recovery candidate, while direct support is left alone',()=>{
+ const result=recoverUncoveredPartCandidates({selectedCandidateIds:['C1','C2'],parts:[
+  {partId:'P1',candidateIds:['C1'],evidence:[{candidateId:'C1',support:'direct'}]},
+  {partId:'P2',candidateIds:['C2'],evidence:[{candidateId:'C2',support:'context'}]}
+ ]},[
+  {id:'C1',retrievedPartHints:['P1']},
+  {id:'C2',retrievedPartHints:['P2']},
+  {id:'C3',retrievedPartHints:['P2']},
+  {id:'C4',retrievedPartHints:['P2']}
+ ]);
+ assert.deepEqual(result.selectedCandidateIds,['C1','C2','C3']);
+ assert.deepEqual(result.recoveredPartLinks,[
+  {partId:'P2',candidateId:'C3',reason:'retrieved-part-hint'}
+ ]);
+ assert.deepEqual(result.skippedPartRecoveries,[]);
+});
+
+test('context-only recovery still respects the six-page packet limit',()=>{
+ const six=Array.from({length:6},(_,index)=>'C'+(index+1));
+ const result=recoverUncoveredPartCandidates({selectedCandidateIds:six,parts:[
+  {partId:'P1',candidateIds:['C1'],evidence:[{candidateId:'C1',support:'context'}]}
+ ]},[{id:'C7',retrievedPartHints:['P1']}]);
+ assert.deepEqual(result.selectedCandidateIds,six);
+ assert.deepEqual(result.recoveredPartLinks,[]);
+ assert.deepEqual(result.skippedPartRecoveries,[{partId:'P1',reason:'six-page-packet-limit'}]);
 });
 
 test('one retrieved candidate may provide a recovery link to multiple uncovered parts',()=>{
