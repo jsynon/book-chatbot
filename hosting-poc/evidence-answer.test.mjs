@@ -10,7 +10,10 @@ function parsePayload(messages){
  if(!Array.isArray(payload.spanCatalog))return payload;
  const spans=new Map(payload.spanCatalog.map(span=>[span.spanId,span]));
  const contexts=new Map((payload.sourceContexts||[]).map(context=>[context.sourceId,context.text]));
+ const sourceCatalog=new Map(Object.entries(payload.sourceCatalog||{}));
  for(const part of payload.parts||[])for(const evidence of part.evidence||[]){
+  const sourceDetails=sourceCatalog.get(evidence.sourceDetailsId);
+  if(sourceDetails)Object.assign(evidence,sourceDetails);
   if(Array.isArray(evidence.spanIds))Object.defineProperty(evidence,'spans',{enumerable:false,
    value:evidence.spanIds.map(id=>spans.get(id)).filter(Boolean)});
   if(evidence.contextSourceId)Object.defineProperty(evidence,'contextText',{enumerable:false,
@@ -408,9 +411,20 @@ test('review payload sends repeated exact spans and shared context text once wit
   'the catalog contains one text record per distinct exact span');
  const reviewStage=result.trace.stages.find(stage=>stage.stage==='review');
  assert.equal(reviewStage.payloadMetrics.spanCount,rawReviewPayload.spanCatalog.length);
+ assert.equal(reviewStage.payloadMetrics.sourceMetadataCount,1,
+  'repeated source title, page, and provenance metadata is represented once');
  assert.equal(reviewStage.payloadMetrics.spanReferenceCount,
   sourceRefs.reduce((n,item)=>n+item.spanIds.length,0));
+ assert.deepEqual(Object.keys(rawReviewPayload.sourceCatalog),['S1']);
+ assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'title')&&!Object.hasOwn(item,'page')&&
+  !Object.hasOwn(item,'provenance')&&!Object.hasOwn(item,'attributionRequirement')),
+  'part-scoped source references retain IDs and span links without repeating source metadata');
+ assert.ok(JSON.stringify(rawReviewPayload).length<JSON.stringify({
+  ...rawReviewPayload,parts:rawReviewPayload.parts.map(part=>({...part,evidence:part.evidence.map(item=>({
+   ...item,...rawReviewPayload.sourceCatalog[item.sourceDetailsId]}))})),sourceCatalog:undefined
+ }).length,'shared source metadata reduces the serialized review request');
  assert.match(REVIEW_PROMPT,/Never borrow a span from another part/);
+ assert.match(REVIEW_PROMPT,/look them up using the evidence entry's sourceDetailsId/);
 });
 
 
