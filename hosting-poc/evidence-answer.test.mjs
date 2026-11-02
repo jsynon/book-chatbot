@@ -1983,6 +1983,31 @@ test('three-author comparison keeps source coverage and synthesis while dropping
  ]);
 });
 
+test('multi-part plans link a focused global planner query to its matching answer part',()=>{
+ const question='How does Elizabeth’s view of Darcy change, and what role do her first impressions play?';
+ const catalog={'341':'Pride and Prejudice — Jane Austen'};
+ const firstImpressionsQuery='influence of first impressions on Elizabeth Bennet’s judgment of Darcy';
+ const plan=normalizePlan({intent:'explain',sources:[
+  {label:'Jane Austen',role:'primary',bookIds:['341']}
+ ],parts:[
+  {question:'How does Elizabeth Bennet’s view of Darcy change?',
+   searchQueries:['Elizabeth Bennet’s changing opinion of Darcy in Pride and Prejudice']},
+  {question:'What role do Elizabeth’s first impressions of Darcy play in her changing view?',
+   searchQueries:['Elizabeth Bennet’s changing opinion of Darcy in Pride and Prejudice']}
+ ],queries:[
+  'Elizabeth Bennet’s changing opinion of Darcy in Pride and Prejudice',
+  firstImpressionsQuery,
+  'Darcy’s character development through Elizabeth’s eyes'
+ ]},question,catalog);
+
+ const firstImpressionsPart=plan.parts.find(part=>/first impressions/i.test(part.question));
+ assert.ok(firstImpressionsPart.searchQueries.includes(firstImpressionsQuery),
+  'the strongest concept-level planner query must reach the matching part and its selector');
+ assert.ok(firstImpressionsPart.searchQueries.length<=5,
+  'global-query linkage remains inside the existing bounded part-facet contract');
+ assert.equal(plan.parts.length,2,'linking a query does not create a new answer obligation');
+});
+
 test('comparison plus a separately requested outcome keeps the distinct part',()=>{
  const question='How do Augustine and Aquinas differ about responsibility, and what consequences does each view have?';
  const catalog={'101':'Confessions — Augustine of Hippo','102':'Summa Theologica — Thomas Aquinas'};
