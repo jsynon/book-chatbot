@@ -21,6 +21,58 @@ export function catalogIdentity(title){
     translators:translator?[translator]:[],
     aliases:[...new Set(aliases.flatMap(v=>{const clean=v.trim();return [clean,clean.replace(/^(the|a|an)\s+/i,'').trim()];}).filter(v=>v.length>=4))]};
 }
+// Build a deterministic, catalog-bounded plan when the hosted planner is
+// unavailable or returns no usable plan. Only unique author surnames/full
+// names and unambiguous work aliases from the supplied catalog are accepted.
+// This keeps direct-search recovery useful without inventing source IDs or
+// making another model call.
+export function catalogFallbackPlan(question,catalog={},selectedBookId=''){
+  const text=String(question||'');
+  const normalize=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .replace(/[’‘]/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
+  const contains=(haystack,phrase)=>{
+    const needle=normalize(phrase),source=normalize(haystack);
+    return needle.length>=4&&(' '+source+' ').includes(' '+needle+' ');
+  };
+  if(selectedBookId&&Object.hasOwn(catalog,String(selectedBookId))){
+    const title=String(catalog[String(selectedBookId)]||'');
+    return {intent:'explain',resolvedQuestion:text,queries:[text],sources:[
+      {label:title,role:'primary',bookIds:[String(selectedBookId)]}],parts:[text]};
+  }
+  const authors=new Map(),authorTokenOwners=new Map(),aliasOwners=new Map();
+  for(const [rawId,titleValue] of Object.entries(catalog||{})){
+    const id=String(rawId),title=String(titleValue||''),identity=catalogIdentity(title);
+    for(const author of identity.authors){
+      const key=normalize(author);if(!key)continue;
+      const entry=authors.get(key)||{label:author,bookIds:new Set()};entry.bookIds.add(id);authors.set(key,entry);
+      for(const token of key.split(' ').filter(token=>token.length>=4&&!['from','with'].includes(token))){
+        const owners=authorTokenOwners.get(token)||new Set();owners.add(key);authorTokenOwners.set(token,owners);
+      }
+    }
+    for(const alias of [identity.work,...identity.aliases]){
+      const key=normalize(alias);if(!key)continue;
+      const owners=aliasOwners.get(key)||new Set();owners.add(id);aliasOwners.set(key,owners);
+    }
+  }
+  const matchedAuthors=[...authors.entries()].filter(([key])=>contains(text,key)||
+    key.split(' ').some(token=>token.length>=4&&authorTokenOwners.get(token)?.size===1&&contains(text,token)));
+  const namedWorkIds=new Set([...aliasOwners.entries()]
+    .filter(([alias,owners])=>owners.size===1&&contains(text,alias))
+    .flatMap(([,owners])=>[...owners]));
+  const sources=matchedAuthors.map(([,entry])=>{
+    const titleNarrowed=[...entry.bookIds].filter(id=>namedWorkIds.has(id));
+    return {label:entry.label,role:'primary',bookIds:titleNarrowed.length?titleNarrowed:[...entry.bookIds]};
+  });
+  const represented=new Set(sources.flatMap(source=>source.bookIds));
+  for(const id of namedWorkIds){
+    if(represented.has(id))continue;
+    const identity=catalogIdentity(catalog[id]);
+    sources.push({label:identity.authors[0]||identity.work,role:'primary',bookIds:[id]});
+  }
+  const comparison=/\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|versus|vs\.?|similar(?:ity)?|alike)\b/i.test(text);
+  return {intent:comparison&&sources.length>1?'compare':'explain',resolvedQuestion:text,
+    queries:[text],sources:sources.slice(0,8).map(source=>({...source,bookIds:source.bookIds.slice(0,16)})),parts:[text]};
+}
 // Corpus-specific voice notes are deliberately guarded by both the stable v48
 // book ID and its exact title. They describe publication/section context, not
 // proof that every sentence on a page is spoken by that voice.
@@ -113,8 +165,10 @@ export function removeUnsupportedQuoteMarks(answer,sources){
 }
 export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   const bounded=(v,max)=>typeof v==='string'?v.trim().slice(0,max):'';
-  const resolvedQuestion=bounded(raw?.resolvedQuestion,600)||question;
-  const entities=Array.isArray(raw?.sources)?raw.sources.filter(s=>s&&typeof s==='object'&&!Array.isArray(s)).slice(0,8):[];
+  const fallback=catalogFallbackPlan(question,catalog,selectedBookId);
+  const planInput=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw:fallback;
+  const resolvedQuestion=bounded(planInput.resolvedQuestion,600)||question;
+  const entities=Array.isArray(planInput.sources)?planInput.sources.filter(s=>s&&typeof s==='object'&&!Array.isArray(s)).slice(0,8):[];
   const identity=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
     .replace(/[’‘]/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
   const authorNames=Object.values(catalog).flatMap(title=>catalogIdentity(title).authors)
@@ -152,10 +206,11 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     }))];
     return {label,role,bookIds};
   }).filter(source=>source.bookIds.length);
+  if(!sources.length&&fallback.sources.length)sources.push(...fallback.sources.slice(0,8));
   if(selectedBookId)sources.splice(0,sources.length,{label:catalog[selectedBookId],role:'primary',bookIds:[selectedBookId]});
-  const intent=['explain','compare','interpret','locate'].includes(raw?.intent)?raw.intent:'explain';
-  const queries=Array.isArray(raw?.queries)?raw.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[];
-  const parts=(Array.isArray(raw?.parts)?raw.parts:[]).slice(0,6).map((p,i)=>({
+  const intent=['explain','compare','interpret','locate'].includes(planInput.intent)?planInput.intent:'explain';
+  const queries=Array.isArray(planInput.queries)?planInput.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[];
+  const parts=(Array.isArray(planInput.parts)?planInput.parts:[]).slice(0,6).map((p,i)=>({
     id:'P'+(i+1),question:bounded(typeof p==='string'?p:p?.question,240),
     plannedSearchQueries:Array.isArray(p?.searchQueries)?[...new Set(p.searchQueries
       .slice(0,5).map(query=>bounded(query,400)).filter(Boolean))]:[]
@@ -324,8 +379,8 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
        ...(syntheticComparison||sourceSidePart?[]:[contextualQuery])])].slice(0,5)};
   });
   return {version:CONTRACT_VERSION,resolvedQuestion,intent,
-    sources,parts:partsWithSources,scope:bounded(raw?.scope,200),
-    clarification:bounded(raw?.clarification,240),queries};
+    sources,parts:partsWithSources,scope:bounded(planInput.scope,200),
+    clarification:bounded(planInput.clarification,240),queries};
 }
 export async function fetchWithDeadline(fetcher,url,options={},timeoutMs=30000){
   const controller=new AbortController();
