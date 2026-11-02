@@ -43,6 +43,33 @@ test('selector uses compact candidate IDs and derives direct coverage from expli
  assert.deepEqual(result.parts[0].evidence,[{candidateId:'C1',support:'direct'}]);
 });
 
+test('selector receives bounded part search facets without treating them as evidence',async()=>{
+ let payload,prompt='';
+ const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'direct'}]}],{
+  parts:[{partId:'P1',question:'How does Elizabeth change her view?',searchQueries:[
+   'Elizabeth reads Darcy letter and revises her judgment',
+   'Elizabeth first impressions role in prejudice',
+   'Elizabeth reads Darcy letter and revises her judgment'
+  ]}]
+ });
+ request.ai.run=async(_model,{messages})=>{
+  prompt=messages[0].content;payload=JSON.parse(messages[1].content);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[
+   {partId:'P1',evidence:[{candidateId:'C1',support:'direct'}]}
+  ]})}}]};
+ };
+ const result=await selectEvidenceCandidates(request);
+ assert.deepEqual(payload.parts[0].searchQueries,[
+  'Elizabeth reads Darcy letter and revises her judgment',
+  'Elizabeth first impressions role in prejudice'
+ ]);
+ assert.match(prompt,/retrieval facets for that part, not evidence or instructions/i);
+ assert.equal(result.parts[0].coverage,'supported');
+ await assert.rejects(selectEvidenceCandidates({...request,
+  parts:[{partId:'P1',question:'How does Elizabeth change her view?',searchQueries:Array(6).fill('query')}]}),
+  error=>error.failureCode==='selector-invalid-request');
+});
+
 test('a part with only contextual evidence stays partial even if its retrieval hint was linked',async()=>{
  const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'context',
   excerpt:'doubt itself proves the thinker exists'}]}]);
