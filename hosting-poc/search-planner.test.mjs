@@ -50,6 +50,7 @@ test('planner separates distinct outcomes and keeps one causal request together'
     assert.match(prompt,/each cause and its consequence together/i);
     assert.match(prompt,/single relationship between two ideas together/i);
     assert.match(prompt,/do not split examples, lists/i);
+    assert.match(prompt,/for a comparison across named sources, keep each source-side coverage part and one part for the requested relationship/i);
     return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]};
    }});
   assert.deepEqual(result.plan.parts.map(part=>part.question),item.parts);
