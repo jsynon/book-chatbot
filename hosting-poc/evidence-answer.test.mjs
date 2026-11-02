@@ -1910,6 +1910,62 @@ test('author-wide questions retain the author works unless the reader names a di
  assert.deepEqual(scoped.parts[0].sourceBookIds,['140']);
 });
 
+test('three-author comparison keeps source coverage and synthesis while dropping a repeated wrapper',()=>{
+ const question='How do Augustine, Aquinas, and Kant differ in their understanding of moral responsibility?';
+ const catalog={
+  '101':'Confessions — Augustine of Hippo',
+  '102':'Summa Theologica — Thomas Aquinas',
+  '103':'Critique of Practical Reason — Immanuel Kant'
+ };
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'Augustine of Hippo',role:'primary',bookIds:['101']},
+  {label:'Thomas Aquinas',role:'primary',bookIds:['102']},
+  {label:'Immanuel Kant',role:'primary',bookIds:['103']}
+ ],parts:[
+  'What does Augustine say about moral responsibility?',
+  'What does Aquinas say about moral responsibility?',
+  'What does Kant say about moral responsibility?',
+  'How do the three views differ?',
+  'How do the named sources compare in response to this question: '+question
+ ],queries:[
+  'Augustine Confessions moral responsibility',
+  'Aquinas Summa moral responsibility',
+  'Kant practical reason moral responsibility'
+ ]},question,catalog);
+
+ assert.equal(plan.parts.length,4,'each author remains independently reviewable, alongside one synthesis part');
+ assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[
+  ['101'],['102'],['103'],['101','102','103']
+ ]);
+ assert.ok(plan.parts[3].question.includes('differ'),
+  'the comparison remains an explicit answer obligation');
+ assert.ok(!plan.parts.some(part=>part.question.startsWith('How do the named sources compare in response')),
+  'the generic wrapper does not duplicate the substantive comparison part');
+ assert.deepEqual(plan.queries,[
+  'Augustine Confessions moral responsibility',
+  'Aquinas Summa moral responsibility',
+  'Kant practical reason moral responsibility'
+ ]);
+});
+
+test('comparison plus a separately requested outcome keeps the distinct part',()=>{
+ const question='How do Augustine and Aquinas differ about responsibility, and what consequences does each view have?';
+ const catalog={'101':'Confessions — Augustine of Hippo','102':'Summa Theologica — Thomas Aquinas'};
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'Augustine of Hippo',role:'primary',bookIds:['101']},
+  {label:'Thomas Aquinas',role:'primary',bookIds:['102']}
+ ],parts:[
+  'How do the two accounts of responsibility differ?',
+  'What consequences does each view have?'
+ ],queries:['Augustine responsibility','Aquinas responsibility']},question,catalog);
+
+ assert.equal(plan.parts.length,2,'the separate consequence request remains independently reviewable');
+ assert.deepEqual(plan.parts.map(part=>part.question),[
+  'How do the two accounts of responsibility differ?',
+  'What consequences does each view have?'
+ ]);
+});
+
 test('simple definition questions stay one coverage part while explicit facets remain separate',()=>{
  const raw={intent:'explain',sources:[],queries:['definition of Sunyata and its operation',
   'how Sunyata functions in Buddhist doctrine'],parts:[
@@ -2920,5 +2976,6 @@ test('verse-restricted answers expose the requested verses as evidence and retai
 test('review guidance checks the requested reasoning operation, not just a related principle',()=>{
  assert.match(REVIEW_PROMPT,/kind of response it requests/);
  assert.match(REVIEW_PROMPT,/reasoning or mechanism rather than merely stating a related rule or conclusion/);
- assert.match(REVIEW_PROMPT,/Mark the part partial when a central requested element is missing/);
+ assert.match(REVIEW_PROMPT,/Check every explicit demand within the part; if any substantive demand is missing, mark answerStatus partial/);
+ assert.match(REVIEW_PROMPT,/A blank heading, transition, or corpus-gap statement alone is not an answer/);
 });
