@@ -1242,8 +1242,9 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/explain how they relate without treating them as proof/);
  assert.match(COMPOSER_PROMPT,/general background and your own synthesis do not need a library citation/i);
  assert.doesNotMatch(COMPOSER_PROMPT,/using only the supplied verified passage windows|Cite every factual sentence|rely on outside knowledge/);
- assert.match(COMPOSER_PROMPT,/Write connected prose/);
- assert.match(COMPOSER_PROMPT,/several developed paragraphs/);
+ assert.match(COMPOSER_PROMPT,/Write focused connected prose/);
+ assert.match(COMPOSER_PROMPT,/do not repeat the full explanation of each view/);
+ assert.match(COMPOSER_PROMPT,/Avoid repeating the same point across parts/);
  assert.match(EXPANSION_PROMPT,/broader knowledge/);
  assert.doesNotMatch(EXPANSION_PROMPT,/rely on outside knowledge|only where the supplied verified passage windows/);
  assert.match(REVIEW_PROMPT,/Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context/);
@@ -2150,6 +2151,48 @@ test('author initials stay attached to the cited direct answer without merging l
   'the complete initialism-bearing first sentence remains the required answer');
  assert.deepEqual([...new Set(result.evidenceMap.map(item=>item.claimId))],['P1-C1','P1-C2'],
   'the following cited sentence stays a separate claim');
+});
+
+test('abbreviations stay inside cited sentences when source filtering rejects their citation',async()=>{
+ const title='Pride and Prejudice — Jane Austen';
+ const source={id:'S3',bookId:'901',title,page:128,
+  text:'The "general prejudice against Mr. Darcy" is so strong that attempting to view him in an "amiable light" is a difficult task.',
+  preview:'The general prejudice against Mr. Darcy makes it difficult to view him in an amiable light.'};
+ const plan={...onePartPlan,sources:[{label:'Jane Austen',role:'primary',bookIds:['900']}],
+  parts:[{...onePartPlan.parts[0],question:'How does Elizabeth’s view of Darcy change?',
+   sourceBookIds:['900'],candidateSourceIds:[]}]};
+ const ai=makeAI([answer('PART P1\nThe "general prejudice against Mr. Darcy" is so strong that attempting to view him in an "amiable light" is a difficult task [S3]. Her journey then changes her view.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Elizabeth’s view of Darcy change?',
+  [source],ai,[],{plan,catalog:{900:title},trace:true});
+ assert.equal(ai.calls.length,2);
+ assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'source-not-linked-to-question-part',sentenceIndex:1}],
+  'the whole abbreviation-bearing sentence is rejected as one unit');
+ assert.doesNotMatch(result.answer,/general prejudice against Mr\.?\s*Her journey/,
+  'rejecting an unlinked citation must not leave the abbreviation fragment in the final answer');
+ assert.doesNotMatch(result.answer,/general prejudice against Mr\./);
+});
+
+test('complete Markdown-wrapped numeric part headings are normalized safely',async()=>{
+ const ai=makeAI([answer('### PART 1\nHume explains causal necessity through custom formed by repeated conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/custom formed by repeated conjunction/);
+ assert.deepEqual(result.trace.formatRecoveries[0].headings,[{raw:'### PART 1',normalized:'### PART P1'}]);
+});
+
+test('Markdown numeric headings with a skipped part number remain malformed',async()=>{
+ const ai=makeAI([answer('### PART 2\nThis cannot be safely assigned to P1. [S1]')]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,1);
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureCode,'model-output-invalid-format');
+ assert.deepEqual(result.trace.formatRecoveries,[{stage:'compose',code:'invalid-numeric-part-heading-sequence',
+  recovered:false,headings:['### PART 2']}]);
 });
 
 test('an invalid citation on an initialism-bearing direct answer still leaves the part partial',async()=>{
