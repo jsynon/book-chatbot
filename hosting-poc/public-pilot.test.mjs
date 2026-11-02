@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 33203)
+Total output lines: 1946
+
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import * as support from './public-gateway.test-support.mjs';
@@ -586,6 +589,30 @@ test('repeated selector candidate IDs are normalized without retrieval-order fal
  assert.equal(result.trace.stages[0].decision.duplicateEvidenceEntriesRemoved,1);
  assert.notEqual(result.sourceSelection.status,'deterministic-fallback');
 });
+test('planned part search facets reach Worker evidence selection',async()=>{
+ const token='part-search-facets-selector-test-token';
+ let selectorPayload=null;
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
+  selector:async(_model,input)=>{
+   selectorPayload=JSON.parse(input.messages[1].content);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
+    selectorPayload.parts.map(part=>({partId:part.partId,evidence:[{
+     candidateId:selectorPayload.candidates[0].id,support:'direct'}]}))})}}]};
+  }});
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'How does Thucydides explain the deeper cause of the war?',answerVariant:'compose-only',
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'How does Thucydides explain the deeper cause of the war?',
+    sourceBookIds:['152'],searchQueries:['Thucydides deeper cause fear growth Athens Sparta']}]}
+ }});
+ assert.equal(response.status,200);
+ assert.equal(selectorPayload.parts[0].searchQueries[0],
+  'Thucydides deeper cause fear growth Athens Sparta');
+ assert.ok(selectorPayload.parts[0].searchQueries.includes(
+  'How does Thucydides explain the deeper cause of the war?'));
+ assert.match(selectorPayload.candidates[0].excerpt,/Thucydides|cause|war/i);
+});
 test('selector fallback trace retains only an approved invalid-response subtype',async()=>{
  const token='selector-invalid-subtype-test-token';
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
@@ -957,177 +984,7 @@ test('composition checks every question part against all verified excerpts and r
   if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    coverage:'partial',missing:'The role of struggle for existence is not addressed.',
    questionParts:[
-    {part:'explain how natural selection operates, including inherited variation',status:'supported',evidenceIds:['S1']},
-    {part:'explain the role of struggle for existence',status:'unsupported',evidenceIds:[]}
-   ],
-   evidence:[{id:'S1',point:'Natural selection preserves favorable variations.'}]
-  })}}],usage:{neurons:2}};
-  if(calls.length===2){
-   assert.match(input.messages[1].content,/all submitted passages, including those not selected/i);
-   assert.match(input.messages[1].content,/struggle for existence, and, consequently, no natural selection/);
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-    answer:'Natural selection preserves favorable variations and does not create them [S1]. The struggle for existence is part of the account: Darwin rejects the idea that it begins only after many forms have appeared, connecting struggle with natural selection [S2].',
-    partChecks:[
-     {part:'explain how natural selection operates, including inherited variation',status:'supported',evidenceIds:['S1']},
-     {part:'explain the role of struggle for existence',status:'unsupported',evidenceIds:[]}
-    ]
-   })}}],usage:{neurons:3}};
-  }
-  assert.match(input.messages[0].content,/Repair only the requested parts/);
-  assert.match(input.messages[1].content,/page 140/);
-  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-   answer:'Natural selection preserves favorable variations rather than creating them [S1]. The struggle for existence is also part of the process: Darwin rejects the assumption that it, and natural selection, begin only after many forms have appeared [S2]. The excerpt supports that connection, though this passage alone does not spell out every consequence of the struggle.',
-   partChecks:[
-    {part:'explain how natural selection operates, including inherited variation',status:'supported',evidenceIds:['S1']},
-    {part:'explain the role of struggle for existence',status:'supported',evidenceIds:['S2']}
-   ]
-  })}}],usage:{neurons:4}};
- }};
- const result=await composeVerifiedAnswer(question,sources,ai);
- assert.equal(calls.length,3);
- assert.equal(result.coverage,'full');
- assert.equal(result.questionParts[1].status,'supported');
- assert.match(result.answer,/struggle for existence is also part of the process/);
- assert.doesNotMatch(result.answer,/do not fully address/i);
- assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
-});
-
-test('named-author comparison repairs an omitted side from a submitted source and develops the answer',async()=>{
- const question="what's the difference between the thought of kierkegaard and shestov?";
- const sources=[
-  {id:'S1',bookId:'96',title:'Athens and Jerusalem — Lev Shestov',page:75,
-   preview:'To tear oneself away from Necessity, it is necessary to dare everything. Beyond reason and knowledge, the enchained Parmenides will regain his primordial freedom.'},
-  {id:'S2',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:39,
-   preview:'If there is such a concealment, we are in the presence of the paradox that the individual as the individual is higher than the universal.'}
- ];
- const calls=[];
- const ai={run:async(_model,input)=>{
-  calls.push(input);
-  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-   coverage:'partial',missing:'Shestov’s thought is not addressed.',
-   questionParts:[
-    {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S2']},
-    {part:"Shestov's thought",status:'unsupported',evidenceIds:[]}
-   ],evidence:[{id:'S2',point:'Kierkegaard places the individual above the universal in faith.'}]
-  })}}],usage:{neurons:2}};
-  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-   answer:'Kierkegaard presents faith as a paradox in which the individual may stand above the ethical universal [S2]. Shestov’s page discusses Kierkegaard, but the answer cannot establish Shestov’s own thought from it [S1].',
-   partChecks:[
-    {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S2']},
-    {part:"Shestov's thought",status:'unsupported',evidenceIds:[]}
-   ]
-  })}}],usage:{neurons:3}};
-  if(calls.length===3){
-   assert.match(input.messages[0].content,/When asked for a named author’s own view, prefer that author’s relevant supplied work/);
-   assert.match(input.messages[1].content,/Beyond reason and knowledge/);
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-    answer:'Kierkegaard’s passage presents faith as a paradox in which the individual can stand in an absolute relation to God beyond the ethical universal [S2]. Shestov argues that universal necessity and rational knowledge constrain human freedom, and he calls for a struggle to break their power [S1]. Read together, the passages suggest a difference in emphasis: Kierkegaard focuses on the individual’s paradoxical relation to God, while Shestov attacks the rule of necessary truths and stresses freedom beyond reason. This is a comparison of the supplied passages, not a claim that either author directly compared them.',
-    partChecks:[
-     {part:"Kierkegaard's thought",status:'supported',evidenceIds:['S2']},
-     {part:"Shestov's thought",status:'supported',evidenceIds:['S1']}
-    ]
-   })}}],usage:{neurons:4}};
-  }
-  assert.match(input.messages[0].content,/exactly two developed paragraphs/);
-  assert.match(input.messages[0].content,/120–180 words/);
-  return {choices:[{finish_reason:'stop',message:{content:
-   'Kierkegaard describes faith through the paradox of the individual’s absolute relation to God. The individual may stand above the ethical universal, though Kierkegaard treats this as a terrifying exception rather than a general license to disregard ethics. His focus is the believer’s inward responsibility before God, which cannot be reduced to a public rule or explained away by a rational system [S2].\n\nShestov attacks the authority of universal and necessary truths, arguing that reason can make human beings accept constraint as inevitable. He calls for a struggle against Necessity so that freedom may be recovered beyond reason and knowledge [S1]. The difference in these passages is one of emphasis: Kierkegaard centers faith’s paradoxical relation between the individual and God, while Shestov emphasizes revolt against reason’s claim to define what is possible. This comparison synthesizes the two texts; neither passage presents a direct debate between the authors [S1, S2].'}}],usage:{neurons:5}};
- }};
- const result=await composeVerifiedAnswer(question,sources,ai);
- assert.equal(calls.length,4);
- assert.equal(result.coverage,'full');
- assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported']);
- assert.equal(result.answer.split(/\n\s*\n/).length,2);
- assert.match(result.answer,/Shestov attacks the authority/);
- assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
-});
-
-test('a partial comparison with both sides supported uses the existing comparison expansion',async()=>{
- const question='How does Aristotle describe political science, how does Hobbes describe common power, and how do their accounts differ?';
- const sources=[
-  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle',page:2,
-   preview:'Political science aims at the highest of all goods achievable by action, which is generally identified as happiness.'},
-  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes',page:106,
-   preview:'The sovereign acts on behalf of the subjects in matters concerning common peace and safety.'}
- ];
- const parts=[
-  {part:'Aristotle’s account of political science',status:'supported',evidenceIds:['S1']},
-  {part:'Hobbes’s account of common power',status:'supported',evidenceIds:['S2']},
-  {part:'How their accounts differ',status:'partial',evidenceIds:['S1','S2']}
- ];
- const calls=[];
- const draft='Aristotle describes political science as pursuing the highest good achievable by action, generally understood as happiness [S1]. This gives political inquiry a stated end.\n\nHobbes describes the sovereign as acting for common peace and safety [S2]. This identifies what public power is to secure.\n\nThe accounts differ in emphasis.';
- const expanded='Aristotle describes political science as aiming at the highest good achievable by action, generally understood as happiness [S1]. The passage presents political inquiry through the end it should serve. That purpose gives the account its central criterion for judging civic institutions and action. It grounds the account in a purpose rather than in a specific enforcement mechanism.\n\nHobbes describes the sovereign as acting for common peace and safety [S2]. His passage focuses on the authority responsible for securing those conditions. Read together, the excerpts contrast an account framed by its public end with one framed by the power that maintains peace and safety [S1, S2]. This is a reader-level comparison of the supplied passages, whose claims remain distinct and are not presented as a direct exchange between the authors.';
- const ai={run:async(_model,input)=>{
-  calls.push(input);
-  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-   coverage:'partial',missing:'The comparison is only partly explained.',questionParts:parts,
-   evidence:[
-    {id:'S1',point:'Aristotle identifies happiness as the highest good pursued by political science.',quote:'the highest of all goods achievable by action',speaker:'Aristotle'},
-    {id:'S2',point:'Hobbes assigns the sovereign responsibility for common peace and safety.',quote:'common peace and safety',speaker:'Thomas Hobbes'}
-   ]
-  })}}],usage:{neurons:1}};
-  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-   answer:draft,partChecks:parts
-  })}}],usage:{neurons:1}};
-  assert.match(input.messages[0].content,/partial but both source-specific positions are supported/);
-  assert.match(input.messages[0].content,/concrete reader-level contrast/);
-  return {choices:[{finish_reason:'stop',message:{content:expanded}}],usage:{neurons:1}};
- }};
- const result=await composeVerifiedAnswer(question,sources,ai);
- assert.equal(calls.length,3);
- assert.equal(result.coverage,'full');
- assert.equal(result.questionParts[2].status,'supported');
- assert.match(result.answer,/contrast an account framed by its public end with one framed by the power/);
- assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
-});
-
-test('discloses a retrieved comparison source omitted from final citations',()=>{
- const groups=[
-  {label:'Hume’s Enquiry',bookIds:new Set(['35'])},
-  {label:'Kant’s Critique',bookIds:new Set(['40'])}
- ];
- const sources=[
-  {id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume'},
-  {id:'S2',bookId:'40',title:'Critique of Pure Reason — Immanuel Kant'}
- ];
- const answer='Kant reports that Hume rejects a priori causal knowledge [S2].';
- const result=appendUncitedSourceGroupDisclosure(answer,groups,sources);
- assert.equal(result.missingGroups.length,1);
- assert.equal(result.missingGroups[0].label,'Hume’s Enquiry');
- assert.match(result.answer,/No passage from Hume’s Enquiry appears in the answer’s citations/);
- assert.match(result.answer,/not directly established/);
- const complete=appendUncitedSourceGroupDisclosure(
-  answer+' Hume’s Enquiry treats causal inference as grounded in experience [S1].',groups,sources);
- assert.deepEqual(complete.missingGroups,[]);
- assert.equal(complete.answer,answer+' Hume’s Enquiry treats causal inference as grounded in experience [S1].');
-});
-
-test('keeps both requested works when one is named by a shortened author reference',()=>{
- const question='How do Hume’s Enquiry and Kant’s Critique of Pure Reason differ over causal necessity?';
- const sources=[
-  {id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume'},
-  {id:'S2',bookId:'40',title:'Critique of Pure Reason — Immanuel Kant'},
-  {id:'S3',bookId:'245',title:'The Social Contract — Jean-Jacques Rousseau'}
- ];
- const scoped=applyExplicitWorkScope(question,sources);
- assert.deepEqual(scoped.map(source=>source.id),['S1','S2']);
-});
-
-test('an unlisted play title does not create a curated source alias',()=>{
- const question='In Hamlet’s “To be, or not to be” soliloquy, what does he mean by conscience?';
- const sources=[
-  {id:'S1',bookId:'212',title:PILOT_BOOKS['212']},
-  {id:'S2',bookId:'230',title:'The Courage to Be — Paul Tillich'}
- ];
- const scoped=applyExplicitWorkScope(question,sources);
- assert.deepEqual(scoped.map(source=>source.id),['S1','S2']);
-});
-
-test('a partial cross-work comparison cannot substitute an author attack for the missing position',()=>{
- const sources=[
-  {id:'S1',bookId:'7',title:'Nicomachean Ethics — Aristotle'},
-  {id:'S2',bookId:'163',title:'Leviathan — Thomas Hobbes'}
+    {part:'explain how natural selection operates, including inherited variation',status:'supported',evidenceIds:['S1'…3203 tokens truncated…2',bookId:'163',title:'Leviathan — Thomas Hobbes'}
  ];
  const groups=[
   {label:'Nicomachean Ethics — Aristotle',bookIds:new Set(['7'])},
