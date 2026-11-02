@@ -1263,6 +1263,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/Each part includes an answerMode/);
  assert.match(COMPOSER_PROMPT,/exact form: \[S1\] or \[S1, S2\]/);
  assert.match(COMPOSER_PROMPT,/a book title, author name, or parenthetical \(S1\) is not a citation/);
+ assert.match(COMPOSER_PROMPT,/Keep each citation attached to the claim supported by that exact supplied page ID; never transfer one author’s or work’s citation label to a different source’s position/);
  assert.match(COMPOSER_PROMPT,/Do not cite every sentence just because it is factual/);
  assert.match(COMPOSER_PROMPT,/Start each part with a direct, calibrated answer to the exact question/);
  assert.match(COMPOSER_PROMPT,/For uncertain or disputed questions, distinguish what the evidence establishes from what remains possible/);
