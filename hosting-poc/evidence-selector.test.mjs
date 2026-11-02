@@ -159,6 +159,26 @@ test('semantic selection preserves a page for each covered part within the six-p
  assert.deepEqual(result.parts.map(part=>part.candidateIds[0]),['C1','C7']);
 });
 
+test('direct evidence survives the six-page cap when the selector lists context first',async()=>{
+ const candidates=Array.from({length:7},(_,index)=>({
+  id:'C'+(index+1),title:'Work '+(index+1),page:index+1,
+  excerpt:'A substantive source passage with enough words to inspect.'
+ }));
+ const result=await selectEvidenceCandidates({question:'What does the source explain?',
+  parts:[{partId:'P1',question:'Why does the author reach this conclusion?'}],candidates,
+  ai:{run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[{
+   partId:'P1',evidence:[
+    ...['C1','C2','C3','C4','C5','C6'].map(candidateId=>({candidateId,support:'context'})),
+    {candidateId:'C7',support:'direct'}
+   ]
+  }]})}}]})}});
+ assert.equal(result.selectedCandidateIds.length,6);
+ assert.ok(result.selectedCandidateIds.includes('C7'));
+ assert.equal(result.parts[0].candidateIds[0],'C7');
+ assert.equal(result.parts[0].coverage,'supported');
+ assert.ok(result.parts[0].candidateIds.every(id=>result.selectedCandidateIds.includes(id)));
+});
+
 test('a shared selected page stays linked to every part it supports under the six-page cap',async()=>{
  const candidates=Array.from({length:8},(_,index)=>({
   id:'C'+(index+1),title:'Work '+(index+1),page:1,
@@ -184,7 +204,7 @@ test('a shared selected page stays linked to every part it supports under the si
   result.parts.find(part=>part.partId==='P2').candidateIds);
 });
 
-test('coverage is recalculated after candidates are removed by the six-page cap',async()=>{
+test('direct evidence takes precedence over earlier context when the six-page cap trims candidates',async()=>{
  const candidates=Array.from({length:8},(_,index)=>({
   id:'C'+(index+1),title:'Unique Work '+(index+1),page:1,
   excerpt:'A distinct verified passage that can support a planned answer part.'
@@ -201,10 +221,10 @@ test('coverage is recalculated after candidates are removed by the six-page cap'
  const result=await selectEvidenceCandidates(request);
  const firstPart=result.parts.find(part=>part.partId==='P1');
  assert.equal(result.selectedCandidateIds.length,6);
- assert.ok(!result.selectedCandidateIds.includes('C7'));
- assert.ok(!firstPart.evidence.some(item=>item.candidateId==='C7'));
- assert.equal(firstPart.coverage,'partial',
-  'a direct candidate outside the submitted packet must not make the part look supported');
+ assert.ok(result.selectedCandidateIds.includes('C7'));
+ assert.ok(firstPart.evidence.some(item=>item.candidateId==='C7'));
+ assert.equal(firstPart.coverage,'supported',
+  'the highest support class must survive packet trimming when a page slot is available');
 });
 
 test('selector fallback prioritizes hinted uncovered parts before breadth filling',()=>{
