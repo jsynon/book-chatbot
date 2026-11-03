@@ -1263,6 +1263,8 @@ test('the logical-scope guard distinguishes neither-or from not-both paraphrases
 test('the answer contract allows useful general context while keeping cited claims traceable',()=>{
  assert.match(COMPOSER_PROMPT,/use your broader knowledge/);
  assert.match(COMPOSER_PROMPT,/use broader knowledge freely for relevant context, explanation, definitions, and synthesis/i);
+ assert.match(COMPOSER_PROMPT,/Prefer concrete, question-specific details/);
+ assert.match(COMPOSER_PROMPT,/Avoid generic statements that could fit many unrelated questions/);
  assert.match(COMPOSER_PROMPT,/In \"general-context\" mode, give a substantive direct answer from general knowledge/i);
  assert.match(COMPOSER_PROMPT,/Each part includes an answerMode/);
  assert.match(COMPOSER_PROMPT,/exact form: \[S1\] or \[S1, S2\]/);
@@ -1290,6 +1292,8 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(REVIEW_PROMPT,/Merely mentioning a work or person in independent background does not require a citation/);
  assert.match(REVIEW_PROMPT,/independent background and synthesis may remain uncited/i);
  assert.match(REVIEW_PROMPT,/Judge each part against the exact question/);
+ assert.match(REVIEW_PROMPT,/broad generalities that could fit unrelated topics are not a complete answer/);
+ assert.match(REVIEW_PROMPT,/without demanding citations for independent background or every factual sentence/);
  assert.match(COMPOSER_PROMPT,/reviewer will assess which claim or claims directly answer the question/);
  assert.match(REVIEW_PROMPT,/describes the collection, not the answer to the reader/);
  assert.match(REVIEW_PROMPT,/complementary passages may support different components of a concise synthesis/);
