@@ -1105,7 +1105,13 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     else if(status!=='answered'||!directAnswerCovered)status='partial';
     if(answerStatus==='answered'&&!directAnswerCovered)answerStatus='partial';
     if(directAnswerIds.length&&!directAnswerCovered&&acceptedAnswers.length)answerStatus='partial';
-    if(status==='answered'&&plan.intent==='compare'&&
+    // Do not rely on the planner's intent label to decide whether a part is
+    // a multi-source comparison. The trusted part scope and catalog groups
+    // are authoritative: if a part names multiple primary/subject groups,
+    // each group must contribute reviewed evidence before library coverage
+    // can be reported as full. Answer completeness remains independently
+    // available through answerStatus and may still include qualified context.
+    if(status==='answered'&&
        !comparisonReviewEvidenceComplete(part,plan,sources,evidence)){
       status='partial';supportIssues.push({partId:part.id,reason:'comparison-support-missing-source-group'});
     }
