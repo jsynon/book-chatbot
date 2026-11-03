@@ -1346,7 +1346,7 @@ test('repairs a requested part when its reviewed evidence is absent from the dra
   ]})}}],usage:{neurons:2}};
   assert.match(input.messages[0].content,/Repair only the requested parts/);
   assert.match(input.messages[0].content,/Put direct definitions, theories, and roles before related motives/);
-  assert.match(input.messages[1].content,/how Raskolnikov justifies the murder — partial/);
+  assert.match(input.messages[1].content,/how Raskolnikov justifies the murder — evidence: partial/);
   assert.match(input.messages[1].content,/Evidence map/);
   assert.match(input.messages[1].content,/Direct mapped points for incomplete parts that are not cited in the current draft/);
   assert.match(input.messages[1].content,/Raskolnikov justifies the murder:.*reported theory grants extraordinary people a right to transgress the law/);
@@ -1779,15 +1779,15 @@ test('answer composition receives the reviewed evidence map as its outline',asyn
  assert.match(calls[1].messages[1].content,/Evidence map \(reviewed points\):/);
  assert.match(calls[1].messages[1].content,/Christianity makes faith the opposite of sin, not virtue/);
  assert.doesNotMatch(calls[1].messages[1].content,/speaker: Kierkegaard/);
- assert.ok(calls[1].messages[0].content.length<3700,'composition guidance should stay compact');
+ assert.ok(calls[1].messages[0].content.length<3700,'composition guidance should stay compact: '+calls[1].messages[0].content.length);
  assert.match(calls[1].messages[0].content,/Answer each requested part directly/);
- assert.match(calls[1].messages[0].content,/a catalog author is not automatically the speaker/);
+ assert.match(calls[1].messages[0].content,/catalog author is not automatically the speaker/);
  assert.match(calls[1].messages[0].content,/Leave unclear dialogue attribution open/);
  assert.match(calls[1].messages[0].content,/Preserve meaningful qualifications/);
  assert.match(calls[1].messages[0].content,/cite each source-based sentence/);
  assert.match(calls[1].messages[0].content,/Use prior conversation only to resolve references/);
- assert.match(calls[1].messages[0].content,/Cross-check answer and partChecks/);
- assert.match(calls[1].messages[0].content,/For a narrative account, explain what happened and how it ended/);
+ assert.match(calls[1].messages[0].content,/Cross-check answer and partChecks with these fields/);
+ assert.match(calls[1].messages[0].content,/for narratives, explain events and outcomes/);
 });
 
 test('a final relation audit removes claims that a verified quote does not establish',async()=>{
@@ -1965,7 +1965,7 @@ test('a mapped point with an unverified quote still triggers the existing eviden
   })}}]};
   assert.match(input.messages[0].content,/Repair only the requested parts/);
   assert.match(input.messages[1].content,/proposed quote not verified; recheck the point against the full excerpt/);
-  assert.match(calls[1].messages[0].content,/A quote-unverified point may still be supported/);
+  assert.match(calls[1].messages[0].content,/Recheck quote-unverified points against the excerpt/);
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
    answer:'Hamlet weighs ending suffering through death against enduring life, but the unknown possibility of dreams after death makes him pause [S1]. The passage presents that uncertainty as a reason he hesitates before choosing death.',
    partChecks:[{part:'effect of uncertainty about death',status:'supported',evidenceIds:['S1']}]
