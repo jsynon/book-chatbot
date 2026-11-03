@@ -552,6 +552,39 @@ test('a valid empty evidence selection can review a useful single-part answer wi
  assert.equal(result.trace.stages[0].status,'no-relevant-evidence');
  assert.deepEqual(result.trace.stages[0].decision.selectedCandidateIds,[]);
 });
+test('an unmentioned catalog-valid planner source does not scope empty selection or block general knowledge',async()=>{
+ const token='unmentioned-planner-source-pilot-test-token';
+ const question='How have writers described the effects of technological change on daily life?';
+ const answerText='Technological change can reshape daily life by changing how people communicate, work, and coordinate with one another. A useful answer should connect those changes to concrete examples from the period and writers being discussed.';
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
+  selector:async()=>({choices:[{finish_reason:'stop',message:{content:'{"parts":[{"partId":"P1","evidence":[]}]}'}}]}),
+  model:async(_model,input)=>{
+   const payload=JSON.parse(input.messages[1].content);
+   if(Array.isArray(payload.claims))return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',sources:[]})),
+    parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'answered',
+     directAnswerClaimIds:(part.contextClaims||[]).slice(0,1).map(claim=>claim.claimId),
+     retainedContextClaimIds:(part.contextClaims||[]).map(claim=>claim.claimId)}))})}}]};
+   return {choices:[{finish_reason:'stop',message:{content:answerText}}]};
+  }
+ });
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{question,
+  plan:{intent:'explain',sources:[{label:'United Nations Framework Convention on Climate Change',
+    role:'primary',bookIds:['400']}],
+   parts:[{id:'P1',question:'What does the United Nations Framework Convention on Climate Change say about technology?',
+    sourceBookIds:['400']}]}
+ }});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(result.trace.plan.parts[0].sourceBookIds,null);
+ assert.equal(result.outcome,'general-context-answer');
+ assert.equal(result.answerCompleteness,'full');
+ assert.deepEqual(result.citations,[]);
+ assert.deepEqual(result.evidenceHighlights,[]);
+ assert.equal(result.sourceSelection.status,'no-relevant-evidence');
+ assert.equal(pilot.stats().calls,3,'the existing selector, composer, and review calls remain the only calls');
+});
 test('selector provider errors retain a safe reason while the bounded fallback remains reviewable',async()=>{
  const token='selector-fallback-error-test-token';
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',

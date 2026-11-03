@@ -1288,6 +1288,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/use broader knowledge freely for relevant context, explanation, definitions, and synthesis/i);
  assert.match(COMPOSER_PROMPT,/Prefer concrete, question-specific details/);
  assert.match(COMPOSER_PROMPT,/Avoid generic statements that could fit many unrelated questions/);
+ assert.match(COMPOSER_PROMPT,/When you promise examples, reasons, or several ways, provide them/);
  assert.match(COMPOSER_PROMPT,/In \"general-context\" mode, give a substantive direct answer from general knowledge/i);
  assert.match(COMPOSER_PROMPT,/Each part includes an answerMode/);
  assert.match(COMPOSER_PROMPT,/exact form: \[S1\] or \[S1, S2\]/);
@@ -2306,7 +2307,7 @@ test('author initials stay attached to the cited direct answer without merging l
 
 test('abbreviations stay inside cited sentences when source filtering rejects their citation',async()=>{
  const title='Pride and Prejudice — Jane Austen';
- const source={id:'S3',bookId:'901',title,page:128,
+ const source={id:'S3',bookId:'901',title,page:128,candidatePartIds:[],
   text:'The "general prejudice against Mr. Darcy" is so strong that attempting to view him in an "amiable light" is a difficult task.',
   preview:'The general prejudice against Mr. Darcy makes it difficult to view him in an amiable light.'};
  const plan={...onePartPlan,sources:[{label:'Jane Austen',role:'primary',bookIds:['900']}],
@@ -3005,6 +3006,43 @@ test('an answer ending with an unfinished lead-in is not presented as complete',
  assert.equal(result.coverage,'none');
  assert.equal(result.citations.length,0);
  assert.equal(result.trace.final.failure.code,'answer-incomplete-ending');
+});
+
+test('an empty promised list is marked incomplete without adding a model call',async()=>{
+ const question='How can justice and mercy come into conflict?';
+ const title='Justice and Mercy';
+ const source={id:'S1',bookId:'72',title,page:1,
+  text:'A just decision applies a rule, while a merciful response may temper its consequence with compassion.',
+  preview:'A just decision applies a rule, while a merciful response may temper its consequence with compassion.'};
+ const plan={...onePartPlan,sources:[{label:title,role:'primary',bookIds:['72']}],
+  parts:[{...onePartPlan.parts[0],question,sourceBookIds:['72'],candidateSourceIds:['S1']}]};
+ const ai=makeAI([answer('PART P1\nJustice and mercy can conflict in several specific ways: [S1]\n\n'+
+  'Even when both values matter, a strict consequence can leave little room for compassion.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(question,[source],ai,[],{plan,catalog:{...catalog,72:title},trace:true});
+ assert.equal(ai.calls.length,2,'the final completeness guard reuses compose and review only');
+ assert.equal(result.questionParts[0].answerStatus,'partial');
+ assert.equal(result.answerCompleteness,'partial');
+ assert.equal(result.trace.reviewContract.partDecisions[0].outputAnswerStatus,'partial');
+});
+
+test('a supplied list and ordinary explanatory colon are not treated as empty lists',async()=>{
+ const question='How can justice and mercy come into conflict?';
+ const title='Justice and Mercy';
+ const source={id:'S1',bookId:'72',title,page:1,
+  text:'A just decision applies a rule, while a merciful response may temper its consequence with compassion.',
+  preview:'A just decision applies a rule, while a merciful response may temper its consequence with compassion.'};
+ const plan={...onePartPlan,sources:[{label:title,role:'primary',bookIds:['72']}],
+  parts:[{...onePartPlan.parts[0],question,sourceBookIds:['72'],candidateSourceIds:['S1']}]};
+ for(const prose of [
+  'Justice and mercy can conflict in several specific ways: [S1]\n- A strict consequence may leave little room for compassion. [S1]\n- Forgiveness may seem unfair to someone who was harmed.',
+  'A helpful distinction is this: [S1]\n\nJustice applies a standard, while mercy responds to a person’s circumstances. [S1]'
+ ]){
+  const ai=makeAI([answer('PART P1\n'+prose),review([['P1','answered']])]);
+  const result=await composeEvidenceAnswer(question,[source],ai,[],{plan,catalog:{...catalog,72:title},trace:true});
+  assert.equal(result.answerCompleteness,'full',prose);
+  assert.equal(ai.calls.length,2);
+ }
 });
 
 test('explicit evidence refusals become structured insufficient evidence without a retry',async()=>{

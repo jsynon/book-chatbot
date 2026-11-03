@@ -235,6 +235,16 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     const normalized=identityText(phrase);
     return normalized.length>=4&&(' '+identityText(haystack)+' ').includes(' '+normalized+' ');
   };
+  const containsSourcePhrase=(haystack,phrase)=>{
+    const normalized=identityText(phrase);
+    if(normalized.split(' ').length===1){
+      const token=String(phrase||'').trim();
+      if(token&&token[0]===token[0].toLocaleUpperCase())
+        return new RegExp('(?<![\\p{L}\\p{N}])'+token.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+
+          '(?![\\p{L}\\p{N}])','u').test(String(haystack||''));
+    }
+    return containsPhrase(haystack,phrase);
+  };
   const asksAnotherFacet=/\b(?:and|or)\s+(?:(?:what|how|why|whether|when|where|who|does|do|did|is|are|can|could|would|should|will|must)\b|(?:its|their|his|her)\s+(?:role|function|importance|effect|impact|origin|history|example|implication|operation)\b|(?:the\s+)?(?:role|function|importance|effect|impact|origin|history|example|implication|operation)\b)|[,;]\s*(?:and\s+)?(?:how|why|what|whether|when|where|who|does|do|did|is|are|can|could|would|should|will|must)\b/i.test(resolvedQuestion);
   const hypotheticalAuthorResponse=/\b(?:what|how)\s+would\b[^?!.]{0,120}\b(?:think|say|respond|react|view|regard)\b[^?!.]{0,100}\b(?:about|of|on|regarding|concerning|to)\b/i.test(resolvedQuestion);
   const comparisonPattern=/\b(?:compare|contrast|differ(?:s|ed|ence|ent)?|versus|vs\.?|similar(?:ity)?|alike)\b/i;
@@ -256,17 +266,30 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   const sourcePhrases=source=>{
     const phrases=[source.label];
     for(const token of String(source.label||'').split(/[^\p{L}\p{N}]+/u))
-      if(token.length>=4)phrases.push(token);
+      if(token.length>=4&&tokenOwners.get(identity(token))?.size===1)phrases.push(token);
     for(const id of source.bookIds){
       const title=catalog[id];if(!title)continue;
       const identity=catalogIdentity(title);
       phrases.push(identity.work,...identity.authors,...identity.authors.map(author=>String(author).split(/\s+/u).at(-1)),...identity.aliases);
     }
-    return [...new Set(phrases.map(identityText).filter(value=>value.length>=4))];
+    const unique=new Map();
+    for(const phrase of phrases){
+      const key=identityText(phrase);if(key.length>=4&&!unique.has(key))unique.set(key,String(phrase).trim());
+    }
+    return [...unique.values()];
   };
   const sourceMentionIndex=source=>sourcePhrases(source).map(phrase=>({
-    index:identityText(resolvedQuestion).indexOf(phrase)
+    index:identityText(resolvedQuestion).indexOf(identityText(phrase))
   })).filter(item=>item.index>=0).sort((a,b)=>a.index-b.index)[0]?.index??Number.MAX_SAFE_INTEGER;
+  const namesAWorkInCollection=(source,text)=>source.bookIds.some(id=>{
+    const catalogTitle=catalog[id];if(!catalogTitle)return false;
+    const identity=catalogIdentity(catalogTitle);
+    if(!/\b(?:complete|collected)\s+(?:works|writings|plays|poems)\b/i.test(identity.work))return false;
+    const catalogTokens=new Set([identity.work,...identity.authors,...identity.aliases]
+      .flatMap(value=>identityText(value).split(' ')).filter(Boolean));
+    return [...String(text||'').matchAll(/(?<![\p{L}\p{N}])([\p{Lu}][\p{L}\p{N}-]{2,})(?:['’]s)?(?![\p{L}\p{N}])/gu)]
+      .some(match=>match.index>0&&!catalogTokens.has(identityText(match[1])));
+  });
   const counterfactualSources=sources.filter(source=>['primary','subject'].includes(source.role)&&source.bookIds.length);
   if(hypotheticalAuthorResponse&&counterfactualSources.length===2){
     counterfactualSources.sort((a,b)=>sourceMentionIndex(a)-sourceMentionIndex(b));
@@ -286,18 +309,34 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     if(broadAuthorQuestion&&!/\b(?:and|or|versus|vs\.?|compare|contrast)\b/i.test(topic))
       normalizedParts=[{id:'P1',question:resolvedQuestion}];
   }
+  const questionNamedSources=sources.map((source,index)=>({source,index,phrases:sourcePhrases(source)}))
+    .filter(group=>group.phrases.some(phrase=>containsSourcePhrase(resolvedQuestion,phrase)));
   const partSourceGroups=normalizedParts.map(part=>{
     let matches=sources.map((source,index)=>({source,index,phrases:sourcePhrases(source)}))
-      .filter(group=>group.phrases.some(phrase=>containsPhrase(part.question,phrase)));
+      .filter(group=>group.phrases.some(phrase=>
+        containsSourcePhrase(part.question,phrase)&&containsSourcePhrase(resolvedQuestion,phrase)));
     // For an author asking about another thinker, the answer belongs to the
     // named primary author unless the plan explicitly makes this a comparison.
     if(intent!=='compare'&&matches.length>1){
       const primary=matches.filter(group=>group.source.role==='primary');
       if(primary.length)matches=primary;
     }
-    if(!matches.length&&sources.length===1)matches=sources.map((source,index)=>({source,index}));
-    if(!matches.length&&intent==='compare'&&sources.length>1)
+    // A planner's single catalog-valid source is only a search lead unless
+    // the reader named it. An explicit book selection remains a hard scope.
+    if(!matches.length&&selectedBookId){
+      matches=sources.map((source,index)=>({source,index}))
+        .filter(group=>group.source.bookIds.some(id=>String(id)===String(selectedBookId)));
+    }
+    // A named play, poem, or other work can live inside a cataloged collected
+    // works volume even when the individual work is not a catalog entry.
+    // Preserve that explicit work request when the planner supplied its
+    // validated primary author as the sole source lead.
+    if(!matches.length&&!selectedBookId&&sources.length===1&&
+       namesAWorkInCollection(sources[0],resolvedQuestion)&&
+       namesAWorkInCollection(sources[0],part.question))
       matches=sources.map((source,index)=>({source,index}));
+    if(!matches.length&&intent==='compare'&&questionNamedSources.length>1)
+      matches=questionNamedSources;
     const narrowed=matches.flatMap(group=>{
       const bookIds=group.source.bookIds;
       // Narrow an author's works only when the reader's question names a
@@ -320,7 +359,10 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     });
     return narrowed.length?[...new Set(narrowed)]:null;
   });
-  const comparisonSources=sources.filter(source=>['primary','subject'].includes(source.role)&&source.bookIds.length);
+  const comparisonSources=sources.filter(source=>['primary','subject'].includes(source.role)&&
+    source.bookIds.length&&(selectedBookId?
+      source.bookIds.some(id=>String(id)===String(selectedBookId)):
+      questionNamedSources.some(group=>group.source===source)));
   const hasPlannedComparison=normalizedParts.some((part,index)=>comparisonPattern.test(part.question)&&
     comparisonSources.filter(source=>source.bookIds.some(id=>(partSourceGroups[index]||[]).includes(id))).length>=2);
   const comparisonBookIds=[...new Set(comparisonSources.flatMap(source=>source.bookIds))];
