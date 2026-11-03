@@ -92,9 +92,9 @@ Use the supplied requiredAnswerClaimId as a candidate when reviewing directness,
 
 For uncited contextClaims listed inside a part, assess them together for relevance, plausibility, usefulness, attribution, coherence, and completion. Return retainedContextClaimIds containing the context claims that should remain in the answer; omit unsupported, irrelevant, or misleading claims. You may nominate one retained claim as a direct answer only when it directly answers the question. Keep direct answer completeness separate from library evidence coverage: a direct, coherent answer using qualified general knowledge can be complete even when library evidence is partial. If an uncited sentence attributes a position to a supplied book, author, or speaker, it is source-derived and must have the needed source ID; do not pass it as general context. Do not mark a part answered when its answer is only related background or ends with an unfinished thought or list introduction. A useful answer may combine cited source claims with uncited context and interpretation. Return answerStatus as answered, partial, or unanswered to describe whether the complete response answers the question; keep status as the library-evidence verdict. Also return repairable as a boolean: true only when a concrete missing or underdeveloped answer element can responsibly be supplied from the already supplied evidence or clearly qualified general knowledge; false when the current limitation is appropriate or the missing element cannot be responsibly resolved. Do not set repairable true merely because the answer is partial.
 
-For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
+If a cited claim combines supported and unsupported material, you may optionally return supportedText: one narrower standalone sentence that preserves only what the supplied exact spans support. Keep the original claim status partial; judge the source decisions against supportedText when provided. Do not add facts, implications, or source attributions absent from those spans. Omit supportedText when no useful narrower claim is directly supported. This is only for cited claims, never uncited general context. The system retains it only if every originally cited source has an accepted exact span and the ordinary attribution, polarity, and citation checks pass. supportedText must be one sentence, contain no line breaks, and contain no citation labels. For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
 
-Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty"}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-speaker claims, provide attributionStatus. Do not include answer text, page text, rationales, or extra fields.`;
+Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty"}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-speaker claims, provide attributionStatus. Do not include answer text, page text, rationales, or extra fields.`;
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -882,7 +882,9 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     }
     if(!Array.isArray(sourceDecisions)){issues.push('invalid-claim-sources');continue;}
     if(suppliedClaims.has(id)){issues.push('duplicate-claim');continue;}
-    suppliedClaims.set(id,{status:normalizeStatus(item.status),sources:sourceDecisions});
+    suppliedClaims.set(id,{status:normalizeStatus(item.status),
+      supportedText:typeof item.supportedText==='string'?item.supportedText.trim():'',
+      sources:sourceDecisions});
   }
   const supportIssues=[],answerContext=[],reviewDecisions=[],partDecisions=[];
   const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
@@ -934,6 +936,13 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       }
       if(!decision){issues.push('missing-claim-decision');supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-decision'});continue;}
       let claimStatus=decision.status;
+      const proposedSupportedText=decision.supportedText;
+      const validSupportedText=decision.status==='partial'&&proposedSupportedText.length>0&&
+        proposedSupportedText!==String(answer.text||'').trim()&&
+        proposedSupportedText.length<=600&&!/[\r\n]/u.test(proposedSupportedText)&&
+        !/\[\s*S\d+/iu.test(proposedSupportedText)&&
+        !/[.!?]\s+\S/u.test(proposedSupportedText);
+      const candidateText=validSupportedText?proposedSupportedText:answer.text;
       const sourceDecisions=new Map();
       for(const sourceDecision of decision.sources){
         const sourceId=String(sourceDecision?.sourceId||'');
@@ -975,7 +984,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           recovered.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:'missing-claim-source-decision',action:'fail-closed-source-decision'});
         }
-        const namedAttribution=hasNamedSpeakerAttribution(answer.text);
+        const namedAttribution=hasNamedSpeakerAttribution(candidateText);
         const attributionStatus=sourceDecision?.attributionStatus;
         const modelAttributionIssue=namedAttribution&&attributionStatus==='conflict'?
           'source-attribution-conflict':
@@ -987,15 +996,15 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             String(sourceById.get(sourceId)?.text||sourceById.get(sourceId)?.preview||''),claimedSpeaker)?
           'source-attribution-unanchored':'';
         const provenanceAttributionIssue=sourceDecision?.status==='answered'?
-          sourceVoiceAttributionIssue(answer.text,sourceById.get(sourceId),plan,
+          sourceVoiceAttributionIssue(candidateText,sourceById.get(sourceId),plan,
             precedingAnswers,sourceById):'';
         const attributionIssue=modelAttributionIssue||unanchoredSpeakerIssue||provenanceAttributionIssue;
         const selectedQuote=selected.map(item=>item.quote).join(' ');
         const polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
-          hasDirectPolarityContradiction(answer.text,selectedQuote)?
+          hasDirectPolarityContradiction(candidateText,selectedQuote)?
           'source-contradicts-claim-polarity':'';
         const negationScopeIssue=sourceDecision?.status==='answered'&&selected.length&&
-          hasNegationScopeMismatch(answer.text,selectedQuote)?
+          hasNegationScopeMismatch(candidateText,selectedQuote)?
           'source-negation-scope-mismatch':'';
         if(attributionIssue){
           sourceDecision.status='partial';
@@ -1029,7 +1038,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           sourceDecision.status!=='answered'?'claim-source-not-supported':
           !selected.length?'missing-claim-source-span':'');
         reviewDecisions.push({partId:part.id,claimId:answer.claimId,sourceId,
-          claimText:String(answer.text||'').slice(0,320),
+          claimText:String(candidateText||'').slice(0,320),
           claimStatus:decision.status,
           sourceStatus:sourceDecision?.status||null,
           attributionStatus:sourceDecision?.attributionStatus||'missing',
@@ -1048,7 +1057,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       }
       for(const selections of selectedBySource.values())for(const selection of selections){
         selection.claimId=answer.claimId;
-        selection.point=answer.text;
+        selection.point=candidateText;
       }
       const sourceGroupKey=sourceId=>{
         const source=sourceById.get(sourceId);
@@ -1057,25 +1066,37 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       };
       const citedGroupKeys=new Set(answer.sourceIds.map(sourceGroupKey));
       const supportedGroupKeys=new Set([...supportedSourceIds].map(sourceGroupKey));
-      const supportedSubsetCoversClaim=decision.status==='answered'&&!hasUnreviewedOrSpanlessSource&&
+      const supportedSubsetCoversClaim=(decision.status==='answered'||validSupportedText)&&!hasUnreviewedOrSpanlessSource&&
         supportedSourceIds.size>0&&
         [...citedGroupKeys].every(key=>supportedGroupKeys.has(key));
       claimStatus=supportedSubsetCoversClaim?'answered':
         decision.status==='unanswered'?'unanswered':'partial';
       const claimEvidence=[...supportedSourceIds]
         .flatMap(sourceId=>selectedBySource.get(sourceId)?.slice(0,MAX_REVIEW_SPANS_PER_SOURCE)||[]);
+      if(validSupportedText&&!supportedSubsetCoversClaim){
+        supportIssues.push({partId:part.id,claimId:answer.claimId,
+          reason:'claim-narrowing-failed-evidence-validation'});
+      }
       if(claimStatus==='answered'){
-        const retainedAnswer={...answer,sourceIds:[...supportedSourceIds]};
+        const retainedAnswer={...answer,text:candidateText,sourceIds:[...supportedSourceIds]};
         const retainedCitation=' ['+[...supportedSourceIds].join(', ')+']';
-        const renderedText=answer.renderedText||answer.text+' ['+[...answer.sourceIds].join(', ')+']';
-        const citationGroupsToNormalize=citationGroups(renderedText).filter(group=>group.isSourceIdCitation);
-        retainedAnswer.renderedText=citationGroupsToNormalize.length?
-          citationGroupsToNormalize.reduceRight((text,group)=>
-            text.slice(0,group.start).replace(/\s+$/u,'')+retainedCitation+text.slice(group.end),renderedText):
-          answer.text+retainedCitation;
+        if(validSupportedText){
+          retainedAnswer.renderedText=candidateText+retainedCitation;
+        }else{
+          const renderedText=answer.renderedText||answer.text+' ['+[...answer.sourceIds].join(', ')+']';
+          const citationGroupsToNormalize=citationGroups(renderedText).filter(group=>group.isSourceIdCitation);
+          retainedAnswer.renderedText=citationGroupsToNormalize.length?
+            citationGroupsToNormalize.reduceRight((text,group)=>
+              text.slice(0,group.start).replace(/\s+$/u,'')+retainedCitation+text.slice(group.end),renderedText):
+            answer.text+retainedCitation;
+        }
         acceptedAnswers.push(retainedAnswer);
         evidence.push(...claimEvidence);precedingAnswers.push(retainedAnswer);
       }
+      if(validSupportedText)reviewDecisions.push({partId:part.id,claimId:answer.claimId,
+        originalClaimStatus:decision.status,supportedTextApplied:claimStatus==='answered',
+        acceptedText:claimStatus==='answered'?candidateText.slice(0,320):'',
+        validationReason:claimStatus==='answered'?null:'claim-narrowing-failed-evidence-validation'});
     }
     let status=reviewerPart?.status||'unanswered';
     let answerStatus=reviewerPart?.answerStatus||reviewerPart?.status||'unanswered';

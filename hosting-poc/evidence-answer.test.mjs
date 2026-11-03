@@ -637,6 +637,55 @@ test('claim-level review removes a sentence when its cited quote supports only a
  assert.equal(result.evidenceMap[0].quote,text);
 });
 
+test('claim review can retain a narrower supported sentence without another AI call',async()=>{
+ const text='Custom is the great guide of human life.';
+ const source={...hume,id:'S1',bookId:'35',text,preview:text};
+ const broad='Custom guides human life, and reason alone determines moral judgment.';
+ const narrow='Custom is the great guide of human life.';
+ const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+   repairable:false,directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:[]}],claims:[{
+    claimId:claim.claimId,status:'partial',supportedText:narrow,sources:[{
+     sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]],
+     attributionStatus:'not_applicable',attributedSpeaker:''}]}]})};
+ }]);
+ const result=await composeEvidenceAnswer('What guides human life?',[source],ai,[],{
+  catalog,plan:{intent:'explain',sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
+   parts:[{id:'P1',question:'What guides human life?',sourceBookIds:['35']}],queries:['Hume custom']},trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.match(result.answer,/Custom is the great guide of human life\. \[S1\]/);
+ assert.doesNotMatch(result.answer,/reason alone determines moral judgment/);
+ assert.equal(result.evidenceMap[0].point,narrow);
+ assert.equal(result.evidenceMap[0].quote,text);
+ assert.ok(result.trace.reviewContract.reviewDecisions.some(item=>
+  item.claimId==='P1-C1'&&item.supportedTextApplied===true&&item.acceptedText===narrow));
+});
+
+test('malformed supportedText is ignored and the partial cited claim remains fail-closed',async()=>{
+ const text='Custom is the great guide of human life.';
+ const source={...hume,id:'S1',bookId:'35',text,preview:text};
+ const broad='Custom guides human life, and reason alone determines moral judgment.';
+ const malformed='Custom guides human life. [S9] Reason alone determines moral judgment.';
+ const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+   repairable:false,directAnswerClaimIds:[],retainedContextClaimIds:[]}],claims:[{
+    claimId:claim.claimId,status:'partial',supportedText:malformed,sources:[{
+     sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]],
+     attributionStatus:'not_applicable',attributedSpeaker:''}]}]})};
+ }]);
+ const result=await composeEvidenceAnswer('What guides human life?',[source],ai,[],{
+  catalog,plan:{intent:'explain',sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
+   parts:[{id:'P1',question:'What guides human life?',sourceBookIds:['35']}],queries:['Hume custom']},trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.doesNotMatch(result.answer,/Custom guides human life/);
+ assert.doesNotMatch(result.answer,/\[S9\]/);
+ assert.deepEqual(result.evidenceMap,[]);
+});
+
 test('claim review rejects an author-wide theory inferred from one character line',async()=>{
  const text='They got on to everlasting questions, floated off into space.';
  const source={...hume,id:'S1',bookId:'52',title:'Crime and Punishment — Fyodor Dostoevsky',
