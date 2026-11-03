@@ -637,6 +637,29 @@ test('claim-level review removes a sentence when its cited quote supports only a
  assert.equal(result.evidenceMap[0].quote,text);
 });
 
+test('claim review rejects an author-wide theory inferred from one character line',async()=>{
+ const text='They got on to everlasting questions, floated off into space.';
+ const source={...hume,id:'S1',bookId:'52',title:'Crime and Punishment — Fyodor Dostoevsky',
+  text,preview:text};
+ const claim='Dostoevsky argues that nihilism destroys religious morality and leaves society without values.';
+ const ai=makeAI([answer(`PART P1\n${claim} [S1]`),(_model,{messages})=>{
+  assert.match(messages[0].content,/Do not infer an author-wide theory from a character's line, isolated example, or passing theme/);
+  const payload=parsePayload(messages),current=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:[{
+   claimId:current.claimId,status:'partial',sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
+ }]);
+ const result=await composeEvidenceAnswer('How does Dostoevsky treat nihilism?',[source],ai,[],{
+  catalog:{...catalog,52:source.title},plan:{intent:'explain',
+   sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['52']}],
+   parts:[{id:'P1',question:'How does Dostoevsky treat nihilism?',sourceBookIds:['52']}]},trace:true
+ });
+ assert.equal(result.coverage,'none');
+ assert.doesNotMatch(result.answer,/Dostoevsky argues that nihilism/);
+ assert.deepEqual(result.evidenceMap,[]);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.claimId==='P1-C1'&&issue.reason==='claim-source-not-supported'));
+});
+
 test('a partially reviewed sentence is not promoted by dropping its unsupported citation',async()=>{
  const unrelated={...hume,id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:17,
   text:'The knight of faith lives an ordinary life after making the movement of infinity.',
@@ -1276,6 +1299,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/logical relations.*neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/When a claim says how one thing affects or relates to another, the span must support that connection/);
+ assert.match(REVIEW_PROMPT,/A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means/);
  assert.match(COMPOSER_PROMPT,/Keep the opening focused on the reader rather than a preview of themes/);
  assert.match(COMPOSER_PROMPT,/If that opening sentence summarizes or combines positions from supplied passages, cite the page IDs that support those components in the sentence/);
  assert.match(COMPOSER_PROMPT,/Leave independent background or your own interpretation uncited when it does not present a supplied source's position/);
