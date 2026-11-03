@@ -238,6 +238,40 @@ test('normalization rejects a planner identity mapped to another catalog author'
  'How does Kant understand causality?',catalog);
  assert.deepEqual(plan.sources.map(source=>source.bookIds),[['40']]);
 });
+test('a valid but unmentioned planner source stays a search lead instead of a hard part scope',()=>{
+ const question='How have writers described the effects of technological change on daily life?';
+ const catalog={'400':'Paris Agreement — United Nations Framework Convention on Climate Change'};
+ const plan=normalizePlan({intent:'explain',sources:[
+  {label:'United Nations Framework Convention on Climate Change',role:'primary',bookIds:['400']}
+ ],parts:[{question:'What does the United Nations Framework Convention on Climate Change say about technology?'}],
+ queries:['United Nations Framework Convention on Climate Change technology']},question,catalog);
+ assert.deepEqual(plan.sources[0].bookIds,['400'],
+  'catalog identity validation still accepts the accurately identified lead');
+ assert.equal(plan.parts[0].sourceBookIds,null,
+  'a planner-generated source mention cannot narrow a question that did not name it');
+ assert.deepEqual(plan.queries,['United Nations Framework Convention on Climate Change technology']);
+});
+test('an explicitly selected book remains a hard scope when the question omits its title',()=>{
+ const catalog={'400':'Paris Agreement — United Nations Framework Convention on Climate Change'};
+ const plan=normalizePlan({intent:'explain',sources:[],parts:[{question:'What does this book say about climate policy?'}]},
+  'What does this book say about climate policy?',catalog,'400');
+ assert.deepEqual(plan.parts[0].sourceBookIds,['400']);
+});
+test('a comparison scopes its synthesis only to sources the reader named',()=>{
+ const question='How do Hume and Kant differ over causal necessity?';
+ const catalog={
+  '35':'An Enquiry Concerning Human Understanding — David Hume',
+  '40':'Critique of Pure Reason — Immanuel Kant',
+  '400':'Paris Agreement — United Nations Framework Convention on Climate Change'
+ };
+ const plan=normalizePlan({intent:'compare',sources:[
+  {label:'David Hume',role:'primary',bookIds:['35']},
+  {label:'Immanuel Kant',role:'primary',bookIds:['40']},
+  {label:'United Nations Framework Convention on Climate Change',role:'primary',bookIds:['400']}
+ ],parts:['How does Hume explain causal necessity?','How does Kant explain causal necessity?',
+  'How do the accounts compare?']},question,catalog);
+ assert.deepEqual(plan.parts.map(part=>part.sourceBookIds),[['35'],['40'],['35','40']]);
+});
 test('normalization rejects an ambiguous author token as a catalog identity',()=>{
  const catalog={
   '901':'Computing Machinery and Intelligence — Alan Turing',
