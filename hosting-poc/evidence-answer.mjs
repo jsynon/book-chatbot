@@ -174,6 +174,7 @@ function parseJson(raw,stage){
 export function parseReviewJson(raw){return parseJson(raw,'review');}
 
 const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":""}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
+const ANSWER_REPAIR_PROMPT=`Repair only the listed question parts whose reviewer-nominated direct answer did not survive evidence review. Use only the already selected evidence and exact spans supplied; do not seek, invent, or cite other sources. Preserve supported claims and useful uncited context where possible. Rewrite or narrow unsupported source-derived claims so each citation supports the entire claim, including scope, attribution, and logical relations. General knowledge may be used for relevant explanation, but keep it clearly distinct from what a supplied source says and leave independent context uncited. Return exactly one JSON object with one entry for each requested part: {"parts":[{"partId":"P1","text":"complete revised answer text for this part"}]}. Do not include other parts or commentary.`;
 
 function mergeReviewRepairs(rawReview,requested,repair){
   if(!Array.isArray(repair?.decisions)||repair.decisions.length!==requested.length)
@@ -1217,6 +1218,53 @@ function reviewPayloadMetrics(payload,serializedPayload,systemPrompt){
     requestCharacters:userPayloadCharacters+systemPromptCharacters};
 }
 
+function buildReviewPacket(answerParts,{sources,pageById,plan,question}){
+  const reviewSpanMaps=new Map(),reviewSpanMapsByPart=new Map();
+  const reviewParts=answerParts.map(part=>{
+    const citedIds=new Set(part.answers.flatMap(answer=>answer.sourceIds));
+    const partSpanMaps=new Map();
+    const evidence=[...pageById.values()].filter(page=>citedIds.has(page.id)).map(page=>{
+      const source=sources.find(item=>item.id===page.id);
+      const spanText=source?.scopeText||page.text||'';
+      if(!reviewSpanMaps.has(page.id))reviewSpanMaps.set(page.id,
+        new Map(buildReviewSpans(page.id,spanText).map(span=>[span.spanId,span])));
+      const citedAnswers=part.answers.filter(answer=>answer.sourceIds.includes(page.id));
+      const citedAnswerText=citedAnswers.map(answer=>answer.text).join(' ');
+      const requiredAnswer=citedAnswers.find(answer=>answer.claimId===part.requiredAnswerClaimId);
+      const orderedSpans=selectReviewPacketSpans([...reviewSpanMaps.get(page.id).values()],{
+        question:part.question,answer:citedAnswerText,requiredAnswer:requiredAnswer?.text,
+        limit:MAX_REVIEW_PACKET_SPANS_PER_SOURCE});
+      partSpanMaps.set(page.id,new Map(orderedSpans.map(span=>[span.spanId,span])));
+      const selectionSupport=(source?.candidatePartSupport||[]).filter(item=>item.partId===part.partId)
+        .map(item=>({relation:item.support,...(item.excerpt?{excerpt:item.excerpt}:{})}));
+      const provenance=sourceProvenance(source,plan,spanText);
+      return {id:page.id,title:page.title,page:page.page,provenance,
+        ...(sourceVoiceGuidance(provenance)?{attributionRequirement:sourceVoiceGuidance(provenance)}:{}),
+        spans:orderedSpans.map(({spanId,text})=>({spanId,text})),
+        ...(selectionSupport.length?{selectionSupport}:{}),
+        ...(source?.scopeText?{contextText:String(page.text||'').slice(0,2500)}:{})};
+    });
+    reviewSpanMapsByPart.set(part.partId,partSpanMaps);
+    const contextClaims=part.answers.filter(answer=>!answer.sourceIds.length)
+      .map(({claimId,text})=>({claimId,text}));
+    return {partId:part.partId,question:part.question,
+      answerMode:evidence.length?'source-and-context':'general-context',
+      ...(part.requiredAnswerClaimId?{requiredAnswerClaimId:part.requiredAnswerClaimId}:{}),
+      ...(contextClaims.length?{contextClaims}:{}),evidence};
+  });
+  const reviewClaimCount=answerParts.reduce((count,part)=>count+
+    part.answers.filter(answer=>answer.sourceIds.length).length,0);
+  const reviewHintLimit=reviewClaimCount>8?1:MAX_REVIEW_CANDIDATES_PER_SOURCE;
+  const reviewClaims=answerParts.flatMap(part=>part.answers.filter(answer=>answer.sourceIds.length)
+    .map(({claimId,text,sourceIds})=>({partId:part.partId,claimId,text,sourceIds,
+      sourceEvidence:sourceIds.map(sourceId=>({sourceId,
+        sourceGroup:sourceGroupFor(sources.find(source=>source.id===sourceId),plan),spanIds:
+        rankReviewSpans([...(reviewSpanMapsByPart.get(part.partId)?.get(sourceId)?.values()||[])],
+          {question:part.question,answer:text}).slice(0,reviewHintLimit).map(span=>span.spanId)}))})));
+  return {reviewSpanMapsByPart,reviewParts,reviewClaims,
+    reviewPayload:compactReviewPayload(question,reviewParts,reviewClaims)};
+}
+
 export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
   const rawPlan=options.plan||inferSelectedHypotheticalPlan(question,sources);
   const normalized=normalizePlan(rawPlan,question,options.catalog||{},options.selectedBookId||'');
@@ -1229,10 +1277,9 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const usage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
   const started=Date.now();
   async function run(stage,system,payload,parser){
-    // One extra call is reserved for a targeted source-decision repair. It
-    // runs only when the reviewer omitted a cited-source decision; normal
-    // public answers still use the existing compose and review calls.
-    const callLimit=options.expand===true?4:3;
+    // The bounded budget includes one optional source-decision repair plus
+    // one conditional answer rewrite and independent re-review.
+    const callLimit=options.expand===true?6:5;
     if(usage.calls>=callLimit)throw Error('Answer call budget exceeded');
     const serializedPayload=JSON.stringify(payload);
     const messages=[{role:'system',content:system},{role:'user',content:serializedPayload}];
@@ -1250,18 +1297,19 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     const reviewRecordCount=stage==='review-repair'?
       (Array.isArray(payload?.decisions)?payload.decisions.length:0):
       (Array.isArray(payload?.claims)?payload.claims.length:0);
-    const outputTokenBudget=stage==='review'?
+    const outputTokenBudget=stage==='review'||stage==='answer-re-review'?
       Math.min(4200,2000+reviewRecordCount*100):
-      stage==='review-repair'?Math.min(3000,900+reviewRecordCount*160):1800;
+      stage==='review-repair'?Math.min(3000,900+reviewRecordCount*160):
+      stage==='answer-repair'?2600:1800;
     try{response=await Promise.race([ai.run(READER_MODEL,{messages,
       chat_template_kwargs:{enable_thinking:false},max_completion_tokens:outputTokenBudget}),
       new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),timeoutMs);})]);}
     catch(error){
-      if(payloadMetrics){
+      if(payloadMetrics||stage==='answer-repair'){
         const failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
           error.code:'review-request-failed';
         trace.stages.push({stage,elapsedMs:Date.now()-start,status:'failed',failureCode,
-          timeoutMs,payloadMetrics});
+          timeoutMs,...(payloadMetrics?{payloadMetrics}:{})});
       }
       throw error;
     }finally{clearTimeout(timer);}
@@ -1273,7 +1321,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       ...(payloadMetrics?{payloadMetrics}:{})});
     if(stage==='compose'&&['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
       throw new ModelFormatError(stage,'The answer draft was truncated before it was complete.','answer-output-truncated');
-    if(stage.startsWith('review')){
+    if(stage.startsWith('review')||stage==='answer-repair'){
       try{
         if(['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
           throw new ModelFormatError(stage,'Reviewer output was truncated before a complete decision object was returned.','review-output-truncated');
@@ -1283,7 +1331,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         if(stageTrace?.stage===stage){
           stageTrace.status='failed';
           stageTrace.failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
-            error.code:'review-response-invalid';
+            error.code:stage==='answer-repair'?'answer-repair-response-invalid':'review-response-invalid';
         }
         throw error;
       }
@@ -1410,61 +1458,8 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       failure={stage:'compose-validation',code:'answer-citation-validation-failed',
         message:'The draft did not contain usable answer content for any requested part.'};
     if(options.review!==false&&checked.parts.some(part=>part.answers.length)){
-      const reviewSpanMaps=new Map();
-      const reviewSpanMapsByPart=new Map();
-      const reviewParts=checked.parts.map(part=>{
-        const citedIds=new Set(part.answers.flatMap(answer=>answer.sourceIds));
-        const partSpanMaps=new Map();
-        const evidence=[...pageById.values()].filter(page=>citedIds.has(page.id)).map(page=>{
-          const source=sources.find(item=>item.id===page.id);
-          const spanText=source?.scopeText||page.text||'';
-          if(!reviewSpanMaps.has(page.id))reviewSpanMaps.set(page.id,
-            new Map(buildReviewSpans(page.id,spanText).map(span=>[span.spanId,span])));
-          const citedAnswers=part.answers.filter(answer=>answer.sourceIds.includes(page.id));
-          const citedAnswerText=citedAnswers.map(answer=>answer.text).join(' ');
-          const requiredAnswer=citedAnswers.find(answer=>answer.claimId===part.requiredAnswerClaimId);
-          const orderedSpans=selectReviewPacketSpans([...reviewSpanMaps.get(page.id).values()],{
-            question:part.question,answer:citedAnswerText,requiredAnswer:requiredAnswer?.text,
-            limit:MAX_REVIEW_PACKET_SPANS_PER_SOURCE});
-          // The reviewer may choose any span in this bounded packet, but the
-          // server rejects span IDs that were not actually sent for this part.
-          partSpanMaps.set(page.id,new Map(orderedSpans.map(span=>[span.spanId,span])));
-          const selectionSupport=(source?.candidatePartSupport||[]).filter(item=>item.partId===part.partId)
-            .map(item=>({relation:item.support,...(item.excerpt?{excerpt:item.excerpt}:{})}));
-          return {id:page.id,title:page.title,page:page.page,
-            provenance:sourceProvenance(source,plan,spanText),
-            ...(sourceVoiceGuidance(sourceProvenance(source,plan,spanText))?
-              {attributionRequirement:sourceVoiceGuidance(sourceProvenance(source,plan,spanText))}:{}),
-            spans:orderedSpans.map(({spanId,text})=>({spanId,text})),
-            ...(selectionSupport.length?{selectionSupport}:{}),
-            ...(source?.scopeText?{contextText:String(page.text||'').slice(0,2500)}: {})};
-        });
-        reviewSpanMapsByPart.set(part.partId,partSpanMaps);
-        const contextClaims=part.answers.filter(answer=>!answer.sourceIds.length)
-          .map(({claimId,text})=>({claimId,text}));
-        return {partId:part.partId,question:part.question,
-          answerMode:evidence.length?'source-and-context':'general-context',
-          ...(part.requiredAnswerClaimId?{requiredAnswerClaimId:part.requiredAnswerClaimId}:{}),
-          ...(contextClaims.length?{contextClaims}:{}),evidence};
-      });
-      // These claim-ranked IDs help the reviewer find likely support quickly;
-      // they are not an allowlist. The reviewer may use another exact span from
-      // this same cited source in reviewParts, and normalizeReview validates it
-      // against the source-scoped, fingerprint-verified span map below.
-      const reviewClaimCount=checked.parts.reduce((count,part)=>count+
-        part.answers.filter(answer=>answer.sourceIds.length).length,0);
-      const reviewHintLimit=reviewClaimCount>8?1:MAX_REVIEW_CANDIDATES_PER_SOURCE;
-      const reviewClaims=checked.parts.flatMap(part=>part.answers
-        .filter(answer=>answer.sourceIds.length)
-        .map(({claimId,text,sourceIds})=>({
-        partId:part.partId,claimId,text,sourceIds,
-        sourceEvidence:sourceIds.map(sourceId=>({sourceId,
-          sourceGroup:sourceGroupFor(sources.find(source=>source.id===sourceId),plan),spanIds:
-          rankReviewSpans([...(reviewSpanMapsByPart.get(part.partId)?.get(sourceId)?.values()||[])],
-            {question:part.question,answer:text}).slice(0,reviewHintLimit)
-              .map(span=>span.spanId)}))
-      })));
-      const reviewPayload=compactReviewPayload(question,reviewParts,reviewClaims);
+      let {reviewSpanMapsByPart,reviewParts,reviewClaims,reviewPayload}=buildReviewPacket(
+        checked.parts,{sources,pageById,plan,question});
       try{
         let rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
         review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMapsByPart,question,reviewClaims);
@@ -1512,6 +1507,83 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             applied:false,reason:'repair-limit-exceeded'};
         }
         if(repairTrace)trace.reviewRepair=repairTrace;
+        const repairTargets=review.issues.length?[]:review.parts.filter(part=>
+          part.directAnswerClaimIds.length>0&&!part.directAnswerCovered&&
+          checked.parts.some(answerPart=>answerPart.partId===part.partId&&answerPart.answers.length));
+        if(repairTargets.length){
+          const targetIds=new Set(repairTargets.map(part=>part.partId));
+          const targetPlan={...plan,parts:plan.parts.filter(part=>targetIds.has(part.id))};
+          const targetAnswers=checked.parts.filter(part=>targetIds.has(part.partId));
+          const targetReviewParts=reviewParts.filter(part=>targetIds.has(part.partId));
+          const directIds=new Set(repairTargets.flatMap(part=>part.directAnswerClaimIds));
+          const repairPayload={question,parts:repairTargets.map(part=>{
+            const answerPart=targetAnswers.find(item=>item.partId===part.partId);
+            return {partId:part.partId,question:plan.parts.find(item=>item.id===part.partId)?.question||'',
+              directAnswerClaimIds:part.directAnswerClaimIds,
+              claims:(answerPart?.answers||[]).map(answer=>({claimId:answer.claimId,text:answer.text,
+                citedSourceIds:answer.sourceIds,
+                initialReview:review.reviewDecisions.filter(item=>item.claimId===answer.claimId)
+                  .map(item=>({sourceId:item.sourceId,status:item.sourceStatus,
+                    accepted:item.accepted===true,reason:item.validationReason||null}))})),
+              evidence:targetReviewParts.find(item=>item.partId===part.partId)?.evidence||[]};
+          }),directAnswerClaimIds:[...directIds]};
+          const answerRepairTrace={attempted:true,partIds:[...targetIds],applied:false,
+            initialSupportIssues:review.supportIssues.filter(issue=>targetIds.has(issue.partId))};
+          try{
+            const repaired=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>{
+              const parsed=parseReviewJson(response);
+              if(!Array.isArray(parsed?.parts)||parsed.parts.length!==targetIds.size)
+                throw new ModelFormatError('answer-repair','Answer repair returned an incomplete part list.','answer-repair-invalid');
+              const repairedById=new Map();
+              for(const item of parsed.parts){
+                const id=String(item?.partId||'').toUpperCase();
+                if(!targetIds.has(id)||repairedById.has(id)||typeof item?.text!=='string'||
+                   !item.text.trim()||item.text.length>8000)
+                  throw new ModelFormatError('answer-repair','Answer repair returned an invalid or unrequested part.','answer-repair-invalid');
+                repairedById.set(id,item.text.trim());
+              }
+              if(repairedById.size!==targetIds.size)
+                throw new ModelFormatError('answer-repair','Answer repair omitted a requested part.','answer-repair-invalid');
+              return repairedById;
+            });
+            const repairedDraftParts=targetPlan.parts.map(part=>({partId:part.id,text:repaired.get(part.id)}));
+            const repairedChecked=validatePartAnswers(repairedDraftParts,sources,targetPlan,question);
+            if(repairedChecked.parts.some(part=>!part.answers.length))
+              throw new ModelFormatError('answer-repair','Repaired answer did not pass citation validation.','answer-repair-invalid');
+            const repairedPacket=buildReviewPacket(repairedChecked.parts,
+              {sources,pageById,plan:targetPlan,question});
+            const repairedRawReview=await run('answer-re-review',REVIEW_PROMPT,
+              repairedPacket.reviewPayload,parseReviewJson);
+            const repairedReview=normalizeReview(repairedRawReview,targetPlan,repairedChecked.parts,
+              sources,repairedPacket.reviewSpanMapsByPart,question,repairedPacket.reviewClaims);
+            const everyDirectClaimAccepted=repairedReview.parts.length===repairTargets.length&&
+              repairedReview.parts.every(part=>part.directAnswerCovered&&part.answerStatus==='answered');
+            if(repairedReview.issues.length||!everyDirectClaimAccepted)
+              throw new ModelFormatError('answer-re-review','Repaired direct answer did not pass independent review.',
+                repairedReview.issues.length?'answer-re-review-incomplete':'answer-re-review-unsupported');
+            for(const repairedPart of repairedChecked.parts){
+              const currentIndex=validatedAnswers.findIndex(item=>item.partId===repairedPart.partId);
+              if(currentIndex>=0)validatedAnswers[currentIndex]=repairedPart;
+            }
+            trace.rejected.push(...repairedChecked.rejected);
+            trace.citationRepairs.push(...repairedChecked.citationRepairs);
+            trace.quoteRepairs.push(...repairedChecked.quoteRepairs);
+            review.parts=review.parts.map(part=>repairedReview.parts.find(item=>item.partId===part.partId)||part);
+            review.reviewDecisions=[...review.reviewDecisions.filter(item=>!targetIds.has(item.partId)),
+              ...repairedReview.reviewDecisions];
+            review.partDecisions=[...review.partDecisions.filter(item=>!targetIds.has(item.partId)),
+              ...repairedReview.partDecisions];
+            review.supportIssues=[...review.supportIssues.filter(item=>!targetIds.has(item.partId)),
+              ...repairedReview.supportIssues];
+            review.warnings=[...review.warnings.filter(item=>!targetIds.has(item.partId)),
+              ...repairedReview.warnings];
+            answerRepairTrace.applied=true;
+            answerRepairTrace.reReviewedPartCount=repairedChecked.parts.length;
+          }catch(error){
+            answerRepairTrace.reason=error.code||'answer-repair-failed';
+          }
+          trace.answerRepair=answerRepairTrace;
+        }
         const syntaxRecovery=rawReview?.[REVIEW_JSON_RECOVERY];
         trace.reviewContract={valid:review.issues.length===0,issues:review.issues,
           warnings:review.warnings,
