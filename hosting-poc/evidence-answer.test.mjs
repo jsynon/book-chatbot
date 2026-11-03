@@ -620,7 +620,7 @@ test('claim review rejects an author-wide theory inferred from one character lin
  const source={...hume,id:'S1',bookId:'52',title:'Crime and Punishment — Fyodor Dostoevsky',
   text,preview:text};
  const claim='Dostoevsky argues that nihilism destroys religious morality and leaves society without values.';
- const ai=makeAI([answer(`PART P1\\n${claim} [S1]`),(_model,{messages})=>{
+ const ai=makeAI([answer(`PART P1\n${claim} [S1]`),(_model,{messages})=>{
   assert.match(messages[0].content,/Do not infer an author-wide theory from a character's line, isolated example, or passing theme/);
   const payload=parsePayload(messages),current=payload.claims[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:[{
