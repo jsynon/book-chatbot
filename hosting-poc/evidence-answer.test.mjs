@@ -1206,6 +1206,47 @@ test('a partial answer-completeness review triggers the existing bounded repair 
  assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
 });
 
+test('a repairable incomplete part is repaired when the reviewer has not nominated a direct claim',async()=>{
+ const ai=makeAI([
+  answer('PART P1\nHume explains necessity as a directly observed power connecting causes to effects. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+    repairable:true,directAnswerClaimIds:[]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),part=payload.parts[0];
+   assert.deepEqual(payload.directAnswerClaimIds,[]);
+   assert.deepEqual(part.review,{status:'partial',answerStatus:'partial',repairable:true,
+    directAnswerCovered:false,supportIssues:[{partId:'P1',reason:'direct-answer-claim-missing'}]});
+   assert.match(messages[0].content,/answer incomplete and explicitly repairable/);
+   assert.match(messages[0].content,/address every substantive demand/);
+   return {response:JSON.stringify({parts:[{partId:'P1',text:
+    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]'}]})};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
+  }
+ ],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,4,'uses one rewrite and one independent re-review within the existing bound');
+ assert.equal(result.trace.answerRepair.applied,true);
+ assert.deepEqual(result.trace.answerRepair.triggerReasons,[{partId:'P1',
+  reasons:['direct-answer-not-identified','repairable-answer-completeness-partial']}]);
+ assert.equal(result.questionParts[0].answerStatus,'answered');
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/uniformity in nature.*custom leads the mind to infer/);
+ assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-repair').length,1);
+ assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
+});
+
 test('malformed answer repair falls back to the original fail-closed review result',async()=>{
  const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
   (_model,{messages})=>{

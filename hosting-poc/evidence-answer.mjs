@@ -174,7 +174,7 @@ function parseJson(raw,stage){
 export function parseReviewJson(raw){return parseJson(raw,'review');}
 
 const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":""}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
-const ANSWER_REPAIR_PROMPT=`Repair only the listed question parts whose reviewer-nominated direct answer did not survive evidence review. Use only the already selected evidence and exact spans supplied; do not seek, invent, or cite other sources. Preserve supported claims and useful uncited context where possible. Rewrite or narrow unsupported source-derived claims so each citation supports the entire claim, including scope, attribution, and logical relations. General knowledge may be used for relevant explanation, but keep it clearly distinct from what a supplied source says and leave independent context uncited. Return exactly one JSON object with one entry for each requested part: {"parts":[{"partId":"P1","text":"complete revised answer text for this part"}]}. Do not include other parts or commentary.`;
+const ANSWER_REPAIR_PROMPT=`Repair only the listed question parts. A part may be listed because its direct answer did not survive evidence review or because the reviewer marked its answer incomplete and explicitly repairable. Compare the part's question with its current claims and review findings; address every substantive demand that can be answered responsibly. Use only the already selected evidence and exact spans supplied; do not seek, invent, or cite other sources. Preserve supported claims and useful uncited context where possible. Rewrite or narrow unsupported source-derived claims so each citation supports the entire claim, including scope, attribution, and logical relations. General knowledge may be used for relevant explanation when the supplied material does not answer a demand; keep it clearly distinct from what a supplied source says and leave independent context uncited. Do not add citations to independent background. Return exactly one JSON object with one entry for each requested part: {"parts":[{"partId":"P1","text":"complete revised answer text for this part"}]}. Do not include other parts or commentary.`;
 
 function mergeReviewRepairs(rawReview,requested,repair){
   if(!Array.isArray(repair?.decisions)||repair.decisions.length!==requested.length)
@@ -1510,8 +1510,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         }
         if(repairTrace)trace.reviewRepair=repairTrace;
         const repairTargets=review.issues.length?[]:review.parts.filter(part=>
-          part.directAnswerClaimIds.length>0&&
-          (!part.directAnswerCovered||
+          ((!part.directAnswerCovered&&part.directAnswerClaimIds.length>0)||
            (part.answerStatus!=='answered'&&part.repairable===true))&&
           checked.parts.some(answerPart=>answerPart.partId===part.partId&&answerPart.answers.length));
         if(repairTargets.length){
@@ -1524,6 +1523,9 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             const answerPart=targetAnswers.find(item=>item.partId===part.partId);
             return {partId:part.partId,question:plan.parts.find(item=>item.id===part.partId)?.question||'',
               directAnswerClaimIds:part.directAnswerClaimIds,
+              review:{status:part.status,answerStatus:part.answerStatus,
+                repairable:part.repairable===true,directAnswerCovered:part.directAnswerCovered,
+                supportIssues:review.supportIssues.filter(issue=>issue.partId===part.partId)},
               claims:(answerPart?.answers||[]).map(answer=>({claimId:answer.claimId,text:answer.text,
                 citedSourceIds:answer.sourceIds,
                 initialReview:review.reviewDecisions.filter(item=>item.claimId===answer.claimId)
@@ -1533,7 +1535,8 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           }),directAnswerClaimIds:[...directIds]};
           const answerRepairTrace={attempted:true,partIds:[...targetIds],applied:false,
             triggerReasons:repairTargets.map(part=>({partId:part.partId,reasons:[
-              ...(!part.directAnswerCovered?['direct-answer-not-supported']:[]),
+              ...(!part.directAnswerCovered?[part.directAnswerClaimIds.length?
+                'direct-answer-not-supported':'direct-answer-not-identified']:[]),
               ...(part.answerStatus!=='answered'&&part.repairable===true?
                 ['repairable-answer-completeness-'+part.answerStatus]:[]),
             ]})),
