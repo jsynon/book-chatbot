@@ -90,11 +90,11 @@ Judge each part against the exact question and the kind of response it requests,
 
 Use the supplied requiredAnswerClaimId as a candidate when reviewing directness, not as the only possible answer. It may be an uncited synthesis in the assistant's own voice; judge it as context rather than requiring a passage to state the synthesis verbatim. When a source-derived claim summarizes or combines positions, assess the cited spans together: complementary passages may support different components of a concise synthesis, but each cited source must support the component attributed to it, and the combined evidence must support the claim as a whole. Identify the claim or claims that directly answer the part in directAnswerClaimIds, whether they occur in the opening or later in the response. Mark answerStatus answered only when the direct-answer claims survive review and the remaining answer is coherent and complete. Do not mark a corpus-gap statement or merely adjacent source discussion as an answer to a different question.
 
-For uncited contextClaims listed inside a part, assess them together for relevance, plausibility, usefulness, attribution, coherence, and completion. Return retainedContextClaimIds containing the context claims that should remain in the answer; omit unsupported, irrelevant, or misleading claims. You may nominate one retained claim as a direct answer only when it directly answers the question. Keep direct answer completeness separate from library evidence coverage: a direct, coherent answer using qualified general knowledge can be complete even when library evidence is partial. If an uncited sentence attributes a position to a supplied book, author, or speaker, it is source-derived and must have the needed source ID; do not pass it as general context. Do not mark a part answered when its answer is only related background or ends with an unfinished thought or list introduction. A useful answer may combine cited source claims with uncited context and interpretation. Return answerStatus as answered, partial, or unanswered to describe whether the complete response answers the question; keep status as the library-evidence verdict.
+For uncited contextClaims listed inside a part, assess them together for relevance, plausibility, usefulness, attribution, coherence, and completion. Return retainedContextClaimIds containing the context claims that should remain in the answer; omit unsupported, irrelevant, or misleading claims. You may nominate one retained claim as a direct answer only when it directly answers the question. Keep direct answer completeness separate from library evidence coverage: a direct, coherent answer using qualified general knowledge can be complete even when library evidence is partial. If an uncited sentence attributes a position to a supplied book, author, or speaker, it is source-derived and must have the needed source ID; do not pass it as general context. Do not mark a part answered when its answer is only related background or ends with an unfinished thought or list introduction. A useful answer may combine cited source claims with uncited context and interpretation. Return answerStatus as answered, partial, or unanswered to describe whether the complete response answers the question; keep status as the library-evidence verdict. Also return repairable as a boolean: true only when a concrete missing or underdeveloped answer element can responsibly be supplied from the already supplied evidence or clearly qualified general knowledge; false when the current limitation is appropriate or the missing element cannot be responsibly resolved. Do not set repairable true merely because the answer is partial.
 
 For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
 
-Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty"}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-speaker claims, provide attributionStatus. Do not include answer text, page text, rationales, or extra fields.`;
+Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty"}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-speaker claims, provide attributionStatus. Do not include answer text, page text, rationales, or extra fields.`;
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -856,7 +856,8 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       code:'source-claim-in-retained-context-list',claimIds:misplacedSourceClaimIds});
     if(unknownRetainedContextIds.length)issues.push('invalid-retained-context-claim-id');
     suppliedParts.set(id,{status:normalizeStatus(item.status),
-      answerStatus, directAnswerClaimIds:normalizedDirectAnswerClaimIds,
+      answerStatus,repairable:item.repairable===true,
+      directAnswerClaimIds:normalizedDirectAnswerClaimIds,
       retainedContextClaimIds,
       invalidDirectAnswerClaimIds:[...new Set(invalidDirectAnswerClaimIds)]});
   }
@@ -1114,6 +1115,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       reviewerStatus:reviewerPart?.status||'missing',finalStatus:status,
       reviewerAnswerStatus:reviewerPart?.answerStatus||reviewerPart?.status||'missing',
       finalAnswerStatus:answerStatus,
+      ...(reviewerPart?.repairable===true?{repairable:true}:{}),
       directAnswerClaimIds:directAnswerIds,
       acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
       directAnswerCovered});
@@ -1121,7 +1123,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     return {partId:part.id,status,answerStatus,evidence,answers:acceptedAnswers,
       directAnswerClaimIds:directAnswerIds,
       acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
-      directAnswerCovered,reason:''};
+      directAnswerCovered,...(reviewerPart?.repairable===true?{repairable:true}:{}),reason:''};
   });
   return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions};
 }
@@ -1508,7 +1510,9 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         }
         if(repairTrace)trace.reviewRepair=repairTrace;
         const repairTargets=review.issues.length?[]:review.parts.filter(part=>
-          part.directAnswerClaimIds.length>0&&!part.directAnswerCovered&&
+          part.directAnswerClaimIds.length>0&&
+          (!part.directAnswerCovered||
+           (part.answerStatus!=='answered'&&part.repairable===true))&&
           checked.parts.some(answerPart=>answerPart.partId===part.partId&&answerPart.answers.length));
         if(repairTargets.length){
           const targetIds=new Set(repairTargets.map(part=>part.partId));
@@ -1528,6 +1532,11 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
               evidence:targetReviewParts.find(item=>item.partId===part.partId)?.evidence||[]};
           }),directAnswerClaimIds:[...directIds]};
           const answerRepairTrace={attempted:true,partIds:[...targetIds],applied:false,
+            triggerReasons:repairTargets.map(part=>({partId:part.partId,reasons:[
+              ...(!part.directAnswerCovered?['direct-answer-not-supported']:[]),
+              ...(part.answerStatus!=='answered'&&part.repairable===true?
+                ['repairable-answer-completeness-'+part.answerStatus]:[]),
+            ]})),
             initialSupportIssues:review.supportIssues.filter(issue=>targetIds.has(issue.partId))};
           try{
             const repaired=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>{
