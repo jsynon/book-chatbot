@@ -635,6 +635,44 @@ test('still repairs an omitted retrieved work when the first answer lacks struct
  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
  assert.match(result.answer,/compares observed gamma rays/);
 });
+test('repairs an incomplete answer part separately from full evidence coverage',async()=>{
+ const question='How does Elizabeth’s view of Darcy change, and what role do her first impressions play in that change?';
+ const sources=[{id:'S1',bookId:'171',title:'Pride and Prejudice — Jane Austen',page:142,
+  preview:'Elizabeth believed Wickham’s account and judged Darcy harshly. Darcy’s letter corrects her first impressions, and she later recognizes how prejudice distorted her judgment.'}];
+ const parts=['Elizabeth’s changing view of Darcy','the role of her first impressions'];
+ const calls=[];
+ const ai={run:async(_model,input)=>{
+  calls.push(input);
+  if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',questionParts:parts.map(part=>({part,status:'supported',evidenceIds:['S1']})),
+   evidence:[{id:'S1',point:'Darcy’s letter corrects Elizabeth’s first impressions and changes her judgment.',
+    quote:'Darcy’s letter corrects her first impressions'}]
+  })}}]};
+  if(calls.length===2)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Elizabeth first accepts Wickham’s account and judges Darcy harshly [S1]. Her first impressions therefore shape her initial view.',
+   partChecks:[
+    {part:parts[0],status:'supported',answerStatus:'partial',repairable:true,evidenceIds:['S1']},
+    {part:parts[1],status:'supported',answerStatus:'answered',repairable:false,evidenceIds:['S1']}
+   ]
+  })}}]};
+  assert.equal(calls.length,3);
+  assert.match(input.messages[0].content,/answerStatus \(answered\|partial\|unanswered\)/);
+  assert.match(input.messages[1].content,/answer completeness: partial/);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   answer:'Elizabeth initially judges Darcy harshly because she accepts Wickham’s account, but she later revises that judgment after Darcy’s letter corrects her first impressions [S1]. Those first impressions shape her early view by making Wickham’s story seem credible and Darcy’s conduct appear to confirm her prejudice; the letter gives her reason to reassess both [S1].',
+   partChecks:[
+    {part:parts[0],status:'supported',answerStatus:'answered',repairable:false,evidenceIds:['S1']},
+    {part:parts[1],status:'supported',answerStatus:'answered',repairable:false,evidenceIds:['S1']}
+   ]
+  })}}]};
+ }};
+ const result=await composeVerifiedAnswer(question,sources,ai);
+ assert.equal(calls.length,3,'the existing bounded answer repair runs only for the flagged incomplete part');
+ assert.equal(result.coverage,'full','source support remains independent from answer completeness');
+ assert.equal(result.answerCompleteness,'full');
+ assert.deepEqual(result.questionParts.map(part=>part.answerStatus),['answered','answered']);
+ assert.match(result.answer,/later revises that judgment/);
+});
 test('repairs literary summaries that blur a character theory with another speaker’s account',async()=>{
  const question='In Crime and Punishment, how does Raskolnikov try to justify murder, and how does the novel test or undermine his reasoning?';
  const sources=[
@@ -1879,15 +1917,15 @@ test('empty-review recovery aligns quote-verified evidence with a cited answer',
  }};
  const result=await composeVerifiedAnswer(question,[source],ai);
  assert.equal(call,2);
- assert.match(prompts[1].messages[0].content,/Cross-check answer and partChecks for consistency/);
+ assert.match(prompts[1].messages[0].content,/Cross-check answer and partChecks with these fields/);
  assert.match(prompts[1].messages[0].content,/Complementary passages may support separate sides/);
  assert.match(prompts[1].messages[0].content,/Preserve meaningful qualifications/);
- assert.match(prompts[1].messages[0].content,/Mark a part supported only if the answer explains it with cited evidence/);
+ assert.match(prompts[1].messages[0].content,/evidence coverage and answer completeness are different judgments/);
  assert.match(prompts[1].messages[0].content,/add an exact short quote only when it can be copied confidently/);
  assert.match(prompts[1].messages[0].content,/answer any part it supports/);
  assert.match(prompts[1].messages[0].content,/cite each source-based sentence inline \[S1\]/);
  assert.match(prompts[1].messages[0].content,/partChecks\/evidence IDs are not citations/);
- assert.match(prompts[1].messages[0].content,/synthesize them in direct prose instead of returning only excerpts/);
+ assert.match(prompts[1].messages[0].content,/Synthesize supported excerpts in direct prose/);
  assert.match(prompts[1].messages[0].content,/Prefer a relevant direct passage from the named primary work over a secondary quotation/);
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.coverage,'full');
