@@ -1168,6 +1168,44 @@ test('an unsupported nominated answer is repaired once and independently re-revi
  assert.equal(result.usage.calls,4,'repair adds one answer rewrite and one independent review');
 });
 
+test('a partial answer-completeness review triggers the existing bounded repair even when its direct claim is supported',async()=>{
+ const ai=makeAI([
+  answer('PART P1\nHume explains necessity as a directly observed power connecting causes to effects. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'partial',repairable:true,
+    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   assert.deepEqual(payload.directAnswerClaimIds,['P1-C1']);
+   assert.match(messages[0].content,/Repair only the listed question parts/);
+   return {response:JSON.stringify({parts:[{partId:'P1',text:
+    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]'}]})};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
+  }
+ ],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,4,'the repair is conditional and reuses one rewrite plus its existing independent re-review');
+ assert.equal(result.trace.answerRepair.attempted,true);
+ assert.equal(result.trace.answerRepair.applied,true);
+ assert.deepEqual(result.trace.answerRepair.triggerReasons,[{partId:'P1',
+  reasons:['repairable-answer-completeness-partial']}]);
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/uniformity in nature.*custom leads the mind to infer/);
+ assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-repair').length,1);
+ assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
+});
+
 test('malformed answer repair falls back to the original fail-closed review result',async()=>{
  const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
   (_model,{messages})=>{
