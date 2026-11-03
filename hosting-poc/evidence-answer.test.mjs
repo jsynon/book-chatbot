@@ -1523,6 +1523,28 @@ test('a reviewed direct general-context claim is retained without duplicating it
  assert.equal(ai.calls.length,2);
 });
 
+test('multi-source part coverage stays partial even when planner intent is misclassified',async()=>{
+ const question='How do Hume and Kant differ in explaining causality?';
+ const humeSource={...hume,id:'S1',candidatePartIds:['P1']};
+ const ai=makeAI([answer('PART P1\nHume explains causality through custom formed by repeated experience. [S1]'),
+  review([['P1','answered']])]);
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question,sourceBookIds:['35','40'],candidateSourceIds:['S1']}],
+  queries:['Hume causality custom','Kant causality a priori']};
+ const result=await composeEvidenceAnswer(question,[humeSource],ai,[],{plan,catalog,trace:true});
+ assert.equal(result.questionParts[0].status,'partial',
+  'one author’s passage cannot establish library coverage for both named source groups');
+ assert.equal(result.questionParts[0].answerStatus,'answered',
+  'qualified general knowledge may still complete the answer');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.answerCompleteness,'full');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='comparison-support-missing-source-group'));
+ assert.equal(ai.calls.length,2,'the completeness check uses the existing compose and review calls');
+});
+
 test('a direct general-context nomination is not enough when answerStatus is partial',async()=>{
  const question='How did Hume explain causal necessity?';
  const ai=makeAI([answer('PART P1\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
