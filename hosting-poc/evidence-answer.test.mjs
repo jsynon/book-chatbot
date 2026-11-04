@@ -2777,6 +2777,31 @@ test('author initials stay attached to the cited direct answer without merging l
   'the following cited sentence stays a separate claim');
 });
 
+test('parenthetical source IDs normalize into the verified citation path and unknown IDs still fail closed',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links causal necessity to repeated conjunction and the mind’s learned expectation (s1).'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/learned expectation \[S1\]/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1']);
+ assert.equal(result.evidenceMap[0].quoteVerified,true);
+ assert.equal(result.evidenceHighlights[0].source_id,'S1');
+ assert.deepEqual(result.trace.citationFormatRepairs,[{partId:'P1',from:'(s1)',to:'[S1]'}]);
+ assert.equal(ai.calls.length,2,'normalization uses the existing compose and review calls');
+
+ const invalidAI=makeAI([answer('PART P1\nHume links causal necessity to repeated conjunction (S99).'),
+  review([['P1','answered']])]);
+ const invalid=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],invalidAI,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(invalid.outcome,'generation-failed');
+ assert.deepEqual(invalid.trace.rejected,[{partId:'P1',reason:'unknown-source-id'}]);
+ assert.doesNotMatch(invalid.answer,/\(S99\)|\[S99\]/);
+ assert.deepEqual(invalid.citations,[]);
+ assert.deepEqual(invalid.evidenceHighlights,[]);
+});
+
 test('abbreviations stay inside cited sentences when source filtering rejects their citation',async()=>{
  const title='Pride and Prejudice — Jane Austen';
  const source={id:'S3',bookId:'901',title,page:128,candidatePartIds:[],

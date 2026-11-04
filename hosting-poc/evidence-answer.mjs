@@ -467,6 +467,21 @@ function isCrossAuthorTransferHypothesis(text){
   return /\bif\b.{0,240}\b(?:apply|applies|applied|extend|extends|extended)\b.{0,180}\b(?:to|against|onto)\b.{0,160}\b(?:might|would|could|may)\s+(?:argue|say|think|claim|conclude|interpret|suggest|propose|infer)\b/iu
     .test(String(text||''));
 }
+function normalizeParentheticalSourceIds(text){
+  // The composer is told to emit [S1], but occasionally emits (S1). Treat
+  // only this exact source-ID shape as a malformed citation marker, convert
+  // it to the canonical syntax, and let the normal source/claim checks
+  // validate it. Unknown IDs still fail closed in validatePartAnswers.
+  const repairs=[];
+  const normalized=String(text||'').replace(/\(\s*(S[1-9]\d*(?:\s*,\s*S[1-9]\d*)*)\s*\)/giu,
+    (match,ids)=>{
+      const replacement='['+ids.toUpperCase().split(',').map(id=>id.trim()).join(', ')+']';
+      repairs.push({from:match,to:replacement});
+      return replacement;
+    });
+  return {text:normalized,repairs};
+}
+
 function validatePartAnswers(draftParts,sources,plan,question=''){
   const sourceById=new Map(sources.map(source=>[source.id,source]));
   // The composer sees passage IDs such as S2-Q8 as locators inside verified
@@ -481,12 +496,15 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
   }
   const hypotheticalQuestion=asksForHypotheticalAuthorResponse(question);
   const crossAuthorComparison=plan.intent==='compare';
-  const output=[],rejected=[],citationRepairs=[],quoteRepairs=[];
+  const output=[],rejected=[],citationRepairs=[],citationFormatRepairs=[],quoteRepairs=[];
   for(const draft of draftParts){
     const part=plan.parts.find(item=>item.id===draft.partId);
     if(!part)continue;
     const allowed=new Set(Array.isArray(part.candidateSourceIds)?part.candidateSourceIds:sources.map(source=>source.id));
-    const paragraphs=draft.text.split(/\n\s*\n/).map(value=>value.trim()).filter(Boolean);
+    const normalizedCitations=normalizeParentheticalSourceIds(draft.text);
+    citationFormatRepairs.push(...normalizedCitations.repairs.map(repair=>({partId:part.id,...repair})));
+    const paragraphs=normalizedCitations.text
+      .split(/\n\s*\n/).map(value=>value.trim()).filter(Boolean);
     const answers=[];
     let requiredAnswerClaimId='';
     for(const [paragraphIndex,paragraph] of paragraphs.entries()){
@@ -584,7 +602,7 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
     output.push({partId:part.id,question:part.question,answers,requiredAnswerClaimId,
       ...(requiresHypotheticalInference?{missingHypotheticalInference:!hasHypotheticalInference}:{})});
   }
-  return {parts:output,rejected,citationRepairs,quoteRepairs};
+  return {parts:output,rejected,citationRepairs,citationFormatRepairs,quoteRepairs};
 }
 
 function renderAnswerParagraphs(answers){
@@ -1622,6 +1640,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     // Citation cleanup is reviewable only in the authenticated trace; the
     // public answer contains the sanitized citation and verified source.
     trace.citationRepairs=checked.citationRepairs;
+    trace.citationFormatRepairs=checked.citationFormatRepairs;
     trace.quoteRepairs=checked.quoteRepairs;
     trace.coverageGaps=[
       ...[...explicitRefusalPartIds].map(partId=>({partId,
@@ -1819,6 +1838,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             }
             trace.rejected.push(...repairedChecked.rejected);
             trace.citationRepairs.push(...repairedChecked.citationRepairs);
+            trace.citationFormatRepairs.push(...repairedChecked.citationFormatRepairs);
             trace.quoteRepairs.push(...repairedChecked.quoteRepairs);
             review.parts=review.parts.map(part=>repairedReview.parts.find(item=>item.partId===part.partId)||part);
             review.reviewDecisions=[...review.reviewDecisions.filter(item=>!targetIds.has(item.partId)),
