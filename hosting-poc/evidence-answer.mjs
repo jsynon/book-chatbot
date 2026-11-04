@@ -92,7 +92,7 @@ Use the supplied requiredAnswerClaimId as a candidate when reviewing directness,
 
 For each part, return requirementCoverage with one decision per supplied requirement: requirementId, status (answered|partial|unanswered), and answerClaimIds. Use only claim IDs from that part. An answered requirement must name at least one claim that directly fulfills it. Do not infer coverage from a claim that only shares its topic. A claim may address multiple requirements. For uncited contextClaims listed inside a part, assess them together for relevance, plausibility, usefulness, attribution, coherence, and completion. Return retainedContextClaimIds containing the context claims that should remain in the answer; omit unsupported, irrelevant, or misleading claims. You may nominate one retained claim as a direct answer only when it directly answers the question. Keep direct answer completeness separate from library evidence coverage: a direct, coherent answer using qualified general knowledge can be complete even when library evidence is partial. If an uncited sentence attributes a position to a supplied book, author, or speaker, it is source-derived and must have the needed source ID; do not pass it as general context. Do not mark a part answered when its answer is only related background or ends with an unfinished thought or list introduction. A useful answer may combine cited source claims with uncited context and interpretation. Return answerStatus as answered, partial, or unanswered to describe whether the complete response answers the question; keep status as the library-evidence verdict. Also return repairable as a boolean: true only when a concrete missing or underdeveloped answer element can responsibly be supplied from the already supplied evidence or clearly qualified general knowledge; false when the current limitation is appropriate or the missing element cannot be responsibly resolved. Do not set repairable true merely because the answer is partial.
 
-If a cited claim combines supported and unsupported material, you may optionally return supportedText: one narrower standalone sentence that preserves only what the supplied exact spans support. Keep the original claim status partial; judge the source decisions against supportedText when provided. Do not add facts, implications, or source attributions absent from those spans. Omit supportedText when no useful narrower claim is directly supported. This is only for cited claims, never uncited general context. The system retains it only if every originally cited source has an accepted exact span and the ordinary attribution, polarity, and citation checks pass. supportedText must be one sentence, contain no line breaks, and contain no citation labels. For every cited source-derived claim, return clauses that cover the complete claim text in order, with no words or connecting phrases omitted. Use one clause containing the entire claim for a simple single-proposition claim. For multiple independently checkable source-derived propositions, split the claim into exact contiguous clause text and include connecting words and punctuation in an adjacent clause so the clauses collectively reproduce the entire claim. Each clause must include a status (answered|partial|unanswered), an issueCode (scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other, or none), and source decisions containing only cited source IDs and exact supporting span IDs. Split propositions joined by causal or contrastive language when each could be true or false independently; do not split one idea into fragments. Mark a clause partial if the passage supports its topic but not its full scope or relation. Clause text must be a verbatim substring of the supplied claim. If supportedText is returned, clause decisions describe the original claim and source decisions describe the narrowed supportedText. Uncited general-context claims are assessed at the part level and do not need clause spans or citations. For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
+If a cited claim combines supported and unsupported material, you may optionally return supportedText: one narrower standalone sentence that preserves only what the supplied exact spans support. Keep the original claim status partial; judge the source decisions against supportedText when provided. Do not add facts, implications, or source attributions absent from those spans. Omit supportedText when no useful narrower claim is directly supported. This is only for cited claims, never uncited general context. The system retains it only if every originally cited source has an accepted exact span and the ordinary attribution, polarity, and citation checks pass. supportedText must be one sentence, contain no line breaks, and contain no citation labels. For a cited claim with multiple independently checkable source-derived clauses, also return clauses: exact clause text copied from the claim. Omit clauses for a simple single-proposition claim. Each clause must include a status (answered|partial|unanswered), an issueCode (scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other, or none), and source decisions containing only cited source IDs and exact supporting span IDs. Split propositions joined by causal or contrastive language when each could be true or false independently; do not split one idea into fragments. Mark a clause partial if the passage supports its topic but not its full scope or relation. Clause text must be a verbatim substring of the supplied claim. If supportedText is returned, clause decisions describe the original claim and source decisions describe the narrowed supportedText. Uncited general-context claims are assessed at the part level and do not need clause spans or citations. For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
 
 Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty"}],"clauses":[{"text":"verbatim clause from claim","status":"answered|partial|unanswered","issueCode":"scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other|none","sources":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"],"requirementCoverage":[{"requirementId":"P1-R1","status":"answered|partial|unanswered","answerClaimIds":["P1-C1"]}]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-speaker claims, provide attributionStatus. Do not include answer text, page text, rationales, or extra fields.`;
 
@@ -655,30 +655,18 @@ function normalizedClauseSurface(value){
   return String(value||'').normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu,' ').trim();
 }
 function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMaps){
-  if(!Array.isArray(raw)||!raw.length)
-    return {decisions:[],warnings:['clause-decisions-missing'],complete:false};
+  if(!Array.isArray(raw)||!raw.length)return {decisions:[],warnings:[]};
   const warnings=[],decisions=[];
   const normalizedClaim=normalizedClauseSurface(claimText);
-  let cursor=0,complete=true;
   for(const item of raw.slice(0,6)){
     const text=typeof item?.text==='string'?item.text.trim():'';
     const normalizedText=normalizedClauseSurface(text);
     if(!text||text.length>600||!normalizedText||!normalizedClaim.includes(normalizedText)){
       warnings.push('clause-text-not-verbatim');
-      complete=false;
       continue;
     }
-    // Clause decisions must partition the whole cited claim, in order. This
-    // makes an omitted final proposition or connective visible to the
-    // deterministic validator instead of trusting the claim-level verdict.
-    const start=normalizedClaim.indexOf(normalizedText,cursor);
-    if(start<cursor||/\S/u.test(normalizedClaim.slice(cursor,start))){
-      warnings.push('clause-coverage-incomplete');
-      complete=false;
-    }else cursor=start+normalizedText.length;
     if(!hasRecognizedStatus(item?.status)){
       warnings.push('clause-status-invalid');
-      complete=false;
       continue;
     }
     const issueCode=REVIEW_CLAUSE_ISSUES.has(String(item?.issueCode||'').toLowerCase())?
@@ -709,13 +697,8 @@ function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMaps){
     if(status!=='answered'&&issueCode==='none')warnings.push('unsupported-clause-without-issue-code');
     decisions.push({text,status,issueCode,sources});
   }
-  if(raw.length>6){warnings.push('clause-count-truncated');complete=false;}
-  if(!/^[\s]*$/u.test(normalizedClaim.slice(cursor))){
-    warnings.push('clause-coverage-incomplete');
-    complete=false;
-  }
-  if(!decisions.length)complete=false;
-  return {decisions,warnings:[...new Set(warnings)],complete};
+  if(raw.length>6)warnings.push('clause-count-truncated');
+  return {decisions,warnings:[...new Set(warnings)]};
 }
 function selectReviewSpansBySource(spanIdsBySource,citedIds,sources,reviewSpanMaps,
  limit=MAX_REVIEW_SPANS_PER_CLAIM){
@@ -1058,12 +1041,13 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         !/\[\s*S\d+/iu.test(proposedSupportedText)&&
         !/[.!?]\s+\S/u.test(proposedSupportedText);
       const candidateText=validSupportedText?proposedSupportedText:answer.text;
+      // Supplied clause decisions add specificity, but the model need not
+      // mechanically partition every cited claim before exact source/span
+      // review can accept it.
       const clauseReview=normalizeClaimClauseDecisions(decision.clauses,answer.text,citedIds,
         reviewSpanMaps.get(part.id)||new Map());
       if(clauseReview.warnings.length)warnings.push({partId:part.id,claimId:answer.claimId,
         code:'clause-review-normalization',details:clauseReview.warnings});
-      if(!clauseReview.complete)supportIssues.push({partId:part.id,claimId:answer.claimId,
-        reason:'claim-clause-review-incomplete'});
       const sourceDecisions=new Map();
       for(const sourceDecision of decision.sources){
         const sourceId=String(sourceDecision?.sourceId||'');
@@ -1147,14 +1131,12 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // the narrower sentence; otherwise the original compound claim stays
         // fail-closed and is omitted by the existing finalizer.
         const unsupportedClause=clauseReview.decisions.find(clause=>clause.status!=='answered');
-        if((!clauseReview.complete||
-          (unsupportedClause&&!validSupportedText&&selected.length>0))&&
+        if(unsupportedClause&&!validSupportedText&&selected.length>0&&
           sourceDecision.status==='answered'){
           sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
-            reason:clauseReview.complete?'claim-clause-not-supported':'claim-clause-review-incomplete',
-            ...(unsupportedClause?{issueCode:unsupportedClause.issueCode,
-              clauseText:unsupportedClause.text.slice(0,320)}:{})});
+            reason:'claim-clause-not-supported',issueCode:unsupportedClause.issueCode,
+            clauseText:unsupportedClause.text.slice(0,320)});
         }
         if(sourceDecision.recoveredMissingDecision||sourceDecision.status!=='answered'||!selected.length){
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
@@ -1168,11 +1150,10 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           supportedSourceIds.add(sourceId);
         }
         const validationReason=attributionIssue||polarityIssue||negationScopeIssue||
-          (!clauseReview.complete?'claim-clause-review-incomplete':
           (sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
           sourceDecision.legacyMissingSpan?'missing-claim-source-span':
           sourceDecision.status!=='answered'?'claim-source-not-supported':
-          !selected.length?'missing-claim-source-span':''));
+          !selected.length?'missing-claim-source-span':'');
         reviewDecisions.push({partId:part.id,claimId:answer.claimId,sourceId,
           claimText:String(candidateText||'').slice(0,320),
           claimStatus:decision.status,
