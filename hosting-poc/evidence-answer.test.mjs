@@ -1256,14 +1256,20 @@ test('an unsupported nominated answer is repaired once and independently re-revi
     directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
   },
-  ()=>({response:JSON.stringify({parts:[{partId:'P1',text:
-   'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]'}]})}),
   (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   const payload=parsePayload(messages),part=payload.parts[0];
+   assert.deepEqual(part.repair.replaceClaimIds,['P1-C1']);
+   assert.equal(part.claims[0].targeted,true);
+   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C1',text:
+    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]'}],additions:[]}]})};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}));
    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims})};
   }
  ],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
@@ -1278,6 +1284,47 @@ test('an unsupported nominated answer is repaired once and independently re-revi
  assert.equal(result.usage.calls,4,'repair adds one answer rewrite and one independent review');
 });
 
+test('claim-scoped repair replaces only rejected claims and preserves accepted neighboring claims verbatim',async()=>{
+ const preserved='Hume explains causal necessity through custom formed by repeated conjunction. [S1]';
+ const ai=makeAI([
+  answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]\n'+preserved),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+    directAnswerClaimIds:['P1-C1']}],claims:payload.claims.map(claim=>{
+     const accepted=claim.claimId==='P1-C2';
+     const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+     return {claimId:claim.claimId,status:accepted?'answered':'partial',
+      sources:[{sourceId:'S1',status:accepted?'answered':'partial',spanIds:accepted?[spanId]:[]}]};
+    })})};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),part=payload.parts[0];
+   assert.deepEqual(part.repair.replaceClaimIds,['P1-C1']);
+   assert.equal(part.claims.find(claim=>claim.claimId==='P1-C1').targeted,true);
+   assert.equal(part.claims.find(claim=>claim.claimId==='P1-C2').targeted,false);
+   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C1',text:
+    'Hume explains necessity through repeated conjunction and the mind’s customary inference from it. [S1]'}],additions:[]}]})};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}));
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims})};
+  }
+ ],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.answerRepair.applied,true);
+ assert.deepEqual(result.trace.answerRepair.targetClaimIds,[{partId:'P1',claimIds:['P1-C1'],addCoverage:false}]);
+ assert.match(result.answer,/Hume explains causal necessity through custom formed by repeated conjunction\. \[S1\]/);
+ assert.equal((result.answer.match(/Hume explains causal necessity through custom formed by repeated conjunction/g)||[]).length,1);
+ assert.match(result.answer,/the mind’s customary inference/);
+ assert.equal(result.usage.calls,4);
+});
+
 test('a partial answer-completeness review triggers the existing bounded repair even when its direct claim is supported',async()=>{
  const ai=makeAI([
   answer('PART P1\nHume explains necessity as a directly observed power connecting causes to effects. [S1]'),
@@ -1289,18 +1336,21 @@ test('a partial answer-completeness review triggers the existing bounded repair 
     sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
   },
   (_model,{messages})=>{
-   const payload=parsePayload(messages);
+   const payload=parsePayload(messages),part=payload.parts[0];
    assert.deepEqual(payload.directAnswerClaimIds,['P1-C1']);
-   assert.match(messages[0].content,/Repair only the listed question parts/);
-   return {response:JSON.stringify({parts:[{partId:'P1',text:
-    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]'}]})};
+   assert.match(messages[0].content,/Patch only the requested claims/);
+   assert.deepEqual(part.repair.replaceClaimIds,[]);
+   assert.equal(part.repair.addCoverage,true);
+   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[],additions:[
+    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]']}]})};
   },
   (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   const payload=parsePayload(messages);
+   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}));
    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims})};
   }
  ],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
@@ -1329,19 +1379,19 @@ test('a repairable incomplete part is repaired when the reviewer has not nominat
   (_model,{messages})=>{
    const payload=parsePayload(messages),part=payload.parts[0];
    assert.deepEqual(payload.directAnswerClaimIds,[]);
-   assert.deepEqual(part.review,{status:'partial',answerStatus:'partial',repairable:true,
-    directAnswerCovered:false,supportIssues:[{partId:'P1',reason:'direct-answer-claim-missing'}]});
-   assert.match(messages[0].content,/answer incomplete and explicitly repairable/);
-   assert.match(messages[0].content,/address every substantive demand/);
-   return {response:JSON.stringify({parts:[{partId:'P1',text:
-    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]'}]})};
+   assert.deepEqual(part.repair.replaceClaimIds,[]);
+   assert.equal(part.repair.addCoverage,true);
+   assert.match(messages[0].content,/addCoverage/);
+   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[],additions:[
+    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]']}]})};
   },
   (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   const payload=parsePayload(messages);
+   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}));
    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims})};
   }
  ],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
@@ -1373,6 +1423,25 @@ test('malformed answer repair falls back to the original fail-closed review resu
  assert.equal(result.trace.answerRepair.applied,false);
  assert.equal(result.trace.answerRepair.reason,'model-output-invalid-format');
  assert.equal(result.usage.calls,3,'invalid repair does not proceed to re-review');
+});
+
+test('an answer repair that patches an unrequested claim fails closed without re-review',async()=>{
+ const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
+  },
+  ()=>({response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C99',
+   text:'An unrequested claim is rewritten. [S1]'}],additions:[]}]})})],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.answerRepair.applied,false);
+ assert.equal(result.trace.answerRepair.reason,'answer-repair-invalid');
+ assert.equal(result.questionParts[0].status,'unsupported');
+ assert.equal(result.usage.calls,3);
+ assert.equal(result.trace.stages.some(stage=>stage.stage==='answer-re-review'),false);
 });
 
 test('an overinclusive direct-answer set can retain a supported answer claim when the reviewer still judges the part complete',async()=>{

@@ -174,7 +174,7 @@ function parseJson(raw,stage){
 export function parseReviewJson(raw){return parseJson(raw,'review');}
 
 const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":""}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
-const ANSWER_REPAIR_PROMPT=`Repair only the listed question parts. A part may be listed because its direct answer did not survive evidence review or because the reviewer marked its answer incomplete and explicitly repairable. Compare the part's question with its current claims and review findings; address every substantive demand that can be answered responsibly. Use only the already selected evidence and exact spans supplied; do not seek, invent, or cite other sources. Preserve supported claims and useful uncited context where possible. Rewrite or narrow unsupported source-derived claims so each citation supports the entire claim, including scope, attribution, and logical relations. General knowledge may be used for relevant explanation when the supplied material does not answer a demand; keep it clearly distinct from what a supplied source says and leave independent context uncited. Do not add citations to independent background. Return exactly one JSON object with one entry for each requested part: {"parts":[{"partId":"P1","text":"complete revised answer text for this part"}]}. Do not include other parts or commentary.`;
+const ANSWER_REPAIR_PROMPT=`Patch only the requested claims. Each part lists replaceClaimIds and whether answer coverage needs an addition. Replace every listed claimId exactly once with one complete sentence; do not rewrite, repeat, remove, or change any other existing claim. Add one or more standalone sentences only when addCoverage is true, and do not repeat claims already present. Use only the already selected evidence and exact spans supplied for that part; do not seek, invent, or cite other sources. A replacement of a source-derived claim must cite only a source supplied for that part, and its citation must support the entire replacement, including attribution, scope, and logical relations. Independent general knowledge may be used for a needed addition when the supplied material does not answer it; keep it distinct from supplied-source claims and leave it uncited. If a requested claim cannot be repaired responsibly, do not invent support; return a replacement that is fully supported or let the bounded repair fail. Return exactly one JSON object with each requested part once and this shape: {"parts":[{"partId":"P1","replacements":[{"claimId":"P1-C2","text":"one replacement sentence"}],"additions":["one new sentence"]}]}. Include empty arrays when there are no replacements or additions. Do not return complete part text, preserved claims, citations to unselected sources, or commentary.`;
 
 function mergeReviewRepairs(rawReview,requested,repair){
   if(!Array.isArray(repair?.decisions)||repair.decisions.length!==requested.length)
@@ -1610,10 +1610,24 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             applied:false,reason:'repair-limit-exceeded'};
         }
         if(repairTrace)trace.reviewRepair=repairTrace;
+        const acceptedClaimIdsByPart=new Map(review.parts.map(part=>[
+          part.partId,new Set((part.answers||[]).map(answer=>answer.claimId))]));
         const repairTargets=review.issues.length?[]:review.parts.filter(part=>
           ((!part.directAnswerCovered&&part.directAnswerClaimIds.length>0)||
            (part.answerStatus!=='answered'&&part.repairable===true))&&
-          checked.parts.some(answerPart=>answerPart.partId===part.partId&&answerPart.answers.length));
+          checked.parts.some(answerPart=>answerPart.partId===part.partId&&answerPart.answers.length))
+          .map(part=>{
+            const acceptedIds=acceptedClaimIdsByPart.get(part.partId)||new Set();
+            const claimIssues=review.supportIssues.filter(issue=>issue.partId===part.partId&&
+              issue.claimId&&!acceptedIds.has(issue.claimId));
+            const targetClaimIds=[...new Set([
+              ...claimIssues.map(issue=>issue.claimId),
+              ...part.directAnswerClaimIds.filter(claimId=>!acceptedIds.has(claimId))
+            ])];
+            return {...part,targetClaimIds,
+              addCoverage:(part.answerStatus!=='answered'&&part.repairable===true)||
+                (!part.directAnswerCovered&&!targetClaimIds.length)};
+          }).filter(part=>part.targetClaimIds.length||part.addCoverage);
         if(repairTargets.length){
           const targetIds=new Set(repairTargets.map(part=>part.partId));
           const targetPlan={...plan,parts:plan.parts.filter(part=>targetIds.has(part.id))};
@@ -1622,19 +1636,21 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           const directIds=new Set(repairTargets.flatMap(part=>part.directAnswerClaimIds));
           const repairPayload={question,parts:repairTargets.map(part=>{
             const answerPart=targetAnswers.find(item=>item.partId===part.partId);
+            const targetClaimIds=new Set(part.targetClaimIds);
             return {partId:part.partId,question:plan.parts.find(item=>item.id===part.partId)?.question||'',
               directAnswerClaimIds:part.directAnswerClaimIds,
-              review:{status:part.status,answerStatus:part.answerStatus,
-                repairable:part.repairable===true,directAnswerCovered:part.directAnswerCovered,
+              repair:{replaceClaimIds:part.targetClaimIds,addCoverage:part.addCoverage,
                 supportIssues:review.supportIssues.filter(issue=>issue.partId===part.partId)},
               claims:(answerPart?.answers||[]).map(answer=>({claimId:answer.claimId,text:answer.text,
-                citedSourceIds:answer.sourceIds,
+                citedSourceIds:answer.sourceIds,targeted:targetClaimIds.has(answer.claimId),
                 initialReview:review.reviewDecisions.filter(item=>item.claimId===answer.claimId)
                   .map(item=>({sourceId:item.sourceId,status:item.sourceStatus,
                     accepted:item.accepted===true,reason:item.validationReason||null}))})),
               evidence:targetReviewParts.find(item=>item.partId===part.partId)?.evidence||[]};
           }),directAnswerClaimIds:[...directIds]};
-          const answerRepairTrace={attempted:true,partIds:[...targetIds],applied:false,
+          const answerRepairTrace={attempted:true,partIds:[...targetIds],
+            targetClaimIds:repairTargets.map(part=>({partId:part.partId,claimIds:part.targetClaimIds,
+              addCoverage:part.addCoverage})),applied:false,
             triggerReasons:repairTargets.map(part=>({partId:part.partId,reasons:[
               ...(!part.directAnswerCovered?[part.directAnswerClaimIds.length?
                 'direct-answer-not-supported':'direct-answer-not-identified']:[]),
@@ -1643,23 +1659,55 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             ]})),
             initialSupportIssues:review.supportIssues.filter(issue=>targetIds.has(issue.partId))};
           try{
-            const repaired=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>{
+            const patches=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>{
               const parsed=parseReviewJson(response);
-              if(!Array.isArray(parsed?.parts)||parsed.parts.length!==targetIds.size)
+              if(!Array.isArray(parsed?.parts)||parsed.parts.length!==repairTargets.length)
                 throw new ModelFormatError('answer-repair','Answer repair returned an incomplete part list.','answer-repair-invalid');
-              const repairedById=new Map();
+              const patchesByPart=new Map();
               for(const item of parsed.parts){
-                const id=String(item?.partId||'').toUpperCase();
-                if(!targetIds.has(id)||repairedById.has(id)||typeof item?.text!=='string'||
-                   !item.text.trim()||item.text.length>8000)
+                const partId=String(item?.partId||'').toUpperCase();
+                const target=repairTargets.find(part=>part.partId===partId);
+                if(!target||patchesByPart.has(partId)||!Array.isArray(item?.replacements)||
+                   !Array.isArray(item?.additions)||
+                   Object.keys(item).some(key=>!['partId','replacements','additions'].includes(key)))
                   throw new ModelFormatError('answer-repair','Answer repair returned an invalid or unrequested part.','answer-repair-invalid');
-                repairedById.set(id,item.text.trim());
+                const replacementById=new Map();
+                for(const replacement of item.replacements){
+                  const claimId=String(replacement?.claimId||'').toUpperCase();
+                  const text=typeof replacement?.text==='string'?replacement.text.trim():'';
+                  if(!target.targetClaimIds.includes(claimId)||replacementById.has(claimId)||
+                     !text||text.length>8000||/[\r\n]/u.test(text)||
+                     Object.keys(replacement).some(key=>!['claimId','text'].includes(key))||
+                     splitCitedSentenceUnits(text).length!==1)
+                    throw new ModelFormatError('answer-repair','Answer repair returned an invalid or unrequested claim patch.','answer-repair-invalid');
+                  replacementById.set(claimId,text);
+                }
+                if(replacementById.size!==target.targetClaimIds.length||
+                   target.targetClaimIds.some(claimId=>!replacementById.has(claimId))||
+                   item.additions.some(text=>typeof text!=='string'||!text.trim()||
+                     text.trim().length>8000||/[\r\n]/u.test(text)||
+                     splitCitedSentenceUnits(text).length!==1)||
+                   [...replacementById.values(),...item.additions].reduce((sum,text)=>sum+text.length,0)>8000||
+                   (!target.addCoverage&&item.additions.length))
+                  throw new ModelFormatError('answer-repair','Answer repair returned incomplete or unrequested claim patches.','answer-repair-invalid');
+                patchesByPart.set(partId,{replacements:replacementById,additions:item.additions.map(text=>text.trim())});
               }
-              if(repairedById.size!==targetIds.size)
+              if(patchesByPart.size!==repairTargets.length)
                 throw new ModelFormatError('answer-repair','Answer repair omitted a requested part.','answer-repair-invalid');
-              return repairedById;
+              return patchesByPart;
             });
-            const repairedDraftParts=targetPlan.parts.map(part=>({partId:part.id,text:repaired.get(part.id)}));
+            const repairedDraftParts=targetPlan.parts.map(part=>{
+              const original=targetAnswers.find(item=>item.partId===part.id);
+              const patch=patches.get(part.id);
+              const answers=(original?.answers||[]).map(answer=>{
+                const replacement=patch.replacements.get(answer.claimId);
+                return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
+              });
+              const nextParagraph=Math.max(-1,...answers.map(answer=>answer.paragraphIndex||0))+1;
+              for(const text of patch.additions)
+                answers.push({text,renderedText:text,sourceIds:[],paragraphIndex:nextParagraph});
+              return {partId:part.id,text:renderAnswerParagraphs(answers)};
+            });
             const repairedChecked=validatePartAnswers(repairedDraftParts,sources,targetPlan,question);
             if(repairedChecked.parts.some(part=>!part.answers.length))
               throw new ModelFormatError('answer-repair','Repaired answer did not pass citation validation.','answer-repair-invalid');
