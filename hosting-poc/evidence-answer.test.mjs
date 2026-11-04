@@ -663,6 +663,67 @@ test('claim review can retain a narrower supported sentence without another AI c
   item.claimId==='P1-C1'&&item.supportedTextApplied===true&&item.acceptedText===narrow));
 });
 
+test('clause review narrows a partially supported causal claim and records each clause',async()=>{
+ const broad='Custom leads us to infer one event from another, and reason alone establishes necessary connection.';
+ const narrow='The mind is determined by custom to infer one from the other.';
+ const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0];
+  const spanId=claim.sourceEvidence[0].spanIds[0];
+  return {response:JSON.stringify({
+   parts:[{partId:'P1',status:'answered',answerStatus:'answered',repairable:false,
+    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'partial',supportedText:narrow,sources:[{
+    sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
+   }],clauses:[
+    {text:'Custom leads us to infer one event from another',status:'answered',issueCode:'none',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]},
+    {text:'reason alone establishes necessary connection',status:'partial',issueCode:'scope',
+     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}
+   ]}]
+  })};
+ }]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  catalog,plan:onePartPlan,trace:true
+ });
+ assert.equal(ai.calls.length,2,'clause review reuses the existing composition and review calls');
+ assert.match(result.answer,/The mind is determined by custom to infer one from the other\. \[S1\]/);
+ assert.doesNotMatch(result.answer,/reason alone establishes necessary connection/);
+ const decision=result.trace.reviewContract.reviewDecisions.find(item=>item.clauseDecisions);
+ assert.ok(decision);
+ assert.deepEqual(decision.clauseDecisions.map(item=>({text:item.text,status:item.status,issueCode:item.issueCode})),[
+  {text:'Custom leads us to infer one event from another',status:'answered',issueCode:'none'},
+  {text:'reason alone establishes necessary connection',status:'partial',issueCode:'scope'}
+ ]);
+ assert.ok(result.trace.reviewContract.reviewDecisions.some(item=>
+  item.claimId==='P1-C1'&&item.supportedTextApplied===true));
+});
+
+test('an unsupported clause cannot pass on an answered claim-level verdict',async()=>{
+ const broad='Custom leads us to infer one event from another, and reason alone establishes necessary connection.';
+ const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0];
+  const spanId=claim.sourceEvidence[0].spanIds[0];
+  return {response:JSON.stringify({
+   parts:[{partId:'P1',status:'answered',answerStatus:'answered',repairable:false,
+    directAnswerClaimIds:[],retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',sources:[{
+    sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
+   }],clauses:[
+    {text:'Custom leads us to infer one event from another',status:'answered',issueCode:'none',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]},
+    {text:'reason alone establishes necessary connection',status:'unanswered',issueCode:'scope',sources:[]}
+   ]}]
+  })};
+ }]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  catalog,plan:onePartPlan,trace:true
+ });
+ assert.equal(ai.calls.length,2);
+ assert.doesNotMatch(result.answer,/Custom leads us to infer|reason alone establishes/);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='claim-clause-not-supported'&&issue.issueCode==='scope'));
+});
+
 test('malformed supportedText is ignored and the partial cited claim remains fail-closed',async()=>{
  const text='Custom is the great guide of human life.';
  const source={...hume,id:'S1',bookId:'35',text,preview:text};
