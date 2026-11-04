@@ -395,8 +395,12 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
        directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
         .slice(0,1).map(claim=>claim.claimId),
        retainedContextClaimIds:(part.contextClaims||[]).map(claim=>claim.claimId)})),
-       claims:payload.claims.map(answer=>({claimId:answer.claimId,status:'answered',
-        spanIds:answer.sourceIds.map(sourceId=>sourceId+'-Q1')}))});
+       claims:payload.claims.map(answer=>{
+        const sources=answer.sourceIds.map(sourceId=>({sourceId,status:'answered',
+         spanIds:[sourceId+'-Q1']}));
+        return {claimId:answer.claimId,status:'answered',sources,
+         clauses:[{text:answer.text,status:'answered',issueCode:'none',sources}]};
+       })});
    }else if(system.startsWith('Answer the reader\'s exact question')){
      const payload=JSON.parse(input.messages[1].content);
      content=payload.parts.map(part=>'PART '+part.partId+'\nThe passage identifies the deeper cause as fear of growing power. [S1]').join('\n\n');
@@ -442,9 +446,13 @@ test('evidence-v2 public route returns six reviewed highlights for six cited pag
   if(system.startsWith('Review the complete answer parts and claims')){
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
     parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),
-    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     spanIds:claim.sourceIds.map(sourceId=>payload.parts.find(part=>part.partId===claim.partId)
-      .evidence.find(item=>item.id===sourceId).spanIds[0])}))
+    claims:payload.claims.map(claim=>{
+     const sources=claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+      spanIds:[payload.parts.find(part=>part.partId===claim.partId)
+       .evidence.find(item=>item.id===sourceId).spanIds[0]]}));
+     return {claimId:claim.claimId,status:'answered',sources,
+      clauses:[{text:claim.text,status:'answered',issueCode:'none',sources}]};
+    })
    })}}]};
   }
   const sourceIds=payload.evidence.map(source=>source.id);
@@ -479,10 +487,14 @@ test('malformed selector JSON uses bounded deterministic fallback without retryi
     parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'answered',
      directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
       .slice(0,1).map(claim=>claim.claimId)})),
-    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+    claims:payload.claims.map(claim=>{
+     const sources=claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
       spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1),
-      attributionStatus:'supported',attributedSpeaker:'Thucydides'}))}))
+      attributionStatus:'supported',attributedSpeaker:'Thucydides'}));
+     return {claimId:claim.claimId,status:'answered',sources,
+      clauses:[{text:claim.text,status:'answered',issueCode:'none',
+       sources:sources.map(({sourceId,spanIds})=>({sourceId,status:'answered',spanIds}))}]};
+    })
    })}}]};
   }
   return {choices:[{finish_reason:'stop',message:{content:
