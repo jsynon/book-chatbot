@@ -749,9 +749,9 @@ test('an unsupported clause cannot pass on an answered claim-level verdict',asyn
   issue.reason==='claim-clause-not-supported'&&issue.issueCode==='scope'));
 });
 
-test('a missing clause review rejects the cited claim but preserves separately reviewed general context',async()=>{
+test('claim-level source review does not require optional clause segmentation',async()=>{
  const context='Outside the cited text, repeated experience can also shape ordinary expectations.';
- const ai=makeAI([answer('PART P1\nHume says custom explains causal expectation. [S1] '+context),
+ const ai=makeAI([answer('PART P1\nCustom shapes the mind’s inference from one event to another. [S1] '+context),
   (_model,{messages})=>{
    const payload=parsePayload(messages),claim=payload.claims[0];
    const contextClaim=payload.parts[0].contextClaims[0];
@@ -764,34 +764,34 @@ test('a missing clause review rejects the cited claim but preserves separately r
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   catalog,plan:onePartPlan,trace:true
  });
- assert.equal(ai.calls.length,2,'missing clause review fails closed without another AI call');
- assert.doesNotMatch(result.answer,/Hume says custom explains causal expectation/);
+ assert.equal(ai.calls.length,2,'optional clause segmentation uses the existing review call');
+ assert.match(result.answer,/Custom shapes the mind’s inference from one event to another\. \[S1\]/);
  assert.match(result.answer,/Outside the cited text, repeated experience/);
- assert.equal(result.citations.length,0,'the rejected source claim does not leave a dangling citation');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+ assert.deepEqual(result.citations.map(source=>source.id),['S1']);
+ assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
   issue.reason==='claim-clause-review-incomplete'));
 });
 
-test('clause coverage must include connective text and the full end of a cited claim',async()=>{
- const broad='Custom shapes expectation, and reason alone establishes necessity.';
+test('reviewed clauses need not mechanically partition every connective in a cited claim',async()=>{
+ const broad='Similar objects are constantly conjoined, and the mind is determined by custom to infer one from the other.';
  const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
   const payload=parsePayload(messages),claim=payload.claims[0],spanId=claim.sourceEvidence[0].spanIds[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
     attributionStatus:'not_applicable',attributedSpeaker:''}],clauses:[
-     {text:'Custom shapes expectation',status:'answered',issueCode:'none',
+     {text:'Similar objects are constantly conjoined',status:'answered',issueCode:'none',
       sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]},
-     {text:'reason alone establishes necessity.',status:'answered',issueCode:'none',
+     {text:'the mind is determined by custom to infer one from the other.',status:'answered',issueCode:'none',
       sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}
    ]}]})};
  }]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   catalog,plan:onePartPlan,trace:true
  });
- assert.doesNotMatch(result.answer,/Custom shapes expectation/);
- assert.ok(result.trace.reviewContract.warnings.some(item=>
+ assert.match(result.answer,/Similar objects are constantly conjoined, and the mind is determined by custom/);
+ assert.ok(!result.trace.reviewContract.warnings.some(item=>
   item.code==='clause-review-normalization'&&item.details.includes('clause-coverage-incomplete')));
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+ assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
   issue.reason==='claim-clause-review-incomplete'));
 });
 
@@ -1748,7 +1748,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/logical relations.*neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/When a claim says how one thing affects or relates to another, the span must support that connection/);
- assert.match(REVIEW_PROMPT,/For every cited source-derived claim, return clauses that cover the complete claim text in order/);
+ assert.match(REVIEW_PROMPT,/For a cited claim with multiple independently checkable source-derived clauses, also return clauses/);
  assert.match(REVIEW_PROMPT,/Uncited general-context claims are assessed at the part level and do not need clause spans or citations/);
  assert.match(REVIEW_PROMPT,/A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means/);
  assert.match(COMPOSER_PROMPT,/Keep the opening focused on the reader rather than a preview of themes/);
