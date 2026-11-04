@@ -46,7 +46,7 @@ Do not tune runtime behavior to a small set of known questions. Use varied devel
 | --- | --- |
 | `hosting-poc/public-gateway.mjs` | Worker routes, public request gates, fingerprint verification, and response handling, including ranking reviewer-approved highlights without adding nonadjacent secondary quotes for the same claim. |
 | `hosting-poc/evidence-selector.mjs` | Bounded selection of verified candidate pages and safe fallback behavior. |
-| `hosting-poc/evidence-answer.mjs` | Evidence assembly, answer composition and review, clause-level claim diagnostics, citation checks, compact source/span catalogs for claim review, and evaluation-only expansion. |
+| `hosting-poc/evidence-answer.mjs` | Evidence assembly, answer composition and review, clause-level claim diagnostics, claim-scoped bounded answer repair, citation checks, compact source/span catalogs for claim review, and evaluation-only expansion. |
 | `hosting-poc/reader-contract.mjs` | Worker planning, catalog-backed fallback, citation, and source contract. Keep shared behavior aligned with the website copy in `antilogicalism/reading-companion/reader-contract.mjs`. |
 | `hosting-poc/*.test.mjs` | Offline Worker and pipeline regression tests. |
 | `scripts/compare_traces.py` | Offline comparison of saved local and Worker traces. |
