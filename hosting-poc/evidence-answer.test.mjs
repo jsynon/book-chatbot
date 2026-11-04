@@ -60,12 +60,19 @@ function makeAI(responses,{decorateReview=true}={}){
      const payload=parsePayload(request.messages);
      if(Array.isArray(reviewObject.parts)&&Array.isArray(reviewObject.claims)){
       for(const part of reviewObject.parts){
-       const contextClaims=payload.parts.find(item=>item.partId===part.partId)?.contextClaims||[];
+       const planPart=payload.parts.find(item=>item.partId===part.partId);
+       const contextClaims=planPart?.contextClaims||[];
+       const partClaims=payload.claims.filter(claim=>claim.partId===part.partId);
        if(!Array.isArray(part.directAnswerClaimIds))part.directAnswerClaimIds=payload.claims
         .filter(claim=>claim.partId===part.partId).slice(0,1).map(claim=>claim.claimId);
        if(!Array.isArray(part.retainedContextClaimIds))part.retainedContextClaimIds=
         part.status==='answered'?contextClaims.map(claim=>claim.claimId):part.status==='partial'?
          part.directAnswerClaimIds.filter(id=>contextClaims.some(claim=>claim.claimId===id)):[];
+       if(!Array.isArray(part.requirementCoverage))part.requirementCoverage=
+        (planPart?.requirements||[]).map(requirement=>({requirementId:requirement.id,
+         status:part.answerStatus||part.status,
+         answerClaimIds:(part.directAnswerClaimIds.length?part.directAnswerClaimIds:partClaims
+          .slice(0,1).map(claim=>claim.claimId))}));
       }
       return {...result,response:JSON.stringify(reviewObject)};
      }
@@ -1041,6 +1048,77 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
   acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true,outputStatus:'supported',
   outputAnswerStatus:'answered'
  }]);
+});
+
+test('uncovered within-part requirements use the existing bounded answer repair and remain traceable',async()=>{
+ const question='How does Hume explain causal necessity, and what role does custom play?';
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,
+  requirements:[
+   {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
+   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}
+  ]}]};
+ let repairPayload;
+ const reviewed=(payload,coverage)=>({response:JSON.stringify({
+  parts:[{partId:'P1',status:'answered',answerStatus:'answered',repairable:true,
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+   requirementCoverage:coverage(payload)}],
+  claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+   sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+    spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})});
+ const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   assert.equal(payload.parts[0].requirements.length,2,'the existing reviewer receives all within-part requirements');
+   return reviewed(payload,()=>[
+    {requirementId:'P1-R1',status:'answered',answerClaimIds:[payload.claims[0].claimId]},
+    {requirementId:'P1-R2',status:'unanswered',answerClaimIds:[]}
+   ]);
+  },
+  (_model,{messages})=>{
+   repairPayload=JSON.parse(messages[1].content);
+   assert.deepEqual(repairPayload.parts[0].repair.missingRequirements,[{
+    requirementId:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'
+   }]);
+   assert.equal(repairPayload.parts[0].repair.addCoverage,true);
+   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[],
+    additions:['Custom trains the mind to infer one event after another from their repeated conjunction. [S1]']}]})};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   return reviewed(payload,current=>[
+    {requirementId:'P1-R1',status:'answered',answerClaimIds:[current.claims[0].claimId]},
+    {requirementId:'P1-R2',status:'answered',answerClaimIds:[current.claims.at(-1).claimId]}
+   ]);
+  }]);
+ const result=await composeEvidenceAnswer(question,[hume],ai,[],{
+  plan,catalog,trace:true});
+ assert.equal(ai.calls.length,4,'requirement tracking reuses the single bounded repair and re-review');
+ assert.deepEqual(result.questionParts[0].requirementCoverage.map(item=>item.status),['answered','answered'],
+  JSON.stringify({outcome:result.outcome,trace:result.trace,questionParts:result.questionParts}));
+ assert.equal(result.questionParts[0].requirementsComplete,true);
+ assert.ok(result.evidenceMap.some(item=>item.requirementIds?.includes('P1-R2')),
+  'accepted evidence records which requirement the repaired claim satisfies');
+ assert.match(result.answer,/Custom trains the mind/);
+});
+
+test('missing requirement decisions fail closed as partial without degrading source evidence status',async()=>{
+ const question='How does Hume explain causal necessity, and what role does custom play?';
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,
+  requirements:[{id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
+   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}]}]};
+ const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[claim.claimId],requirementCoverage:[{
+     requirementId:'P1-R1',status:'answered',answerClaimIds:[claim.claimId]
+    }]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer(question,[hume],ai,[],{plan,catalog,trace:true});
+ assert.equal(result.coverage,'partial','the cited passage review remains independent from answer completeness');
+ assert.equal(result.questionParts[0].requirementsComplete,false);
+ assert.ok(result.trace.reviewContract.issues.some(issue=>issue.includes('missing-requirement-coverage')));
 });
 
 test('a retained direct synthesis remains complete when library evidence is partial',async()=>{

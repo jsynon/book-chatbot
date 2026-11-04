@@ -212,10 +212,13 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   const queries=Array.isArray(planInput.queries)?planInput.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[];
   const parts=(Array.isArray(planInput.parts)?planInput.parts:[]).slice(0,6).map((p,i)=>({
     id:'P'+(i+1),question:bounded(typeof p==='string'?p:p?.question,240),
+    requirementTexts:Array.isArray(p?.requirements)?[...new Set(p.requirements
+      .slice(0,4).map(requirement=>bounded(typeof requirement==='string'?requirement:requirement?.text,200))
+      .filter(Boolean))]:[],
     plannedSearchQueries:Array.isArray(p?.searchQueries)?[...new Set(p.searchQueries
       .slice(0,5).map(query=>bounded(query,400)).filter(Boolean))]:[]
   })).filter(p=>p.question);
-  let normalizedParts=parts.length?parts:[{id:'P1',question}];
+  let normalizedParts=parts.length?parts:[{id:'P1',question,requirementTexts:[]}];
   const identityText=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
     .replace(/[’‘]/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
   const plannerQueryStopWords=new Set(['a','an','and','are','as','at','be','by','do','does','for','from','how',
@@ -261,7 +264,8 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   // context instead of turning inferred themes into new answer requirements.
   if(!explicitMultiPartRequest&&!hypotheticalAuthorResponse){
     const plannedSearchQueries=[...new Set(normalizedParts.flatMap(part=>part.plannedSearchQueries||[]))];
-    normalizedParts=[{id:'P1',question:resolvedQuestion,plannedSearchQueries}];
+    const requirementTexts=[...new Set(normalizedParts.flatMap(part=>part.requirementTexts||[]))];
+    normalizedParts=[{id:'P1',question:resolvedQuestion,plannedSearchQueries,requirementTexts}];
   }
   const sourcePhrases=source=>{
     const phrases=[source.label];
@@ -384,7 +388,15 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     const wrapper=part.question.match(/^How do the named sources compare in response to this question:\s*(.+)$/i);
     if(wrapper&&seenParts.some(previous=>comparisonPartPattern.test(previous.question)))return false;
     seenParts.push(part);retainedPartSourceGroups.push(partSourceGroups[originalIndex]||null);return true;
-  }).map((part,index)=>({...part,id:'P'+(index+1)}));
+  }).map((part,index)=>{
+    const id='P'+(index+1);
+    const requirementTexts=[...new Set((part.requirementTexts||[]).map(value=>String(value||'').trim())
+      .filter(Boolean))];
+    const requirements=requirementTexts.slice(0,4)
+      .map((text,requirementIndex)=>({id:id+'-R'+(requirementIndex+1),text}));
+    const {requirementTexts:_,...normalizedPart}=part;
+    return {...normalizedPart,id,...(requirements.length?{requirements}:{})};
+  });
   partSourceGroups.splice(0,partSourceGroups.length,...retainedPartSourceGroups);
   const partsWithSources=normalizedParts.map((part,index)=>{
     const allowedIds=partSourceGroups[index]||[];

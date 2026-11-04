@@ -673,7 +673,7 @@ test('selector trace exposes the specific coverage-shape failure without model t
 });
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
-   if(input.max_completion_tokens===720)return {choices:[{finish_reason:'stop',message:{content:
+   if(input.max_completion_tokens===1100)return {choices:[{finish_reason:'stop',message:{content:
      '{"queries":["specific original event causes","political motives and context"]}'}}]};
    if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:
      '{"coverage":"full","missing":"","evidence":[{"id":"S1","point":"Relevant supported passage point."}]}'}}]};

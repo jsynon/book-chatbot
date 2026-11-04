@@ -2213,6 +2213,17 @@ test('public highlights join only adjacent verified spans for the same claim',()
  assert.equal(highlights[0].quote,first+' '+second);
  assert.deepEqual(highlights[0].quotes.map(item=>item.quote),[first+' '+second]);
 });
+test('public highlights retain sanitized requirement links on accepted claims',()=>{
+ const source={id:'S1',title:'An Enquiry Concerning Human Understanding — David Hume',page:42};
+ const point='Custom leads the mind to infer one event from another.';
+ const quote='The mind is determined by custom to infer one from the other.';
+ const highlights=selectPublicEvidenceHighlights(point+' [S1].',[source],[
+  {id:'S1',claimId:'P1-C2',partId:'P1',point,quote,quoteVerified:true,
+   requirementIds:['P1-R2','malformed','P1-R2','P2-R1']}
+ ],6,'What role does custom play?',{});
+ assert.deepEqual(highlights[0].requirement_ids,['P1-R2']);
+ assert.deepEqual(highlights[0].quotes[0].requirement_ids,['P1-R2']);
+});
 test('public highlights keep the strongest claim-specific excerpt without unrelated filler',()=>{
  const source={id:'S1',title:'The Odyssey — Homer',page:212};
  const point='Odysseus turns toward the sun, anxious for it to set, yearning to be home.';
