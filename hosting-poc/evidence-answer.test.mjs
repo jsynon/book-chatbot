@@ -46,7 +46,7 @@ function review(statuses,{evidenceByPart={},includeEvidence=true,directAnswerCla
   return {response:JSON.stringify({parts,claims})};
  };
 }
-function makeAI(responses,{decorateReview=true}={}){
+function makeAI(responses,{decorateReview=true,decorateClauses=true}={}){
  const calls=[];
  return {calls,run:async(model,request)=>{calls.push({model,request});const next=responses.shift();
    if(next instanceof Error)throw next;
@@ -54,12 +54,13 @@ function makeAI(responses,{decorateReview=true}={}){
    // Most fixtures predate the explicit answer/context decisions. Give legacy
    // fixtures realistic reviewer selections; focused contract tests opt out.
    const systemText=String(request?.messages?.[0]?.content||'');
-   if(decorateReview&&systemText.includes('directAnswerClaimIds')&&typeof result?.response==='string'){
+   if((decorateReview||decorateClauses)&&systemText.includes('directAnswerClaimIds')&&
+      typeof result?.response==='string'){
     try{
      const reviewObject=JSON.parse(result.response);
      const payload=parsePayload(request.messages);
-     if(Array.isArray(reviewObject.parts)&&Array.isArray(reviewObject.claims)){
-      for(const part of reviewObject.parts){
+    if(Array.isArray(reviewObject.parts)&&Array.isArray(reviewObject.claims)){
+      if(decorateReview)for(const part of reviewObject.parts){
        const planPart=payload.parts.find(item=>item.partId===part.partId);
        const contextClaims=planPart?.contextClaims||[];
        const partClaims=payload.claims.filter(claim=>claim.partId===part.partId);
@@ -73,6 +74,19 @@ function makeAI(responses,{decorateReview=true}={}){
          status:part.answerStatus||part.status,
          answerClaimIds:(part.directAnswerClaimIds.length?part.directAnswerClaimIds:partClaims
           .slice(0,1).map(claim=>claim.claimId))}));
+      }
+      if(decorateClauses)for(const claim of reviewObject.claims){
+       if(Array.isArray(claim.clauses))continue;
+       const sourceIds=payload.claims.find(item=>item.claimId===claim.claimId)?.sourceIds||[];
+       const sourceDecisions=Array.isArray(claim.sources)?claim.sources:
+        sourceIds.map(sourceId=>({sourceId,
+         status:claim.status||'answered',
+         spanIds:(Array.isArray(claim.spanIds)?claim.spanIds:[])
+          .filter(spanId=>String(spanId).startsWith(sourceId+'-'))}));
+       claim.clauses=[{text:payload.claims.find(item=>item.claimId===claim.claimId)?.text||'',
+        status:claim.status||'answered',issueCode:'none',
+        sources:sourceDecisions.map(item=>({sourceId:item.sourceId,
+         status:item.status||claim.status||'answered',spanIds:item.spanIds||[]}))}];
       }
       return {...result,response:JSON.stringify(reviewObject)};
      }
@@ -296,7 +310,9 @@ test('review request orders the cited page by the answer sentence while preservi
   const selected=reviewPayload.parts[0].evidence[0].spans[0];
   const claim=reviewPayload.claims[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:['P1-C1']}],
-   claims:[{claimId:claim.claimId,status:'answered',spanIds:[selected.spanId]}]})};
+   claims:[{claimId:claim.claimId,status:'answered',spanIds:[selected.spanId],clauses:[{
+    text:claim.text,status:'answered',issueCode:'none',sources:[{sourceId:'S1',
+     status:'answered',spanIds:[selected.spanId]}]}]}]})};
  }};
  const result=await composeEvidenceAnswer('What is the relation between faith and probability?',[source],ai,[],{
   catalog,plan:{intent:'explain',sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
@@ -372,7 +388,9 @@ test('compact review decisions validate exact spans without rationale text or re
   assert.equal(max_completion_tokens,messages[0].content.startsWith('Answer the reader')?1800:2100);
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
-    spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}]}]})};
+    spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}],
+    clauses:[{text:claim.text,status:'answered',issueCode:'none',sources:[{sourceId:'S1',
+     status:'answered',spanIds:[span.spanId]}]}]}]})};
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
@@ -682,9 +700,9 @@ test('clause review narrows a partially supported causal claim and records each 
    claims:[{claimId:claim.claimId,status:'partial',supportedText:narrow,sources:[{
     sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
    }],clauses:[
-    {text:'Custom leads us to infer one event from another',status:'answered',issueCode:'none',
+    {text:'Custom leads us to infer one event from another, and',status:'answered',issueCode:'none',
      sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]},
-    {text:'reason alone establishes necessary connection',status:'partial',issueCode:'scope',
+    {text:'reason alone establishes necessary connection.',status:'partial',issueCode:'scope',
      sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}
    ]}]
   })};
@@ -698,8 +716,8 @@ test('clause review narrows a partially supported causal claim and records each 
  const decision=result.trace.reviewContract.reviewDecisions.find(item=>item.clauseDecisions);
  assert.ok(decision);
  assert.deepEqual(decision.clauseDecisions.map(item=>({text:item.text,status:item.status,issueCode:item.issueCode})),[
-  {text:'Custom leads us to infer one event from another',status:'answered',issueCode:'none'},
-  {text:'reason alone establishes necessary connection',status:'partial',issueCode:'scope'}
+  {text:'Custom leads us to infer one event from another, and',status:'answered',issueCode:'none'},
+  {text:'reason alone establishes necessary connection.',status:'partial',issueCode:'scope'}
  ]);
  assert.ok(result.trace.reviewContract.reviewDecisions.some(item=>
   item.claimId==='P1-C1'&&item.supportedTextApplied===true));
@@ -716,9 +734,9 @@ test('an unsupported clause cannot pass on an answered claim-level verdict',asyn
    claims:[{claimId:claim.claimId,status:'answered',sources:[{
     sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
    }],clauses:[
-    {text:'Custom leads us to infer one event from another',status:'answered',issueCode:'none',
+    {text:'Custom leads us to infer one event from another, and',status:'answered',issueCode:'none',
      sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]},
-    {text:'reason alone establishes necessary connection',status:'unanswered',issueCode:'scope',sources:[]}
+    {text:'reason alone establishes necessary connection.',status:'unanswered',issueCode:'scope',sources:[]}
    ]}]
   })};
  }]);
@@ -729,6 +747,52 @@ test('an unsupported clause cannot pass on an answered claim-level verdict',asyn
  assert.doesNotMatch(result.answer,/Custom leads us to infer|reason alone establishes/);
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.reason==='claim-clause-not-supported'&&issue.issueCode==='scope'));
+});
+
+test('a missing clause review rejects the cited claim but preserves separately reviewed general context',async()=>{
+ const context='Outside the cited text, repeated experience can also shape ordinary expectations.';
+ const ai=makeAI([answer('PART P1\nHume says custom explains causal expectation. [S1] '+context),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   const contextClaim=payload.parts[0].contextClaims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'answered',
+    repairable:false,directAnswerClaimIds:[contextClaim.claimId],
+    retainedContextClaimIds:[contextClaim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]],
+     attributionStatus:'not_applicable',attributedSpeaker:''}]}]})};
+  }],{decorateClauses:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  catalog,plan:onePartPlan,trace:true
+ });
+ assert.equal(ai.calls.length,2,'missing clause review fails closed without another AI call');
+ assert.doesNotMatch(result.answer,/Hume says custom explains causal expectation/);
+ assert.match(result.answer,/Outside the cited text, repeated experience/);
+ assert.equal(result.citations.length,0,'the rejected source claim does not leave a dangling citation');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='claim-clause-review-incomplete'));
+});
+
+test('clause coverage must include connective text and the full end of a cited claim',async()=>{
+ const broad='Custom shapes expectation, and reason alone establishes necessity.';
+ const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0],spanId=claim.sourceEvidence[0].spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+   claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
+    attributionStatus:'not_applicable',attributedSpeaker:''}],clauses:[
+     {text:'Custom shapes expectation',status:'answered',issueCode:'none',
+      sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]},
+     {text:'reason alone establishes necessity.',status:'answered',issueCode:'none',
+      sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}
+   ]}]})};
+ }]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  catalog,plan:onePartPlan,trace:true
+ });
+ assert.doesNotMatch(result.answer,/Custom shapes expectation/);
+ assert.ok(result.trace.reviewContract.warnings.some(item=>
+  item.code==='clause-review-normalization'&&item.details.includes('clause-coverage-incomplete')));
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='claim-clause-review-incomplete'));
 });
 
 test('malformed supportedText is ignored and the partial cited claim remains fail-closed',async()=>{
@@ -1684,6 +1748,8 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/logical relations.*neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/When a claim says how one thing affects or relates to another, the span must support that connection/);
+ assert.match(REVIEW_PROMPT,/For every cited source-derived claim, return clauses that cover the complete claim text in order/);
+ assert.match(REVIEW_PROMPT,/Uncited general-context claims are assessed at the part level and do not need clause spans or citations/);
  assert.match(REVIEW_PROMPT,/A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means/);
  assert.match(COMPOSER_PROMPT,/Keep the opening focused on the reader rather than a preview of themes/);
  assert.match(COMPOSER_PROMPT,/If that opening sentence summarizes or combines positions from supplied passages, cite the page IDs that support those components in the sentence/);
@@ -3223,8 +3289,14 @@ test('the exact run 9 Wollstonecraft reviewer response parses after repeated unm
 
 test('run 9 repeated-unmatched-closer recovery still validates the full review and makes no extra call',async()=>{
  const sourceDecision={sourceId:'S1',status:'answered',spanIds:['S1-Q1']};
- const valid=JSON.stringify({claims:['P1-C1','P1-C2'].map(claimId=>({claimId,status:'answered',
-  sources:[sourceDecision]})),parts:[{partId:'P1',status:'answered',
+ const valid=JSON.stringify({claims:[
+  {claimId:'P1-C1',status:'answered',sources:[sourceDecision],clauses:[{
+   text:'Hume links necessity to custom and regular conjunction.',status:'answered',issueCode:'none',
+   sources:[sourceDecision]}]},
+  {claimId:'P1-C2',status:'answered',sources:[sourceDecision],clauses:[{
+   text:'Repeated conjunction guides inference.',status:'answered',issueCode:'none',
+   sources:[sourceDecision]}]}
+ ],parts:[{partId:'P1',status:'answered',
   directAnswerClaimIds:['P1-C1','P1-C2']}]});
  const malformed=valid.replaceAll('"spanIds":["S1-Q1"]}]}','"spanIds":["S1-Q1"]}]]}');
  assert.equal((malformed.match(/\]\]\}/gu)||[]).length,2,
@@ -3286,7 +3358,9 @@ test('flat reviewer decisions retain exact provenance and source-encoded spans',
   reviewPayload=parsePayload(messages);
   const claim=reviewPayload.claims[0];
   return {response:'```json\n'+JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
-   claims:[{claimId:claim.claimId,status:'answered',spanIds:['S1-Q1']}]})+'\n```'};
+   claims:[{claimId:claim.claimId,status:'answered',spanIds:['S1-Q1'],clauses:[{
+    text:claim.text,status:'answered',issueCode:'none',sources:[{sourceId:'S1',
+     status:'answered',spanIds:['S1-Q1']}]}]}]})+'\n```'};
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[source],ai,[],{
   plan:{...onePartPlan,sources:[{label:'Hume commentary',role:'commentary',bookIds:['35']}]},catalog,trace:true});
