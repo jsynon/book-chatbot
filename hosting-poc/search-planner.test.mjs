@@ -57,6 +57,34 @@ test('planner separates distinct outcomes and keeps one causal request together'
  }
 });
 
+test('planner requirements retain explicit within-part demands without changing the part count',async()=>{
+ const question='How does Hume explain causal necessity, and what role does custom play?';
+ const planned={resolvedQuestion:question,intent:'explain',sources:[],
+  parts:[{question,requirements:[
+   'Explain how repeated conjunction gives rise to the idea of necessity.',
+   'Explain how custom leads the mind to infer one event from another.'
+  ]}],scope:'',queries:['Hume causal necessity custom','repeated conjunction and inference']};
+ const result=await planSearchQueries(question,'',{
+  run:async(_model,options)=>{
+   assert.match(options.messages[0].content,/within that part/i);
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]};
+  }});
+ assert.equal(result.plan.parts.length,1,'requirements do not become retrieval or answer parts');
+ assert.deepEqual(result.plan.parts[0].requirements,[
+  {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
+  {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}
+ ]);
+});
+
+test('legacy planner parts without requirements remain unchanged',async()=>{
+ const question='What is causal necessity?';
+ const result=await planSearchQueries(question,'',{
+  run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   resolvedQuestion:question,intent:'explain',sources:[],parts:[{question}],scope:'',
+   queries:['causal necessity meaning','necessity and causation']})}}]})});
+ assert.equal(Object.hasOwn(result.plan.parts[0],'requirements'),false);
+});
+
 test('bounded search planner produces distinct, well-formed corpus search queries',async()=>{
  const answer=await planSearchQueries(question,'Crime and Punishment — Dostoevsky',mockAI);
  assert.deepEqual(answer.queries,good.queries);
