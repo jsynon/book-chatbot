@@ -1467,7 +1467,8 @@ function reviewPayloadMetrics(payload,serializedPayload,systemPrompt){
     requestCharacters:userPayloadCharacters+systemPromptCharacters};
 }
 
-function buildReviewPacket(answerParts,{sources,pageById,plan,question}){
+function buildReviewPacket(answerParts,{sources,pageById,plan,question,
+ packetSpanLimit=MAX_REVIEW_PACKET_SPANS_PER_SOURCE}){
   const reviewSpanMaps=new Map(),reviewSpanMapsByPart=new Map();
   const reviewParts=answerParts.map(part=>{
     const citedIds=new Set(part.answers.flatMap(answer=>answer.sourceIds));
@@ -1482,7 +1483,7 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question}){
       const requiredAnswer=citedAnswers.find(answer=>answer.claimId===part.requiredAnswerClaimId);
       const orderedSpans=selectReviewPacketSpans([...reviewSpanMaps.get(page.id).values()],{
         question:part.question,answer:citedAnswerText,requiredAnswer:requiredAnswer?.text,
-        limit:MAX_REVIEW_PACKET_SPANS_PER_SOURCE});
+        limit:packetSpanLimit});
       partSpanMaps.set(page.id,new Map(orderedSpans.map(span=>[span.spanId,span])));
       const selectionSupport=(source?.candidatePartSupport||[]).filter(item=>item.partId===part.partId)
         .map(item=>({relation:item.support,...(item.excerpt?{excerpt:item.excerpt}:{})}));
@@ -1512,6 +1513,65 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question}){
           {question:part.question,answer:text}).slice(0,reviewHintLimit).map(span=>span.spanId)}))})));
   return {reviewSpanMapsByPart,reviewParts,reviewClaims,
     reviewPayload:compactReviewPayload(question,reviewParts,reviewClaims)};
+}
+
+// Fallback evidence overlap uses the same lightweight term normalization as
+// review-span ranking: lowercase alphanumeric tokens with simple suffix
+// stripping and common stop words removed. Only terms of at least four
+// characters count, so short function-word remnants cannot fake a match.
+const FALLBACK_EVIDENCE_STOP_WORDS=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
+function fallbackEvidenceTerms(value){
+  return new Set((String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>{
+      const simple=term.replace(/(?:ing|ed|es|s)$/u,'');
+      return simple.length>=3?simple:term;
+    }).filter(term=>term.length>=4&&!FALLBACK_EVIDENCE_STOP_WORDS.has(term)));
+}
+function fallbackEvidencePhrases(value){
+  const words=String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]+/gu)||[];
+  const phrases=new Set();
+  for(let index=0;index+2<words.length;index++)
+    phrases.add(words.slice(index,index+3).join(' '));
+  return phrases;
+}
+// A fallback span counts as claim evidence only when the link is lexical and
+// checkable: at least two distinct shared content terms, or one identical
+// three-word phrase. Anything weaker stays unlinked.
+function fallbackSpanVerifiablyOverlaps(claimText,spanText){
+  const claimTerms=fallbackEvidenceTerms(claimText);
+  const spanTerms=fallbackEvidenceTerms(spanText);
+  let shared=0;
+  for(const term of claimTerms)if(spanTerms.has(term))shared++;
+  if(shared>=2)return true;
+  const spanPhrases=fallbackEvidencePhrases(spanText);
+  for(const phrase of fallbackEvidencePhrases(claimText))
+    if(spanPhrases.has(phrase))return true;
+  return false;
+}
+// Build deterministic citation->span links from the validated draft when the
+// model review failed outright. Entries mirror the shape normalizeReview
+// produces, flagged with fallback:true, and never alter review verdicts.
+function buildFallbackEvidenceByPart(checkedParts,sources){
+  const sourceById=new Map(sources.map(source=>[source.id,source]));
+  const byPart=new Map();
+  for(const part of checkedParts){
+    const entries=[];
+    for(const answer of part.answers||[]){
+      for(const sourceId of answer.sourceIds||[]){
+        const source=sourceById.get(sourceId);
+        const text=source?.scopeText||source?.text||source?.preview||'';
+        if(!text)continue;
+        const top=rankReviewSpans(buildReviewSpans(sourceId,text),
+          {question:part.question,answer:answer.text})[0];
+        if(!top||!fallbackSpanVerifiablyOverlaps(answer.text,top.text))continue;
+        entries.push({sourceId,claimId:answer.claimId,quote:top.text,
+          anchorQuote:top.text,start:top.start,end:top.end,fallback:true});
+      }
+    }
+    if(entries.length)byPart.set(part.partId,entries);
+  }
+  return byPart;
 }
 
 export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
@@ -1555,8 +1615,12 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     // budget, and the cap stays below the review allowance.
     const composePartCount=stage==='compose'&&Array.isArray(payload?.parts)?
       Math.max(1,payload.parts.length):1;
+    // A review record costs roughly 170 output tokens once clause decisions
+    // are included; a 25-claim live review truncated at the old 4,200-token
+    // cap and the whole review was discarded. Keep the review allowance
+    // proportional to the record count so large reviews can complete.
     const outputTokenBudget=stage==='review'||stage==='answer-re-review'?
-      Math.min(4200,2000+reviewRecordCount*100):
+      Math.min(6800,1200+reviewRecordCount*170):
       stage==='review-repair'?Math.min(3000,900+reviewRecordCount*160):
       stage==='answer-repair'?2600:
       stage==='compose'?Math.min(3600,Math.max(1800,900+600*composePartCount)):1800;
@@ -1608,6 +1672,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   // unrelated retrieved result from tempting the composer into that failure.
   const composerSourceIds=new Set(plan.parts.flatMap(part=>part.candidateSourceIds||[]));
   const validatedAnswers=[];let review=null,reviewFailure=null,failure=null,reviewedLibraryClaims=false;
+  const fallbackEvidenceByPart=new Map();
   try{
     const composePayload={question,plan,history,
       parts:plan.parts.map(part=>({partId:part.id,question:part.question,requirements:part.requirements||[],
@@ -1721,7 +1786,26 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       let {reviewSpanMapsByPart,reviewParts,reviewClaims,reviewPayload}=buildReviewPacket(
         checked.parts,{sources,pageById,plan,question});
       try{
-        let rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
+        let rawReview;
+        try{
+          rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
+        }catch(firstReviewError){
+          // A truncated, malformed, or deadline-cut review discards every
+          // part decision. Retry once with a compact span packet when the
+          // failure is a review-output problem and the call budget still
+          // has room; any other failure, and a failed retry, follows the
+          // existing review-failure path unchanged.
+          const retryableCodes=['model-output-invalid-format','review-output-truncated',
+            'review-response-invalid','inference-deadline-exceeded'];
+          const callLimit=options.expand===true?6:5;
+          if(!retryableCodes.includes(firstReviewError?.code)||usage.calls>=callLimit)
+            throw firstReviewError;
+          trace.reviewRetry={attempted:true,reason:firstReviewError.code,applied:false};
+          ({reviewSpanMapsByPart,reviewParts,reviewClaims,reviewPayload}=buildReviewPacket(
+            checked.parts,{sources,pageById,plan,question,packetSpanLimit:4}));
+          rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
+          trace.reviewRetry.applied=true;
+        }
         review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMapsByPart,question,reviewClaims);
         const missingDecisions=[...new Map(review.supportIssues
           .filter(issue=>issue.reason==='missing-claim-source-decision')
@@ -1945,6 +2029,18 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         trace.reviewContract={valid:false,issues:[reviewFailure.code]};
       }
     }
+    // Graceful degradation when review fails outright: the validated draft
+    // still carries citations, so link its claims to exact source spans
+    // deterministically where the overlap is verifiable. The answer keeps
+    // citation->span links and highlights instead of none, while statuses
+    // and the review outcome still report it as unverified.
+    if(reviewFailure&&!review){
+      for(const [partId,entries] of buildFallbackEvidenceByPart(checked.parts,sources))
+        fallbackEvidenceByPart.set(partId,entries);
+      const fallbackEntries=[...fallbackEvidenceByPart.values()]
+        .reduce((count,entries)=>count+entries.length,0);
+      if(fallbackEntries)trace.fallbackEvidence={reason:reviewFailure.code,entries:fallbackEntries};
+    }
   }catch(error){failure={stage:error.stage||'compose',code:error.code||'answer-pipeline-failed',
     message:String(error.message||error).slice(0,240)};}
 
@@ -1964,7 +2060,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     if(status==='answered'&&answerPart?.missingHypotheticalInference)status='partial';
     if(answerStatus==='answered'&&hasUnfinishedListIntroduction(renderAnswerParagraphs(answers)))
       answerStatus='partial';
-    return {part,answers,status,answerStatus,evidence:reviewed?.evidence||[],reviewReason:reviewed?.reason||'',
+    return {part,answers,status,answerStatus,evidence:reviewed?.evidence||fallbackEvidenceByPart.get(part.id)||[],reviewReason:reviewed?.reason||'',
       ...(reviewed?.requirementCoverage?{requirementCoverage:reviewed.requirementCoverage,
         requirementsComplete:reviewed.requirementsComplete===true}:{})};
   });

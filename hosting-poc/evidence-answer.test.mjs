@@ -385,7 +385,7 @@ test('compact review decisions validate exact spans without rationale text or re
   if(messages[0].content.startsWith('Answer the reader'))return answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]');
   reviewPayload=parsePayload(messages);
   const claim=reviewPayload.claims[0],span=reviewPayload.parts[0].evidence[0].spans[0];
-  assert.equal(max_completion_tokens,messages[0].content.startsWith('Answer the reader')?1800:2100);
+  assert.equal(max_completion_tokens,messages[0].content.startsWith('Answer the reader')?1800:1370);
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
     spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}],
@@ -615,14 +615,16 @@ test('compact review cannot verify a sentence unless every cited source has a se
  assert.equal(result.evidenceMap.length,0);
  assert.equal(ai.calls.length,2,'an incomplete source checklist does not trigger an unmarked repair');
 });
-test('review truncation remains fail-closed and exposes a stage-specific reason without another call',async()=>{
+test('review truncation gets one compact retry, then remains fail-closed with a stage-specific reason',async()=>{
+ const truncated={choices:[{finish_reason:'length',message:{content:'{"parts":[{"partId":"P1"'}}],
+   usage:{neurons:3,prompt_tokens:500,completion_tokens:1800}};
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
-  {choices:[{finish_reason:'length',message:{content:'{"parts":[{"partId":"P1"'}}],
-   usage:{neurons:3,prompt_tokens:500,completion_tokens:1800}}]);
+  truncated,truncated]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,3,'the truncated review is retried once and no further call is made');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'review-output-truncated',applied:false});
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.reviewStatus,'review-format-failed');
  assert.equal(result.failureCode,'review-output-truncated');
@@ -634,7 +636,11 @@ test('review truncation remains fail-closed and exposes a stage-specific reason 
  assert.ok(result.trace.stages[1].payloadMetrics.serializedCharacters>0);
  assert.equal(result.trace.final.reviewFailure.code,'review-output-truncated');
  assert.match(result.answer,/custom and regular conjunction/);
- assert.equal(result.evidenceMap.length,0);
+ // The failed review no longer discards every citation link: the draft's
+ // claim is deterministically linked to its clearly matching source span.
+ assert.deepEqual(result.trace.fallbackEvidence,{reason:'review-output-truncated',entries:1});
+ assert.equal(result.evidenceMap.length,1);
+ assert.equal(result.evidenceHighlights.length,1);
 });
 test('claim-level review removes a sentence when its cited quote supports only a neighboring claim',async()=>{
  const text='The movement of infinity is the last stage preceding faith, so that he who has not made the movement of infinity cannot have faith.';
@@ -2191,15 +2197,16 @@ test('review sees a bounded per-source packet and cannot select an unsent full-s
  assert.equal(omitted.ai.calls.length,2,'a missing evidence packet cannot trigger repair');
 });
 
-test('review deadline failure stays fail-closed and records the failed stage without retry',async()=>{
- const timeout=Object.assign(new Error('Inference deadline exceeded'),{
+test('review deadline failure stays fail-closed and records the failed stage after one compact retry',async()=>{
+ const timeout=()=>Object.assign(new Error('Inference deadline exceeded'),{
   stage:'review',code:'inference-deadline-exceeded',startedAt:Date.now()-45000
  });
- const ai=makeAI([answer('PART P1\nHume links causal expectation to custom and regular conjunction. [S1]'),timeout]);
+ const ai=makeAI([answer('PART P1\nHume links causal expectation to custom and regular conjunction. [S1]'),timeout(),timeout()]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
- assert.equal(ai.calls.length,2,'a failed review is not retried or repaired with another model call');
+ assert.equal(ai.calls.length,3,'a deadline-cut review is retried once and no further call is made');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'inference-deadline-exceeded',applied:false});
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.coverage,'partial');
  assert.equal(result.trace.final.reviewFailure.stage,'review');
@@ -3367,8 +3374,9 @@ test('reviewer contract errors preserve citation-checked text as an explicitly u
 });
 
 test('malformed reviewer JSON with unescaped quotation marks fails closed and preserves the cited draft as unverified',async()=>{
+ const malformed={response:'{"parts":[{"partId":"P1","status":"answered","reason":"The phrase "denial of self" is supported.","claims":[]}]}' };
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
-  {response:'{"parts":[{"partId":"P1","status":"answered","reason":"The phrase "denial of self" is supported.","claims":[]}]}' }]);
+  malformed,malformed]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.outcome,'unverified-source-draft');
@@ -3376,7 +3384,8 @@ test('malformed reviewer JSON with unescaped quotation marks fails closed and pr
  assert.equal(result.reviewStatus,'review-format-failed');
  assert.match(result.answer,/custom and regular conjunction/);
  assert.deepEqual(result.trace.reviewContract.issues,['model-output-invalid-format']);
- assert.equal(ai.calls.length,2,'format handling must not make an additional model call');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false});
+ assert.equal(ai.calls.length,3,'a malformed review gets one compact retry and no further call');
 });
 
 test('the exact run 9 Wollstonecraft reviewer response parses after repeated unmatched closers are removed',()=>{
@@ -3418,18 +3427,105 @@ test('run 9 repeated-unmatched-closer recovery still validates the full review a
  assert.equal(ai.calls.length,2,'syntax normalization must not trigger another model call');
 });
 
-test('run 48 reviewer typo fails closed without exposing unreviewed evidence',async()=>{
+test('run 48 reviewer typo fails closed to an unverified draft with deterministic fallback evidence',async()=>{
+ const typo={response:'{"parts":[{"partId":"P1","status":"partial"}],"claims":[{"claimId":"P1-C1","status":"unanswered","spansBySource:{}}'};
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
-  {response:'{"parts":[{"partId":"P1","status":"partial"}],"claims":[{"claimId":"P1-C1","status":"unanswered","spansBySource:{}}'}]);
+  typo,typo]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.coverage,'partial');
  assert.equal(result.reviewStatus,'review-format-failed');
- assert.deepEqual(result.evidenceMap,[]);
- assert.deepEqual(result.evidenceHighlights,[]);
+ assert.equal(result.questionParts[0].status,'partial',
+  'fallback evidence never promotes the part to supported');
+ // The review itself still failed; only the deterministic citation->span
+ // link for the clearly matching claim survives as fallback evidence.
+ assert.deepEqual(result.trace.fallbackEvidence,{reason:'model-output-invalid-format',entries:1});
+ assert.equal(result.evidenceMap.length,1);
+ assert.equal(result.evidenceMap[0].id,'S1');
+ assert.equal(result.evidenceMap[0].claimId,'P1-C1');
+ assert.match(result.evidenceMap[0].quote,/uniformity observable in nature/);
+ assert.equal(result.evidenceHighlights.length,1);
+ assert.equal(result.evidenceHighlights[0].source_id,'S1');
  assert.equal(result.trace.reviewContract.issues[0],'model-output-invalid-format');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false});
+ assert.equal(ai.calls.length,3);
+});
+
+test('a truncated first review succeeds on one compact retry with a smaller span packet',async()=>{
+ const sourceText=[
+  'Causation is not perceived directly in the objects themselves, nor in any single impression that we receive from them.',
+  'Custom operates quietly upon the imagination only after repeated instances of constant conjunction have been observed.',
+  'Belief carries with it a peculiar feeling of vivacity that clearly distinguishes it from the loose reveries of fancy.',
+  'Reason alone, as far as experience shows, never produces any action or gives rise to volition in human life itself.',
+  'The idea of substance, when examined closely, has no corresponding impression from which it could be derived at all.',
+  'Probability in matters of fact arises from an opposition of contrary causes and chances mixed together in experience.',
+  'Sympathy is the principle by which we enter into the feelings of others and share their pleasures and their pains.',
+  'Justice derives its whole origin from human conventions established by society to remedy selfishness and partiality.'
+ ].join(' ');
+ const source={...hume,text:sourceText,preview:'Causation is not perceived directly in the objects themselves.'};
+ const truncated={choices:[{finish_reason:'length',message:{content:'{"parts":[{"partId":"P1"'}}],
+  usage:{neurons:3,prompt_tokens:500,completion_tokens:1800}};
+ const ai=makeAI([answer('PART P1\nCausation is not perceived directly in objects themselves. [S1]'),
+  truncated,review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[source],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, the truncated review, and exactly one retry');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'review-output-truncated',applied:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.evidenceMap.length,1);
+ assert.equal(result.trace.fallbackEvidence,undefined,'a successful retry needs no fallback evidence');
+ const firstPacket=JSON.parse(ai.calls[1].request.messages[1].content);
+ const retryPacket=JSON.parse(ai.calls[2].request.messages[1].content);
+ assert.equal(firstPacket.spanCatalog.length,8);
+ assert.equal(retryPacket.spanCatalog.length,4,'the retry reviews a compact four-span packet');
+});
+
+test('a review that fails both attempts keeps deterministic fallback evidence for a clearly matching claim',async()=>{
+ const matching='A just decision applies a rule impartially, while a merciful response tempers the consequence with compassion.';
+ const unrelated='Harvest festivals in the valley traditionally begin after the first frost and continue for nine days of feasting.';
+ const source={id:'S1',bookId:'72',title:'Justice and Mercy',page:1,
+  text:matching+' '+unrelated,preview:matching};
+ const plan={...onePartPlan,sources:[{label:'Justice and Mercy',role:'primary',bookIds:['72']}],
+  parts:[{...onePartPlan.parts[0],question:'How can justice and mercy come into conflict?',
+   sourceBookIds:['72'],candidateSourceIds:['S1']}]};
+ const invalid={response:'{invalid-json'};
+ const ai=makeAI([answer('PART P1\nJustice applies a rule impartially, while mercy tempers consequences with compassion. [S1]'),
+  invalid,invalid]);
+ const result=await composeEvidenceAnswer('How can justice and mercy come into conflict?',[source],ai,[],
+  {plan,catalog:{...catalog,72:'Justice and Mercy'},trace:true});
+ assert.equal(ai.calls.length,3);
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false});
+ assert.equal(result.reviewStatus,'review-format-failed');
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.questionParts[0].status,'partial',
+  'fallback evidence leaves the part partial rather than supported');
+ assert.deepEqual(result.trace.fallbackEvidence,{reason:'model-output-invalid-format',entries:1});
+ assert.equal(result.evidenceMap.length,1);
+ assert.equal(result.evidenceMap[0].id,'S1');
+ assert.equal(result.evidenceMap[0].claimId,'P1-C1');
+ assert.equal(result.evidenceMap[0].quote,matching,
+  'the fallback links the claim to the matching sentence, not the unrelated one');
+ assert.equal(result.evidenceHighlights.length,1);
+ assert.equal(result.evidenceHighlights[0].quote,matching);
+});
+
+test('review output budget scales past the old cap for a many-claim review',async()=>{
+ const sentences=Array.from({length:25},(_,index)=>
+  `Hume observation ${index+1} links necessity to custom and regular conjunction in experience. [S1]`);
+ const ai=makeAI([answer('PART P1\n'+sentences.join(' ')),review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
  assert.equal(ai.calls.length,2);
+ const reviewCall=ai.calls.find(call=>call.request.messages[0].content.startsWith('Review the complete answer'));
+ assert.ok(reviewCall,'the review call was made');
+ assert.ok(reviewCall.request.max_completion_tokens>4200,
+  'a 25-claim review is no longer truncated by the old 4,200-token cap');
+ assert.equal(reviewCall.request.max_completion_tokens,5450,
+  'the budget is 1,200 plus 170 tokens per review record');
+ assert.equal(result.trace.reviewRetry,undefined,'a completed review is not retried');
 });
 
 test('a repeated top-level parts key cannot produce a verified draft after JSON parsing drops a part decision',async()=>{
