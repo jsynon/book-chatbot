@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import * as support from './public-gateway.test-support.mjs';
 import {deduplicateRetrievedEvidenceCandidates} from './public-gateway.mjs';
-const {gzipSync,gateway,handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights,HOST,PDF,manifest,pages,question,payload,fetcher,request,env,fingerprintTestFixture,pilotBaseEnv,pilotScenario}=support;
+const {gzipSync,gateway,handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,prepareCandidatePages,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,planSearchGapQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights,HOST,PDF,manifest,pages,question,payload,fetcher,request,env,fingerprintTestFixture,pilotBaseEnv,pilotScenario}=support;
 
 test('inference failure diagnostics classify provider errors without exposing raw exception text',()=>{
  const error=new Error('rate limit for token=private-token; prompt=private question');
@@ -2285,4 +2285,103 @@ test('v1.9.4 local CORS preflight requires no AI call or token',async()=>{
  assert.equal(response.headers.get('Access-Control-Allow-Origin'),
    'http://127.0.0.1:8766');
  assert.equal(fixture.stats().aiCount,0);
+});
+
+test('public highlights link from the shipped-claim set when a citation sits mid-sentence (batch 5 Q1)',()=>{
+ const source={id:'S1',title:'On Liberty — John Stuart Mill',page:6};
+ const point='Mill explains the principle and its limits for individual liberty.';
+ const quote='The principle requires each person to have a protected sphere of liberty.';
+ const answer='Mill explains the principle [S1] and its limits for individual liberty.';
+ const map=[{id:'S1',claimId:'P1-C1',partId:'P1',point,quote,quoteVerified:true}];
+ const dropped=selectPublicEvidenceHighlights(answer,[source],map,6,
+  'How does Mill define liberty?',{});
+ assert.equal(dropped.length,0,
+  'the legacy verbatim point test drops a claim whose citation marker sits mid-sentence');
+ const kept=selectPublicEvidenceHighlights(answer,[source],map,6,
+  'How does Mill define liberty?',{},new Set(['P1-C1']));
+ assert.equal(kept.length,1,'contract linkage keeps the accepted span for a shipped claim');
+ assert.equal(kept[0].quote,quote);
+ const unshipped=selectPublicEvidenceHighlights(answer,[source],map,6,
+  'How does Mill define liberty?',{},new Set(['P1-C9']));
+ assert.equal(unshipped.length,0,'a claim outside the shipped set stays unlinked');
+});
+test('public highlights surface up to six distinct claims from one source (batch 5 Q1)',()=>{
+ const source={id:'S1',title:'On Liberty — John Stuart Mill',page:6};
+ const claims=[1,2,3,4].map(n=>({id:'S1',claimId:'P1-C'+n,partId:'P1',
+  point:'Point number '+n+' about liberty and society.',
+  quote:'Passage number '+n+' explains a distinct aspect of liberty and its social limits in detail.',
+  quoteVerified:true}));
+ const highlights=selectPublicEvidenceHighlights('Mill explains liberty [S1].',[source],claims,6,
+  'How does Mill define liberty?',{},new Set(['P1-C1','P1-C2','P1-C3','P1-C4']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quotes.length,4,
+  'the old per-source cap of three claims would have dropped the fourth');
+});
+test('fingerprint packets are served from cache on repeat verification (batch 5 verification diet)',async()=>{
+ const content='The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes.';
+ const raw=new TextEncoder().encode(content);
+ const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',raw)),x=>x.toString(16).padStart(2,'0')).join('');
+ const canonical={schema:'antilogicalism-reader-fingerprints-v2',hashAlgorithm:'SHA-256-utf8-exact',
+  libraryVersion:48,bookId:'152',chunk:1,firstPage:33,lastPage:64,
+  title:'Canonical History — Thucydides',pdfDriveId:PDF,
+  pages:[{page:38,globalPageId:34403,utf8Bytes:raw.byteLength,sha256:hash}]};
+ let fetches=0;
+ const fetcher=async()=>{fetches++;return Response.json(canonical);};
+ const store=new Map();
+ const cache={match:async url=>store.get(url),
+  put:async(url,response)=>{store.set(url,response);}};
+ const first={packetsFetched:0,packetCacheHits:0,pagesVerified:0};
+ await verifiedFingerprintSources(question,[{bookId:'152',page:38,text:content}],fetcher,
+  {cache,stats:first});
+ assert.equal(fetches,1);
+ assert.deepEqual(first,{packetsFetched:1,packetCacheHits:0,pagesVerified:1});
+ const second={packetsFetched:0,packetCacheHits:0,pagesVerified:0};
+ const sources=await verifiedFingerprintSources(question,[{bookId:'152',page:38,text:content}],
+  fetcher,{cache,stats:second});
+ assert.equal(sources.length,1,'the cached packet still fully verifies the page');
+ assert.equal(sources[0].title,'Canonical History — Thucydides');
+ assert.equal(fetches,1,'a second verification of the same packet does not re-fetch');
+ assert.deepEqual(second,{packetsFetched:0,packetCacheHits:1,pagesVerified:1});
+});
+test('provisional candidates mirror verification entry validation (batch 5 verification diet)',()=>{
+ const text='The public disputes were over a breached agreement, whereas growing power created fear.';
+ const candidates=prepareCandidatePages(question,[{bookId:'152',page:38,text,
+  candidatePartIds:['P1']}]);
+ assert.equal(candidates.length,1);
+ assert.equal(candidates[0].title,PILOT_BOOKS['152']);
+ assert.equal(candidates[0].text,text);
+ assert.deepEqual(candidates[0].candidatePartIds,['P1']);
+ assert.throws(()=>prepareCandidatePages(question,
+  [{bookId:'152',page:38,text},{bookId:'152',page:38,text}]),/Duplicate source claim/);
+ assert.throws(()=>prepareCandidatePages(question,
+  [{bookId:'152',page:38,text:'too short'}]),/Unacceptable page text size/);
+});
+test('search planning runs at temperature 0 and fails at its 30 s deadline (batch 5 L2/L6)',async(t)=>{
+ let seen;
+ const ai={run:async(_model,input)=>{seen=input;
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   resolvedQuestion:'What caused the war between Athens and Sparta?',intent:'explain',sources:[],
+   parts:[{question:'What caused the war between Athens and Sparta?'}],scope:'',
+   queries:['athens sparta war causes','growing power fear rivals']})}}],usage:{neurons:1}};}};
+ await planSearchQueries('What caused the war between Athens and Sparta?','',ai);
+ assert.equal(seen.temperature,0);
+ t.mock.timers.enable({apis:['setTimeout']});
+ try{
+  const hanging={run:()=>new Promise(()=>{})};
+  const pending=planSearchQueries('What caused the war between Athens and Sparta?','',hanging);
+  const rejection=assert.rejects(pending,/Search plan deadline exceeded/);
+  t.mock.timers.tick(30000);
+  await rejection;
+ }finally{t.mock.timers.reset();}
+});
+test('retrieval gap planning fails at its 20 s deadline instead of hanging (batch 5 L2)',async(t)=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ try{
+  const hanging={run:()=>new Promise(()=>{})};
+  const pending=planSearchGapQueries('What caused the war?','',
+   {weakParts:[],originalQueries:[],candidates:[]},hanging);
+  const rejection=assert.rejects(pending,/Retrieval gap plan deadline exceeded/);
+  t.mock.timers.tick(20000);
+  await rejection;
+ }finally{t.mock.timers.reset();}
 });

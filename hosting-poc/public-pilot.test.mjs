@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import * as support from './public-gateway.test-support.mjs';
-const {gzipSync,gateway,handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights,HOST,PDF,manifest,pages,question,payload,fetcher,request,env,fingerprintTestFixture,pilotBaseEnv,pilotScenario}=support;
+const {gzipSync,gateway,handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,prepareCandidatePages,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,planSearchGapQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights,HOST,PDF,manifest,pages,question,payload,fetcher,request,env,fingerprintTestFixture,pilotBaseEnv,pilotScenario}=support;
 
 test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every guard exists',async()=>{
  const off=await handleRequest(new Request(HOST+'/api/pilot-status',{
@@ -1988,4 +1988,82 @@ test('a mapped point with an unverified quote still triggers the existing eviden
  assert.equal(result.coverage,'full');
  assert.equal(result.questionParts[0].status,'supported');
  assert.match(result.answer,/unknown possibility of dreams after death makes him pause/);
+});
+
+test('verification diet: a candidate discarded by selection is never fingerprint-fetched (batch 5)',async()=>{
+ const textA='The public disputes were over a breached agreement, whereas growing power created fear among competing cities. The deeper cause of the war was stated to be anxiety over political change.';
+ const textB='The shipwrights of the Piraeus laid down triremes each spring, and the treasury recorded every talent spent on timber, cordage, and oars for the fleet.';
+ const packetFor=async(chunk,firstPage,page,text,globalPageId)=>{
+  const bytes=new TextEncoder().encode(text);
+  const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),
+   b=>b.toString(16).padStart(2,'0')).join('');
+  return {schema:'antilogicalism-reader-fingerprints-v2',hashAlgorithm:'SHA-256-utf8-exact',
+   libraryVersion:48,bookId:'152',chunk,firstPage,lastPage:firstPage+31,
+   title:'History of the Peloponnesian War — Thucydides',pdfDriveId:PDF,
+   pages:[{page,globalPageId,utf8Bytes:bytes.byteLength,sha256}]};
+ };
+ const packet1=await packetFor(1,33,38,textA,34403);
+ const packet2=await packetFor(2,65,70,textB,34435);
+ const fetchedUrls=[];
+ const fetcher=async(url,init={})=>{
+  const value=String(url);
+  fetchedUrls.push(value);
+  if(value.includes('siteverify')){
+   const params=new URLSearchParams(init.body);
+   return Response.json({success:params.get('response')==='one-time-challenge',
+    hostname:'jsynon.github.io',action:'companion_ask'});
+  }
+  if(value.endsWith('books/152/1.json'))return Response.json(packet1);
+  if(value.endsWith('books/152/2.json'))return Response.json(packet2);
+  return new Response('missing',{status:404});
+ };
+ const ai={run:async(_model,input)=>{
+  const system=input.messages?.[0]?.content||'';
+  const payload=JSON.parse(input.messages[1].content);
+  if(input.max_completion_tokens===960){
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    parts:payload.parts.map(part=>({partId:part.partId,
+     evidence:[{candidateId:payload.candidates[0].id,support:'direct'}]}))})}}],
+    usage:{neurons:1,prompt_tokens:10,completion_tokens:10}};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'answered',
+     directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
+      .slice(0,1).map(claim=>claim.claimId),
+     retainedContextClaimIds:(part.contextClaims||[]).map(claim=>claim.claimId)})),
+    claims:payload.claims.map(claim=>{
+     const sources=claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+      spanIds:[sourceId+'-Q1']}));
+     return {claimId:claim.claimId,status:'answered',sources,
+      clauses:[{text:claim.text,status:'answered',issueCode:'none',sources}]};
+    })})}}],usage:{neurons:1}};
+  }
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {choices:[{finish_reason:'stop',message:{content:
+    payload.parts.map(part=>'PART '+part.partId+'\nThe passage identifies the deeper cause as fear of growing power. [S1]').join('\n\n')}}],
+    usage:{neurons:1}};
+  }
+  throw new Error('Unexpected AI call in verification-diet scenario');
+ }};
+ const environment=env({PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
+  TURNSTILE_SITE_KEY:'0x4AAAAAA-test-public-pilot',
+  TURNSTILE_SECRET:'a-long-private-turnstile-test-secret',AI:ai});
+ const request=new Request(HOST+'/api/pilot-answer',{method:'POST',
+  headers:{Origin:'https://jsynon.github.io','Content-Type':'application/json',
+   'CF-Connecting-IP':'198.51.100.42'},
+  body:JSON.stringify({question:'What caused the Peloponnesian War?',
+   turnstileToken:'one-time-challenge',
+   sources:[{bookId:'152',page:38,text:textA},{bookId:'152',page:70,text:textB}]})});
+ const response=await handleRequest(request,environment,fetcher);
+ assert.equal(response.status,200);
+ const data=await response.json();
+ assert.match(data.answer,/fear of growing power/);
+ assert.ok(fetchedUrls.some(url=>url.endsWith('books/152/1.json')),
+  'the selected page’s packet is fetched for verification');
+ assert.ok(!fetchedUrls.some(url=>url.endsWith('books/152/2.json')),
+  'the discarded candidate’s packet is never fetched');
+ assert.deepEqual(data.sourceVerification,{candidatePages:2,pagesVerified:1,
+  packetsFetched:1,packetCacheHits:0});
+ assert.equal(data.verifiedPages,1);
 });

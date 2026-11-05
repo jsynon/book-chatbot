@@ -323,3 +323,26 @@ test('one retrieved candidate may provide a recovery link to multiple uncovered 
   ['P2','C2'],['P3','C2']
  ]);
 });
+
+test('selector runs at temperature 0 (batch 5 L6)',async()=>{
+ let seen;
+ const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'direct'}]}]);
+ const original=request.ai.run;
+ request.ai.run=async(model,input)=>{seen=input;return original(model,input);};
+ await selectEvidenceCandidates(request);
+ assert.equal(seen.temperature,0);
+ assert.equal(seen.max_completion_tokens,960);
+});
+
+test('selector times out at 25 s with the call-timeout reason (batch 5 L2)',async(t)=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ try{
+  const request=requestWith([]);
+  request.ai.run=()=>new Promise(()=>{});
+  const pending=selectEvidenceCandidates(request);
+  const rejection=assert.rejects(pending,error=>
+   error?.failureCode==='selector-provider-error'&&error?.failureReason==='call-timeout');
+  t.mock.timers.tick(25000);
+  await rejection;
+ }finally{t.mock.timers.reset();}
+});
