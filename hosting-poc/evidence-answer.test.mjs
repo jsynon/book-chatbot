@@ -108,6 +108,8 @@ test('selected-books hypothetical answers recover author groups from verified so
  const ai=makeAI([answer('PART P1\nNietzsche questions Christian faith’s claim to truth. [S2]\n'+
   'PART P2\nJohannes de Silentio presents faith as a paradox that cannot be made intelligible to others. [S1]\n'+
   'PART P3\nAs a cautious reader inference, Nietzsche might question whether Johannes de Silentio’s account establishes truth about God. [S1, S2]'),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
   review([['P1','answered'],['P2','answered'],['P3','answered']])]);
  const result=await composeEvidenceAnswer(question,sources,ai,[],{catalog:{
   140:'Fear and Trembling — Søren Kierkegaard',
@@ -118,7 +120,7 @@ test('selected-books hypothetical answers recover author groups from verified so
  assert.deepEqual(result.trace.plan.parts.map(part=>part.sourceBookIds),
   [['144'],['140'],['144','140']]);
  assert.deepEqual(result.questionParts.map(part=>part.status),['supported','supported','supported']);
- assert.equal(ai.calls.length,2,'the reconstructed plan uses the existing composition and review calls only');
+ assert.equal(ai.calls.length,4,'the reconstructed plan uses the existing composition and one review call per part');
 });
 
 test('curated provenance is title-guarded and distinguishes pseudonymous work voice from page voice',()=>{
@@ -413,63 +415,66 @@ test('review payload sends repeated exact spans and shared context text once wit
   {id:'P1',question:'How does Hume explain necessity?',sourceBookIds:['35'],candidateSourceIds:['S1']},
   {id:'P2',question:'How does Hume explain causal expectation?',sourceBookIds:['35'],candidateSourceIds:['S1']}
  ]};
- let rawReviewPayload;
+ const rawReviewPayloads=[];
  const fullText=hume.text+'\n\nThe discussion also notes that experience shapes expectations in ordinary life.';
+ const captureReview=(_model,{messages})=>{
+  rawReviewPayloads.push(JSON.parse(messages[1].content));
+  return review([['P1','answered'],['P2','answered']])(_model,{messages});
+ };
  const ai=makeAI([answer('PART P1\nHume links necessity to custom. [S1]\n\n'+
   'PART P2\nHume links causal expectation to repeated experience. [S1]'),
-  (_model,{messages})=>{
-   rawReviewPayload=JSON.parse(messages[1].content);
-   const result=review([['P1','answered'],['P2','answered']])(_model,{messages});
-   return result;
-  }]);
+  captureReview,captureReview]);
  const result=await composeEvidenceAnswer('How does Hume explain necessity and causal expectation?',
   [{...hume,text:fullText,scopeText:hume.text}],ai,[],{plan,catalog,trace:true});
  assert.equal(result.outcome,'verified-source-draft');
- const sourceRefs=rawReviewPayload.parts.map(part=>part.evidence[0]);
- assert.ok(sourceRefs.every(item=>Array.isArray(item.spanIds)));
- assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'spans')));
- assert.ok(rawReviewPayload.spanCatalog.length<sourceRefs.reduce((n,item)=>n+item.spanIds.length,0),
-  'the shared span catalog removes duplicate span text across parts');
- assert.equal(rawReviewPayload.sourceContexts.length,1,
-  'the same source context text is transmitted only once');
- assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'contextSourceId')),
-  'the evidence id already links to its optional source context');
- assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'sourceDetailsId')),
-  'the evidence id already keys shared metadata when no per-part metadata variant exists');
- assert.deepEqual(rawReviewPayload.spanCatalog.map(span=>span.spanId),
-  [...new Set(sourceRefs.flatMap(item=>item.spanIds))],
-  'the catalog contains one text record per distinct exact span');
- const reviewStage=result.trace.stages.find(stage=>stage.stage==='review');
- assert.equal(reviewStage.payloadMetrics.spanCount,rawReviewPayload.spanCatalog.length);
- assert.equal(reviewStage.payloadMetrics.sourceMetadataCount,1,
-  'repeated source title, page, and provenance metadata is represented once');
- assert.equal(reviewStage.payloadMetrics.spanReferenceCount,
-  sourceRefs.reduce((n,item)=>n+item.spanIds.length,0));
- assert.equal(reviewStage.payloadMetrics.systemPromptCharacters,REVIEW_PROMPT.length);
- assert.equal(reviewStage.payloadMetrics.requestCharacters,
-  reviewStage.payloadMetrics.serializedCharacters+REVIEW_PROMPT.length,
-  'workload diagnostics include both the fixed review instructions and variable evidence payload');
- assert.deepEqual(Object.keys(rawReviewPayload.sourceCatalog),['S1']);
- assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'title')&&!Object.hasOwn(item,'page')&&
-  !Object.hasOwn(item,'provenance')&&!Object.hasOwn(item,'attributionRequirement')),
-  'part-scoped source references retain IDs and span links without repeating source metadata');
- assert.ok(JSON.stringify(rawReviewPayload).length<JSON.stringify({
-  ...rawReviewPayload,parts:rawReviewPayload.parts.map(part=>({...part,evidence:part.evidence.map(item=>({
-   ...item,...rawReviewPayload.sourceCatalog[item.sourceDetailsId||item.id]}))})),sourceCatalog:undefined
- }).length,'shared source metadata reduces the serialized review request');
- const previousShape={...rawReviewPayload,
-  parts:rawReviewPayload.parts.map(part=>({...part,evidence:part.evidence.map(item=>({...item,
-   sourceDetailsId:item.id,...(rawReviewPayload.sourceContexts?.some(context=>context.sourceId===item.id)?
-    {contextSourceId:item.id}:{})}))})),
-  claims:rawReviewPayload.claims.map(claim=>({...claim,sourceEvidence:claim.sourceEvidence.map(item=>({...item,
-   sourceGroup:rawReviewPayload.sourceCatalog[item.sourceId].sourceGroup}))}))};
- assert.ok(JSON.stringify(rawReviewPayload).length<JSON.stringify(previousShape).length,
-  'the compact shape removes repeated source-group, metadata-pointer, and context-pointer fields');
- const linksIntact=rawReviewPayload.claims.every(claim=>claim.sourceEvidence.every(item=>
-  item.sourceId in rawReviewPayload.sourceCatalog&&item.spanIds.every(id=>
-   rawReviewPayload.parts.some(part=>part.evidence.some(evidence=>evidence.id===item.sourceId&&
-    evidence.spanIds.includes(id))))));
- assert.ok(linksIntact,'payload compaction keeps each claim source and its part-scoped span hints intact');
+ assert.equal(rawReviewPayloads.length,2,'each part is reviewed in its own call');
+ assert.deepEqual(rawReviewPayloads.map(payload=>payload.parts.map(part=>part.partId)),
+  [['P1'],['P2']],'each review payload contains only its own part');
+ // The compacting guarantees now hold within each per-part payload: exact
+ // span text and source metadata are each transmitted once per call, and
+ // evidence entries link to them by ID instead of repeating them.
+ for(const [index,rawReviewPayload] of rawReviewPayloads.entries()){
+  const sourceRefs=rawReviewPayload.parts.map(part=>part.evidence[0]);
+  assert.ok(sourceRefs.every(item=>Array.isArray(item.spanIds)));
+  assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'spans')));
+  assert.deepEqual(rawReviewPayload.spanCatalog.map(span=>span.spanId),
+   [...new Set(sourceRefs.flatMap(item=>item.spanIds))],
+   'the span catalog contains one text record per distinct exact span');
+  assert.equal(rawReviewPayload.sourceContexts.length,1,
+   'the source context text is transmitted once per part payload');
+  assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'contextSourceId')),
+   'the evidence id already links to its optional source context');
+  assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'sourceDetailsId')),
+   'the evidence id already keys shared metadata when no per-part metadata variant exists');
+  const reviewStage=result.trace.stages.filter(stage=>stage.stage==='review')[index];
+  assert.equal(reviewStage.partId,rawReviewPayload.parts[0].partId);
+  assert.equal(reviewStage.payloadMetrics.spanCount,rawReviewPayload.spanCatalog.length);
+  assert.equal(reviewStage.payloadMetrics.sourceMetadataCount,1,
+   'repeated source title, page, and provenance metadata is represented once');
+  assert.equal(reviewStage.payloadMetrics.spanReferenceCount,
+   sourceRefs.reduce((n,item)=>n+item.spanIds.length,0));
+  assert.equal(reviewStage.payloadMetrics.systemPromptCharacters,REVIEW_PROMPT.length);
+  assert.equal(reviewStage.payloadMetrics.requestCharacters,
+   reviewStage.payloadMetrics.serializedCharacters+REVIEW_PROMPT.length,
+   'workload diagnostics include both the fixed review instructions and variable evidence payload');
+  assert.deepEqual(Object.keys(rawReviewPayload.sourceCatalog),['S1']);
+  assert.ok(sourceRefs.every(item=>!Object.hasOwn(item,'title')&&!Object.hasOwn(item,'page')&&
+   !Object.hasOwn(item,'provenance')&&!Object.hasOwn(item,'attributionRequirement')),
+   'part-scoped source references retain IDs and span links without repeating source metadata');
+  const previousShape={...rawReviewPayload,
+   parts:rawReviewPayload.parts.map(part=>({...part,evidence:part.evidence.map(item=>({...item,
+    sourceDetailsId:item.id,...(rawReviewPayload.sourceContexts?.some(context=>context.sourceId===item.id)?
+     {contextSourceId:item.id}:{})}))})),
+   claims:rawReviewPayload.claims.map(claim=>({...claim,sourceEvidence:claim.sourceEvidence.map(item=>({...item,
+    sourceGroup:rawReviewPayload.sourceCatalog[item.sourceId].sourceGroup}))}))};
+  assert.ok(JSON.stringify(rawReviewPayload).length<JSON.stringify(previousShape).length,
+   'the compact shape removes repeated source-group, metadata-pointer, and context-pointer fields');
+  const linksIntact=rawReviewPayload.claims.every(claim=>claim.sourceEvidence.every(item=>
+   item.sourceId in rawReviewPayload.sourceCatalog&&item.spanIds.every(id=>
+    rawReviewPayload.parts.some(part=>part.evidence.some(evidence=>evidence.id===item.sourceId&&
+     evidence.spanIds.includes(id))))));
+  assert.ok(linksIntact,'payload compaction keeps each claim source and its part-scoped span hints intact');
+ }
  assert.match(REVIEW_PROMPT,/Never borrow a span from another part/);
  assert.match(REVIEW_PROMPT,/look them up using sourceDetailsId when present, otherwise use the evidence entry's id/);
 });
@@ -624,7 +629,8 @@ test('review truncation gets one compact retry, then remains fail-closed with a 
   plan:onePartPlan,catalog,trace:true
  });
  assert.equal(ai.calls.length,3,'the truncated review is retried once and no further call is made');
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'review-output-truncated',applied:false});
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'review-output-truncated',applied:false,
+  parts:[{partId:'P1',reason:'review-output-truncated',applied:false}]});
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.reviewStatus,'review-format-failed');
  assert.equal(result.failureCode,'review-output-truncated');
@@ -638,7 +644,8 @@ test('review truncation gets one compact retry, then remains fail-closed with a 
  assert.match(result.answer,/custom and regular conjunction/);
  // The failed review no longer discards every citation link: the draft's
  // claim is deterministically linked to its clearly matching source span.
- assert.deepEqual(result.trace.fallbackEvidence,{reason:'review-output-truncated',entries:1});
+ assert.deepEqual(result.trace.fallbackEvidence,{reason:'review-output-truncated',entries:1,
+  parts:[{partId:'P1',reason:'review-output-truncated',entries:1}]});
  assert.equal(result.evidenceMap.length,1);
  assert.equal(result.evidenceHighlights.length,1);
 });
@@ -951,21 +958,22 @@ test('the Sunyata review handoff omits a compound sentence when one of its cited
 });
 
 test('a failed author-side premise cannot be pruned from a hypothetical inference citation',async()=>{
+ const premiseReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+   sources:claim.sourceIds.map(sourceId=>({sourceId,
+    status:claim.partId==='P3'&&sourceId==='S2'?'unanswered':'answered',
+    spanIds:claim.partId==='P3'&&sourceId==='S2'?[]:[sourceId+'-Q1']}))}));
+  return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),claims})};
+ };
  const ai=makeAI([hypotheticalDraft(
   'From these passages, one cautious inference is that Nietzsche might reject Kierkegaard’s account of faith. [S1, S2]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,
-     status:claim.partId==='P3'&&sourceId==='S2'?'unanswered':'answered',
-     spanIds:claim.partId==='P3'&&sourceId==='S2'?[]:[sourceId+'-Q1']}))}));
-   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),claims})};
-  }
+  premiseReviewer,premiseReviewer,premiseReviewer
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,2,'an unsupported author-side premise is not repaired without reviewer approval');
+ assert.equal(ai.calls.length,4,'an unsupported author-side premise is not repaired without reviewer approval');
  assert.equal(result.questionParts[2].status,'unsupported');
  assert.equal(result.coverage,'partial');
  assert.doesNotMatch(result.answer,/one cautious inference is that Nietzsche might reject/);
@@ -1039,7 +1047,9 @@ test('a comparison drops an unrequested conditional author-to-author inference',
  const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
   'PART P2\nKant identifies causality as an a priori category of relation. [S2]\n'+
   'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]\n'+
-  inference),review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+  inference),review([['P1','answered'],['P2','answered'],['P3','answered']]),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
+  review([['P1','answered'],['P2','answered'],['P3','answered']])]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
   [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
   {plan:twoSidePlan,catalog,trace:true});
@@ -1047,7 +1057,7 @@ test('a comparison drops an unrequested conditional author-to-author inference',
  assert.doesNotMatch(result.answer,/cautious reader inference|necessary transcendental principle/);
  assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
   item.reason==='unrequested-cross-author-inference'));
- assert.equal(ai.calls.length,2,'the scope guard reuses compose and review without an extra call');
+ assert.equal(ai.calls.length,4,'the scope guard reuses compose and the per-part reviews without an extra call');
 });
 
 test('comparison handoff preserves uncited context while dropping an unrequested author-transfer claim',async()=>{
@@ -1056,6 +1066,8 @@ test('comparison handoff preserves uncited context while dropping an unrequested
   'PART P2\nKant identifies causality as an a priori category of relation. [S2]\n'+
   'PART P3\nHume and Kant differ in their accounts of causal necessity.\n'+
   'Hume ties causal expectation to custom. [S1] Kant treats causality as an a priori category. [S2]\n'+inference),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
   review([['P1','answered'],['P2','answered'],['P3','answered']])]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
   [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
@@ -1069,7 +1081,7 @@ test('comparison handoff preserves uncited context while dropping an unrequested
  assert.equal(comparisonDecision.finalStatus,'answered',
   'the trace preserves the reviewer-stage status after exact-span checks');
  assert.equal(comparisonDecision.outputStatus,'supported');
- assert.equal(ai.calls.length,2,'the handoff stays within one compose and one review call');
+ assert.equal(ai.calls.length,4,'the handoff stays within one compose and one review call per part');
 });
 
 test('an unsupported counterfactual-only comparison exposes its bounded validation reason',async()=>{
@@ -1887,18 +1899,22 @@ test('a multi-part source-and-context answer keeps direct general knowledge for 
   {id:'P2',question:'How does the Odyssey picture heroism?',sourceBookIds:[],
    searchQueries:[],candidateSourceIds:[]}
  ]};
+ const gapReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const response=review([['P1','answered'],['P2','partial']])(_model,{messages});
+  const parsed=JSON.parse(response.response);
+  const p2Decision=parsed.parts.find(part=>part.partId==='P2');
+  if(p2Decision){
+   const contextClaim=payload.parts.find(part=>part.partId==='P2')?.contextClaims?.[0]?.claimId;
+   p2Decision.answerStatus='answered';
+   p2Decision.directAnswerClaimIds=contextClaim?[contextClaim]:[];
+   p2Decision.retainedContextClaimIds=contextClaim?[contextClaim]:[];
+  }
+  return {...response,response:JSON.stringify(parsed)};
+ };
  const ai=makeAI([answer('PART P1\nHume links causal necessity to custom formed through repeated conjunction. [S1]\n\n'+
   'PART P2\nThe Odyssey presents heroism through endurance, judgment, and the difficult return home.'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   const response=review([['P1','answered'],['P2','partial']])(_model,{messages});
-   const parsed=JSON.parse(response.response);
-   const contextClaim=payload.parts.find(part=>part.partId==='P2')?.contextClaims?.[0]?.claimId;
-   parsed.parts.find(part=>part.partId==='P2').answerStatus='answered';
-   parsed.parts.find(part=>part.partId==='P2').directAnswerClaimIds=contextClaim?[contextClaim]:[];
-   parsed.parts.find(part=>part.partId==='P2').retainedContextClaimIds=contextClaim?[contextClaim]:[];
-   return {...response,response:JSON.stringify(parsed)};
-  }]);
+  gapReviewer,gapReviewer]);
  const result=await composeEvidenceAnswer(question,[hume],ai,[],{plan,catalog,trace:true});
  const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
  assert.equal(composePayload.parts.find(part=>part.partId==='P2').answerMode,'source-and-context');
@@ -1906,7 +1922,7 @@ test('a multi-part source-and-context answer keeps direct general knowledge for 
  assert.equal(result.answerCompleteness,'full');
  assert.match(result.answer,/The Odyssey presents heroism/);
  assert.match(result.answer,/Hume links causal necessity.*\[S1\]/);
- assert.equal(ai.calls.length,2,'the existing compose and review calls are sufficient');
+ assert.equal(ai.calls.length,3,'the existing compose and per-part review calls are sufficient');
 });
 
 test('a reviewed direct general-context claim is retained without duplicating it in context IDs',async()=>{
@@ -2071,14 +2087,16 @@ function hypotheticalDraft(inference){
 
 test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both authors’ reviewed evidence',async()=>{
  let reviewPayload;
+ const capturingReviewer=(_model,{messages})=>{reviewPayload=parsePayload(messages);
+  return hypotheticalReview()(_model,{messages});};
  const ai=makeAI([hypotheticalDraft(
   'As a cautious reader inference, if Nietzsche applied his criticism of Christian faith to Johannes de Silentio’s account of faith, he might question whether that account establishes truth about God. [S1, S2]'),
-  (_model,{messages})=>{reviewPayload=parsePayload(messages);return hypotheticalReview()(_model,{messages});}
+  capturingReviewer,capturingReviewer,capturingReviewer
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,2,'the fix must stay within the existing compose + review budget');
+ assert.equal(ai.calls.length,4,'the fix must stay within the existing compose + per-part review budget');
  assert.equal(result.coverage,'full');
  assert.equal(result.questionParts[2].status,'supported');
  assert.match(result.answer,/cautious reader inference/i);
@@ -2098,22 +2116,23 @@ test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both 
 });
 
 test('a broad hypothetical conclusion stays partial even when both premise sources are supported',async()=>{
+ const broadReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const claims=payload.claims.map(claim=>({claimId:claim.claimId,
+   status:claim.partId==='P3'?'partial':'answered',
+   sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+    spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}));
+  return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,
+   status:part.partId==='P3'?'partial':'answered'})),claims})};
+ };
  const ai=makeAI([hypotheticalDraft(
   'From these passages, one cautious inference is that Nietzsche would reject Kierkegaard’s entire philosophy as life-denying. [S1, S2]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   const claims=payload.claims.map(claim=>({claimId:claim.claimId,
-    status:claim.partId==='P3'?'partial':'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}));
-   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,
-    status:part.partId==='P3'?'partial':'answered'})),claims})};
-  }
+  broadReviewer,broadReviewer,broadReviewer
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,2,'broad unsupported synthesis remains partial without a repairability signal');
+ assert.equal(ai.calls.length,4,'broad unsupported synthesis remains partial without a repairability signal');
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.questionParts[1].status,'supported');
@@ -2151,13 +2170,13 @@ test('a hypothetical can cite one relevant page per author when more group pages
  };
  const ai=makeAI([hypotheticalDraft(
   'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1, S2]'),
-  reviewer
+  reviewer,reviewer,reviewer
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,sources,ai,[],{plan,catalog,trace:true});
  const inference=reviewPayload.claims.find(claim=>claim.partId==='P3');
  assert.deepEqual(inference.sourceIds,['S1','S2']);
  assert.equal(result.coverage,'full');
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,4);
 });
 
 test('review sees a bounded per-source packet and cannot select an unsent full-source span',async()=>{
@@ -2206,7 +2225,8 @@ test('review deadline failure stays fail-closed and records the failed stage aft
   plan:onePartPlan,catalog,trace:true
  });
  assert.equal(ai.calls.length,3,'a deadline-cut review is retried once and no further call is made');
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'inference-deadline-exceeded',applied:false});
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'inference-deadline-exceeded',applied:false,
+  parts:[{partId:'P1',reason:'inference-deadline-exceeded',applied:false}]});
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.coverage,'partial');
  assert.equal(result.trace.final.reviewFailure.stage,'review');
@@ -2230,14 +2250,15 @@ test('an evidence limitation stays visible but cannot complete the requested hyp
  const limitation='The supplied passages do not warrant a reliable inference about how Nietzsche would respond to Kierkegaard. [S1, S2]';
  const reviewer=(_model,{messages})=>{
   const result=JSON.parse(hypotheticalReview()(_model,{messages}).response);
-  result.parts.find(part=>part.partId==='P3').status='partial';
+  const p3=result.parts.find(part=>part.partId==='P3');
+  if(p3)p3.status='partial';
   return {response:JSON.stringify(result)};
  };
- const ai=makeAI([hypotheticalDraft(limitation),reviewer]);
+ const ai=makeAI([hypotheticalDraft(limitation),reviewer,reviewer,reviewer]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,4);
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[2].status,'partial');
  assert.match(result.answer,/do not warrant a reliable inference/);
@@ -2248,14 +2269,15 @@ test('the run-58 comparison limitation remains partial while a positive inferenc
  const limitation='Because Nietzsche characterizes faith as a psychological misunderstanding or a tool of priestly mastery [S1] and Kierkegaard describes faith as a transcendent, absurd movement of the self toward God [S2], the passages support a comparison but not a reliable inference about Nietzsche’s specific response to Kierkegaard’s thought.';
  const reviewer=(_model,{messages})=>{
   const result=JSON.parse(hypotheticalReview()(_model,{messages}).response);
-  result.parts.find(part=>part.partId==='P3').status='partial';
+  const p3=result.parts.find(part=>part.partId==='P3');
+  if(p3)p3.status='partial';
   return {response:JSON.stringify(result)};
  };
- const ai=makeAI([hypotheticalDraft(limitation),reviewer]);
+ const ai=makeAI([hypotheticalDraft(limitation),reviewer,reviewer,reviewer]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,4);
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[2].status,'partial');
  assert.match(result.answer,/support a comparison but not a reliable inference/);
@@ -2414,31 +2436,32 @@ test('prior speaker attribution carries across accepted claims without crossing 
   issue.sourceId==='S2'&&issue.reason==='pseudonymous-voice-unidentified'));
 });
 
-test('flat reviewer input keeps multi-part claims linked once and duplicate claims keys fail closed',async()=>{
+test('flat reviewer input keeps per-part claims linked once and duplicate claims keys fail closed',async()=>{
  let reviewPayload;
  const draft=hypotheticalDraft(
   'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1, S2]');
- const ai=makeAI([draft,(_model,{messages})=>{
+ const duplicateKeyReviewer=(_model,{messages})=>{
   reviewPayload=parsePayload(messages);
-  assert.deepEqual(reviewPayload.parts.map(part=>part.partId),['P1','P2','P3']);
+  const partId=reviewPayload.parts[0].partId;
+  assert.deepEqual(reviewPayload.parts.map(part=>part.partId),[partId],
+   'each part review payload carries only its own part');
   assert.ok(reviewPayload.parts.every(part=>!('claims' in part)));
-  assert.deepEqual(reviewPayload.claims.map(claim=>[claim.partId,claim.claimId]),[
-   ['P1','P1-C1'],['P2','P2-C1'],['P3','P3-C1']
-  ]);
-  assert.equal(reviewPayload.parts[0].evidence[0].id,'S1');
-  assert.equal(reviewPayload.parts[1].evidence[0].id,'S2');
-  const decisions=reviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-   spanIds:claim.sourceIds.map(sourceId=>sourceId+'-Q1')}));
-  const parts=reviewPayload.parts.map(part=>({partId:part.partId,status:'answered'}));
-  return {response:'{"parts":'+JSON.stringify(parts)+
-   ',"claims":['+JSON.stringify(decisions[0])+']'+
-   ',"claims":['+JSON.stringify(decisions[1])+']'+
-   ',"claims":['+JSON.stringify(decisions[2])+']}'};
- }]);
+  assert.deepEqual(reviewPayload.claims.map(claim=>[claim.partId,claim.claimId]),
+   [[partId,partId+'-C1']]);
+  assert.equal(reviewPayload.parts[0].evidence[0].id,partId==='P2'?'S2':'S1');
+  const decision={claimId:partId+'-C1',status:'answered',
+   spanIds:reviewPayload.claims[0].sourceIds.map(sourceId=>sourceId+'-Q1')};
+  // Duplicate top-level "claims" keys: JSON parsing keeps only the last
+  // (empty) array, so the part's claim decision goes missing and the part
+  // review must fail closed.
+  return {response:'{"parts":[{"partId":"'+partId+'","status":"answered"}]'+
+   ',"claims":['+JSON.stringify(decision)+'],"claims":[]}'};
+ };
+ const ai=makeAI([draft,duplicateKeyReviewer,duplicateKeyReviewer,duplicateKeyReviewer]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,4);
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.coverage,'partial');
  assert.equal(result.reviewStatus,'review-contract-incomplete');
@@ -2453,12 +2476,12 @@ test('flat reviewer input keeps multi-part claims linked once and duplicate clai
 test('a reviewed comparison cannot satisfy a hypothetical synthesis part without an inference',async()=>{
  const ai=makeAI([hypotheticalDraft(
   'Nietzsche criticizes Christian morality, whereas Johannes de Silentio centers faith. [S1, S2]'),
-  hypotheticalReview()
+  hypotheticalReview(),hypotheticalReview(),hypotheticalReview()
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,4);
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.questionParts[1].status,'supported');
@@ -2472,12 +2495,12 @@ test('a reviewed comparison cannot satisfy a hypothetical synthesis part without
 test('a one-sided hypothetical inference is rejected and the part remains visibly incomplete',async()=>{
  const ai=makeAI([hypotheticalDraft(
   'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1]'),
-  hypotheticalReview()
+  hypotheticalReview(),hypotheticalReview(),hypotheticalReview()
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,4);
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[2].status,'unsupported');
  assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
@@ -2489,7 +2512,7 @@ test('a one-sided hypothetical inference is rejected and the part remains visibl
 test('a neighboring comparison clause cannot lend its citation group to a hypothetical inference',async()=>{
  const ai=makeAI([hypotheticalDraft(
   'From these passages, one cautious inference is that Nietzsche might have viewed Kierkegaard’s emphasis on religious inwardness as part of the Christian outlook he rejects. [S1], whereas Kierkegaard’s own position is expressed by Johannes de Silentio. [S2]'),
-  hypotheticalReview()
+  hypotheticalReview(),hypotheticalReview(),hypotheticalReview()
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
@@ -2498,18 +2521,18 @@ test('a neighboring comparison clause cannot lend its citation group to a hypoth
  assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
   item.reason==='hypothetical-inference-missing-source-group-citation'));
  assert.doesNotMatch(result.answer,/one cautious inference/i);
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,4);
 });
 
 test('an unqualified hypothetical author claim is rejected even when both source groups are cited',async()=>{
  const ai=makeAI([hypotheticalDraft(
   'Nietzsche would have regarded Kierkegaard’s emphasis on religious inwardness as a form of the decadent outlook he attacks. [S1, S2]'),
-  hypotheticalReview()
+  hypotheticalReview(),hypotheticalReview(),hypotheticalReview()
  ]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,4);
  assert.equal(result.coverage,'partial');
  assert.ok(result.trace.rejected.some(item=>item.partId==='P3'&&
   item.reason==='hypothetical-inference-not-explicitly-qualified'));
@@ -2947,7 +2970,7 @@ test('an invalid citation on an initialism-bearing direct answer still leaves th
 test('a citation linked to another question part is rejected even when its source ID exists',async()=>{
  const plan={...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)};
  const ai=makeAI([answer('PART P1\nKant says causality is a category. [S2]\nPART P2\nKant says causality is a category. [S2]'),
-  review([['P1','answered'],['P2','answered']])]);
+  review([['P1','answered'],['P2','answered']]),review([['P1','answered'],['P2','answered']])]);
  const result=await composeEvidenceAnswer('How do Hume and Kant explain necessity?',
   [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],{plan,catalog});
  assert.equal(result.questionParts[0].status,'unsupported');
@@ -2998,6 +3021,8 @@ test('comparison claims keep citations attached to the smallest supporting sourc
  const ai=makeAI([answer('PART P1\nHume says causal inference comes from custom rather than reasoning. [S5]\n'+
   'PART P2\nKant treats causality as a condition of possible experience. [S4]\n'+
   'PART P3\nHume grounds inference in custom, while Kant makes causality a condition of objective experience. [S5, S3]'),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
   review([['P1','answered'],['P2','answered'],['P3','answered']])]);
  const result=await composeEvidenceAnswer('How do Hume and Kant explain causal necessity?',sources,ai,[],
   {plan:twoSidePlan,catalog,trace:true});
@@ -3007,7 +3032,7 @@ test('comparison claims keep citations attached to the smallest supporting sourc
  assert.ok(result.answer.includes('[S4]'));
  assert.ok(result.answer.includes('[S5, S3]'));
  assert.ok(!result.answer.includes('[S1]'));
- assert.equal(ai.calls.length,2,'claim-specific citation guidance adds no model call');
+ assert.equal(ai.calls.length,4,'claim-specific citation guidance adds no model call beyond the per-part reviews');
 });
 
 test('a non-exact quotation is converted to a paraphrase and reviewed with neighboring claims',async()=>{
@@ -3051,6 +3076,8 @@ test('a non-exact quotation is converted to a paraphrase and reviewed with neigh
 test('missing question parts remain visible as partial coverage instead of invalidating the answer',async()=>{
  const ai=makeAI([
   answer('PART P1\nHume says causal necessity arises from custom and regular conjunction. [S1]'),
+  review([['P1','answered'],['P2','answered'],['P3','partial']]),
+  review([['P1','answered'],['P2','answered'],['P3','partial']]),
   review([['P1','answered'],['P2','answered'],['P3','partial']])
  ]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
@@ -3059,7 +3086,7 @@ test('missing question parts remain visible as partial coverage instead of inval
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.coverage,'partial');
  assert.deepEqual(result.questionParts.map(part=>part.status),['supported','unsupported','unsupported']);
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,4);
  assert.match(result.missing,/Kant|differ/i);
 });
 
@@ -3289,28 +3316,30 @@ test('the reviewer receives an explicit source checklist and missing synthesis e
   {...twoSidePlan.parts[1],candidateSourceIds:['S3','S6']},
   {...twoSidePlan.parts[2],candidateSourceIds:['S1','S2','S3','S6']}
  ]};
+ const checklistReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const supported={P1:['S1','S2'],P2:['S3','S6'],P3:['S1','S3','S6']};
+  return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    spanIds:claim.sourceIds.filter(id=>supported[claim.partId].includes(id)).map(sourceId=>sourceId+'-Q1')}))} )};
+ };
  const ai=makeAI([
   answer('PART P1\nHume grounds necessity in custom and regular conjunction. [S1] External objects do not reveal power directly. [S2]\n'+
    'PART P2\nKant treats causal connection as a priori and necessary. [S3, S6]\n'+
    'PART P3\nHume explains necessity through custom, while Kant grounds causal connection in a priori categories. [S1, S2, S3, S6]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   const supported={P1:['S1','S2'],P2:['S3','S6'],P3:['S1','S3','S6']};
-   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),
-    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     spanIds:claim.sourceIds.filter(id=>supported[claim.partId].includes(id)).map(sourceId=>sourceId+'-Q1')}))} )};
-  }
+  checklistReviewer,checklistReviewer,checklistReviewer
  ]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',sources,ai,[],
   {plan,catalog,trace:true});
- const reviewPayload=parsePayload(ai.calls[1].request.messages);
+ const reviewPayload=parsePayload(result.trace.stages
+  .find(stage=>stage.stage==='review'&&stage.partId==='P3').messages);
  const synthesisClaims=reviewPayload.claims.filter(claim=>claim.partId==='P3');
  assert.deepEqual([...new Set(synthesisClaims.flatMap(item=>item.sourceIds))],['S1','S2','S3','S6']);
  assert.equal(result.questionParts[2].status,'unsupported');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.partId==='P3'&&issue.reason==='missing-claim-source-span'));
  assert.equal(result.evidenceMap.some(item=>item.partId==='P3'&&item.id==='S2'),false);
- assert.equal(ai.calls.length,2,'missing synthesis evidence remains partial without an explicit repairability decision');
+ assert.equal(ai.calls.length,4,'missing synthesis evidence remains partial without an explicit repairability decision');
 });
 
 test('reviewer preserves a separate exact span from each cited source when each supports the claim',async()=>{
@@ -3384,7 +3413,8 @@ test('malformed reviewer JSON with unescaped quotation marks fails closed and pr
  assert.equal(result.reviewStatus,'review-format-failed');
  assert.match(result.answer,/custom and regular conjunction/);
  assert.deepEqual(result.trace.reviewContract.issues,['model-output-invalid-format']);
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false});
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false,
+  parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false}]});
  assert.equal(ai.calls.length,3,'a malformed review gets one compact retry and no further call');
 });
 
@@ -3440,7 +3470,8 @@ test('run 48 reviewer typo fails closed to an unverified draft with deterministi
   'fallback evidence never promotes the part to supported');
  // The review itself still failed; only the deterministic citation->span
  // link for the clearly matching claim survives as fallback evidence.
- assert.deepEqual(result.trace.fallbackEvidence,{reason:'model-output-invalid-format',entries:1});
+ assert.deepEqual(result.trace.fallbackEvidence,{reason:'model-output-invalid-format',entries:1,
+  parts:[{partId:'P1',reason:'model-output-invalid-format',entries:1}]});
  assert.equal(result.evidenceMap.length,1);
  assert.equal(result.evidenceMap[0].id,'S1');
  assert.equal(result.evidenceMap[0].claimId,'P1-C1');
@@ -3450,7 +3481,8 @@ test('run 48 reviewer typo fails closed to an unverified draft with deterministi
  assert.equal(result.evidenceHighlights.length,1);
  assert.equal(result.evidenceHighlights[0].source_id,'S1');
  assert.equal(result.trace.reviewContract.issues[0],'model-output-invalid-format');
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false});
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false,
+  parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false}]});
  assert.equal(ai.calls.length,3);
 });
 
@@ -3473,7 +3505,8 @@ test('a truncated first review succeeds on one compact retry with a smaller span
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[source],ai,[],{
   plan:onePartPlan,catalog,trace:true});
  assert.equal(ai.calls.length,3,'compose, the truncated review, and exactly one retry');
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'review-output-truncated',applied:true});
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'review-output-truncated',applied:true,
+  parts:[{partId:'P1',reason:'review-output-truncated',applied:true}]});
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.coverage,'full');
  assert.equal(result.questionParts[0].status,'supported');
@@ -3499,12 +3532,14 @@ test('a review that fails both attempts keeps deterministic fallback evidence fo
  const result=await composeEvidenceAnswer('How can justice and mercy come into conflict?',[source],ai,[],
   {plan,catalog:{...catalog,72:'Justice and Mercy'},trace:true});
  assert.equal(ai.calls.length,3);
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false});
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false,
+  parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false}]});
  assert.equal(result.reviewStatus,'review-format-failed');
  assert.equal(result.outcome,'unverified-source-draft');
  assert.equal(result.questionParts[0].status,'partial',
   'fallback evidence leaves the part partial rather than supported');
- assert.deepEqual(result.trace.fallbackEvidence,{reason:'model-output-invalid-format',entries:1});
+ assert.deepEqual(result.trace.fallbackEvidence,{reason:'model-output-invalid-format',entries:1,
+  parts:[{partId:'P1',reason:'model-output-invalid-format',entries:1}]});
  assert.equal(result.evidenceMap.length,1);
  assert.equal(result.evidenceMap[0].id,'S1');
  assert.equal(result.evidenceMap[0].claimId,'P1-C1');
@@ -3512,6 +3547,152 @@ test('a review that fails both attempts keeps deterministic fallback evidence fo
   'the fallback links the claim to the matching sentence, not the unrelated one');
  assert.equal(result.evidenceHighlights.length,1);
  assert.equal(result.evidenceHighlights[0].quote,matching);
+});
+
+test('per-part review calls run concurrently instead of summing every part',async()=>{
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant identifies causality as an a priori category of relation. [S2]\n'+
+  'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]';
+ const partReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const part=payload.parts[0];
+  return {response:JSON.stringify({parts:[{partId:part.partId,status:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const baseAi=makeAI([answer(draft),partReviewer,partReviewer,partReviewer]);
+ const ai={calls:baseAi.calls,run:async(model,request)=>{
+  if(String(request?.messages?.[0]?.content||'').startsWith('Review the complete answer'))
+   await new Promise(resolve=>setTimeout(resolve,150));
+  return baseAi.run(model,request);}};
+ const started=Date.now();
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:twoSidePlan,catalog,trace:true});
+ const elapsedMs=Date.now()-started;
+ assert.equal(ai.calls.length,4,'one compose call and one review call per part');
+ assert.deepEqual(result.trace.stages.filter(stage=>stage.stage==='review')
+  .map(stage=>stage.partId),['P1','P2','P3'],
+  'each review stage trace names the part it reviewed');
+ assert.ok(elapsedMs<400,
+  `three 150ms part reviews overlap rather than sum (took ${elapsedMs}ms; serial would exceed 450ms)`);
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(result.questionParts.map(part=>part.status),
+  ['supported','supported','supported']);
+});
+
+test('one part’s failed review keeps the other parts’ verdicts and falls back alone',async()=>{
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant treats causality as a category of relation and a pure conception of the understanding. [S2]\n'+
+  'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]';
+ const dispatchReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  if(payload.parts[0].partId==='P2'){
+   const error=new Error('Inference deadline exceeded');
+   error.code='inference-deadline-exceeded';error.stage='review';
+   throw error;
+  }
+  return review([['P1','answered'],['P2','answered'],['P3','answered']])(_model,{messages});
+ };
+ const ai=makeAI([answer(draft),dispatchReviewer,dispatchReviewer,dispatchReviewer,dispatchReviewer]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:twoSidePlan,catalog,trace:true});
+ assert.equal(ai.calls.length,5,'compose, three part reviews, and one compact retry for the failed part');
+ assert.deepEqual(result.questionParts.map(part=>part.status),
+  ['supported','partial','supported'],
+  'the failed part is partial while the reviewed parts keep their verdicts');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.deepEqual(result.trace.reviewContract.failedParts,
+  [{partId:'P2',code:'inference-deadline-exceeded'}]);
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'inference-deadline-exceeded',
+  applied:false,parts:[{partId:'P2',reason:'inference-deadline-exceeded',applied:false}]});
+ assert.deepEqual(result.trace.fallbackEvidence,{reason:'inference-deadline-exceeded',entries:1,
+  parts:[{partId:'P2',reason:'inference-deadline-exceeded',entries:1}]});
+ assert.ok(result.evidenceMap.some(item=>item.partId==='P2'&&item.id==='S2'&&item.claimId==='P2-C1'),
+  'the failed part keeps a deterministic citation link');
+ assert.match(result.answer,/Kant treats causality as a category of relation/,
+  'the failed part’s draft still ships, marked partial');
+});
+
+test('a review request failure is retried once per part like other review-output failures',async()=>{
+ // The run #44 failure arrived as a provider error with no machine-readable
+ // code; run() records it as review-request-failed, and the retry decision
+ // uses the same normalization.
+ const requestFailed=new Error('Review request failed');
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  requestFailed,review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, the failed review request, and its compact retry');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'review-request-failed',
+  applied:true,parts:[{partId:'P1',reason:'review-request-failed',applied:true}]});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'supported');
+});
+
+test('citation gate downgrades a source-based part that ships without any citation',async()=>{
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
+ const uncitedRepair={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction in experience.'}],
+  additions:[]}]})};
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.'),
+  uncitedReview,uncitedRepair],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, review, and exactly one targeted gate repair attempt');
+ assert.deepEqual(result.trace.citationGate,[{partId:'P1',action:'repair-failed'}],
+  'a repair that still yields no citation is recorded and does not ship');
+ assert.equal(result.questionParts[0].status,'partial',
+  'the part is downgraded instead of shipping as fully supported');
+ assert.equal(result.coverage,'partial');
+ assert.match(result.answer,/custom and regular conjunction/);
+ assert.doesNotMatch(result.answer,/\[S1\]/);
+});
+
+test('citation gate keeps a source-based part supported when repair restores its citation',async()=>{
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
+ const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction. [S1]'}],
+  additions:[]}]})};
+ const citedReReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.'),
+  uncitedReview,citedRepair,citedReReview],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,4,'compose, review, the gate repair, and its independent re-review');
+ assert.deepEqual(result.trace.citationGate,[{partId:'P1',action:'repair-applied'}]);
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.equal(result.coverage,'full');
+ assert.match(result.answer,/custom and regular conjunction\. \[S1\]/);
+ assert.ok(result.evidenceMap.some(item=>item.partId==='P1'&&item.id==='S1'),
+  'the restored citation carries reviewed evidence');
+});
+
+test('citation gate leaves general-context parts untouched',async()=>{
+ const contextReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
+ const ai=makeAI([answer('PART P1\nHume explains causal necessity through learned expectation formed by repeated conjunctions.'),
+  contextReview],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],candidateSourceIds:[]}]},catalog,trace:true});
+ assert.equal(ai.calls.length,2,'no gate repair call runs for a part with no linked sources');
+ assert.equal(result.trace.citationGate,undefined);
+ assert.equal(result.answerCompleteness,'full');
+ assert.match(result.answer,/learned expectation/);
 });
 
 test('review output budget scales past the old cap for a many-claim review',async()=>{
@@ -3630,6 +3811,8 @@ test('comparison cannot receive full coverage unless both named source groups ar
  const ai=makeAI([answer('PART P1\nHume grounds necessity in custom after repeated conjunction. [S1]\n'+
   'PART P2\nKant treats causal order as a priori. [S2]\n'+
   'PART P3\nHume grounds necessity in custom after repeated conjunction, whereas Kant treats causal order as a priori. [S1]'),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
   review([['P1','answered'],['P2','answered'],['P3','answered']])]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ?',linkedSources,ai,[],{plan:twoSidePlan,catalog});
  assert.equal(result.coverage,'partial');
@@ -3641,11 +3824,14 @@ test('a comparison with cited evidence from both named source groups may be revi
  const ai=makeAI([answer('PART P1\nHume grounds necessity in custom after repeated conjunction. [S1]\n'+
   'PART P2\nKant treats causal order as a priori. [S2]\n'+
   'PART P3\nHume grounds necessity in custom after repeated conjunction, whereas Kant treats causal order as a priori. [S1, S2]'),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
   review([['P1','answered'],['P2','answered'],['P3','answered']])]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ?',linkedSources,ai,[],{plan:twoSidePlan,catalog});
  assert.equal(result.coverage,'full');
  assert.equal(result.questionParts[0].status,'supported');
- const reviewPayload=parsePayload(ai.calls[1].request.messages);
+ const reviewPayload=ai.calls.map(call=>parsePayload(call.request.messages))
+  .find(payload=>Array.isArray(payload.claims)&&payload.parts?.[0]?.partId==='P3');
  assert.deepEqual(reviewPayload.claims.find(claim=>claim.partId==='P3').sourceIds,['S1','S2']);
  assert.deepEqual([...new Set(result.evidenceMap.filter(item=>item.partId==='P3').map(item=>item.id))],['S1','S2']);
 });
