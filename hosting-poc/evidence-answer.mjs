@@ -922,6 +922,38 @@ function hasExplicitSpeakerCue(sourceText,speaker){
     .test(String(sourceText||''));
 }
 
+function normalizedPersonName(value){
+  return String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/gu,' ');
+}
+// The speaker-anchoring gate exists to stop a claim from crediting a work's
+// words to someone the passage never names. That risk does not arise when
+// the attributed speaker IS the author of the very work the supporting
+// spans come from: the author's own narration anchors attribution to that
+// author without a separate “the author said” cue, and first-person
+// narration in an author's own work is the normal case, not an anomaly.
+// The match is purely relational — the claimed speaker against the catalog
+// byline of the source that supplied this decision's spans — and it is
+// evaluated per source, so spans borrowed from a different work never
+// inherit the exemption, and a third-party speaker never matches.
+export function speakerIsWorkAuthor(speaker,source){
+  const name=normalizedPersonName(speaker);
+  if(!name)return false;
+  const nameParts=name.split(' ');
+  return (catalogIdentity(source?.title||'').authors||[]).some(author=>{
+    const credited=normalizedPersonName(author);
+    if(!credited)return false;
+    if(credited===name)return true;
+    // Surname-only attribution (a claim naming just “Surname”, or a byline
+    // crediting just a surname) matches on the shared surname. Two full
+    // names that merely share a surname do not match.
+    const creditedParts=credited.split(' ');
+    return nameParts.at(-1)===creditedParts.at(-1)&&
+      nameParts.at(-1).length>=4&&
+      (nameParts.length===1||creditedParts.length===1);
+  });
+}
+
 function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question,reviewClaims=[],initialAnswerContext=[]){
   const suppliedParts=new Map(),suppliedClaims=new Map(),issues=[],warnings=[],recovered=[];
   const expectedClaims=new Map(answerParts.flatMap(part=>(part.answers||[])
@@ -1141,7 +1173,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           namedAttribution&&attributionStatus==='unclear'?'source-attribution-unclear':
           namedAttribution&&attributionStatus==='not_applicable'?'source-attribution-not-applicable':'';
         const claimedSpeaker=String(sourceDecision?.attributedSpeaker||'').trim();
+        // A speaker who is the author of this source's own work is anchored
+        // by the byline itself (author narration), so no speech cue is
+        // required for that source; every other speaker still needs one.
         const unanchoredSpeakerIssue=namedAttribution&&attributionStatus==='supported'&&claimedSpeaker&&
+          !speakerIsWorkAuthor(claimedSpeaker,sourceById.get(sourceId))&&
           !hasExplicitSpeakerCue(selected.map(item=>item.quote).join(' ')+' '+
             String(sourceById.get(sourceId)?.text||sourceById.get(sourceId)?.preview||''),claimedSpeaker)?
           'source-attribution-unanchored':'';
@@ -1586,6 +1622,112 @@ function buildFallbackEvidenceByPart(checkedParts,sources){
   return byPart;
 }
 
+// --- Batch 4: claim-level citation check and assembly coverage audit ------
+// Both mechanisms are deterministic post-review guards. They read only the
+// review contract's own claim ledger (accepted decisions, their source
+// linkages, and the shipped claim texts) — never the question, the plan
+// wording, or any particular book — and they never touch claims the
+// contract does not tie to a source: general-context claims and parts are
+// the pipeline's general-knowledge allowance and stay exempt by design.
+
+// Map claimId -> set of sourceIds for one part, built from accepted review
+// decisions that carry at least one accepted span. A claim with no entry
+// here has no source linkage in the contract and is exempt from citation
+// checks.
+export function acceptedLinkedSourcesByClaim(reviewDecisions,partId){
+  const linked=new Map();
+  for(const decision of reviewDecisions||[]){
+    if(decision?.partId!==partId||decision?.accepted!==true||!decision?.sourceId)continue;
+    if(!Array.isArray(decision.acceptedSpanIds)||!decision.acceptedSpanIds.length)continue;
+    const sources=linked.get(decision.claimId)||new Set();
+    sources.add(decision.sourceId);
+    linked.set(decision.claimId,sources);
+  }
+  return linked;
+}
+
+function normalizedProseSurface(text){
+  return normalizedClauseSurface(String(text||'')
+    .replace(/\[S[1-9]\d*(?:\s*,\s*S[1-9]\d*)*\]/gu,' '));
+}
+
+// A claim offends the claim-level citation check when all of these hold:
+// it is source-linked in the review contract, its own text actually ships
+// in the part's final segment, and the segment carries no citation marker
+// for any of its linked sources. A claim whose text is absent from the
+// segment is not reported here — absence is the assembly audit's domain.
+export function findClaimCitationOffenses(partAnswers,segment,linkedByClaim){
+  const segmentCitations=new Set(citationIds(segment));
+  const normalizedSegment=normalizedProseSurface(segment);
+  const offenses=[];
+  for(const answer of partAnswers||[]){
+    const linked=linkedByClaim?.get(answer.claimId);
+    if(!linked||!linked.size)continue;
+    if([...linked].some(sourceId=>segmentCitations.has(sourceId)))continue;
+    const claimText=normalizedProseSurface(answer.text);
+    if(claimText.length<8||!normalizedSegment.includes(claimText))continue;
+    offenses.push({claimId:answer.claimId,linkedSourceIds:[...linked]});
+  }
+  return offenses;
+}
+
+// Remove claims (and their evidence entries) from a part item. When the
+// removal leaves the part with no remaining answer text, the part is
+// downgraded to partial, mirroring the part-level citation gate.
+export function removeClaimsFromPart(item,claimIds){
+  const removed=new Set(claimIds);
+  const before=item.answers.length;
+  item.answers=item.answers.filter(answer=>!removed.has(answer.claimId));
+  item.evidence=(item.evidence||[]).filter(entry=>!removed.has(entry.claimId));
+  const removedCount=before-item.answers.length;
+  let downgraded=false;
+  if(removedCount&&!item.answers.length){
+    item.status='partial';
+    if(item.answerStatus==='answered')item.answerStatus='partial';
+    downgraded=true;
+  }
+  return {removedCount,downgraded};
+}
+
+// Representation test for the assembly audit: the claim's normalized text,
+// or a distinctive long head of it, appears in the normalized answer.
+export function claimTextAppears(claimText,normalizedHaystack){
+  const needle=normalizedProseSurface(claimText);
+  if(needle.length<12)return true;
+  if(normalizedHaystack.includes(needle))return true;
+  if(needle.length>90){
+    const head=needle.slice(0,90).replace(/\s+\S*$/u,'');
+    if(head.length>=40&&normalizedHaystack.includes(head))return true;
+  }
+  return false;
+}
+
+const ASSEMBLY_DANGLING_TAIL=/\b(?:the|a|an|of|to|in|on|for|with|by|as|at|from|and|or|but|including|such|because|is|are|was|were)$/iu;
+// Ending integrity beyond the legacy unfinished-ending check: an answer
+// must not end on a bare heading or label (a structure that promises
+// content that never arrives) or on an unclosed list item. A list item is
+// only flagged when it both lacks terminal punctuation and is either very
+// short or trails off on a function word, so complete one-line list
+// entries with full sentences are never flagged.
+export function hasAssemblyEndingViolation(text){
+  const value=String(text||'').replace(/\s+$/u,'');
+  if(!value)return false;
+  if(hasUnfinishedAnswerEnding(value))return true;
+  const lastLine=value.split('\n').map(line=>line.trim()).filter(Boolean).at(-1)||'';
+  if(/^#{1,6}\s+\S/u.test(lastLine))return true;
+  if(/^\*\*[^*\n]{1,100}\*\*:?$/u.test(lastLine))return true;
+  const listMatch=lastLine.match(/^(?:[-*•]|\d+[.)])\s+(.*)$/u);
+  if(listMatch){
+    const body=listMatch[1].trim();
+    if(!body)return true;
+    if(!/[.!?…]["'”’)]?$/u.test(body)){
+      const words=body.split(/\s+/u).filter(Boolean);
+      if(words.length<=5||ASSEMBLY_DANGLING_TAIL.test(body))return true;
+    }
+  }
+  return false;
+}
+
 export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
   const rawPlan=options.plan||inferSelectedHypotheticalPlan(question,sources);
   const normalized=normalizePlan(rawPlan,question,options.catalog||{},options.selectedBookId||'');
@@ -1598,12 +1740,14 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const usage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
   const started=Date.now();
   // The call budget scales with the plan now that review and re-review run
-  // as one call per part: composition (plus the optional expansion), one
-  // review and one compact retry per part, the shared source-decision
-  // repair and answer repair, one re-review per repaired part, and one
-  // citation-gate repair plus its re-review per part. The hard cap keeps
+  // as one call per part. Per part the worst case is nine calls: the review,
+  // its compact retry, the re-review after the shared answer repair, the
+  // citation-gate repair and its re-review, the claim-citation repair and
+  // its re-review, and the assembly-audit repair and its re-review. The
+  // shared calls are composition (plus the optional expansion), the
+  // source-decision repair, and the answer repair. The hard cap keeps
   // pathological plans bounded; calls past the cap fail closed per part.
-  const callLimit=Math.min(60,3+(options.expand===true?1:0)+plan.parts.length*5);
+  const callLimit=Math.min(60,3+(options.expand===true?1:0)+plan.parts.length*9);
   async function run(stage,system,payload,parser,{partId}={}){
     if(usage.calls>=callLimit)throw Error('Answer call budget exceeded');
     const serializedPayload=JSON.stringify(payload);
@@ -2236,6 +2380,113 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       ...(reviewed?.requirementCoverage?{requirementCoverage:reviewed.requirementCoverage,
         requirementsComplete:reviewed.requirementsComplete===true}:{})};
   });
+  // Shared machinery for the deterministic post-review gates below
+  // (citation-presence gate, claim-level citation check, assembly audit).
+  // Each gate gets at most one repair per part: a targeted answer-repair
+  // call whose patch is re-validated and independently re-reviewed before
+  // anything from it may ship. All of these calls count against the call
+  // budget like every other stage.
+  const buildClaimRepairPayload=(item,{targets,addCoverage,supportIssues,extraClaims=[]})=>{
+    const planPart=item.part;
+    const linkedIds=(planPart.candidateSourceIds||[]).filter(id=>pageById.has(id));
+    // The repair needs spans from every source supplied for the part, not
+    // only the ones the draft happened to cite, so harvest the packet
+    // evidence through a synthetic checked part that cites them all; only
+    // its evidence list is used.
+    const harvestPacket=buildReviewPacket([{partId:planPart.id,question:planPart.question,
+      answers:item.answers.map(answer=>({...answer,sourceIds:linkedIds}))}],
+      {sources,pageById,plan,question});
+    const reviewedPart=review?.parts.find(part=>part.partId===planPart.id);
+    const initialReviewFor=claimId=>(review?.reviewDecisions||[])
+      .filter(decision=>decision.claimId===claimId)
+      .map(decision=>({sourceId:decision.sourceId,status:decision.sourceStatus,
+        accepted:decision.accepted===true,reason:decision.validationReason||null}));
+    return {question,parts:[{partId:planPart.id,question:planPart.question,
+      directAnswerClaimIds:reviewedPart?.directAnswerClaimIds||[],
+      repair:{replaceClaimIds:targets,addCoverage,missingRequirements:[],supportIssues},
+      claims:[...item.answers.map(answer=>({claimId:answer.claimId,text:answer.text,
+        citedSourceIds:answer.sourceIds||[],targeted:targets.includes(answer.claimId),
+        initialReview:initialReviewFor(answer.claimId)})),...extraClaims],
+      evidence:harvestPacket.reviewParts[0]?.evidence||[]}],
+      directAnswerClaimIds:reviewedPart?.directAnswerClaimIds||[]};
+  };
+  const parseClaimRepairPatches=(response,{partId,targets,restorableIds=[],
+    requireAllTargets=true,allowAdditions=false})=>{
+    const parsed=parseAnswerRepairJson(response);
+    const patchPart=Array.isArray(parsed?.parts)&&parsed.parts.length===1?
+      parsed.parts[0]:null;
+    const additions=Array.isArray(patchPart?.additions)?patchPart.additions:[];
+    if(!patchPart||String(patchPart?.partId||'').toUpperCase()!==partId||
+       !Array.isArray(patchPart?.replacements)||
+       Object.keys(patchPart).some(key=>!['partId','replacements','additions'].includes(key)))
+      throw new ModelFormatError('answer-repair','Gate repair returned an invalid part patch.','answer-repair-invalid');
+    if(!allowAdditions&&additions.length)
+      throw new ModelFormatError('answer-repair','Gate repair returned unrequested additions.','answer-repair-invalid');
+    const allowed=new Set([...targets,...restorableIds]);
+    const replacementById=new Map();
+    for(const replacement of patchPart.replacements){
+      const claimId=String(replacement?.claimId||'').toUpperCase();
+      const text=typeof replacement?.text==='string'?replacement.text.trim():'';
+      if(!allowed.has(claimId)||replacementById.has(claimId)||
+         !text||text.length>8000||/[\r\n]/u.test(text)||
+         Object.keys(replacement).some(key=>!['claimId','text'].includes(key))||
+         splitCitedSentenceUnits(text).length!==1)
+        throw new ModelFormatError('answer-repair','Gate repair returned an invalid claim patch.','answer-repair-invalid');
+      replacementById.set(claimId,text);
+    }
+    if(requireAllTargets&&targets.some(claimId=>!replacementById.has(claimId)))
+      throw new ModelFormatError('answer-repair','Gate repair omitted a targeted claim.','answer-repair-invalid');
+    const additionTexts=additions.map(text=>typeof text==='string'?text.trim():'');
+    if(additionTexts.some(text=>!text||text.length>8000||/[\r\n]/u.test(text)||
+       splitCitedSentenceUnits(text).length!==1))
+      throw new ModelFormatError('answer-repair','Gate repair returned an invalid addition.','answer-repair-invalid');
+    return {replacements:replacementById,additions:additionTexts};
+  };
+  // Run one gate repair for a part and return the validated candidate part;
+  // throws when the repair is unusable, unchanged, or rejected by the
+  // caller's candidate check. Callers decide adoption after re-review.
+  const repairPartCandidate=async(item,{targets,supportIssues,addCoverage=false,
+    extraClaims=[],restorableIds=[],requireAllTargets=true,allowAdditions=false,
+    applyPatches,validateCandidate})=>{
+    const planPart=item.part;
+    const singlePlan={...plan,parts:[planPart]};
+    const repairPayload=buildClaimRepairPayload(item,
+      {targets,addCoverage,supportIssues,extraClaims});
+    const patches=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>
+      parseClaimRepairPatches(response,{partId:planPart.id,targets,restorableIds,
+        requireAllTargets,allowAdditions}),{partId:planPart.id});
+    const repairedAnswers=applyPatches(patches);
+    const repairedChecked=validatePartAnswers(
+      [{partId:planPart.id,text:renderAnswerParagraphs(repairedAnswers)}],
+      sources,singlePlan,question);
+    const candidate=repairedChecked.parts[0];
+    if(!candidate?.answers.length||
+       !repairAnswerChanged([{partId:planPart.id,answers:item.answers}],repairedChecked.parts))
+      throw new ModelFormatError('answer-repair','Gate repair produced no usable changed answer.','answer-repair-invalid');
+    if(validateCandidate&&!validateCandidate(candidate))
+      throw new ModelFormatError('answer-repair','Gate repair did not resolve the targeted violation.','answer-repair-invalid');
+    return candidate;
+  };
+  const reReviewPartCandidate=async(item,candidate)=>{
+    const planPart=item.part;
+    const singlePlan={...plan,parts:[planPart]};
+    const packet=buildReviewPacket([candidate],{sources,pageById,plan:singlePlan,question});
+    const rawReview=await run('answer-re-review',REVIEW_PROMPT,packet.reviewPayload,
+      parseReviewJson,{partId:planPart.id});
+    const reReview=normalizeReview(rawReview,singlePlan,[candidate],sources,
+      packet.reviewSpanMapsByPart,question,packet.reviewClaims);
+    return {reReview,rePart:reReview.parts[0]};
+  };
+  const adoptRepairedPart=(item,rePart)=>{
+    item.answers=rePart.answers;
+    item.evidence=rePart.evidence;
+    item.status=rePart.status;
+    item.answerStatus=rePart.answerStatus;
+    if(rePart.requirementCoverage){
+      item.requirementCoverage=rePart.requirementCoverage;
+      item.requirementsComplete=rePart.requirementsComplete===true;
+    }
+  };
   // Citation-presence gate. A source-based part can survive review with no
   // citations at all when the composer writes uncited prose and the reviewer
   // accepts it as general context (run #42's Dostoevsky case): the part then
@@ -2259,94 +2510,33 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       const entry={partId:planPart.id,action:'downgraded'};
       citationGateEntries.push(entry);
       const linkedIds=(planPart.candidateSourceIds||[]).filter(id=>pageById.has(id));
-      const singlePlan={...plan,parts:[planPart]};
       const targetClaimIds=item.answers.filter(answer=>!answer.sourceIds?.length)
         .map(answer=>answer.claimId);
       const targets=targetClaimIds.length?targetClaimIds:
         item.answers.map(answer=>answer.claimId);
       let repairedPart=null;
       try{
-        // The repair needs spans from every source supplied for the part,
-        // not only the ones the draft happened to cite, so harvest the
-        // packet evidence through a synthetic checked part that cites them
-        // all; only its evidence list is used.
-        const harvestPacket=buildReviewPacket([{partId:planPart.id,question:planPart.question,
-          answers:item.answers.map(answer=>({...answer,sourceIds:linkedIds}))}],
-          {sources,pageById,plan,question});
-        const reviewedPart=review?.parts.find(part=>part.partId===planPart.id);
-        const repairPayload={question,parts:[{partId:planPart.id,question:planPart.question,
-          directAnswerClaimIds:reviewedPart?.directAnswerClaimIds||[],
-          repair:{replaceClaimIds:targets,addCoverage:false,missingRequirements:[],
-            supportIssues:[{partId:planPart.id,reason:'citation-gate-missing-citation'}]},
-          claims:item.answers.map(answer=>({claimId:answer.claimId,text:answer.text,
-            citedSourceIds:answer.sourceIds||[],targeted:targets.includes(answer.claimId),
-            initialReview:(review?.reviewDecisions||[])
-              .filter(decision=>decision.claimId===answer.claimId)
-              .map(decision=>({sourceId:decision.sourceId,status:decision.sourceStatus,
-                accepted:decision.accepted===true,reason:decision.validationReason||null}))})),
-          evidence:harvestPacket.reviewParts[0]?.evidence||[]}],
-          directAnswerClaimIds:reviewedPart?.directAnswerClaimIds||[]};
-        const patches=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>{
-          const parsed=parseAnswerRepairJson(response);
-          const patchPart=Array.isArray(parsed?.parts)&&parsed.parts.length===1?
-            parsed.parts[0]:null;
-          if(!patchPart||String(patchPart?.partId||'').toUpperCase()!==planPart.id||
-             !Array.isArray(patchPart?.replacements)||
-             (Array.isArray(patchPart?.additions)&&patchPart.additions.length)||
-             Object.keys(patchPart).some(key=>!['partId','replacements','additions'].includes(key)))
-            throw new ModelFormatError('answer-repair','Citation gate repair returned an invalid part patch.','answer-repair-invalid');
-          const replacementById=new Map();
-          for(const replacement of patchPart.replacements){
-            const claimId=String(replacement?.claimId||'').toUpperCase();
-            const text=typeof replacement?.text==='string'?replacement.text.trim():'';
-            if(!targets.includes(claimId)||replacementById.has(claimId)||
-               !text||text.length>8000||/[\r\n]/u.test(text)||
-               Object.keys(replacement).some(key=>!['claimId','text'].includes(key))||
-               splitCitedSentenceUnits(text).length!==1)
-              throw new ModelFormatError('answer-repair','Citation gate repair returned an invalid claim patch.','answer-repair-invalid');
-            replacementById.set(claimId,text);
-          }
-          if(replacementById.size!==targets.length)
-            throw new ModelFormatError('answer-repair','Citation gate repair omitted a targeted claim.','answer-repair-invalid');
-          return replacementById;
-        },{partId:planPart.id});
-        const repairedAnswers=item.answers.map(answer=>{
-          const replacement=patches.get(answer.claimId);
-          return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
-        });
-        const repairedChecked=validatePartAnswers(
-          [{partId:planPart.id,text:renderAnswerParagraphs(repairedAnswers)}],
-          sources,singlePlan,question);
-        const candidate=repairedChecked.parts[0];
-        if(!candidate?.answers.length||
-           !repairAnswerChanged([{partId:planPart.id,answers:item.answers}],repairedChecked.parts))
-          throw new ModelFormatError('answer-repair','Citation gate repair produced no usable cited answer.','answer-repair-invalid');
-        const repairedCitedIds=new Set(citationIds(renderAnswerParagraphs(candidate.answers)));
-        if(!linkedIds.some(id=>repairedCitedIds.has(id)))
-          throw new ModelFormatError('answer-repair','Citation gate repair still has no linked citation.','answer-repair-invalid');
-        repairedPart=candidate;
+        repairedPart=await repairPartCandidate(item,{
+          targets,
+          supportIssues:[{partId:planPart.id,reason:'citation-gate-missing-citation'}],
+          applyPatches:({replacements})=>item.answers.map(answer=>{
+            const replacement=replacements.get(answer.claimId);
+            return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
+          }),
+          validateCandidate:candidate=>{
+            const repairedCitedIds=new Set(citationIds(renderAnswerParagraphs(candidate.answers)));
+            return linkedIds.some(id=>repairedCitedIds.has(id));
+          }});
       }catch(error){
         entry.action='repair-failed';
       }
       if(repairedPart){
         try{
-          const reReviewPacket=buildReviewPacket([repairedPart],
-            {sources,pageById,plan:singlePlan,question});
-          const reRawReview=await run('answer-re-review',REVIEW_PROMPT,
-            reReviewPacket.reviewPayload,parseReviewJson,{partId:planPart.id});
-          const reReview=normalizeReview(reRawReview,singlePlan,[repairedPart],sources,
-            reReviewPacket.reviewSpanMapsByPart,question,reReviewPacket.reviewClaims);
-          const rePart=reReview.parts[0];
+          const {reReview,rePart}=await reReviewPartCandidate(item,repairedPart);
           const reCitedIds=new Set(citationIds(renderAnswerParagraphs(rePart?.answers||[])));
           if(!reReview.issues.length&&rePart?.status==='answered'&&
              linkedIds.some(id=>reCitedIds.has(id))){
-            item.answers=rePart.answers;
-            item.evidence=rePart.evidence;
-            item.answerStatus=rePart.answerStatus;
-            if(rePart.requirementCoverage){
-              item.requirementCoverage=rePart.requirementCoverage;
-              item.requirementsComplete=rePart.requirementsComplete===true;
-            }
+            adoptRepairedPart(item,rePart);
             entry.action='repair-applied';
           }
         }catch(error){
@@ -2360,6 +2550,272 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     const planOrder=new Map(plan.parts.map((part,index)=>[part.id,index]));
     citationGateEntries.sort((a,b)=>planOrder.get(a.partId)-planOrder.get(b.partId));
     trace.citationGate=citationGateEntries;
+  }
+  // Claim-level citation check. The part-level gate above only asks whether
+  // a part cites ANY of its linked sources; an individual accepted claim
+  // can still ship bare when its own text is present in the segment but
+  // none of its linked sources are cited anywhere in that segment. Only
+  // claims the merged review contract ties to a source with accepted spans
+  // are in scope: general-context claims, claims with no source linkage,
+  // and non-claim prose are exempt and never touched, and a claim whose
+  // text is absent from the segment is left to the assembly audit. One
+  // targeted repair is attempted per affected part; a claim that still
+  // ships uncited after repair is removed from the segment rather than
+  // presented as sourced, and a part left with no answer text at all is
+  // downgraded to partial like the gate above.
+  const claimCitationGateEntries=[];
+  const removedClaimIds=new Set();
+  if(review&&!reviewFailure){
+    const gateProcessedPartIds=new Set(citationGateEntries.map(entry=>entry.partId));
+    const linkedByPart=new Map(plan.parts.map(part=>
+      [part.id,acceptedLinkedSourcesByClaim(review.reviewDecisions,part.id)]));
+    const claimGateCandidates=parts.filter(item=>{
+      if(!item.answers.length||item.answerStatus==='unanswered')return false;
+      if(gateProcessedPartIds.has(item.part.id))return false;
+      if(failedReviewParts.some(failed=>failed.partId===item.part.id))return false;
+      if(!review.parts.some(part=>part.partId===item.part.id))return false;
+      const linked=linkedByPart.get(item.part.id);
+      return linked.size>0&&findClaimCitationOffenses(item.answers,
+        normalizeAnswerMarkdown(renderAnswerParagraphs(item.answers)),linked).length>0;
+    });
+    if(claimGateCandidates.length){
+      const applyClaimCitationGate=async(item)=>{
+        const planPart=item.part;
+        const linked=linkedByPart.get(planPart.id);
+        const offenses=findClaimCitationOffenses(item.answers,
+          normalizeAnswerMarkdown(renderAnswerParagraphs(item.answers)),linked);
+        if(!offenses.length)return;
+        const entries=offenses.map(offense=>
+          ({partId:planPart.id,claimId:offense.claimId,action:'claim-removed'}));
+        claimCitationGateEntries.push(...entries);
+        const targets=offenses.map(offense=>offense.claimId);
+        let repairedPart=null;
+        try{
+          repairedPart=await repairPartCandidate(item,{
+            targets,
+            supportIssues:offenses.map(offense=>({partId:planPart.id,
+              claimId:offense.claimId,reason:'claim-citation-gate-missing-citation'})),
+            applyPatches:({replacements})=>item.answers.map(answer=>{
+              const replacement=replacements.get(answer.claimId);
+              return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
+            }),
+            validateCandidate:candidate=>{
+              const segmentCitations=new Set(citationIds(
+                normalizeAnswerMarkdown(renderAnswerParagraphs(candidate.answers))));
+              return offenses.every(offense=>{
+                if(!candidate.answers.some(answer=>answer.claimId===offense.claimId))return true;
+                return offense.linkedSourceIds.some(id=>segmentCitations.has(id));
+              });
+            }});
+        }catch(error){
+          repairedPart=null;
+        }
+        if(repairedPart){
+          try{
+            const {reReview,rePart}=await reReviewPartCandidate(item,repairedPart);
+            const candidateLinked=acceptedLinkedSourcesByClaim(reReview.reviewDecisions,planPart.id);
+            if(!reReview.issues.length&&rePart&&rePart.answers.length&&
+               rePart.answerStatus!=='unanswered'&&
+               !findClaimCitationOffenses(rePart.answers,
+                 normalizeAnswerMarkdown(renderAnswerParagraphs(rePart.answers)),
+                 candidateLinked).length){
+              adoptRepairedPart(item,rePart);
+              entries.forEach(entry=>{entry.action='repair-applied';});
+              return;
+            }
+          }catch(error){
+            // The repair could not be independently re-reviewed; it does
+            // not ship, and the offending claims are removed instead.
+          }
+        }
+        const {downgraded}=removeClaimsFromPart(item,targets);
+        targets.forEach(claimId=>removedClaimIds.add(claimId));
+        if(downgraded)entries.forEach(entry=>{entry.action='downgraded';});
+      };
+      await Promise.allSettled(claimGateCandidates.map(applyClaimCitationGate));
+      const planOrder=new Map(plan.parts.map((part,index)=>[part.id,index]));
+      claimCitationGateEntries.sort((a,b)=>planOrder.get(a.partId)-planOrder.get(b.partId));
+      trace.claimCitationGate=claimCitationGateEntries;
+    }
+  }
+  // Assembly coverage audit. The review contract can accept a claim that
+  // then never reaches the reader — markdown normalization can drop its
+  // line during rendering — and an answer can end mid-structure in ways
+  // the legacy unfinished-ending check does not cover. Audit the assembled
+  // parts against the contract before the answer is finalized: every
+  // accepted direct-answer claim must be represented in the final text
+  // (its linked citation marker in the part's segment, or its own text),
+  // and the answer must not end mid-structure. One repair round runs for
+  // the affected parts; violations that persist downgrade the affected
+  // parts to partial so completeness is never reported as full over a
+  // known gap. The legacy unfinished-ending failure below still supersedes
+  // for endings it covers when no repair could fix them.
+  if(review&&!reviewFailure){
+    // Segments are judged after markdown normalization, exactly as they
+    // will ship: normalization can drop a claim's line, and a claim that
+    // does not survive it is not represented however the draft looked.
+    const segmentOf=item=>normalizeAnswerMarkdown(renderAnswerParagraphs(item.answers));
+    const includedNow=()=>parts.filter(item=>
+      item.answerStatus!=='unanswered'&&item.answers.length);
+    const draftAnswersFor=partId=>
+      validatedAnswers.find(part=>part.partId===partId)?.answers||[];
+    const claimTextFor=(partId,claimId)=>
+      draftAnswersFor(partId).find(answer=>answer.claimId===claimId)?.text||
+      (review.reviewDecisions||[]).find(decision=>
+        decision.partId===partId&&decision.claimId===claimId)?.claimText||'';
+    const auditViolations=answerText=>{
+      const violations=[];
+      const normalizedAnswer=normalizedProseSurface(answerText);
+      for(const item of includedNow()){
+        const decision=(review.partDecisions||[]).find(entry=>entry.partId===item.part.id);
+        if(!decision)continue;
+        const segmentCitations=new Set(citationIds(segmentOf(item)));
+        const linked=acceptedLinkedSourcesByClaim(review.reviewDecisions,item.part.id);
+        for(const claimId of decision.acceptedDirectAnswerClaimIds||[]){
+          if(removedClaimIds.has(claimId))continue;
+          const linkedSources=linked.get(claimId);
+          const markerSources=linkedSources&&linkedSources.size?linkedSources:
+            new Set(draftAnswersFor(item.part.id)
+              .find(answer=>answer.claimId===claimId)?.sourceIds||[]);
+          if([...markerSources].some(id=>segmentCitations.has(id)))continue;
+          if(claimTextAppears(claimTextFor(item.part.id,claimId),normalizedAnswer))continue;
+          violations.push({partId:item.part.id,claimId,type:'accepted-claim-not-represented'});
+        }
+      }
+      if(answerText&&hasAssemblyEndingViolation(answerText)){
+        const lastIncluded=includedNow().at(-1);
+        if(lastIncluded)violations.push({partId:lastIncluded.part.id,type:'unfinished-ending'});
+      }
+      return violations;
+    };
+    const assembleNow=()=>normalizeAnswerMarkdown(
+      includedNow().map(item=>segmentOf(item)).join('\n\n'));
+    const violations=auditViolations(assembleNow());
+    const auditRecord={violations,action:'none'};
+    if(violations.length){
+      auditRecord.action='downgraded';
+      const missingByPart=new Map();
+      for(const violation of violations){
+        if(violation.type!=='accepted-claim-not-represented')continue;
+        const list=missingByPart.get(violation.partId)||[];
+        list.push(violation.claimId);
+        missingByPart.set(violation.partId,list);
+      }
+      const endingPartId=violations.find(violation=>
+        violation.type==='unfinished-ending')?.partId;
+      const affectedPartIds=[...new Set(violations.map(violation=>violation.partId))];
+      let anyAdopted=false;
+      const repairAssemblyPart=async(partId)=>{
+        const item=parts.find(entry=>entry.part.id===partId);
+        if(!item)return;
+        const missing=missingByPart.get(partId)||[];
+        const isEndingPart=partId===endingPartId;
+        const endingTargets=isEndingPart&&item.answers.length?
+          [item.answers.at(-1).claimId]:[];
+        const targets=[...endingTargets];
+        const extraClaims=missing.map(claimId=>({
+          claimId,text:claimTextFor(partId,claimId),
+          citedSourceIds:draftAnswersFor(partId)
+            .find(answer=>answer.claimId===claimId)?.sourceIds||[],
+          targeted:true,
+          initialReview:(review.reviewDecisions||[])
+            .filter(decision=>decision.claimId===claimId)
+            .map(decision=>({sourceId:decision.sourceId,status:decision.sourceStatus,
+              accepted:decision.accepted===true,reason:decision.validationReason||null}))}));
+        let candidate=null;
+        try{
+          candidate=await repairPartCandidate(item,{
+            targets,
+            addCoverage:missing.length>0,
+            supportIssues:[
+              ...missing.map(claimId=>({partId,claimId,
+                reason:'assembly-audit-claim-not-represented'})),
+              ...(isEndingPart?[{partId,reason:'assembly-audit-unfinished-ending'}]:[])],
+            extraClaims,
+            restorableIds:missing,
+            requireAllTargets:endingTargets.length>0,
+            allowAdditions:true,
+            applyPatches:({replacements,additions})=>{
+              const answers=item.answers.map(answer=>{
+                const replacement=replacements.get(answer.claimId);
+                return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
+              });
+              const draftOrder=draftAnswersFor(partId);
+              const presentIds=new Set(answers.map(answer=>answer.claimId));
+              for(const draftAnswer of draftOrder){
+                if(!missing.includes(draftAnswer.claimId)||
+                   presentIds.has(draftAnswer.claimId))continue;
+                const replacement=replacements.get(draftAnswer.claimId);
+                if(!replacement)continue;
+                const draftIndex=draftOrder.indexOf(draftAnswer);
+                let insertAt=answers.length;
+                for(let index=0;index<answers.length;index++){
+                  const otherIndex=draftOrder.findIndex(entry=>
+                    entry.claimId===answers[index].claimId);
+                  if(otherIndex>draftIndex){insertAt=index;break;}
+                }
+                answers.splice(insertAt,0,{...draftAnswer,text:replacement,
+                  renderedText:replacement});
+              }
+              const nextParagraph=Math.max(-1,...answers.map(answer=>
+                answer.paragraphIndex||0))+1;
+              for(const text of additions)
+                answers.push({text,renderedText:text,sourceIds:[],
+                  paragraphIndex:nextParagraph});
+              return answers;
+            }});
+        }catch(error){
+          candidate=null;
+        }
+        if(!candidate)return;
+        try{
+          const {reReview,rePart}=await reReviewPartCandidate(item,candidate);
+          if(reReview.issues.length||!rePart||!rePart.answers.length||
+             rePart.answerStatus==='unanswered')return;
+          const candidateSegment=segmentOf(rePart);
+          const candidateCitations=new Set(citationIds(candidateSegment));
+          const candidateNormalized=normalizedProseSurface(candidateSegment);
+          const candidateDecision=(reReview.partDecisions||[])
+            .find(entry=>entry.partId===partId);
+          const candidateLinked=acceptedLinkedSourcesByClaim(reReview.reviewDecisions,partId);
+          const unresolved=(candidateDecision?.acceptedDirectAnswerClaimIds||[])
+            .some(claimId=>{
+              const linkedSources=candidateLinked.get(claimId);
+              if(linkedSources&&[...linkedSources].some(id=>candidateCitations.has(id)))
+                return false;
+              const text=candidate.answers.find(answer=>answer.claimId===claimId)?.text||
+                claimTextFor(partId,claimId);
+              return !claimTextAppears(text,candidateNormalized);
+            });
+          if(unresolved)return;
+          const originalLinked=acceptedLinkedSourcesByClaim(review.reviewDecisions,partId);
+          const missingResolved=missing.every(claimId=>{
+            const linkedSources=originalLinked.get(claimId);
+            if(linkedSources&&[...linkedSources].some(id=>candidateCitations.has(id)))
+              return true;
+            return claimTextAppears(claimTextFor(partId,claimId),candidateNormalized);
+          });
+          if(!missingResolved)return;
+          if(isEndingPart&&hasAssemblyEndingViolation(candidateSegment))return;
+          adoptRepairedPart(item,rePart);
+          anyAdopted=true;
+        }catch(error){
+          // The repair could not be independently re-reviewed; it does
+          // not ship, and the violation stands.
+        }
+      };
+      await Promise.allSettled(affectedPartIds.map(repairAssemblyPart));
+      const remaining=auditViolations(assembleNow());
+      if(!remaining.length&&anyAdopted){
+        auditRecord.action='repair-applied';
+      }else{
+        for(const partId of new Set(remaining.map(violation=>violation.partId))){
+          const item=parts.find(entry=>entry.part.id===partId);
+          if(item&&item.answerStatus==='answered')item.answerStatus='partial';
+        }
+      }
+    }
+    trace.assemblyAudit=auditRecord;
   }
   const included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
   let answer=normalizeAnswerMarkdown(included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n'));

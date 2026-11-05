@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
@@ -4114,4 +4114,231 @@ test('review guidance checks the requested reasoning operation, not just a relat
  assert.match(REVIEW_PROMPT,/reasoning or mechanism rather than merely stating a related rule or conclusion/);
  assert.match(REVIEW_PROMPT,/Check every explicit demand within the part; if any substantive demand is missing, mark answerStatus partial/);
  assert.match(REVIEW_PROMPT,/A blank heading, transition, or corpus-gap statement alone is not an answer/);
+});
+
+// --- Batch 4: claim-level citation check, assembly audit, author anchoring.
+// All fixtures below are invented for these tests.
+
+const batch4Catalog={501:'The Salt Meridian — Ines Vidal',502:'Wintering Geese — Aaron Feld'};
+const vidalSalt={id:'S1',bookId:'501',title:batch4Catalog[501],page:12,
+ url:'https://example.test/salt-meridian#page=12',
+ text:'I crossed the salt flats in my nineteenth year, carrying my father’s survey chain and a tin of well water. I learned that a horizon can recede exactly as fast as a walker advances toward it.',
+ preview:'I crossed the salt flats in my nineteenth year.'};
+const feldGeese={id:'S2',bookId:'502',title:batch4Catalog[502],page:30,
+ url:'https://example.test/wintering-geese#page=30',
+ text:'Geese read the stars on clear nights and hold their course by the brightest patterns. A flock that loses the pattern circles until the sky clears.',
+ preview:'Geese read the stars on clear nights.'};
+const vidalPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Ines Vidal',role:'primary',bookIds:['501']}],
+ parts:[{id:'P1',question:'What does Vidal describe learning from crossing the salt flats?',
+   sourceBookIds:['501'],searchQueries:['salt flats horizon'],candidateSourceIds:['S1']}],
+ queries:['salt flats horizon']};
+const twoBookPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Ines Vidal',role:'primary',bookIds:['501']},
+  {label:'Aaron Feld',role:'primary',bookIds:['502']}],
+ parts:[{id:'P1',question:'What do Vidal and Feld each describe about finding direction?',
+   sourceBookIds:['501','502'],searchQueries:['direction horizon stars'],
+   candidateSourceIds:['S1','S2']}],queries:['direction horizon stars']};
+function attributedReview(speaker,{sourceId='S1'}={}){
+ return (_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0];
+  const spanId=claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
+   sources:[{sourceId,status:'answered',spanIds:[spanId],
+    attributionStatus:'supported',attributedSpeaker:speaker}]}]})};
+ };
+}
+
+test('author narration needs no speech cue when the speaker is the work’s own author',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
+  attributedReview('Ines Vidal')]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2,'no gate or audit repair runs for a clean cited answer');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.answerCompleteness,'full');
+ assert.match(result.answer,/Ines Vidal describes learning/);
+ assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='source-attribution-unanchored'),
+  'the author’s own narration is anchored by the byline');
+ assert.equal(result.trace.claimCitationGate,undefined);
+ assert.deepEqual(result.trace.assemblyAudit,{violations:[],action:'none'});
+});
+
+test('a third-party speaker still needs a speech cue in the source',async()=>{
+ const ai=makeAI([answer('PART P1\nPetra Lindqvist describes the crossing of the salt flats as a lesson in patience. [S1]'),
+  attributedReview('Petra Lindqvist')]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'none','an unanchored third-party attribution cannot verify the claim');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S1'&&issue.reason==='source-attribution-unanchored'));
+ assert.doesNotMatch(result.answer,/Petra Lindqvist describes/);
+});
+
+test('matching a different work’s author does not anchor spans from another work',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes how geese hold their course by the brightest star patterns. [S2]'),
+  attributedReview('Ines Vidal',{sourceId:'S2'})]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2);
+ assert.equal(result.coverage,'none',
+  'the exemption is per source: Vidal does not author the geese passage');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S2'&&issue.reason==='source-attribution-unanchored'));
+});
+
+test('author anchoring matches only the byline author of the same work',()=>{
+ assert.equal(speakerIsWorkAuthor('Ines Vidal',{title:'The Salt Meridian — Ines Vidal'}),true);
+ assert.equal(speakerIsWorkAuthor('Vidal',{title:'The Salt Meridian — Ines Vidal'}),true,
+  'surname-only attribution matches the byline surname');
+ assert.equal(speakerIsWorkAuthor('Petra Lindqvist',{title:'The Salt Meridian — Ines Vidal'}),false);
+ assert.equal(speakerIsWorkAuthor('Ines Vidal',{title:'Wintering Geese — Aaron Feld'}),false,
+  'the same name does not match a different work’s byline');
+ assert.equal(speakerIsWorkAuthor('Tomas Vidal',{title:'The Salt Meridian — Ines Vidal'}),false,
+  'two full names that merely share a surname do not match');
+ assert.equal(speakerIsWorkAuthor('',{title:'The Salt Meridian — Ines Vidal'}),false);
+});
+
+test('claim citation offenses need source linkage, shipped text, and a missing linked marker',()=>{
+ const linked=new Map([['P1-C1',new Set(['S1'])],['P1-C2',new Set(['S2'])]]);
+ const answers=[
+  {claimId:'P1-C1',text:'Vidal crosses the flats carrying a survey chain.'},
+  {claimId:'P1-C2',text:'Feld writes that geese hold their course by bright star patterns.'},
+  {claimId:'P1-C3',text:'A general remark about patience needs no source.'}];
+ const segment='Vidal crosses the flats carrying a survey chain. '+
+  'Feld writes that geese hold their course by bright star patterns. [S2] '+
+  'A general remark about patience needs no source.';
+ assert.deepEqual(findClaimCitationOffenses(answers,segment,linked),
+  [{claimId:'P1-C1',linkedSourceIds:['S1']}],
+  'only the source-linked claim whose marker is missing offends; the unlinked general remark is exempt');
+ assert.deepEqual(findClaimCitationOffenses(answers,
+  'Feld writes that geese hold their course by bright star patterns. [S2]',linked),[],
+  'a claim whose text never reaches the segment is not this check’s concern');
+ assert.deepEqual(findClaimCitationOffenses(answers,segment,new Map()),[],
+  'with no contract linkage nothing can offend');
+});
+
+test('removing uncited claims filters their evidence and downgrades only an emptied part',()=>{
+ const item={answers:[{claimId:'P1-C1'},{claimId:'P1-C2'}],
+  evidence:[{claimId:'P1-C1'},{claimId:'P1-C2'}],status:'answered',answerStatus:'answered'};
+ assert.deepEqual(removeClaimsFromPart(item,['P1-C1']),{removedCount:1,downgraded:false});
+ assert.deepEqual(item.answers.map(answer=>answer.claimId),['P1-C2']);
+ assert.deepEqual(item.evidence.map(entry=>entry.claimId),['P1-C2']);
+ assert.equal(item.status,'answered','a part with remaining claim text keeps its status');
+ assert.deepEqual(removeClaimsFromPart(item,['P1-C2']),{removedCount:1,downgraded:true});
+ assert.equal(item.status,'partial');
+ assert.equal(item.answerStatus,'partial');
+});
+
+test('a general-context claim ships uncited and untouched beside a cited claim',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Crossing open country on foot teaches patience in a way that maps never can.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2,'the claim-level check makes no calls for exempt claims');
+ assert.equal(result.trace.claimCitationGate,undefined);
+ assert.equal(result.trace.citationGate,undefined);
+ assert.deepEqual(result.trace.assemblyAudit,{violations:[],action:'none'});
+ assert.equal(result.answerCompleteness,'full');
+ assert.match(result.answer,/teaches patience in a way that maps never can/);
+ assert.match(result.answer,/\[S1\]/);
+});
+
+test('assembly ending check flags bare headings and unclosed list items only',()=>{
+ assert.equal(hasAssemblyEndingViolation('The answer is complete.'),false);
+ assert.equal(hasAssemblyEndingViolation(
+  'Findings:\n\n- Geese hold their course by the brightest patterns.'),false,
+  'a complete final list item is not an unclosed one');
+ assert.equal(hasAssemblyEndingViolation('The answer ends here:\n\n**Origins**'),true,
+  'a final line that is only a label promises content that never arrives');
+ assert.equal(hasAssemblyEndingViolation('Points:\n- Geese read the stars\n- Geese hold'),true,
+  'a short final list item with no terminal punctuation is unclosed');
+ assert.equal(hasAssemblyEndingViolation('Points:\n- Navigation depends on'),true,
+  'a final list item trailing off on a function word is unclosed');
+ assert.equal(hasAssemblyEndingViolation('The routes differ in several ways, including'),true);
+});
+
+const droppedClaimDraft='PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n\n'+
+ '- **Field note: Feld writes that geese hold their course by the brightest star patterns [S2]';
+
+test('assembly audit repairs an accepted claim that assembly silently dropped',async()=>{
+ const restoreRepair={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:[{claimId:'P1-C2',text:'Feld writes that geese hold their course by the brightest star patterns. [S2]'}],
+  additions:[]}]})};
+ const ai=makeAI([answer(droppedClaimDraft),
+  review([['P1','answered']],{directAnswerClaimIdsByPart:{P1:['P1-C1','P1-C2']}}),
+  restoreRepair,review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,4,'compose, review, one audit repair, and its re-review');
+ assert.deepEqual(result.trace.assemblyAudit.violations,
+  [{partId:'P1',claimId:'P1-C2',type:'accepted-claim-not-represented'}]);
+ assert.equal(result.trace.assemblyAudit.action,'repair-applied');
+ assert.match(result.answer,/brightest star patterns\. \[S2\]/,
+  'the dropped claim is restored with its citation');
+ assert.equal(result.answerCompleteness,'full');
+});
+
+test('assembly audit downgrades when a dropped accepted claim cannot be repaired',async()=>{
+ const ai=makeAI([answer(droppedClaimDraft),
+  review([['P1','answered']],{directAnswerClaimIdsByPart:{P1:['P1-C1','P1-C2']}})]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
+ assert.equal(result.trace.assemblyAudit.action,'downgraded');
+ assert.equal(result.trace.assemblyAudit.violations.length,1);
+ assert.equal(result.answerCompleteness,'partial',
+  'completeness is reported honestly instead of full over a known gap');
+ assert.equal(result.questionParts[0].answerStatus,'partial');
+ assert.match(result.answer,/horizon recedes/, 'the surviving claim still ships');
+});
+
+test('assembly audit downgrades an answer ending on a bare heading instead of shipping it as full',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n\n**Crossing**'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
+ assert.deepEqual(result.trace.assemblyAudit,
+  {violations:[{partId:'P1',type:'unfinished-ending'}],action:'downgraded'});
+ assert.notEqual(result.outcome,'generation-failed',
+  'a heading-only ending is a completeness gap, not a total failure');
+ assert.equal(result.answerCompleteness,'partial');
+ assert.match(result.answer,/horizon recedes/);
+});
+
+test('assembly audit repair can complete an unfinished lead-in ending',async()=>{
+ const completeRepair=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const part=payload.parts[0];
+  const replacements=part.repair.replaceClaimIds.map(claimId=>{
+   const claim=part.claims.find(item=>item.claimId===claimId);
+   const text=claim?.text.startsWith('A full answer')?
+    'A full answer would compare two possibilities: a simulated world and a physical one.':
+    'The hypothesis is possible, but no evidence establishes it, and a full answer would compare two possibilities: a simulated world and a physical one.';
+   return {claimId,text};
+  });
+  return {response:JSON.stringify({parts:[{partId:'P1',replacements,additions:[]}]})};
+ };
+ const ai=makeAI([answer('PART P1\nThe hypothesis is possible, but no evidence establishes it. A full answer would compare two possibilities:'),
+  review([['P1','answered']]),completeRepair,review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('Are we living in a simulation?',[],ai,[],{
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question:'Are we living in a simulation?'}]},
+  catalog,trace:true});
+ assert.equal(ai.calls.length,4,'compose, review, one audit repair, and its re-review');
+ assert.deepEqual(result.trace.assemblyAudit,
+  {violations:[{partId:'P1',type:'unfinished-ending'}],action:'repair-applied'});
+ assert.notEqual(result.outcome,'generation-failed',
+  'a repaired ending ships instead of being discarded by the legacy check');
+ assert.equal(result.failureCode,undefined);
+ assert.match(result.answer,/a simulated world and a physical one\./);
+ // The part itself stays partial for a pre-existing contract reason that
+ // predates the audit: an uncited claim can be retained context but never
+ // a direct-answer claim, so this source-less part was already partial at
+ // review time. The audit's win is the completed ending, not the status.
+ assert.equal(result.questionParts[0].answerStatus,'partial');
 });
