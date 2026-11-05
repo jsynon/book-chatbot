@@ -915,7 +915,7 @@ function hasExplicitSpeakerCue(sourceText,speaker){
     .test(String(sourceText||''));
 }
 
-function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question,reviewClaims=[]){
+function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question,reviewClaims=[],initialAnswerContext=[]){
   const suppliedParts=new Map(),suppliedClaims=new Map(),issues=[],warnings=[],recovered=[];
   const expectedClaims=new Map(answerParts.flatMap(part=>(part.answers||[])
     .map(answer=>[answer.claimId,part.partId])));
@@ -1022,7 +1022,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       sources:sourceDecisions,
       clauses:Array.isArray(item.clauses)?item.clauses:[]});
   }
-  const supportIssues=[],answerContext=[],reviewDecisions=[],partDecisions=[];
+  const supportIssues=[],answerContext=[...initialAnswerContext],reviewDecisions=[],partDecisions=[];
   const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
     String(claim?.claimId||''),new Map((Array.isArray(claim?.sourceEvidence)?claim.sourceEvidence:[])
       .map(item=>[String(item?.sourceId||''),Array.isArray(item?.spanIds)?item.spanIds:[]]))
@@ -1590,10 +1590,14 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   if(options.trace&&options.selectionTrace)trace.stages.push(options.selectionTrace);
   const usage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
   const started=Date.now();
-  async function run(stage,system,payload,parser){
-    // The bounded budget includes one optional source-decision repair plus
-    // one conditional answer rewrite and independent re-review.
-    const callLimit=options.expand===true?6:5;
+  // The call budget scales with the plan now that review and re-review run
+  // as one call per part: composition (plus the optional expansion), one
+  // review and one compact retry per part, the shared source-decision
+  // repair and answer repair, one re-review per repaired part, and one
+  // citation-gate repair plus its re-review per part. The hard cap keeps
+  // pathological plans bounded; calls past the cap fail closed per part.
+  const callLimit=Math.min(60,3+(options.expand===true?1:0)+plan.parts.length*5);
+  async function run(stage,system,payload,parser,{partId}={}){
     if(usage.calls>=callLimit)throw Error('Answer call budget exceeded');
     const serializedPayload=JSON.stringify(payload);
     const messages=[{role:'system',content:system},{role:'user',content:serializedPayload}];
@@ -1637,16 +1641,21 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         const failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
           error.code:'review-request-failed';
         trace.stages.push({stage,elapsedMs:Date.now()-start,status:'failed',failureCode,
-          timeoutMs,...(payloadMetrics?{payloadMetrics}:{})});
+          timeoutMs,...(partId?{partId}:{}),...(payloadMetrics?{payloadMetrics}:{})});
       }
       throw error;
     }finally{clearTimeout(timer);}
     usage.neurons+=Math.max(0,Number(response?.usage?.neurons)||0);
     usage.inputTokens+=Math.max(0,Number(response?.usage?.prompt_tokens)||0);
     usage.outputTokens+=Math.max(0,Number(response?.usage?.completion_tokens)||0);
-    trace.stages.push({stage,elapsedMs:Date.now()-start,messages,response,
+    // Keep a reference to this call's own stage entry: with per-part review
+    // calls running concurrently, the last trace entry may belong to another
+    // part, so a parser failure must mark this object, not trace.stages.at(-1).
+    const stageTrace={stage,elapsedMs:Date.now()-start,messages,response,
       finishReason:response?.choices?.[0]?.finish_reason||null,
-      ...(payloadMetrics?{payloadMetrics}:{})});
+      ...(partId?{partId}:{}),
+      ...(payloadMetrics?{payloadMetrics}:{})};
+    trace.stages.push(stageTrace);
     if(stage==='compose'&&['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
       throw new ModelFormatError(stage,'The answer draft was truncated before it was complete.','answer-output-truncated');
     if(stage.startsWith('review')||stage==='answer-repair'){
@@ -1655,12 +1664,9 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           throw new ModelFormatError(stage,'Reviewer output was truncated before a complete decision object was returned.','review-output-truncated');
         return parser(response,stage);
       }catch(error){
-        const stageTrace=trace.stages.at(-1);
-        if(stageTrace?.stage===stage){
-          stageTrace.status='failed';
-          stageTrace.failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
-            error.code:stage==='answer-repair'?'answer-repair-response-invalid':'review-response-invalid';
-        }
+        stageTrace.status='failed';
+        stageTrace.failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
+          error.code:stage==='answer-repair'?'answer-repair-response-invalid':'review-response-invalid';
         throw error;
       }
     }
@@ -1678,6 +1684,11 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const composerSourceIds=new Set(plan.parts.flatMap(part=>part.candidateSourceIds||[]));
   const validatedAnswers=[];let review=null,reviewFailure=null,failure=null,reviewedLibraryClaims=false;
   const fallbackEvidenceByPart=new Map();
+  // Parts whose review failed (call-level failure after the compact retry,
+  // or an incomplete per-part review contract) while other parts reviewed
+  // normally. They fall back to deterministic evidence and partial status
+  // instead of discarding every part's verdicts.
+  const failedReviewParts=[];
   try{
     const composePayload={question,plan,history,
       parts:plan.parts.map(part=>({partId:part.id,question:part.question,requirements:part.requirements||[],
@@ -1788,30 +1799,113 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       failure={stage:'compose-validation',code:'answer-citation-validation-failed',
         message:'The draft did not contain usable answer content for any requested part.'};
     if(options.review!==false&&checked.parts.some(part=>part.answers.length)){
-      let {reviewSpanMapsByPart,reviewParts,reviewClaims,reviewPayload}=buildReviewPacket(
-        checked.parts,{sources,pageById,plan,question});
-      try{
-        let rawReview;
+      // The review contract is scoped per part — claims, clauses, and
+      // requirement coverage each belong to exactly one part — so review
+      // each part in its own call and run those calls concurrently. Wall
+      // time becomes the slowest part instead of the sum of all parts, a
+      // failed review discards only its own part's decisions, and the
+      // compact retry rebuilds just that part's packet.
+      const retryableReviewCodes=['model-output-invalid-format','review-output-truncated',
+        'review-response-invalid','inference-deadline-exceeded','review-request-failed'];
+      // Match run()'s stage-trace normalization: a provider failure with no
+      // machine-readable code is a review request failure (the run #44
+      // case), not a reason to skip the retry.
+      const reviewFailureCode=error=>
+        typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
+          error.code:'review-request-failed';
+      const packetsByPart=new Map(),rawReviewByPart=new Map(),reviewRetryParts=[];
+      const attemptPartReview=async(checkedPart)=>{
+        const partId=checkedPart.partId;
+        let packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question});
         try{
-          rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
+          const rawReview=await run('review',REVIEW_PROMPT,packet.reviewPayload,
+            parseReviewJson,{partId});
+          return {packet,rawReview};
         }catch(firstReviewError){
-          // A truncated, malformed, or deadline-cut review discards every
-          // part decision. Retry once with a compact span packet when the
-          // failure is a review-output problem and the call budget still
-          // has room; any other failure, and a failed retry, follows the
-          // existing review-failure path unchanged.
-          const retryableCodes=['model-output-invalid-format','review-output-truncated',
-            'review-response-invalid','inference-deadline-exceeded'];
-          const callLimit=options.expand===true?6:5;
-          if(!retryableCodes.includes(firstReviewError?.code)||usage.calls>=callLimit)
-            throw firstReviewError;
-          trace.reviewRetry={attempted:true,reason:firstReviewError.code,applied:false};
-          ({reviewSpanMapsByPart,reviewParts,reviewClaims,reviewPayload}=buildReviewPacket(
-            checked.parts,{sources,pageById,plan,question,packetSpanLimit:4}));
-          rawReview=await run('review',REVIEW_PROMPT,reviewPayload,parseReviewJson);
-          trace.reviewRetry.applied=true;
+          // A truncated, malformed, or deadline-cut review discards that
+          // part's decisions. Retry the part once with a compact span
+          // packet when the failure is a review-output problem and the
+          // call budget still has room; any other failure, and a failed
+          // retry, fails that part alone.
+          const failureCode=reviewFailureCode(firstReviewError);
+          if(!retryableReviewCodes.includes(failureCode)||
+             usage.calls>=callLimit)throw firstReviewError;
+          const retryEntry={partId,reason:failureCode,applied:false};
+          reviewRetryParts.push(retryEntry);
+          packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question,
+            packetSpanLimit:4});
+          const rawReview=await run('review',REVIEW_PROMPT,packet.reviewPayload,
+            parseReviewJson,{partId});
+          retryEntry.applied=true;
+          return {packet,rawReview};
         }
-        review=normalizeReview(rawReview,plan,checked.parts,sources,reviewSpanMapsByPart,question,reviewClaims);
+      };
+      const settledReviews=await Promise.allSettled(checked.parts.map(attemptPartReview));
+      settledReviews.forEach((settled,index)=>{
+        const partId=checked.parts[index].partId;
+        if(settled.status==='fulfilled'){
+          packetsByPart.set(partId,settled.value.packet);
+          rawReviewByPart.set(partId,settled.value.rawReview);
+        }else failedReviewParts.push({partId,
+          code:reviewFailureCode(settled.reason),error:settled.reason});
+      });
+      if(reviewRetryParts.length){
+        const planOrder=new Map(plan.parts.map((part,index)=>[part.id,index]));
+        reviewRetryParts.sort((a,b)=>planOrder.get(a.partId)-planOrder.get(b.partId));
+        trace.reviewRetry={attempted:true,reason:reviewRetryParts[0].reason,
+          applied:reviewRetryParts.some(entry=>entry.applied),parts:reviewRetryParts};
+      }
+      // Merged packet views keep the repair flows below working on the same
+      // shapes they used when one call reviewed every part.
+      const reviewParts=[],reviewClaims=[];
+      for(const part of checked.parts){
+        const packet=packetsByPart.get(part.partId);if(!packet)continue;
+        reviewParts.push(...packet.reviewParts);
+        reviewClaims.push(...packet.reviewClaims);
+      }
+      const issueExcludedPartIds=new Set(),excludedIssues=[];
+      const normalizeAllParts=()=>{
+        const merged={parts:[],issues:[],warnings:[],supportIssues:[],recovered:[],
+          reviewDecisions:[],partDecisions:[]};
+        // Normalization is deterministic CPU work; run it in plan order so
+        // each part still sees the accepted answers of the parts before it,
+        // exactly as the single-call review produced them.
+        let context=[];
+        for(const part of plan.parts){
+          if(!rawReviewByPart.has(part.id)||issueExcludedPartIds.has(part.id))continue;
+          const packet=packetsByPart.get(part.id);
+          const checkedPart=checked.parts.find(item=>item.partId===part.id);
+          const single=normalizeReview(rawReviewByPart.get(part.id),
+            {...plan,parts:[part]},[checkedPart],sources,packet.reviewSpanMapsByPart,
+            question,packet.reviewClaims,context);
+          if(single.issues.length){
+            // A part whose own review contract is incomplete fails closed
+            // for that part only; the other parts keep their verdicts. The
+            // part's diagnostic records still merge — only its verdicts
+            // (parts, claim decisions, part decisions) are withheld.
+            issueExcludedPartIds.add(part.id);
+            if(!failedReviewParts.some(item=>item.partId===part.id))
+              failedReviewParts.push({partId:part.id,code:'review-contract-incomplete'});
+            for(const issue of single.issues)
+              if(!excludedIssues.includes(issue))excludedIssues.push(issue);
+            merged.warnings.push(...single.warnings);
+            merged.supportIssues.push(...single.supportIssues);
+            merged.recovered.push(...single.recovered);
+            continue;
+          }
+          merged.parts.push(...single.parts);
+          merged.warnings.push(...single.warnings);
+          merged.supportIssues.push(...single.supportIssues);
+          merged.recovered.push(...single.recovered);
+          merged.reviewDecisions.push(...single.reviewDecisions);
+          merged.partDecisions.push(...single.partDecisions);
+          context.push(...(single.parts[0]?.answers||[]));
+        }
+        return merged;
+      };
+      try{
+        if(!rawReviewByPart.size)throw failedReviewParts[0].error;
+        review=normalizeAllParts();
         const missingDecisions=[...new Map(review.supportIssues
           .filter(issue=>issue.reason==='missing-claim-source-decision')
           .map(issue=>[issue.claimId+'|'+issue.sourceId,issue])).values()];
@@ -1837,13 +1931,22 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             try{
               const repair=await run('review-repair',REVIEW_REPAIR_PROMPT,
                 {question,decisions:requested},parseReviewJson);
-              const merged=mergeReviewRepairs(rawReview,requested,repair);
+              // mergeReviewRepairs works on one claims list; merge through
+              // a combined view of the per-part raw reviews, then split the
+              // repaired claims back into the part reviews they came from.
+              const combinedRawReview={claims:[...rawReviewByPart.values()]
+                .flatMap(raw=>Array.isArray(raw?.claims)?raw.claims:[])};
+              const merged=mergeReviewRepairs(combinedRawReview,requested,repair);
               repairTrace={attempted:true,requestedCount:requested.length,
                 applied:merged.ok,reason:merged.ok?'complete':merged.reason};
               if(merged.ok){
-                rawReview=merged.review;
-                review=normalizeReview(rawReview,plan,checked.parts,sources,
-                  reviewSpanMapsByPart,question,reviewClaims);
+                const repairedClaims=new Map(merged.review.claims
+                  .map(claim=>[claim.claimId,claim]));
+                for(const [partId,raw] of rawReviewByPart)
+                  rawReviewByPart.set(partId,{...raw,
+                    claims:(Array.isArray(raw?.claims)?raw.claims:[])
+                      .map(claim=>repairedClaims.get(claim.claimId)||claim)});
+                review=normalizeAllParts();
               }
             }catch(error){
               repairTrace={attempted:true,requestedCount:requested.length,applied:false,
@@ -1983,12 +2086,37 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
               answerRepairTrace.reason='answer-repair-no-material-change';
               trace.answerRepair=answerRepairTrace;
             }else{
-              const repairedPacket=buildReviewPacket(repairedChecked.parts,
-                {sources,pageById,plan:targetPlan,question});
-              const repairedRawReview=await run('answer-re-review',REVIEW_PROMPT,
-                repairedPacket.reviewPayload,parseReviewJson);
-              const repairedReview=normalizeReview(repairedRawReview,targetPlan,repairedChecked.parts,
-                sources,repairedPacket.reviewSpanMapsByPart,question,repairedPacket.reviewClaims);
+              // Re-review follows the same per-part split as the initial
+              // review: one concurrent call per repaired part, normalized
+              // in plan order. Any part's failure rejects the whole repair,
+              // exactly as the single re-review call did.
+              const repairedPackets=await Promise.all(repairedChecked.parts.map(async repairedPart=>{
+                const packet=buildReviewPacket([repairedPart],
+                  {sources,pageById,plan:targetPlan,question});
+                const rawReview=await run('answer-re-review',REVIEW_PROMPT,
+                  packet.reviewPayload,parseReviewJson,{partId:repairedPart.partId});
+                return {repairedPart,packet,rawReview};
+              }));
+              const repairedReview={parts:[],issues:[],warnings:[],supportIssues:[],
+                recovered:[],reviewDecisions:[],partDecisions:[]};
+              let reReviewContext=[];
+              for(const targetPart of targetPlan.parts){
+                const entry=repairedPackets.find(item=>item.repairedPart.partId===targetPart.id);
+                if(!entry)continue;
+                const single=normalizeReview(entry.rawReview,
+                  {...targetPlan,parts:[targetPart]},[entry.repairedPart],sources,
+                  entry.packet.reviewSpanMapsByPart,question,entry.packet.reviewClaims,
+                  reReviewContext);
+                repairedReview.parts.push(...single.parts);
+                repairedReview.issues.push(...single.issues);
+                repairedReview.warnings.push(...single.warnings);
+                repairedReview.supportIssues.push(...single.supportIssues);
+                repairedReview.recovered.push(...single.recovered);
+                repairedReview.reviewDecisions.push(...single.reviewDecisions);
+                repairedReview.partDecisions.push(...single.partDecisions);
+                reReviewContext.push(...(single.parts[0]?.answers||[]));
+              }
+              repairedReview.issues=[...new Set(repairedReview.issues)];
               const everyDirectClaimAccepted=repairedReview.parts.length===repairTargets.length&&
                 repairedReview.parts.every(part=>part.directAnswerCovered&&part.answerStatus==='answered');
               if(repairedReview.issues.length||!everyDirectClaimAccepted)
@@ -2019,14 +2147,25 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           }
           trace.answerRepair=answerRepairTrace;
         }
-        const syntaxRecovery=rawReview?.[REVIEW_JSON_RECOVERY];
-        trace.reviewContract={valid:review.issues.length===0,issues:review.issues,
+        const syntaxRecoveries=plan.parts.flatMap(part=>{
+          const recovery=rawReviewByPart.get(part.id)?.[REVIEW_JSON_RECOVERY];
+          return recovery?[{stage:'review',...recovery}]:[];
+        });
+        trace.reviewContract={valid:review.issues.length===0&&!excludedIssues.length&&
+            !failedReviewParts.length,
+          issues:[...new Set([...review.issues,...excludedIssues])],
           warnings:review.warnings,
           supportIssues:review.supportIssues,recovered:[...review.recovered,
-            ...(syntaxRecovery?[{stage:'review',...syntaxRecovery}]:[])],
-          reviewDecisions:review.reviewDecisions,partDecisions:review.partDecisions};
-        if(review.issues.length)reviewFailure={stage:'review',code:'review-contract-incomplete',
-          message:'Review omitted or changed one or more question-part decisions.'};
+            ...syntaxRecoveries],
+          reviewDecisions:review.reviewDecisions,partDecisions:review.partDecisions,
+          ...(failedReviewParts.length?{failedParts:failedReviewParts
+            .map(item=>({partId:item.partId,code:item.code}))}:{})};
+        // Per-part contract problems fail only their own part (recorded in
+        // failedParts above, with deterministic fallback evidence below).
+        // The whole answer is unverified only when no part was reviewed.
+        if((review.issues.length||excludedIssues.length)&&!review.parts.length)
+          reviewFailure={stage:'review',code:'review-contract-incomplete',
+            message:'Review omitted or changed one or more question-part decisions.'};
       }catch(error){
         reviewFailure={stage:error.stage||'review',code:error.code||'review-request-failed',
           message:String(error.message||error).slice(0,240),
@@ -2034,17 +2173,35 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         trace.reviewContract={valid:false,issues:[reviewFailure.code]};
       }
     }
-    // Graceful degradation when review fails outright: the validated draft
-    // still carries citations, so link its claims to exact source spans
+    // Graceful degradation when review fails: the validated draft still
+    // carries citations, so link its claims to exact source spans
     // deterministically where the overlap is verifiable. The answer keeps
     // citation->span links and highlights instead of none, while statuses
-    // and the review outcome still report it as unverified.
-    if(reviewFailure&&!review){
-      for(const [partId,entries] of buildFallbackEvidenceByPart(checked.parts,sources))
+    // and the review outcome still report it as unverified. Per-part
+    // isolation extends the fallback to a single failed part beside
+    // reviewed ones. One legacy case is preserved exactly: when every
+    // part's review contract was incomplete (no call-level failure), the
+    // whole answer is already reported unverified and no fallback is built.
+    const issueOnlyCollapse=Boolean(reviewFailure)&&
+      !failedReviewParts.some(item=>item.error);
+    if(failedReviewParts.length&&!issueOnlyCollapse){
+      const fallbackPartIds=new Set(failedReviewParts
+        .filter(item=>item.error||review?.parts.length)
+        .map(item=>item.partId));
+      const fallbackChecked=checked.parts.filter(part=>fallbackPartIds.has(part.partId));
+      for(const [partId,entries] of buildFallbackEvidenceByPart(fallbackChecked,sources))
         fallbackEvidenceByPart.set(partId,entries);
       const fallbackEntries=[...fallbackEvidenceByPart.values()]
         .reduce((count,entries)=>count+entries.length,0);
-      if(fallbackEntries)trace.fallbackEvidence={reason:reviewFailure.code,entries:fallbackEntries};
+      if(fallbackEntries){
+        const planOrder=new Map(plan.parts.map((part,index)=>[part.id,index]));
+        const orderedFailed=[...failedReviewParts]
+          .sort((a,b)=>planOrder.get(a.partId)-planOrder.get(b.partId));
+        trace.fallbackEvidence={reason:orderedFailed[0].code,entries:fallbackEntries,
+          parts:orderedFailed.filter(item=>fallbackPartIds.has(item.partId))
+            .map(item=>({partId:item.partId,reason:item.code,
+              entries:fallbackEvidenceByPart.get(item.partId)?.length||0}))};
+      }
     }
   }catch(error){failure={stage:error.stage||'compose',code:error.code||'answer-pipeline-failed',
     message:String(error.message||error).slice(0,240)};}
@@ -2053,7 +2210,10 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   const parts=plan.parts.map(part=>{
     const answerPart=validatedAnswers.find(item=>item.partId===part.id);
     const reviewed=review?.parts.find(item=>item.partId===part.id);
-    const answers=unreviewed?(answerPart?.answers||[]):(reviewed?.answers||[]);
+    // A part whose own review failed keeps its validated draft, like the
+    // globally unreviewed path; reviewed parts use their reviewed answers.
+    const partReviewFailed=failedReviewParts.some(item=>item.partId===part.id);
+    const answers=unreviewed||partReviewFailed?(answerPart?.answers||[]):(reviewed?.answers||[]);
     let status=reviewed?.status||
       (answers.length?'partial':'unanswered');
     let answerStatus=reviewed?.answerStatus||reviewed?.status||
@@ -2069,6 +2229,131 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       ...(reviewed?.requirementCoverage?{requirementCoverage:reviewed.requirementCoverage,
         requirementsComplete:reviewed.requirementsComplete===true}:{})};
   });
+  // Citation-presence gate. A source-based part can survive review with no
+  // citations at all when the composer writes uncited prose and the reviewer
+  // accepts it as general context (run #42's Dostoevsky case): the part then
+  // ships as fully supported although nothing in it is actually sourced.
+  // Catch that here, once the final parts are known: one targeted repair
+  // tries to restore citations from the part's supplied sources and the
+  // repair is independently re-reviewed; a part that still has no linked
+  // citation is downgraded to partial instead of shipping as supported.
+  // General-context parts and parts with no linked sources are exempt.
+  const citationGateEntries=[];
+  const gateCandidates=parts.filter(item=>{
+    if(item.status!=='answered'||!item.answers.length)return false;
+    const linkedIds=(item.part.candidateSourceIds||[]).filter(id=>pageById.has(id));
+    if(!linkedIds.length)return false;
+    const citedIds=new Set(citationIds(renderAnswerParagraphs(item.answers)));
+    return !linkedIds.some(id=>citedIds.has(id));
+  });
+  if(gateCandidates.length){
+    const applyCitationGate=async(item)=>{
+      const planPart=item.part;
+      const entry={partId:planPart.id,action:'downgraded'};
+      citationGateEntries.push(entry);
+      const linkedIds=(planPart.candidateSourceIds||[]).filter(id=>pageById.has(id));
+      const singlePlan={...plan,parts:[planPart]};
+      const targetClaimIds=item.answers.filter(answer=>!answer.sourceIds?.length)
+        .map(answer=>answer.claimId);
+      const targets=targetClaimIds.length?targetClaimIds:
+        item.answers.map(answer=>answer.claimId);
+      let repairedPart=null;
+      try{
+        // The repair needs spans from every source supplied for the part,
+        // not only the ones the draft happened to cite, so harvest the
+        // packet evidence through a synthetic checked part that cites them
+        // all; only its evidence list is used.
+        const harvestPacket=buildReviewPacket([{partId:planPart.id,question:planPart.question,
+          answers:item.answers.map(answer=>({...answer,sourceIds:linkedIds}))}],
+          {sources,pageById,plan,question});
+        const reviewedPart=review?.parts.find(part=>part.partId===planPart.id);
+        const repairPayload={question,parts:[{partId:planPart.id,question:planPart.question,
+          directAnswerClaimIds:reviewedPart?.directAnswerClaimIds||[],
+          repair:{replaceClaimIds:targets,addCoverage:false,missingRequirements:[],
+            supportIssues:[{partId:planPart.id,reason:'citation-gate-missing-citation'}]},
+          claims:item.answers.map(answer=>({claimId:answer.claimId,text:answer.text,
+            citedSourceIds:answer.sourceIds||[],targeted:targets.includes(answer.claimId),
+            initialReview:(review?.reviewDecisions||[])
+              .filter(decision=>decision.claimId===answer.claimId)
+              .map(decision=>({sourceId:decision.sourceId,status:decision.sourceStatus,
+                accepted:decision.accepted===true,reason:decision.validationReason||null}))})),
+          evidence:harvestPacket.reviewParts[0]?.evidence||[]}],
+          directAnswerClaimIds:reviewedPart?.directAnswerClaimIds||[]};
+        const patches=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>{
+          const parsed=parseAnswerRepairJson(response);
+          const patchPart=Array.isArray(parsed?.parts)&&parsed.parts.length===1?
+            parsed.parts[0]:null;
+          if(!patchPart||String(patchPart?.partId||'').toUpperCase()!==planPart.id||
+             !Array.isArray(patchPart?.replacements)||
+             (Array.isArray(patchPart?.additions)&&patchPart.additions.length)||
+             Object.keys(patchPart).some(key=>!['partId','replacements','additions'].includes(key)))
+            throw new ModelFormatError('answer-repair','Citation gate repair returned an invalid part patch.','answer-repair-invalid');
+          const replacementById=new Map();
+          for(const replacement of patchPart.replacements){
+            const claimId=String(replacement?.claimId||'').toUpperCase();
+            const text=typeof replacement?.text==='string'?replacement.text.trim():'';
+            if(!targets.includes(claimId)||replacementById.has(claimId)||
+               !text||text.length>8000||/[\r\n]/u.test(text)||
+               Object.keys(replacement).some(key=>!['claimId','text'].includes(key))||
+               splitCitedSentenceUnits(text).length!==1)
+              throw new ModelFormatError('answer-repair','Citation gate repair returned an invalid claim patch.','answer-repair-invalid');
+            replacementById.set(claimId,text);
+          }
+          if(replacementById.size!==targets.length)
+            throw new ModelFormatError('answer-repair','Citation gate repair omitted a targeted claim.','answer-repair-invalid');
+          return replacementById;
+        },{partId:planPart.id});
+        const repairedAnswers=item.answers.map(answer=>{
+          const replacement=patches.get(answer.claimId);
+          return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
+        });
+        const repairedChecked=validatePartAnswers(
+          [{partId:planPart.id,text:renderAnswerParagraphs(repairedAnswers)}],
+          sources,singlePlan,question);
+        const candidate=repairedChecked.parts[0];
+        if(!candidate?.answers.length||
+           !repairAnswerChanged([{partId:planPart.id,answers:item.answers}],repairedChecked.parts))
+          throw new ModelFormatError('answer-repair','Citation gate repair produced no usable cited answer.','answer-repair-invalid');
+        const repairedCitedIds=new Set(citationIds(renderAnswerParagraphs(candidate.answers)));
+        if(!linkedIds.some(id=>repairedCitedIds.has(id)))
+          throw new ModelFormatError('answer-repair','Citation gate repair still has no linked citation.','answer-repair-invalid');
+        repairedPart=candidate;
+      }catch(error){
+        entry.action='repair-failed';
+      }
+      if(repairedPart){
+        try{
+          const reReviewPacket=buildReviewPacket([repairedPart],
+            {sources,pageById,plan:singlePlan,question});
+          const reRawReview=await run('answer-re-review',REVIEW_PROMPT,
+            reReviewPacket.reviewPayload,parseReviewJson,{partId:planPart.id});
+          const reReview=normalizeReview(reRawReview,singlePlan,[repairedPart],sources,
+            reReviewPacket.reviewSpanMapsByPart,question,reReviewPacket.reviewClaims);
+          const rePart=reReview.parts[0];
+          const reCitedIds=new Set(citationIds(renderAnswerParagraphs(rePart?.answers||[])));
+          if(!reReview.issues.length&&rePart?.status==='answered'&&
+             linkedIds.some(id=>reCitedIds.has(id))){
+            item.answers=rePart.answers;
+            item.evidence=rePart.evidence;
+            item.answerStatus=rePart.answerStatus;
+            if(rePart.requirementCoverage){
+              item.requirementCoverage=rePart.requirementCoverage;
+              item.requirementsComplete=rePart.requirementsComplete===true;
+            }
+            entry.action='repair-applied';
+          }
+        }catch(error){
+          // The repair text exists but could not be independently
+          // re-reviewed; it does not ship, and the part is downgraded.
+        }
+      }
+      if(entry.action!=='repair-applied')item.status='partial';
+    };
+    await Promise.allSettled(gateCandidates.map(applyCitationGate));
+    const planOrder=new Map(plan.parts.map((part,index)=>[part.id,index]));
+    citationGateEntries.sort((a,b)=>planOrder.get(a.partId)-planOrder.get(b.partId));
+    trace.citationGate=citationGateEntries;
+  }
   const included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
   let answer=normalizeAnswerMarkdown(included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n'));
   const incompleteAnswer=Boolean(answer&&hasUnfinishedAnswerEnding(answer));
