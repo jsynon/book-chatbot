@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,normalizeAnswerMarkdown} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
@@ -1603,6 +1603,45 @@ test('malformed answer repair falls back to the original fail-closed review resu
  assert.equal(result.trace.answerRepair.applied,false);
  assert.equal(result.trace.answerRepair.reason,'model-output-invalid-format');
  assert.equal(result.usage.calls,3,'invalid repair does not proceed to re-review');
+});
+
+test('answer repair recovers unescaped quotation marks before the existing validation and re-review',async()=>{
+ const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[] }]}]})};
+  },
+  (_model,{messages})=>{
+   const payload=JSON.parse(messages[1].content),claimId=payload.parts[0].repair.replaceClaimIds[0];
+   return {response:`{"parts":[{"partId":"P1","replacements":[{"claimId":"${claimId}","text":"Hume links the idea of "necessity" to repeated conjunction and custom. [S1]"}],"additions":[]}]}`};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims:payload.claims.map(claim=>({
+     claimId:claim.claimId,status:'answered',sources:claim.sourceIds.map(sourceId=>({sourceId,
+      status:'answered',spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}))})};
+  }
+ ],{decorateReview:false});
+ const raw=`{"parts":[{"partId":"P1","replacements":[{"claimId":"P1-C1","text":"Hume describes an idea of "necessity" that arises through custom. [S1]"}],"additions":[]}]}`;
+ const parsed=parseAnswerRepairJson({response:raw});
+ assert.equal(parsed.parts[0].replacements[0].text,
+  'Hume describes an idea of "necessity" that arises through custom. [S1]');
+ assert.equal(parsed[Object.getOwnPropertySymbols(parsed)[0]].code,'unescaped-inner-quotes');
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.answerRepair.applied,true);
+ assert.equal(result.trace.answerRepair.responseRecovery.code,'unescaped-inner-quotes');
+ assert.match(result.answer,/idea of "necessity" to repeated conjunction and custom/);
+ assert.equal(result.usage.calls,4,'syntax recovery uses the existing repair and re-review calls');
+ assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
+});
+
+test('answer repair quote recovery leaves unrelated malformed JSON fail-closed',()=>{
+ assert.throws(()=>parseAnswerRepairJson({response:'{"parts":[{"partId":"P1",}],}'}),
+  /valid JSON/);
 });
 
 test('an answer repair that patches an unrequested claim fails closed without re-review',async()=>{

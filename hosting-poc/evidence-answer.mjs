@@ -108,6 +108,7 @@ function responseText(raw,stage){
   return text;
 }
 const REVIEW_JSON_RECOVERY=Symbol('reviewJsonRecovery');
+const ANSWER_REPAIR_JSON_RECOVERY=Symbol('answerRepairJsonRecovery');
 function removeRepeatedUnmatchedClosers(value){
   const stack=[];let output='',inString=false,escaped=false,previousCloser='',removed=0;
   for(let index=0;index<value.length;index++){
@@ -133,6 +134,29 @@ function removeRepeatedUnmatchedClosers(value){
   }
   return !inString&&stack.length===0&&removed?{text:output,removed}:null;
 }
+function escapeUnescapedJsonStringQuotes(value){
+  let output='',inString=false,escaped=false,changed=0;
+  for(let index=0;index<value.length;index++){
+    const char=value[index];
+    if(char==='"'&&!escaped){
+      if(!inString){inString=true;output+=char;continue;}
+      let next=index+1;
+      while(next<value.length&&/\s/u.test(value[next]))next++;
+      // A JSON string can close only before a structural delimiter. A quote
+      // followed by ordinary prose is an unescaped quote inside the value.
+      if(next===value.length||[',',']','}',':'].includes(value[next])){
+        inString=false;output+=char;continue;
+      }
+      output+='\\"';changed++;continue;
+    }
+    output+=char;
+    if(inString){
+      if(escaped)escaped=false;
+      else if(char==='\\')escaped=true;
+    }
+  }
+  return changed&&!inString&&!escaped?{text:output,count:changed}:null;
+}
 function parseJson(raw,stage){
   const text=responseText(raw,stage).trim();
   const fenced=text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -157,6 +181,19 @@ function parseJson(raw,stage){
   const objectText=candidate.slice(start,end);
   try{return JSON.parse(objectText);}
   catch{
+    // Answer-repair output sometimes embeds source quotation marks without
+    // JSON escaping. Recover only quotes that cannot legally close a JSON
+    // string; all answer, claim, citation, and re-review validators still run.
+    const repairQuotes=stage==='answer-repair'?
+      escapeUnescapedJsonStringQuotes(objectText):null;
+    if(repairQuotes){
+      try{
+        const parsed=JSON.parse(repairQuotes.text);
+        Object.defineProperty(parsed,ANSWER_REPAIR_JSON_RECOVERY,
+          {value:{code:'unescaped-inner-quotes',count:repairQuotes.count}});
+        return parsed;
+      }catch{}
+    }
     // Recovery is limited to review output and one unambiguous defect pattern.
     // The normal review-schema and exact-span checks still run after parsing.
     const recovered=stage==='review'?removeRepeatedUnmatchedClosers(objectText):null;
@@ -172,6 +209,7 @@ function parseJson(raw,stage){
 }
 // Keep the review parser independently testable against authenticated trace fixtures.
 export function parseReviewJson(raw){return parseJson(raw,'review');}
+export function parseAnswerRepairJson(raw){return parseJson(raw,'answer-repair');}
 
 const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":""}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
 const ANSWER_REPAIR_PROMPT=`Patch only the requested claims. Each part lists replaceClaimIds, any missing requirements, and whether answer coverage needs an addition. When missing requirements are listed, make the minimum change that directly addresses each one; do not add optional material. Replace every listed claimId exactly once with one complete sentence; do not rewrite, repeat, remove, or change any other existing claim. Add one or more standalone sentences only when addCoverage is true, and do not repeat claims already present. Use only the already selected evidence and exact spans supplied for that part; do not seek, invent, or cite other sources. A replacement of a source-derived claim must cite only a source supplied for that part, and its citation must support the entire replacement, including attribution, scope, and logical relations. Independent general knowledge may be used for a needed addition when the supplied material does not answer it; keep it distinct from supplied-source claims and leave it uncited. If a requested claim cannot be repaired responsibly, do not invent support; return a replacement that is fully supported or let the bounded repair fail. Return exactly one JSON object with each requested part once and this shape: {"parts":[{"partId":"P1","replacements":[{"claimId":"P1-C2","text":"one replacement sentence"}],"additions":["one new sentence"]}]}. Include empty arrays when there are no replacements or additions. Do not return complete part text, preserved claims, citations to unselected sources, or commentary.`;
@@ -1791,7 +1829,9 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             initialSupportIssues:review.supportIssues.filter(issue=>targetIds.has(issue.partId))};
           try{
             const patches=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>{
-              const parsed=parseReviewJson(response);
+              const parsed=parseAnswerRepairJson(response);
+              const responseRecovery=parsed?.[ANSWER_REPAIR_JSON_RECOVERY];
+              if(responseRecovery)answerRepairTrace.responseRecovery=responseRecovery;
               if(!Array.isArray(parsed?.parts)||parsed.parts.length!==repairTargets.length)
                 throw new ModelFormatError('answer-repair','Answer repair returned an incomplete part list.','answer-repair-invalid');
               const patchesByPart=new Map();
