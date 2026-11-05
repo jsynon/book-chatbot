@@ -723,7 +723,14 @@ function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMaps){
       const rawSpanIds=Array.isArray(sourceDecision?.spanIds)?sourceDecision.spanIds:[];
       const spanIds=[...new Set(rawSpanIds.filter(spanId=>typeof spanId==='string'&&
         reviewSpanSourceId(spanId)===sourceId&&validSpanMap?.has(spanId)))].slice(0,MAX_REVIEW_SPANS_PER_SOURCE);
-      let status=hasRecognizedStatus(sourceDecision?.status)?normalizeStatus(sourceDecision.status):'partial';
+      // The review contract asks clause source decisions for only a cited
+      // source ID and its exact supporting span IDs — no status. Mirror the
+      // claim-level convention below: a missing status asserts support only
+      // when at least one supplied span survives validation. Defaulting it
+      // to 'partial' demoted every prompt-conformant clause, and the
+      // claim-clause gate then discarded the whole claim's acceptance.
+      let status=hasRecognizedStatus(sourceDecision?.status)?normalizeStatus(sourceDecision.status):
+        spanIds.length?'answered':'partial';
       if(status==='answered'&&!spanIds.length){status='partial';warnings.push('clause-supported-without-valid-span');}
       sources.push({sourceId,status,spanIds});
     }

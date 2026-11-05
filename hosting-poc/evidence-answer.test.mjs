@@ -808,6 +808,101 @@ test('reviewed clauses need not mechanically partition every connective in a cit
   issue.reason==='claim-clause-review-incomplete'));
 });
 
+// The review prompt asks clause source decisions for only a cited source ID
+// and its exact supporting span IDs — no per-source status. Live per-part
+// reviews return exactly that shape, so a clause source carrying valid spans
+// asserts support just as a claim-level source decision with no explicit
+// status does. Regression coverage for the batch-3 live runs where whole
+// parts lost every acceptance (acceptedDirectAnswerClaimIds=[]) whenever the
+// reviewer segmented a claim into clauses.
+function clauseShapeReview({withClauses,clauseTexts}){
+ return (_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const part=payload.parts[0],claim=payload.claims[0];
+  const sourceId=claim.sourceIds[0];
+  const spanId=claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:part.partId,status:'answered',
+    answerStatus:'answered',repairable:false,directAnswerClaimIds:[claim.claimId],
+    requirementCoverage:(part.requirements||[]).map(requirement=>({
+     requirementId:requirement.id,status:'answered',answerClaimIds:[claim.claimId]}))}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId,status:'answered',spanIds:[spanId],
+     attributionStatus:'not_applicable',attributedSpeaker:''}],
+    ...(withClauses?{clauses:clauseTexts.map(text=>({text,status:'answered',
+     issueCode:'none',sources:[{sourceId,spanIds:[spanId]}]}))}:{})}]})};
+ };
+}
+
+test('clause sources carrying only span IDs keep the claim acceptance (single part)',async()=>{
+ const question='How does Hume explain causal necessity, and what role does custom play?';
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,
+  requirements:[{id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
+   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}]}]};
+ const claimText='Custom leads the mind to infer one event from another, and repeated conjunction gives rise to the idea of necessity.';
+ const ai=makeAI([answer(`PART P1\n${claimText} [S1]`),
+  clauseShapeReview({withClauses:true,clauseTexts:[
+   'Custom leads the mind to infer one event from another',
+   'repeated conjunction gives rise to the idea of necessity.']})]);
+ const result=await composeEvidenceAnswer(question,[hume],ai,[],{plan,catalog,trace:true});
+ const decision=result.trace.reviewContract.partDecisions.find(item=>item.partId==='P1');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.deepEqual(decision.acceptedDirectAnswerClaimIds,['P1-C1'],
+  'the direct claim accepted by the reviewer survives clause normalization');
+ assert.deepEqual(decision.requirementCoverage.map(item=>[item.requirementId,item.status,item.answerClaimIds]),
+  [['P1-R1','answered',['P1-C1']],['P1-R2','answered',['P1-C1']]]);
+ assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='claim-clause-not-supported'||issue.reason==='claim-source-not-supported'),
+  'no deterministic demotion is recorded for a prompt-conformant clause review');
+ assert.match(result.answer,/Custom leads the mind to infer one event from another/);
+ assert.match(result.answer,/\[S1\]/,'the final answer keeps its citation');
+ assert.deepEqual(result.citations.map(source=>source.id),['S1']);
+});
+
+test('a clause-segmented later part loses nothing to a clause-free earlier part, and vice versa',async()=>{
+ const plan={version:'reader-evidence-v2',intent:'compare',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[
+   {id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
+    searchQueries:['Hume necessity custom'],candidateSourceIds:['S1'],
+    requirements:[{id:'P1-R1',text:'Explain how Hume accounts for causal necessity.'}]},
+   {id:'P2',question:'How does Kant explain causal necessity?',sourceBookIds:['40'],
+    searchQueries:['Kant causality a priori'],candidateSourceIds:['S2'],
+    requirements:[{id:'P2-R1',text:'Explain how Kant accounts for causal necessity.'}]}
+  ],queries:['Hume custom','Kant a priori']};
+ const sources=[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}];
+ const draft='PART P1\nCustom leads the mind to infer one event from another, and repeated conjunction gives rise to the idea of necessity. [S1]\n'+
+  'PART P2\nCausality is a pure conception of the understanding, and as a category it is a priori. [S2]';
+ const clauseTexts={
+  P1:['Custom leads the mind to infer one event from another',
+   'repeated conjunction gives rise to the idea of necessity.'],
+  P2:['Causality is a pure conception of the understanding',
+   'as a category it is a priori.']};
+ for(const segmentedPart of ['P2','P1']){
+  const reviewCall=(_model,request)=>{
+   const payload=parsePayload(request.messages);
+   const partId=payload.parts[0].partId;
+   return clauseShapeReview({withClauses:partId===segmentedPart,
+    clauseTexts:clauseTexts[partId]})(_model,request);
+  };
+  const ai=makeAI([answer(draft),reviewCall,reviewCall]);
+  const result=await composeEvidenceAnswer('How do Hume and Kant explain causal necessity?',
+   sources,ai,[],{plan,catalog,trace:true});
+  assert.equal(result.outcome,'verified-source-draft',
+   `segmented part ${segmentedPart}: both parts keep their reviewed answers`);
+  for(const partId of ['P1','P2']){
+   const decision=result.trace.reviewContract.partDecisions.find(item=>item.partId===partId);
+   assert.deepEqual(decision.acceptedDirectAnswerClaimIds,[`${partId}-C1`],
+    `${partId} keeps its direct claim when ${segmentedPart} is clause-segmented`);
+   assert.deepEqual(decision.requirementCoverage.map(item=>[item.status,item.answerClaimIds]),
+    [['answered',[`${partId}-C1`]]]);
+  }
+  assert.match(result.answer,/\[S1\]/);
+  assert.match(result.answer,/\[S2\]/);
+  assert.deepEqual(result.citations.map(source=>source.id),['S1','S2']);
+ }
+});
+
 test('malformed supportedText is ignored and the partial cited claim remains fail-closed',async()=>{
  const text='Custom is the great guide of human life.';
  const source={...hume,id:'S1',bookId:'35',text,preview:text};
