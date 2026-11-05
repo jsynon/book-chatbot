@@ -1384,6 +1384,35 @@ function compactReviewPayload(question,parts,claims){
     ...(sourceContexts.size?{sourceContexts:[...sourceContexts.values()]}:{}),claims:compactClaims};
 }
 
+// Scoped text is already sent as exact review spans. Include only nearby page
+// context for attribution and voice checks instead of repeating a large prefix
+// of the full page in every review request.
+function compactSourceContext(pageText,scopeText,limit=800){
+  const page=String(pageText||'').trim();
+  if(page.length<=limit)return page;
+  const scope=String(scopeText||'').trim();
+  const start=scope?page.indexOf(scope):-1;
+  if(start<0)return page.slice(0,limit);
+  const header=start>200?page.slice(0,160).trim():'';
+  const before=page.slice(Math.max(0,start-280),start).trim();
+  const afterStart=start+scope.length;
+  const after=page.slice(afterStart,afterStart+280).trim();
+  const pieces=[];
+  if(header)pieces.push(header);
+  const nearby=[before,after].filter(Boolean).join('\n…\n');
+  if(nearby)pieces.push(nearby);
+  let context=pieces.join('\n…\n');
+  if(context.length>limit)context=context.slice(0,limit);
+  return context;
+}
+
+function repairAnswerChanged(beforeParts,afterParts){
+  const signature=parts=>JSON.stringify((parts||[]).map(part=>({partId:part.partId,
+    answers:(part.answers||[]).map(answer=>({text:String(answer.text||'').replace(/\s+/gu,' ').trim(),
+      sourceIds:[...new Set(answer.sourceIds||[])].sort()}))})));
+  return signature(beforeParts)!==signature(afterParts);
+}
+
 function reviewPayloadMetrics(payload,serializedPayload,systemPrompt){
   const parts=Array.isArray(payload?.parts)?payload.parts:[];
   const evidence=parts.flatMap(part=>Array.isArray(part?.evidence)?part.evidence:[]);
@@ -1424,7 +1453,7 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question}){
         ...(sourceVoiceGuidance(provenance)?{attributionRequirement:sourceVoiceGuidance(provenance)}:{}),
         spans:orderedSpans.map(({spanId,text})=>({spanId,text})),
         ...(selectionSupport.length?{selectionSupport}:{}),
-        ...(source?.scopeText?{contextText:String(page.text||'').slice(0,2500)}:{})};
+        ...(source?.scopeText?{contextText:compactSourceContext(page.text,source.scopeText)}:{})};
     });
     reviewSpanMapsByPart.set(part.partId,partSpanMaps);
     const contextClaims=part.answers.filter(answer=>!answer.sourceIds.length)
@@ -1694,7 +1723,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         if(repairTrace)trace.reviewRepair=repairTrace;
         const acceptedClaimIdsByPart=new Map(review.parts.map(part=>[
           part.partId,new Set((part.answers||[]).map(answer=>answer.claimId))]));
-        const repairTargets=review.issues.length?[]:review.parts.filter(part=>
+        const repairCandidates=review.issues.length?[]:review.parts.filter(part=>
           ((!part.directAnswerCovered&&part.directAnswerClaimIds.length>0)||
            (part.answerStatus!=='answered'&&part.repairable===true)||
            (part.requirementCoverage||[]).some(item=>item.status!=='answered'))&&
@@ -1717,6 +1746,17 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
                 (part.answerStatus!=='answered'&&part.repairable===true)||
                 (!part.directAnswerCovered&&!targetClaimIds.length)};
           }).filter(part=>part.targetClaimIds.length||part.addCoverage);
+        const repairTargets=repairCandidates.filter(part=>part.repairable===true);
+        if(repairCandidates.length&&!repairTargets.length){
+          trace.answerRepair={attempted:false,partIds:repairCandidates.map(part=>part.partId),
+            applied:false,reason:'reviewer-did-not-mark-repairable',
+            triggerReasons:repairCandidates.map(part=>({partId:part.partId,reasons:[
+              ...(!part.directAnswerCovered?[part.directAnswerClaimIds.length?
+                'direct-answer-not-supported':'direct-answer-not-identified']:[]),
+              ...(part.missingRequirements.length?['uncovered-answer-requirement']:[]),
+              ...(part.answerStatus!=='answered'?['incomplete-answer-'+part.answerStatus]:[])
+            ]}))};
+        }
         if(repairTargets.length){
           const targetIds=new Set(repairTargets.map(part=>part.partId));
           const targetPlan={...plan,parts:plan.parts.filter(part=>targetIds.has(part.id))};
@@ -1802,36 +1842,41 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             const repairedChecked=validatePartAnswers(repairedDraftParts,sources,targetPlan,question);
             if(repairedChecked.parts.some(part=>!part.answers.length))
               throw new ModelFormatError('answer-repair','Repaired answer did not pass citation validation.','answer-repair-invalid');
-            const repairedPacket=buildReviewPacket(repairedChecked.parts,
-              {sources,pageById,plan:targetPlan,question});
-            const repairedRawReview=await run('answer-re-review',REVIEW_PROMPT,
-              repairedPacket.reviewPayload,parseReviewJson);
-            const repairedReview=normalizeReview(repairedRawReview,targetPlan,repairedChecked.parts,
-              sources,repairedPacket.reviewSpanMapsByPart,question,repairedPacket.reviewClaims);
-            const everyDirectClaimAccepted=repairedReview.parts.length===repairTargets.length&&
-              repairedReview.parts.every(part=>part.directAnswerCovered&&part.answerStatus==='answered');
-            if(repairedReview.issues.length||!everyDirectClaimAccepted)
-              throw new ModelFormatError('answer-re-review','Repaired direct answer did not pass independent review.',
-                repairedReview.issues.length?'answer-re-review-incomplete':'answer-re-review-unsupported');
-            for(const repairedPart of repairedChecked.parts){
-              const currentIndex=validatedAnswers.findIndex(item=>item.partId===repairedPart.partId);
-              if(currentIndex>=0)validatedAnswers[currentIndex]=repairedPart;
+            if(!repairAnswerChanged(targetAnswers,repairedChecked.parts)){
+              answerRepairTrace.reason='answer-repair-no-material-change';
+              trace.answerRepair=answerRepairTrace;
+            }else{
+              const repairedPacket=buildReviewPacket(repairedChecked.parts,
+                {sources,pageById,plan:targetPlan,question});
+              const repairedRawReview=await run('answer-re-review',REVIEW_PROMPT,
+                repairedPacket.reviewPayload,parseReviewJson);
+              const repairedReview=normalizeReview(repairedRawReview,targetPlan,repairedChecked.parts,
+                sources,repairedPacket.reviewSpanMapsByPart,question,repairedPacket.reviewClaims);
+              const everyDirectClaimAccepted=repairedReview.parts.length===repairTargets.length&&
+                repairedReview.parts.every(part=>part.directAnswerCovered&&part.answerStatus==='answered');
+              if(repairedReview.issues.length||!everyDirectClaimAccepted)
+                throw new ModelFormatError('answer-re-review','Repaired direct answer did not pass independent review.',
+                  repairedReview.issues.length?'answer-re-review-incomplete':'answer-re-review-unsupported');
+              for(const repairedPart of repairedChecked.parts){
+                const currentIndex=validatedAnswers.findIndex(item=>item.partId===repairedPart.partId);
+                if(currentIndex>=0)validatedAnswers[currentIndex]=repairedPart;
+              }
+              trace.rejected.push(...repairedChecked.rejected);
+              trace.citationRepairs.push(...repairedChecked.citationRepairs);
+              trace.citationFormatRepairs.push(...repairedChecked.citationFormatRepairs);
+              trace.quoteRepairs.push(...repairedChecked.quoteRepairs);
+              review.parts=review.parts.map(part=>repairedReview.parts.find(item=>item.partId===part.partId)||part);
+              review.reviewDecisions=[...review.reviewDecisions.filter(item=>!targetIds.has(item.partId)),
+                ...repairedReview.reviewDecisions];
+              review.partDecisions=[...review.partDecisions.filter(item=>!targetIds.has(item.partId)),
+                ...repairedReview.partDecisions];
+              review.supportIssues=[...review.supportIssues.filter(item=>!targetIds.has(item.partId)),
+                ...repairedReview.supportIssues];
+              review.warnings=[...review.warnings.filter(item=>!targetIds.has(item.partId)),
+                ...repairedReview.warnings];
+              answerRepairTrace.applied=true;
+              answerRepairTrace.reReviewedPartCount=repairedChecked.parts.length;
             }
-            trace.rejected.push(...repairedChecked.rejected);
-            trace.citationRepairs.push(...repairedChecked.citationRepairs);
-            trace.citationFormatRepairs.push(...repairedChecked.citationFormatRepairs);
-            trace.quoteRepairs.push(...repairedChecked.quoteRepairs);
-            review.parts=review.parts.map(part=>repairedReview.parts.find(item=>item.partId===part.partId)||part);
-            review.reviewDecisions=[...review.reviewDecisions.filter(item=>!targetIds.has(item.partId)),
-              ...repairedReview.reviewDecisions];
-            review.partDecisions=[...review.partDecisions.filter(item=>!targetIds.has(item.partId)),
-              ...repairedReview.partDecisions];
-            review.supportIssues=[...review.supportIssues.filter(item=>!targetIds.has(item.partId)),
-              ...repairedReview.supportIssues];
-            review.warnings=[...review.warnings.filter(item=>!targetIds.has(item.partId)),
-              ...repairedReview.warnings];
-            answerRepairTrace.applied=true;
-            answerRepairTrace.reReviewedPartCount=repairedChecked.parts.length;
           }catch(error){
             answerRepairTrace.reason=error.code||'answer-repair-failed';
           }
