@@ -2224,6 +2224,20 @@ test('public highlights retain sanitized requirement links on accepted claims',(
  assert.deepEqual(highlights[0].requirement_ids,['P1-R2']);
  assert.deepEqual(highlights[0].quotes[0].requirement_ids,['P1-R2']);
 });
+test('public highlights keep fallback evidence whose point is the answer claim',()=>{
+ const source={id:'S1',title:'An Enquiry Concerning Human Understanding — David Hume',page:42};
+ const point='Hume links necessity to custom and regular conjunction.';
+ const quote='Necessity is something that exists in the mind, not in objects, through the uniformity observable in nature.';
+ const map=pointValue=>[{id:'S1',claimId:'P1-C1',partId:'P1',point:pointValue,quote,quoteVerified:true}];
+ const kept=selectPublicEvidenceHighlights(point+' [S1]',[source],map(point),6,
+  'How does Hume explain causal necessity?',{});
+ assert.equal(kept.length,1,
+  'a fallback entry whose point is the answer claim survives the verbatim highlight filter');
+ const dropped=selectPublicEvidenceHighlights(point+' [S1]',[source],map('How does Hume explain causal necessity?'),6,
+  'How does Hume explain causal necessity?',{});
+ assert.equal(dropped.length,0,
+  'the pre-fix fallback shape (point = the part question) is filtered out');
+});
 test('public highlights keep the strongest claim-specific excerpt without unrelated filler',()=>{
  const source={id:'S1',title:'The Odyssey — Homer',page:212};
  const point='Odysseus turns toward the sun, anxious for it to set, yearning to be home.';

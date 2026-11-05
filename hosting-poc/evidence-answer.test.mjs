@@ -3444,6 +3444,8 @@ test('run 48 reviewer typo fails closed to an unverified draft with deterministi
  assert.equal(result.evidenceMap.length,1);
  assert.equal(result.evidenceMap[0].id,'S1');
  assert.equal(result.evidenceMap[0].claimId,'P1-C1');
+ assert.equal(result.evidenceMap[0].point,'Hume links necessity to custom and regular conjunction.',
+  'fallback evidence carries the claim text as its point, not the part question, so the gateway verbatim filter can keep its highlight');
  assert.match(result.evidenceMap[0].quote,/uniformity observable in nature/);
  assert.equal(result.evidenceHighlights.length,1);
  assert.equal(result.evidenceHighlights[0].source_id,'S1');
