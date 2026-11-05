@@ -495,7 +495,7 @@ test('source-grouped review makes each cited source decision explicit and keeps 
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.sourceId==='S2'&&issue.reason==='claim-source-not-supported'));
  assert.equal(result.evidenceMap.length,0);
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,2,'missing repairability keeps the unsupported source side fail-closed without a repair round trip');
 });
 test('a supported source in the same planned group keeps a claim when an alternate citation is weak',async()=>{
  const title='The Consolation of Philosophy — Boethius';
@@ -613,7 +613,7 @@ test('compact review cannot verify a sentence unless every cited source has a se
  assert.equal(result.questionParts[0].status,'unsupported');
  assert.ok(result.trace.reviewContract.supportIssues.some(item=>item.reason==='missing-claim-source-span'));
  assert.equal(result.evidenceMap.length,0);
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,2,'an incomplete source checklist does not trigger an unmarked repair');
 });
 test('review truncation remains fail-closed and exposes a stage-specific reason without another call',async()=>{
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
@@ -861,7 +861,7 @@ test('a partially reviewed sentence is not promoted by dropping its unsupported 
  const result=await composeEvidenceAnswer('What is the Christian opposite of sin?',[unrelated,supporting],ai,[],{
   catalog:{...catalog,140:unrelated.title},plan,trace:true
  });
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,2,'partial source support without a repairability decision does not add a call');
  assert.equal(result.coverage,'none');
  assert.match(result.answer,/did not support a reliable answer/i);
  assert.equal(result.questionParts[0].status,'unsupported');
@@ -959,7 +959,7 @@ test('a failed author-side premise cannot be pruned from a hypothetical inferenc
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,2,'an unsupported author-side premise is not repaired without reviewer approval');
  assert.equal(result.questionParts[2].status,'unsupported');
  assert.equal(result.coverage,'partial');
  assert.doesNotMatch(result.answer,/one cautious inference is that Nietzsche might reject/);
@@ -986,7 +986,7 @@ test('claim review rejects a compound sentence when its quote supports only one 
    parts:[{id:'P1',question:'What did Nietzsche say about the church?',sourceBookIds:['239']}],
    queries:['Nietzsche church criticism']},trace:true
  });
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,2,'a compound claim rejection without repairability does not add a call');
  assert.equal(result.coverage,'none');
  assert.equal(result.outcome,'insufficient-evidence');
  assert.equal(result.evidenceMap.length,0);
@@ -1395,7 +1395,7 @@ test('an unsupported nominated answer is repaired once and independently re-revi
   (_model,{messages})=>{
    const payload=parsePayload(messages),claim=payload.claims[0];
    return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
+    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
   },
   (_model,{messages})=>{
@@ -1433,7 +1433,7 @@ test('claim-scoped repair replaces only rejected claims and preserves accepted n
   (_model,{messages})=>{
    const payload=parsePayload(messages);
    return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    directAnswerClaimIds:['P1-C1']}],claims:payload.claims.map(claim=>{
+    repairable:true,directAnswerClaimIds:['P1-C1']}],claims:payload.claims.map(claim=>{
      const accepted=claim.claimId==='P1-C2';
      const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
      return {claimId:claim.claimId,status:accepted?'answered':'partial',
@@ -1460,7 +1460,7 @@ test('claim-scoped repair replaces only rejected claims and preserves accepted n
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
  assert.equal(result.trace.answerRepair.applied,true);
- assert.deepEqual(result.trace.answerRepair.targetClaimIds,[{partId:'P1',claimIds:['P1-C1'],addCoverage:false}]);
+ assert.deepEqual(result.trace.answerRepair.targetClaimIds,[{partId:'P1',claimIds:['P1-C1'],addCoverage:true}]);
  assert.match(result.answer,/Hume explains causal necessity through custom formed by repeated conjunction\. \[S1\]/);
  assert.equal((result.answer.match(/Hume explains causal necessity through custom formed by repeated conjunction/g)||[]).length,1);
  assert.match(result.answer,/the mind’s customary inference/);
@@ -1506,6 +1506,44 @@ test('a partial answer-completeness review triggers the existing bounded repair 
  assert.match(result.answer,/uniformity in nature.*custom leads the mind to infer/);
  assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-repair').length,1);
  assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
+});
+
+test('an unsupported direct claim without an explicit repairable finding skips answer repair',async()=>{
+ const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+    repairable:false,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,2,'a repairability-negative review ends after compose and review');
+ assert.equal(result.trace.answerRepair.attempted,false);
+ assert.equal(result.trace.answerRepair.reason,'reviewer-did-not-mark-repairable');
+ assert.equal(result.questionParts[0].status,'unsupported');
+});
+
+test('an answer repair that leaves text and citations unchanged skips independent re-review',async()=>{
+ const original='Hume says necessity is a directly observed power connecting causes to effects. [S1]';
+ const ai=makeAI([answer('PART P1\n'+original),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
+  },
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[{
+    claimId:payload.parts[0].repair.replaceClaimIds[0],text:original}],additions:[]}]})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,3,'an unchanged patch avoids the second review inference');
+ assert.equal(result.trace.answerRepair.reason,'answer-repair-no-material-change');
+ assert.equal(result.trace.stages.some(stage=>stage.stage==='answer-re-review'),false);
+ assert.equal(result.questionParts[0].status,'unsupported');
 });
 
 test('a repairable incomplete part is repaired when the reviewer has not nominated a direct claim',async()=>{
@@ -1554,7 +1592,7 @@ test('malformed answer repair falls back to the original fail-closed review resu
   (_model,{messages})=>{
    const payload=parsePayload(messages),claim=payload.claims[0];
    return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
+    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
   },answer('{not-json}')],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
@@ -1572,7 +1610,7 @@ test('an answer repair that patches an unrequested claim fails closed without re
   (_model,{messages})=>{
    const payload=parsePayload(messages),claim=payload.claims[0];
    return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
+    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
   },
   ()=>({response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C99',
@@ -2030,7 +2068,7 @@ test('a broad hypothetical conclusion stays partial even when both premise sourc
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,2,'broad unsupported synthesis remains partial without a repairability signal');
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.questionParts[1].status,'supported');
@@ -2111,7 +2149,7 @@ test('review sees a bounded per-source packet and cannot select an unsent full-s
   issue.partId==='P1'&&issue.reason==='missing-claim-source-span'));
  assert.equal(omitted.result.coverage,'none',
   'a valid full-source span cannot be selected when it was not sent to this part review');
- assert.equal(omitted.ai.calls.length,3);
+ assert.equal(omitted.ai.calls.length,2,'a missing evidence packet cannot trigger repair');
 });
 
 test('review deadline failure stays fail-closed and records the failed stage without retry',async()=>{
@@ -2198,7 +2236,7 @@ test('quoted-speaker conflicts are preserved as a source-attribution rejection',
  const result=await composeEvidenceAnswer(question,[source],ai,[],{
   plan,catalog:{80:'Buddha’s Teachings'},trace:true
  });
- assert.equal(ai.calls.length,3,'the unsupported direct answer triggers one bounded repair attempt');
+ assert.equal(ai.calls.length,2,'source-attribution conflicts are not repaired without an explicit repairability decision');
  assert.equal(result.coverage,'none','the misattributed claim cannot survive review');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.sourceId==='S1'&&issue.reason==='source-attribution-conflict'));
@@ -2225,7 +2263,7 @@ test('a positive reviewer speaker label must be anchored in the supplied source'
  const result=await composeEvidenceAnswer(question,[source],ai,[],{
   plan,catalog:{81:source.title},trace:true
  });
- assert.equal(ai.calls.length,3,'the unsupported direct answer triggers one bounded repair attempt');
+ assert.equal(ai.calls.length,2,'unanchored source attribution is not repaired without an explicit repairability decision');
  assert.equal(result.coverage,'none','an unanchored positive reviewer label cannot verify the claim');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.sourceId==='S1'&&issue.reason==='source-attribution-unanchored'));
@@ -2631,7 +2669,7 @@ test('run 49 claim-specific source pointers expose each passage and retain the p
  assert.equal(partial.coverage,'none');
  assert.ok(partial.trace.reviewContract.supportIssues.some(issue=>
   issue.claimId==='P1-C1'&&issue.reason==='missing-claim-source-span'));
- assert.equal(missingSourceAI.calls.length,3);
+ assert.equal(missingSourceAI.calls.length,2,'a missing citation decision is not repaired without a repairability signal');
 
  const supportedAI=makeAI([answer(draft),(_model,{messages})=>{
   const payload=parsePayload(messages),claim=payload.claims[0];
@@ -3003,7 +3041,7 @@ test('an unclear reviewer claim is normalized to partial and remains fail-closed
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
- assert.equal(ai.calls.length,3,'the unsupported direct answer triggers one bounded repair attempt');
+ assert.equal(ai.calls.length,2,'an unclear claim decision remains fail-closed without an explicit repairability decision');
  assert.deepEqual(result.trace.reviewContract.issues,[],
   'a valid uncertainty label must not invalidate the review contract');
  assert.equal(result.trace.reviewContract.reviewDecisions[0].claimStatus,'partial');
@@ -3047,7 +3085,7 @@ test('invented and cross-source span IDs cannot enter the reviewed evidence map'
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
   {partId:'P1',claimId:'P1-C1',sourceId:'S1',reason:'missing-claim-source-span'}]);
  assert.equal(result.evidenceMap.length,0);
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,2,'invented span IDs do not trigger an unmarked repair');
 });
 
 test('the active reviewer resolves a selected span to exact bounded source text',async()=>{
@@ -3226,7 +3264,7 @@ test('the reviewer receives an explicit source checklist and missing synthesis e
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.partId==='P3'&&issue.reason==='missing-claim-source-span'));
  assert.equal(result.evidenceMap.some(item=>item.partId==='P3'&&item.id==='S2'),false);
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,2,'missing synthesis evidence remains partial without an explicit repairability decision');
 });
 
 test('reviewer preserves a separate exact span from each cited source when each supports the claim',async()=>{
@@ -3274,7 +3312,7 @@ test('a claim citing more sources than the span budget stays incomplete',async()
  assert.equal(result.evidenceMap.length,0);
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.claimId==='P1-C1'&&issue.reason==='missing-claim-source-span'));
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,2,'a claim exceeding the evidence-span budget is not retried as an answer repair');
 });
 
 test('reviewer contract errors preserve citation-checked text as an explicitly unverified partial draft',async()=>{
@@ -3628,6 +3666,28 @@ test('verse-restricted answers expose the requested verses as evidence and retai
  assert.equal(reviewPayload.parts[0].evidence[0].spans[0].text,source.scopeText);
  assert.equal(reviewPayload.parts[0].evidence[0].spans[0].spanId,'S1-Q1');
  assert.equal(reviewPayload.parts[0].evidence[0].contextText,source.text);
+});
+
+test('review source context stays bounded around scoped evidence while exact spans remain intact',async()=>{
+ const scopeText='The selected passage states that love is from God and believers should love one another.';
+ const source={...hume,text:'PAGE-HEADER '+('A'.repeat(1400))+'\n'+scopeText+'\n'+('B'.repeat(1400)),scopeText};
+ let reviewPayload;
+ const ai=makeAI([answer('PART P1\nThe passage grounds mutual love in love from God. [S1]'),
+  (_model,{messages})=>{
+   reviewPayload=parsePayload(messages);
+   const claim=reviewPayload.claims[0],span=reviewPayload.spanCatalog[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId]}]}]})};
+  }]);
+ await composeEvidenceAnswer('According to the selected passage, why should believers love one another?',
+  [source],ai,[],{plan:onePartPlan,catalog,trace:true});
+ const context=reviewPayload.sourceContexts[0].text;
+ assert.ok(context.length<=800);
+ assert.match(context,/PAGE-HEADER/,'page header attribution context is retained');
+ assert.match(context,/A{100,}/);
+ assert.match(context,/B{100,}/);
+ assert.equal(reviewPayload.parts[0].evidence[0].spans[0].text,scopeText,
+  'the exact selected passage remains available for support decisions');
 });
 
 
