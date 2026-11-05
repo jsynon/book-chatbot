@@ -14,7 +14,7 @@ const SELECTOR_INVALID_REASONS=new Set([
   'candidate-ids-not-array','too-many-candidate-ids','invalid-coverage',
   'unknown-candidate-id','coverage-selection-mismatch','missing-part-decision',
   'evidence-not-array','too-many-evidence-items','invalid-evidence-item',
-  'invalid-evidence-support','duplicate-evidence-candidate'
+  'invalid-evidence-support','duplicate-evidence-candidate','call-timeout'
 ]);
 
 function selectorError(failureCode,message,cause,failureReason=''){
@@ -55,9 +55,11 @@ function sourceWorkKey(title){
 }
 
 /*
- * The Worker calls this only after candidate page fingerprints pass. The
- * selector sees bounded excerpts and returns IDs; the caller maps those IDs
- * back to verified full pages and enforces the six-page composition budget.
+ * The Worker calls this on provisional candidates (batch 5 verification
+ * diet): the selector sees bounded excerpts and returns IDs; the caller
+ * fingerprint-verifies exactly the selected pages, maps those IDs back to
+ * the verified full pages, and enforces the six-page composition budget.
+ * Nothing the selector sees is treated as verified evidence.
  */
 export async function selectEvidenceCandidates({question,parts,candidates,ai}){
   if(typeof question!=='string'||question.trim().length<5||question.length>400||
@@ -96,15 +98,23 @@ export async function selectEvidenceCandidates({question,parts,candidates,ai}){
       ...(Array.isArray(candidate.retrievedPartHints)&&candidate.retrievedPartHints.length?
         {retrievedPartHints:[...new Set(candidate.retrievedPartHints)]}:{})};
   });
-  let response;
+  let response,timer;
   try{
-    response=await ai.run(READER_MODEL,{messages:[
+    // Batch 5 (L2/L6): the selection call was unbounded and unparameterized.
+    // It now runs at temperature 0 (a structured extraction task) under a
+    // 25 s deadline; a timeout surfaces as a provider error with reason
+    // 'call-timeout', and the gateway's existing deterministic-order
+    // fallback takes over exactly as for any other selector failure.
+    response=await Promise.race([ai.run(READER_MODEL,{messages:[
       {role:'system',content:SELECTOR_PROMPT},
         {role:'user',content:JSON.stringify({question,parts:compactParts,candidates:compactCandidates})}
-    ],chat_template_kwargs:{enable_thinking:false},max_completion_tokens:960});
+    ],chat_template_kwargs:{enable_thinking:false},temperature:0,max_completion_tokens:960}),
+      new Promise((_,reject)=>{timer=setTimeout(()=>reject(
+        selectorError('selector-provider-error','Evidence selector model call timed out.',null,'call-timeout')),25000);})]);
   }catch(error){
+    if(error?.failureCode)throw error;
     throw selectorError('selector-provider-error','Evidence selector model call failed.',error);
-  }
+  }finally{clearTimeout(timer);}
   const finishReason=response?.choices?.[0]?.finish_reason||null;
   if(['length','max_tokens'].includes(finishReason))
     throw selectorError('selector-output-truncated','Evidence selector output was truncated.');

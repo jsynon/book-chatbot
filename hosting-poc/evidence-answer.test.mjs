@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
 
@@ -4341,4 +4341,341 @@ test('assembly audit repair can complete an unfinished lead-in ending',async()=>
  // a direct-answer claim, so this source-less part was already partial at
  // review time. The audit's win is the completed ending, not the status.
  assert.equal(result.questionParts[0].answerStatus,'partial');
+});
+
+// --- Batch 5: Q1 claim linkage, A1 second look, R1 synthesis review,
+// C assembly seams + representation hardening, B speaker-cue scoping,
+// D closing synthesis, L2/L3/L4/L6 latency-and-repair mechanics.
+// All fixtures below are invented for these tests.
+
+test('batch 5 prompt additions: synthesis review guidance and closing synthesis',()=>{
+ assert.match(REVIEW_PROMPT,/synthesisCoverage/);
+ assert.match(REVIEW_PROMPT,/contextClaimLinks/);
+ assert.match(REVIEW_PROMPT,/tightly paraphrases a supplied span/);
+ assert.match(REVIEW_PROMPT,/prefer the span that states the claim's proposition/);
+ assert.match(REVIEW_PROMPT,/independent background and synthesis may remain uncited/,
+  'the general-knowledge allowance language is unchanged');
+ assert.match(COMPOSER_PROMPT,/Close each part with one sentence stating what the part established/);
+ assert.match(COMPOSER_PROMPT,/make that closing sentence the decisive contrast/);
+});
+
+test('question parts report the shipped claim IDs for highlight linkage (Q1)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(result.questionParts[0].partId,'P1');
+ assert.deepEqual(result.questionParts[0].claimIds,['P1-C1']);
+});
+
+test('context-claim second look cites a retained claim that verifiably paraphrases a linked source (A1)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Vidal crossed the salt flats in her nineteenth year, carrying her father’s survey chain and a tin of well water.\n'+
+   'Crossing open country on foot teaches patience in a way that maps never can.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2,'the second look is deterministic and makes no model call');
+ assert.equal(result.trace.contextSecondLook.length,1);
+ assert.equal(result.trace.contextSecondLook[0].partId,'P1');
+ assert.equal(result.trace.contextSecondLook[0].claimId,'P1-C2');
+ assert.deepEqual(result.trace.contextSecondLook[0].sourceIds,['S1']);
+ assert.match(result.answer,/survey chain and a tin of well water\. \[S1\]/,
+  'the passing claim ships with its citation attached');
+ assert.ok(result.evidenceMap.some(item=>item.claimId==='P1-C2'),
+  'the second-look claim joins the evidence map');
+ assert.ok(!result.evidenceMap.some(item=>item.claimId==='P1-C3'),
+  'a claim that fails the overlap standard stays uncited');
+ assert.doesNotMatch(result.answer,/maps never can\. \[S1\]/,
+  'the general-knowledge allowance is intact for the failing claim');
+});
+
+test('synthesis parts link a tight paraphrase through reviewer contextClaimLinks (R1)',async()=>{
+ let packetPart;
+ const linkingReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  packetPart=payload.parts[0];
+  const s2Span=packetPart.evidence.find(entry=>entry.id==='S2').spans[0].spanId;
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:['P1-C3'],
+    contextClaimLinks:[{claimId:'P1-C2',sourceId:'S2',spanIds:[s2Span]}]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
+ };
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Geese read the stars on clear nights and hold their course by the brightest patterns.\n'+
+   'Patience is a virtue that travel tends to teach slowly.'),
+  linkingReview]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(packetPart.synthesisCoverage,true,'the multi-source part is flagged');
+ assert.equal(packetPart.evidence.find(entry=>entry.id==='S2').linkedEvidence,true,
+  'the packet extends to the linked-but-uncited source');
+ assert.equal(packetPart.evidence.find(entry=>entry.id==='S1').linkedEvidence,undefined,
+  'draft-cited evidence is not marked as linked');
+ const linked=result.trace.reviewContract.reviewDecisions
+  .find(decision=>decision.claimId==='P1-C2');
+ assert.equal(linked?.contextClaimLink,true);
+ assert.equal(linked?.accepted,true);
+ assert.match(result.answer,/brightest patterns\. \[S2\]/,
+  'the linked paraphrase ships with its citation');
+ assert.ok(result.evidenceMap.some(item=>item.claimId==='P1-C2'));
+ assert.ok(!result.evidenceMap.some(item=>item.claimId==='P1-C3'),
+  'a genuinely general claim in the same part remains context');
+ assert.match(result.answer,/Patience is a virtue/);
+});
+
+test('contextClaimLinks are ignored outside flagged synthesis parts (R1 guardrail)',async()=>{
+ let packetPart;
+ const linkingReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  packetPart=payload.parts[0];
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:['P1-C2'],
+    contextClaimLinks:[{claimId:'P1-C2',sourceId:'S1',spanIds:['S1-Q1']}]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
+ };
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Vidal crossed the salt flats in her nineteenth year, carrying her father’s survey chain and a tin of well water.'),
+  linkingReview]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(packetPart.synthesisCoverage,undefined,
+  'a single-source expository part is not flagged');
+ assert.ok(!result.trace.reviewContract.reviewDecisions
+  .some(decision=>decision.claimId==='P1-C2'&&decision.contextClaimLink),
+  'classification for single-source parts is unchanged by the R1 mechanism');
+});
+
+test('claimTextAppears no longer passes absent claims (C)',()=>{
+ assert.equal(claimTextAppears('A short claim',
+  'the answer contains a short claim within it'),true,
+  'a short claim that is present still passes');
+ assert.equal(claimTextAppears('A short claim',
+  'the answer contains other words entirely'),false,
+  'short claims no longer pass vacuously');
+ const longClaim='Vidal argues that the horizon recedes exactly as fast as a walker '+
+  'advances toward it and therefore the crossing teaches a walker that distance '+
+  'is measured by effort rather than by sight alone';
+ assert.equal(claimTextAppears(longClaim,
+  'vidal argues that the horizon recedes exactly as fast as a walker advances '+
+  'toward it and therefore the crossing ends at the river'),false,
+  'a shared head alone no longer represents an absent claim (the run-49 hole)');
+ assert.equal(claimTextAppears(longClaim,
+  'vidal argues that the horizon recedes exactly as fast as a walker advances '+
+  'toward it and (as the narrative shows) therefore the crossing teaches a '+
+  'walker that distance is measured by effort rather than by sight alone'),true,
+  'head and tail anchors both present despite a mid-text insertion');
+});
+
+test('assembly audit flags an unbalanced bold seam in prose (C)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a **horizon recedes exactly as fast as a walker advances toward it. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
+ assert.deepEqual(result.trace.assemblyAudit.violations,
+  [{partId:'P1',type:'unbalanced-bold'}]);
+ assert.equal(result.trace.assemblyAudit.action,'downgraded');
+ assert.equal(result.questionParts[0].answerStatus,'partial');
+});
+
+test('person name matching tolerates middle initials but not different people (B)',()=>{
+ assert.equal(personNamesMatch('Viktor Frankl','Viktor E. Frankl'),true,
+  'a byline middle initial does not make a different person');
+ assert.equal(personNamesMatch('Frankl','Viktor E. Frankl'),true,
+  'surname-only attribution still matches');
+ assert.equal(personNamesMatch('Tomas Vidal','Ines Vidal'),false,
+  'two full names that merely share a surname do not match');
+ assert.equal(personNamesMatch('Ines Vidal','Aaron Feld'),false);
+ assert.equal(speakerIsWorkAuthor('Viktor Frankl',
+  {title:'Man’s Search for Meaning — Viktor E. Frankl'}),true);
+ assert.equal(namedSpeakerAttribution('Viktor Frankl argues that people choose.'),'Viktor Frankl');
+ assert.equal(namedSpeakerAttribution('Geese read the stars on clear nights.'),'');
+});
+
+test('author narration with a middle-initial byline is anchored (B, run-50 Frankl shape)',async()=>{
+ const franklCatalog={601:'Man’s Search for Meaning — Viktor E. Frankl'};
+ const franklSource={id:'S1',bookId:'601',title:franklCatalog[601],page:33,
+  url:'https://example.test/frankl#page=33',
+  text:'Even when everything is taken away, a person retains the freedom to choose an attitude toward suffering. I found that life expects something from each of us, and each of us must answer for his own life.',
+  preview:'Even when everything is taken away, a person retains the freedom to choose.'};
+ const franklPlan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Viktor Frankl',role:'primary',bookIds:['601']}],
+  parts:[{id:'P1',question:'What does Frankl argue a person retains even when everything is taken away?',
+    sourceBookIds:['601'],searchQueries:['freedom choose attitude suffering'],
+    candidateSourceIds:['S1']}],queries:['freedom choose attitude suffering']};
+ const ai=makeAI([answer('PART P1\nViktor Frankl argues that a person retains the freedom to choose an attitude toward suffering even when everything is taken away. [S1]'),
+  attributedReview('Viktor Frankl')]);
+ const result=await composeEvidenceAnswer('What does Frankl argue a person retains even when everything is taken away?',
+  [franklSource],ai,[],{plan:franklPlan,catalog:franklCatalog,trace:true});
+ assert.equal(result.coverage,'full',
+  'the author exemption reaches the middle-initial byline, so first-person narration needs no separate cue');
+ assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='source-attribution-unanchored'));
+ assert.match(result.answer,/Viktor Frankl argues/);
+});
+
+test('a character named with speech verbs elsewhere on the page no longer anchors an attribution (B, Austen shape)',async()=>{
+ const ellisonPage={id:'S1',bookId:'501',title:batch4Catalog[501],page:12,
+  url:'https://example.test/salt-meridian#page=12',
+  text:'Mara Ellison said the crossing would take three days. Mara Ellison argued that the wells would surely hold. The guides counted the tins of water twice and checked the survey chain link by link. Dust settled over the camp as the evening wind dropped. I learned that a horizon can recede exactly as fast as a walker advances toward it.',
+  preview:'Mara Ellison said the crossing would take three days.'};
+ const ai=makeAI([answer('PART P1\nMara Ellison argues that a horizon can recede exactly as fast as a walker advances toward it. [S1]'),
+  attributedReview('Mara Ellison')]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [ellisonPage],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(result.coverage,'none',
+  'the cue search is scoped to the accepted span’s neighbourhood, not the whole page');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S1'&&issue.reason==='source-attribution-unanchored'));
+});
+
+test('a claim naming a different speaker than the reviewer demotes as a speaker mismatch (B)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
+  attributedReview('Aaron Feld')]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.sourceId==='S1'&&issue.reason==='source-attribution-speaker-mismatch'),
+  'the claim’s own named speaker is compared against the attributed speaker');
+});
+
+test('a part repaired by an earlier gate gets no second repair cycle in the assembly audit (L3)',async()=>{
+ // Both cited claims sit in list lines that markdown normalization drops,
+ // so the shipped segment cites nothing (the citation gate fires and
+ // consumes the part's one repair cycle) while both accepted claims are
+ // unrepresented (the assembly audit would normally repair them too).
+ const droppedDraft='PART P1\nCrossing open country on foot teaches patience in a way that maps never can.\n\n'+
+  '- **Field note: Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it [S1]\n\n'+
+  '- **Field note: Feld writes that geese hold their course by the brightest star patterns [S2]';
+ const ai=makeAI([answer(droppedDraft),
+  review([['P1','answered']],{directAnswerClaimIdsByPart:{P1:['P1-C2','P1-C3']}})]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,3,
+  'compose, review, and the citation gate’s repair attempt — the assembly audit adds no cycle');
+ assert.deepEqual(result.trace.gateRepairCycles,[{partId:'P1',gate:'citation-presence'}]);
+ assert.deepEqual(result.trace.assemblyAudit.repairSkippedPartIds,['P1']);
+ assert.equal(result.trace.assemblyAudit.action,'downgraded');
+});
+
+test('answer repair adoption is per part (L4)',async()=>{
+ const repairPlan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
+    searchQueries:['Hume necessity'],candidateSourceIds:['S1'],
+    requirements:[{id:'P1-R1',text:'Explain the role of custom in causal inference.'}]},
+   {id:'P2',question:'How does Kant explain causality?',sourceBookIds:['40'],
+    searchQueries:['Kant causality'],candidateSourceIds:['S2'],
+    requirements:[{id:'P2-R1',text:'Explain why causality is a priori.'}]}],
+  queries:['Hume necessity','Kant causality']};
+ const initialReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({
+   parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'partial',
+     repairable:true,
+     directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
+      .map(claim=>claim.claimId),
+     requirementCoverage:part.requirements.map(requirement=>({requirementId:requirement.id,
+       status:'unanswered',answerClaimIds:[]}))})),
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+       spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const repair=()=>({response:JSON.stringify({parts:[
+  {partId:'P1',replacements:[],additions:['Custom trains the mind to infer one event after another. [S1]']},
+  {partId:'P2',replacements:[],additions:['Causality is known a priori because it is a category. [S2]']}]})});
+ const reReview=(succeeds,requirementId)=>(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({
+   parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
+     answerStatus:succeeds?'answered':'partial',
+     directAnswerClaimIds:succeeds?payload.claims.map(claim=>claim.claimId):[],
+     requirementCoverage:part.requirements.map(requirement=>({requirementId:requirement.id,
+       status:succeeds?'answered':'unanswered',
+       answerClaimIds:succeeds?[payload.claims.at(-1).claimId]:[]}))})),
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+       spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]\n'+
+   'PART P2\nCausality is a category of the understanding. [S2]'),
+  initialReview,initialReview,repair,reReview(true,'P1-R1'),reReview(false,'P2-R1')]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant each explain causality?',
+  [hume,kant],ai,[],{plan:repairPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,6,'compose, two per-part reviews, one shared repair, two per-part re-reviews');
+ assert.equal(result.trace.answerRepair.applied,true);
+ assert.deepEqual(result.trace.answerRepair.adoptedPartIds,['P1']);
+ assert.deepEqual(result.trace.answerRepair.rejectedParts,
+  [{partId:'P2',reason:'answer-re-review-unsupported'}]);
+ assert.match(result.answer,/Custom trains the mind/,
+  'the part whose repair passed re-review ships its repair');
+ assert.doesNotMatch(result.answer,/known a priori because/,
+  'the part whose repair failed keeps its original text');
+});
+
+test('the synthesis-deficit repair pattern is skipped as futile (L4)',async()=>{
+ const question='How does Hume explain causal necessity, and what role does custom play?';
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,
+  requirements:[
+   {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
+   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}]}]};
+ const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+     repairable:true,directAnswerClaimIds:[claim.claimId],
+     requirementCoverage:[
+      {requirementId:'P1-R1',status:'answered',answerClaimIds:[claim.claimId]},
+      {requirementId:'P1-R2',status:'partial',answerClaimIds:[claim.claimId]}]}],
+    claims:[{claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer(question,[hume],ai,[],{plan,catalog,trace:true});
+ assert.equal(ai.calls.length,2,'no repair call is spent on the futile pattern');
+ assert.equal(result.trace.answerRepair.attempted,false);
+ assert.equal(result.trace.answerRepair.reason,'synthesis-deficit-repair-skipped');
+});
+
+test('structured calls run at temperature 0 and re-review failures record the review timeout (L2/L6)',async()=>{
+ const clean=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
+  review([['P1','answered']])]);
+ await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],clean,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(clean.calls[0].request.temperature,undefined,
+  'compose keeps the provider default — no temperature parameter');
+ assert.equal(clean.calls[1].request.temperature,0,'review runs at temperature 0');
+
+ const question='How does Hume explain causal necessity, and what role does custom play?';
+ const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,
+  requirements:[
+   {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
+   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}]}]};
+ const providerDown=Object.assign(new Error('provider unavailable'),{code:'provider-down'});
+ const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+     repairable:true,directAnswerClaimIds:[claim.claimId],
+     requirementCoverage:[
+      {requirementId:'P1-R1',status:'answered',answerClaimIds:[claim.claimId]},
+      {requirementId:'P1-R2',status:'unanswered',answerClaimIds:[]}]}],
+    claims:[{claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
+  },
+  {response:JSON.stringify({parts:[{partId:'P1',replacements:[],
+   additions:['Custom trains the mind to infer one event after another from their repeated conjunction. [S1]']}]})},
+  providerDown]);
+ const result=await composeEvidenceAnswer(question,[hume],ai,[],{plan,catalog,trace:true});
+ const failedReReview=result.trace.stages.find(stage=>
+  stage.stage==='answer-re-review'&&stage.status==='failed');
+ assert.ok(failedReReview,'the failed re-review is traced');
+ assert.equal(failedReReview.timeoutMs,60000,
+  'answer-re-review gets the review timeout, not the 45 s compose-class timeout');
+ assert.equal(failedReReview.temperature,0);
 });
