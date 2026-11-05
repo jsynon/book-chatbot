@@ -1548,10 +1548,18 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       (Array.isArray(payload?.claims)?payload.claims.length:0)+
         (Array.isArray(payload?.parts)?payload.parts.reduce((count,part)=>count+
           (Array.isArray(part?.requirements)?part.requirements.length:0),0):0);
+    // Composition used to share one flat 1,800-token budget across every
+    // planned part, leaving a six-part comparison roughly 300 tokens per
+    // part and producing thin or truncated drafts. Scale the budget with
+    // the part count instead; a single-part answer keeps the exact former
+    // budget, and the cap stays below the review allowance.
+    const composePartCount=stage==='compose'&&Array.isArray(payload?.parts)?
+      Math.max(1,payload.parts.length):1;
     const outputTokenBudget=stage==='review'||stage==='answer-re-review'?
       Math.min(4200,2000+reviewRecordCount*100):
       stage==='review-repair'?Math.min(3000,900+reviewRecordCount*160):
-      stage==='answer-repair'?2600:1800;
+      stage==='answer-repair'?2600:
+      stage==='compose'?Math.min(3600,Math.max(1800,900+600*composePartCount)):1800;
     try{response=await Promise.race([ai.run(READER_MODEL,{messages,
       chat_template_kwargs:{enable_thinking:false},max_completion_tokens:outputTokenBudget}),
       new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),timeoutMs);})]);}
