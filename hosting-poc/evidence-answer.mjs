@@ -1565,7 +1565,12 @@ function buildFallbackEvidenceByPart(checkedParts,sources){
         const top=rankReviewSpans(buildReviewSpans(sourceId,text),
           {question:part.question,answer:answer.text})[0];
         if(!top||!fallbackSpanVerifiablyOverlaps(answer.text,top.text))continue;
-        entries.push({sourceId,claimId:answer.claimId,quote:top.text,
+        // The point must be the claim text itself: the public gateway only
+        // keeps a highlight whose point survives verbatim in the final
+        // answer. Without it the evidence map substitutes the part question,
+        // which never appears in the answer, and every fallback highlight
+        // was silently dropped (runs #42-44: ~75 entries, 0 highlights).
+        entries.push({sourceId,claimId:answer.claimId,point:answer.text,quote:top.text,
           anchorQuote:top.text,start:top.start,end:top.end,fallback:true});
       }
     }
