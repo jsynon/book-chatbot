@@ -1194,6 +1194,7 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
     throw new Error('Invalid source count');
   const packets=new Map(),seen=new Set(),sources=[];
   let totalBytes=0;
+  const prepared=[];
   for(const item of items){
     if(!item || typeof item!=='object' ||
        !/^[1-9]\d{0,3}$/.test(String(item.bookId))||
@@ -1217,14 +1218,22 @@ export async function verifiedFingerprintSources(question,items,fetcher=(url,opt
     totalBytes+=bytes.byteLength;
     if(totalBytes>maxTotalBytes)throw new Error('Too much text submitted');
     const chunk=Math.floor((page-1)/32),key=libraryVersion+'/'+bookId+'/'+chunk;
-    if(!packets.has(key)){
-      const response=await fetchFingerprintPacket(fetcher,
-        fingerprintContract.root+'books/'+bookId+'/'+chunk+'.json');
-      const raw=new Uint8Array(await response.arrayBuffer());
-      if(raw.byteLength>12000)throw new Error('Fingerprint packet exceeds size cap');
-      packets.set(key,{fingerprint:JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(raw)),
-        packetBytes:raw.byteLength});
-    }
+    prepared.push({item,libraryVersion,fingerprintContract,bookId,page,bytes,chunk,key});
+  }
+  // Fingerprint packets are independent of one another, so fetch every
+  // distinct book/chunk packet in parallel instead of one await per page.
+  // The verification loop below still runs in submission order, so the
+  // results and failure behavior are unchanged.
+  await Promise.all([...new Set(prepared.map(entry=>entry.key))].map(async key=>{
+    const entry=prepared.find(candidate=>candidate.key===key);
+    const response=await fetchFingerprintPacket(fetcher,
+      entry.fingerprintContract.root+'books/'+entry.bookId+'/'+entry.chunk+'.json');
+    const raw=new Uint8Array(await response.arrayBuffer());
+    if(raw.byteLength>12000)throw new Error('Fingerprint packet exceeds size cap');
+    packets.set(key,{fingerprint:JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(raw)),
+      packetBytes:raw.byteLength});
+  }));
+  for(const {item,libraryVersion,fingerprintContract,bookId,page,bytes,chunk,key} of prepared){
     const {fingerprint:p,packetBytes}=packets.get(key);
     if(p.schema!==fingerprintContract.schema||
        p.hashAlgorithm!=='SHA-256-utf8-exact'||p.libraryVersion!==libraryVersion||
