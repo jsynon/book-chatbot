@@ -2374,6 +2374,55 @@ test('public highlights leave an ordinary prose opening untouched (batch 6 B6-2)
  assert.equal(highlights.length,1);
  assert.equal(highlights[0].quote,quote,'a prose opening is not mistaken for a running header');
 });
+test('public highlights demote repeated page furniture and drop a claim whose only quote is furniture (batch 7 B7-5a)',()=>{
+ const source={id:'S1',title:'The Salt Meridian — Ines Vidal',page:12};
+ const heading='Chapter Nine. Relation of the Baptist to Elijah and the Theory of Transmigration Considered.';
+ const genuine='I learned that a horizon can recede exactly as fast as a walker advances toward it.';
+ const text=[genuine,heading,
+  'The cook fed the mules at dusk and mended the torn canvas of the largest tent.',heading,
+  'A cold rain began near midnight and the guides argued quietly about the northern route.',heading].join(' ');
+ const firstPoint='Vidal describes learning that a horizon recedes as a walker advances.';
+ const secondPoint='Vidal describes the chapter heading about the Baptist and Elijah.';
+ const answer=firstPoint+' '+secondPoint+' [S1]';
+ const highlights=selectPublicEvidenceHighlights(answer,[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:firstPoint,quote:heading,quoteVerified:true},
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:firstPoint,quote:genuine,quoteVerified:true},
+  {id:'S1',claimId:'P1-C2',partId:'P1',point:secondPoint,quote:heading,quoteVerified:true}
+ ],6,'What does Vidal describe?',{S1:text},new Set(['P1-C1','P1-C2']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,genuine,
+  'the genuine quote outranks the thrice-repeated heading fragment for the claim that has both');
+ assert.deepEqual(highlights[0].quotes.map(item=>item.claim_id),['P1-C1'],
+  'the claim whose only candidate is furniture loses its highlight entirely');
+ const furnitureOnly=selectPublicEvidenceHighlights(answer,[source],[
+  {id:'S1',claimId:'P1-C2',partId:'P1',point:secondPoint,quote:heading,quoteVerified:true}
+ ],6,'What does Vidal describe?',{S1:text},new Set(['P1-C2']));
+ assert.deepEqual(furnitureOnly,[],
+  'a source whose only candidate is furniture produces no highlight block at all');
+});
+test('public highlights strip a lecture header prefix to the exact suffix (batch 7 B7-5a)',()=>{
+ const source={id:'S1',title:'Collected Lectures — A. Essayist',page:449};
+ const point='The essayist warns about the climate and the limits of growth.';
+ const suffix='was first delivered as a warning about the climate and the limits of growth.';
+ const quote='449 Spring 2002 / End of Nature '+suffix;
+ const highlights=selectPublicEvidenceHighlights(point+' [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point,quote,quoteVerified:true}
+ ],6,'What does the essayist warn about?',{},new Set(['P1-C1']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,suffix,
+  'the page number, term, year, and title header are stripped, leaving the exact suffix');
+});
+test('public highlights do not treat a year-and-slash prose opening as a lecture header (batch 7 B7-5a)',()=>{
+ const source={id:'S1',title:'Collected Minutes — A. Secretary',page:3};
+ const point='The society recorded a long debate in its minutes.';
+ const quote='Spring 2002 / minutes of the society record a long debate about the nature of historical change and progress.';
+ const highlights=selectPublicEvidenceHighlights(point+' [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point,quote,quoteVerified:true}
+ ],6,'What do the minutes record?',{},new Set(['P1-C1']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,quote,
+  'a lowercase continuation after the slash is prose, not a title-case header');
+});
 test('fingerprint packets are served from cache on repeat verification (batch 5 verification diet)',async()=>{
  const content='The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes.';
  const raw=new TextEncoder().encode(content);
