@@ -642,12 +642,13 @@ test('review truncation gets one compact retry, then remains fail-closed with a 
  assert.ok(result.trace.stages[1].payloadMetrics.serializedCharacters>0);
  assert.equal(result.trace.final.reviewFailure.code,'review-output-truncated');
  assert.match(result.answer,/custom and regular conjunction/);
- // The failed review no longer discards every citation link: the draft's
- // claim is deterministically linked to its clearly matching source span.
- assert.deepEqual(result.trace.fallbackEvidence,{reason:'review-output-truncated',entries:1,
-  parts:[{partId:'P1',reason:'review-output-truncated',entries:1}]});
- assert.equal(result.evidenceMap.length,1);
- assert.equal(result.evidenceHighlights.length,1);
+ // Batch 7 (B7-5b): the failed review's deterministic fallback now
+ // applies the union-coverage standard, and this claim's span covers
+ // only two of its six content terms, so the weak link the batch-2
+ // fallback used to attach is withheld. The draft itself still ships.
+ assert.equal(result.trace.fallbackEvidence,undefined);
+ assert.equal(result.evidenceMap.length,0);
+ assert.equal(result.evidenceHighlights.length,0);
 });
 test('claim-level review removes a sentence when its cited quote supports only a neighboring claim',async()=>{
  const text='The movement of infinity is the last stage preceding faith, so that he who has not made the movement of infinity cannot have faith.';
@@ -3557,7 +3558,7 @@ test('run 9 repeated-unmatched-closer recovery still validates the full review a
  assert.equal(ai.calls.length,2,'syntax normalization must not trigger another model call');
 });
 
-test('run 48 reviewer typo fails closed to an unverified draft with deterministic fallback evidence',async()=>{
+test('run 48 reviewer typo fails closed to an unverified draft; the weak fallback link is withheld (B7-5b)',async()=>{
  const typo={response:'{"parts":[{"partId":"P1","status":"partial"}],"claims":[{"claimId":"P1-C1","status":"unanswered","spansBySource:{}}'};
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
   typo,typo]);
@@ -3568,18 +3569,17 @@ test('run 48 reviewer typo fails closed to an unverified draft with deterministi
  assert.equal(result.reviewStatus,'review-format-failed');
  assert.equal(result.questionParts[0].status,'partial',
   'fallback evidence never promotes the part to supported');
- // The review itself still failed; only the deterministic citation->span
- // link for the clearly matching claim survives as fallback evidence.
- assert.deepEqual(result.trace.fallbackEvidence,{reason:'model-output-invalid-format',entries:1,
-  parts:[{partId:'P1',reason:'model-output-invalid-format',entries:1}]});
- assert.equal(result.evidenceMap.length,1);
- assert.equal(result.evidenceMap[0].id,'S1');
- assert.equal(result.evidenceMap[0].claimId,'P1-C1');
- assert.equal(result.evidenceMap[0].point,'Hume links necessity to custom and regular conjunction.',
-  'fallback evidence carries the claim text as its point, not the part question, so the gateway verbatim filter can keep its highlight');
- assert.match(result.evidenceMap[0].quote,/uniformity observable in nature/);
- assert.equal(result.evidenceHighlights.length,1);
- assert.equal(result.evidenceHighlights[0].source_id,'S1');
+ // The review itself still failed. Batch 7 (B7-5b) holds the fallback
+ // builder to the second look's union-coverage standard: this claim's
+ // only span covers two of its six content terms (necessity, custom —
+ // the span's "conjoined" is not the claim's "conjunction"), so no
+ // span link is fabricated. The draft and its own citation marker
+ // still ship, marked partial, exactly as the fail-closed path intends.
+ assert.equal(result.trace.fallbackEvidence,undefined);
+ assert.equal(result.evidenceMap.length,0);
+ assert.equal(result.evidenceHighlights.length,0);
+ assert.match(result.answer,/Hume links necessity to custom and regular conjunction\. \[S1\]/,
+  'the draft claim ships with its citation; only the weak span link is withheld');
  assert.equal(result.trace.reviewContract.issues[0],'model-output-invalid-format');
  assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false,
   parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false}]});
@@ -4870,4 +4870,215 @@ test('structured calls run at temperature 0 and re-review failures record the re
  assert.equal(failedReReview.timeoutMs,60000,
   'answer-re-review gets the review timeout, not the 45 s compose-class timeout');
  assert.equal(failedReReview.temperature,0);
+});
+
+// --- Batch 7: B7-1 scaffolding citations (prompt), B7-2 rejection
+// containment, B7-3 claim-to-claim inheritance, B7-5b fallback union
+// coverage, B7-6.1 mid-segment dangling list introduction.
+// All fixtures below are invented for these tests.
+
+// A reviewer that answers every cited claim except those whose text
+// matches rejectPattern (marked partial with no spans, so review drops
+// them), retains every uncited claim as context, and optionally reports
+// an attributed speaker for accepted claims.
+function selectiveReview({rejectPattern=null,attributedSpeaker=''}={}){
+ return (_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const claims=payload.claims.filter(claim=>claim.sourceIds.length).map(claim=>{
+   const rejected=rejectPattern&&rejectPattern.test(claim.text);
+   return {claimId:claim.claimId,status:rejected?'partial':'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,
+     status:rejected?'partial':'answered',
+     spanIds:rejected?[]:[claim.sourceEvidence
+      .find(item=>item.sourceId===sourceId).spanIds[0]],
+     ...(attributedSpeaker?{attributionStatus:'supported',attributedSpeaker}:{})}))};
+  });
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[payload.claims[0].claimId],
+    retainedContextClaimIds:(payload.parts[0].contextClaims||[])
+     .map(claim=>claim.claimId)}],
+   claims})};
+ };
+}
+
+test('batch 7 prompt state: scaffolding citation rule added, allowances verbatim (B7-1)',()=>{
+ assert.match(COMPOSER_PROMPT,/when an opening thesis, a section thesis, or a closing sentence restates or combines positions that cited claims in the same part established, attach the page IDs those claims rest on/);
+ assert.match(COMPOSER_PROMPT,/A closing sentence may only state what the part established/);
+ assert.match(COMPOSER_PROMPT,/a position the part did not establish belongs in the body of the part with its own support, or is not written at all/);
+ // The general-knowledge allowances the addition must not weaken.
+ assert.match(COMPOSER_PROMPT,/general background and your own synthesis do not need a library citation/);
+ assert.match(COMPOSER_PROMPT,/not every factual sentence needs a citation/);
+ assert.match(COMPOSER_PROMPT,/Leave independent background or your own interpretation uncited when it does not present a supplied source's position/);
+ // The pre-existing opening-sentence and closing-sentence rules stand.
+ assert.match(COMPOSER_PROMPT,/If that opening sentence summarizes or combines positions from supplied passages, cite the page IDs/);
+ assert.match(COMPOSER_PROMPT,/Close each part with one sentence stating what the part established/);
+});
+
+test('a closing synthesis that restates cited claims ships with their citations (B7-1)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Geese read the stars on clear nights and hold their course by the brightest patterns. [S2]\n'+
+   'Ines Vidal learned that a horizon recedes exactly as fast as a walker advances toward it, while the geese hold their course by the brightest star patterns. [S1, S2]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ assert.deepEqual(result.questionParts[0].claimIds,['P1-C1','P1-C2','P1-C3']);
+ assert.match(result.answer,/brightest star patterns\. \[S1, S2\]/,
+  'the closing synthesis carries the page IDs of the claims it restates');
+});
+
+test('an unevidenced closing position is rejected by review and never ships cited (B7-1)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'The crossing therefore proves that every distant journey ends in self-knowledge. [S1]'),
+  selectiveReview({rejectPattern:/self-knowledge/})]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2,'compose and review only; no repair is spent');
+ assert.deepEqual(result.questionParts[0].claimIds,['P1-C1']);
+ assert.doesNotMatch(result.answer,/self-knowledge/,
+  'a closing position the part did not establish is dropped, not shipped with a citation');
+});
+
+test('rejection containment drops a softened rewrite of a rejected claim (B7-2)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Vidal argues that the salt flats crossing proves distant empires decline when luxury corrupts their citizens. [S1]\n'+
+   'The crossing suggests that empires decline as luxury corrupts citizens.'),
+  selectiveReview({rejectPattern:/empires decline/})]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2,'containment is deterministic and makes no model call');
+ assert.deepEqual(result.trace.rejectionContainment,
+  [{partId:'P1',claimId:'P1-C3',matchedRejectedClaimId:'P1-C2',containment:0.5}],
+  'the uncited rewrite covers half of the rejected claim’s content terms');
+ assert.doesNotMatch(result.answer,/empires decline as luxury corrupts citizens/,
+  'the post-rejection rewrite does not ship');
+ assert.deepEqual(result.questionParts[0].claimIds,['P1-C1'],
+  'the accepted claim is untouched');
+ assert.match(result.answer,/Ines Vidal describes learning/);
+});
+
+test('rejection containment leaves an unrelated context claim untouched (B7-2)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Vidal argues that the salt flats crossing proves distant empires decline when luxury corrupts their citizens. [S1]\n'+
+   'Crossing open country on foot teaches patience in a way that maps never can.'),
+  selectiveReview({rejectPattern:/empires decline/})]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(result.trace.rejectionContainment,undefined,
+  'a general claim sharing one term with the rejected claim is not a rewrite');
+ assert.equal(result.trace.claimInheritance,undefined);
+ assert.equal(result.trace.contextSecondLook,undefined);
+ assert.match(result.answer,/maps never can\./,
+  'the unrelated context claim still ships, uncited');
+ assert.doesNotMatch(result.answer,/maps never can\. \[S/);
+ assert.deepEqual(result.questionParts[0].claimIds,['P1-C1','P1-C3']);
+});
+
+test('rejection containment spares a restatement of an accepted sibling (B7-2)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Vidal argues that a horizon recedes exactly as fast as any walker advances toward it, and that the flats prove walkers never reach the far side. [S1]\n'+
+   'Vidal learned that a horizon recedes exactly as fast as a walker advances toward it.'),
+  selectiveReview({rejectPattern:/flats prove/})]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ // The uncited claim covers 8 of the rejected claim's 14 terms (0.571),
+ // but it covers 9 of the accepted sibling's 11 terms (0.818): it is a
+ // restatement of what the part established, not a rewrite of what
+ // review refused, so containment must not drop it.
+ assert.equal(result.trace.rejectionContainment,undefined);
+ assert.match(result.answer,/Vidal learned that a horizon recedes exactly as fast as a walker advances toward it\./);
+ assert.ok(result.questionParts[0].claimIds.includes('P1-C3'),
+  'the restatement of the accepted claim still ships');
+});
+
+test('claim-to-claim inheritance cites a part thesis from its contributing siblings (B7-3)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Geese read the stars on clear nights and hold their course by the brightest patterns. [S2]\n'+
+   'Ines Vidal learned that a horizon recedes exactly as fast as a walker advances toward it, while the geese hold their course by the brightest star patterns, and both accounts suggest direction is found by attending to distant markers.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2,'inheritance is deterministic and makes no model call');
+ assert.deepEqual(result.trace.claimInheritance,
+  [{partId:'P1',claimId:'P1-C3',sourceIds:['S1','S2'],coverageRatio:0.64}],
+  'neither sibling alone covers half the thesis; together they cover 16 of its 25 terms');
+ assert.match(result.answer,/attending to distant markers\. \[S1, S2\]/,
+  'the thesis ships with the contributing claims’ citations appended');
+ assert.deepEqual(result.evidenceMap.filter(item=>item.claimId==='P1-C3')
+  .map(item=>item.id),['S1','S2'],
+  'the contributing siblings’ evidence entries are copied onto the thesis');
+ assert.equal(result.trace.contextSecondLook,undefined,
+  'the second look has nothing left to attach in this part');
+});
+
+test('claim-to-claim inheritance leaves a paraphrase-heavy synthesis uncited (B7-3)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Geese read the stars on clear nights and hold their course by the brightest patterns. [S2]\n'+
+   'Together, the two accounts suggest that patience and attention matter more than instruments when crossing unfamiliar country.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(result.trace.claimInheritance,undefined,
+  'a synthesis sharing almost no terms with the cited claims earns no citation');
+ assert.equal(result.trace.contextSecondLook,undefined);
+ assert.match(result.answer,/crossing unfamiliar country\./,
+  'the synthesis still ships as the part’s own context');
+ assert.doesNotMatch(result.answer,/unfamiliar country\. \[S/);
+});
+
+test('claim-to-claim inheritance does not transfer a citation across speakers (B7-3)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it, a lesson she carried into every later survey of the meridian. [S1]\n'+
+   'Aaron Feld argues that the meridian surveys taught Vidal’s lesson: a horizon recedes exactly as fast as a walker advances toward it.'),
+  selectiveReview({attributedSpeaker:'Ines Vidal'})]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ // The uncited claim covers the cited sibling's terms well past the
+ // inheritance bar, but it attributes the point to Aaron Feld while the
+ // sibling's speaker is Ines Vidal, so no citation may transfer.
+ assert.equal(result.trace.claimInheritance,undefined);
+ assert.equal(result.trace.contextSecondLook,undefined,
+  'the span-level second look also fails this claim (7 of 15 terms), so nothing attaches');
+ assert.match(result.answer,/Aaron Feld argues that the meridian surveys taught Vidal’s lesson/);
+ assert.ok(!result.evidenceMap.some(item=>item.claimId==='P1-C2'),
+  'the speaker-mismatched claim carries no evidence link');
+});
+
+test('fallback evidence attaches nothing when the only span fails the union coverage standard (B7-5b)',async()=>{
+ const span='The empire was shaken when invading horsemen crossed the frontier, and the trade roads emptied of caravans in a single season.';
+ const source={id:'S1',bookId:'73',title:'The Fall of the Empire',page:1,
+  text:span,preview:span};
+ const plan={...onePartPlan,sources:[{label:'The Fall of the Empire',role:'primary',bookIds:['73']}],
+  parts:[{...onePartPlan.parts[0],question:'Why did the empire decline?',
+   sourceBookIds:['73'],candidateSourceIds:['S1']}]};
+ const invalid={response:'{invalid-json'};
+ const ai=makeAI([answer('PART P1\nThe empire gradually declined as trade withered and the treasury emptied. [S1]'),
+  invalid,invalid]);
+ const result=await composeEvidenceAnswer('Why did the empire decline?',[source],ai,[],
+  {plan,catalog:{...catalog,73:'The Fall of the Empire'},trace:true});
+ // The span shares three of the claim's seven content terms (empire,
+ // trade, emptied) — enough for batch 2's per-span bar, but under the
+ // half-coverage union standard the batch-6 second look set, so the
+ // fallback no longer fabricates the link (the phase-2 empires shape).
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.reviewStatus,'review-format-failed');
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.equal(result.trace.fallbackEvidence,undefined);
+ assert.equal(result.evidenceMap.length,0);
+ assert.equal(result.evidenceHighlights.length,0);
+ assert.match(result.answer,/The empire gradually declined as trade withered and the treasury emptied\. \[S1\]/,
+  'the draft claim still ships with its own citation; only the span link is withheld');
+});
+
+test('assembly audit flags a list introduction stranded mid-segment (B7-6.1)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n\n'+
+   'The primary shifts include:\n\n'+
+   'Crossing open country on foot teaches patience in a way that maps never can.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
+ assert.deepEqual(result.trace.assemblyAudit.violations,
+  [{partId:'P1',type:'dangling-list-introduction'}],
+  'batch 6 caught only a colon line at the segment’s end; the mid-segment shape is flagged now');
+ assert.equal(result.trace.assemblyAudit.action,'downgraded');
+ assert.equal(result.questionParts[0].answerStatus,'partial');
 });

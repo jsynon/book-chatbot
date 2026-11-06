@@ -40,6 +40,22 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       term.length>=3&&!stopWords.has(term)));
   const questionTerms=terms(question);
   const normalizedAnswer=normalizedEvidenceQuote(answer);
+  // Batch 7 (B7-5a): repetition counting for the furniture defense below,
+  // the same normalization the Worker's second look uses: case- and
+  // punctuation-insensitive, so a running header counts however the OCR
+  // happened to punctuate each recurrence.
+  const normalizedRepetitionText=value=>String(value||'').normalize('NFKC')
+    .toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/gu,' ');
+  const repetitionCount=(normalizedText,needle)=>{
+    if(!normalizedText||!needle)return 0;
+    let count=0,from=0;
+    while(count<3){
+      const at=normalizedText.indexOf(needle,from);
+      if(at<0)break;
+      count++;from=at+needle.length;
+    }
+    return count;
+  };
   const readableQuote=value=>{
     const quote=String(value||'');
     if(!quote)return 0;
@@ -67,6 +83,19 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       const titleCaps=(mixed[1].match(/(?:^|\s)[A-Z]/g)||[]).length;
       const remainder=quote.slice(mixed[0].length);
       if(titleCaps>=2&&remainder.length>=8&&/^\p{L}/u.test(remainder))
+        return remainder.trim();
+    }
+    // Batch 7 (B7-5a): the lecture/issue header form — an optional page
+    // number, a term or season word, a four-digit year, a slash, then a
+    // title-case header, as in "449 Spring 2002 / End of Nature was
+    // first delivered as a lecture…". The year anchor before the slash
+    // and the capitalized run after it keep ordinary prose (which does
+    // not open with a year-and-slash) from matching; the prefix is
+    // bounded and only the exact suffix survives, as above.
+    const lecture=/^(?:\d{1,4}\s+)?(?:(?:[A-Z][\p{L}'’-]*|of|on|the|and|in|de)\s+){0,3}\d{4}\s*\/\s+((?:[A-Z][\p{L}'’-]*)(?:\s+(?:[A-Z][\p{L}'’-]*|of|on|the|and|in|de)){0,4})\s+/u.exec(quote);
+    if(lecture&&lecture[0].length<=64){
+      const remainder=quote.slice(lecture[0].length);
+      if(remainder.length>=8&&/^\p{L}/u.test(remainder))
         return remainder.trim();
     }
     return quote.trim();
@@ -104,6 +133,24 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
         return answerClaim.length>=12&&normalizedAnswer.includes(answerClaim);
       })
       .filter(item=>usefulQuote(item.quote));
+    const claimKey=item=>item.claimId?item.partId+'|'+item.claimId:'span:'+item.index;
+    // Batch 7 (B7-5a): page-furniture defense on the native highlight
+    // path. Batch 6 kept furniture out of second-look attachments, but a
+    // reviewer-native quote can still BE a repeated heading fragment —
+    // in phase 2 a chapter-heading fragment was displayed as the quote
+    // for every claim on one source. A candidate whose normalized text
+    // occurs 3+ times in its source's full text is furniture: it sorts
+    // below every genuine candidate for the source, and when it is a
+    // claim's only candidate for the source it is dropped outright, so
+    // the claim simply has no highlight rather than a heading for one.
+    const normalizedSourceText=normalizedRepetitionText(sourceTexts?.[id]||'');
+    if(normalizedSourceText)for(const item of candidates)
+      item.furniture=repetitionCount(normalizedSourceText,
+        normalizedRepetitionText(item.quote))>=3;
+    const claimsWithGenuineQuote=new Set(candidates
+      .filter(item=>!item.furniture).map(item=>claimKey(item)));
+    const displayCandidates=candidates.filter(item=>
+      !item.furniture||claimsWithGenuineQuote.has(claimKey(item)));
     // Reviewer-approved spans are exact and source-verified. Rank them against
     // the reader's named evidence first, then use the linked claim as context.
     // These lexical scores order excerpts only and never prove support.
@@ -117,7 +164,11 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       };
       return {pointScore:similarity(pointTerms),questionScore:similarity(questionTerms)};
     };
-    candidates.sort((left,right)=>{
+    displayCandidates.sort((left,right)=>{
+      // Furniture demotion is the primary ordering key (B7-5a); the
+      // relevance ordering below decides among genuine candidates.
+      const furnitureDifference=(left.furniture?1:0)-(right.furniture?1:0);
+      if(furnitureDifference)return furnitureDifference;
       const leftScore=relevance(left),rightScore=relevance(right);
       const questionDifference=rightScore.questionScore-leftScore.questionScore;
       // A strong match to wording the reader explicitly singled out (for
@@ -132,7 +183,6 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     // excerpts from that same claim are shown only when they are adjacent and
     // can be joined into one continuous, source-exact passage. A merely related
     // second quote should not dilute the primary highlight.
-    const claimKey=item=>item.claimId?item.partId+'|'+item.claimId:'span:'+item.index;
     // Batch 6 (B6-2): the quote dedupe is scoped per claim. One accepted
     // span can be the evidence for two distinct claims; dropping the
     // second claim's only candidate orphaned it from the highlights —
@@ -140,7 +190,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     // linkage pooled 0.80, concentrated in exactly these shared-span
     // claims. Repeats for the SAME claim still dedupe.
     const seenQuotes=new Set();
-    const distinctCandidates=candidates.filter(item=>{
+    const distinctCandidates=displayCandidates.filter(item=>{
       const seenKey=claimKey(item)+'\n'+item.quote;
       if(seenQuotes.has(seenKey))return false;
       seenQuotes.add(seenKey);return true;
