@@ -72,6 +72,39 @@ export function buildReviewSpans(sourceId,text,{maxSpanLength=DEFAULT_MAX_SPAN_L
   }));
 }
 
+const HEADING_FUNCTION_WORDS=new Set(('a an the of to in on for and or but by with from at as per via upon among between is are was were').split(' '));
+/**
+ * Deterministic heading-shape test for a single span. Sentence-splitting
+ * turns a book's heading lines into selectable "sentences" ("Relation of
+ * the Baptist to Elijah."), and a heading span can then be accepted as a
+ * claim's quote and surface as its highlight. A span is heading-only when
+ * it is a single short line whose content words are all capitalized (a
+ * title), or a chapter/section opener: a "Chap. XXVII.—" prefix glued to
+ * its title by a dash is structural and decisive, and a chapter/numbered
+ * prefix leaves a remainder that must still pass the title test. A
+ * lowercase verb-bearing sentence never classifies: any lowercase content
+ * word (a verb, a common noun, an adjective) marks sentence flow.
+ */
+export function isHeadingOnlySpan(text){
+  const value=String(text||'').trim();
+  if(!value||/[\r\n]/u.test(value))return false;
+  const wordsOf=s=>s.split(/\s+/u).filter(Boolean);
+  if(wordsOf(value).length>14)return false;
+  // Chapter opener glued to its title by a dash ("Chap. XXVII.—How
+  // little the precepts…"): body prose does not open this way.
+  if(/^(?:chapter|chap\.?)\s+(?:[IVXLCDM]+|\d+)\.?\s*[—–]/iu.test(value))return true;
+  let rest=value;
+  const prefix=value.match(/^(?:(?:chapter|chap\.?|book|part|section|appendix)\s+(?:[IVXLCDM]+|\d+)[.:]?\s+|\d+(?:\.\d+)+\.?\s+|\d+\.\s+)/iu);
+  if(prefix)rest=value.slice(prefix[0].length).trim();
+  const words=wordsOf(rest);
+  if(!words.length||words.length>9)return false;
+  const content=words
+    .map(word=>word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu,''))
+    .filter(word=>/\p{L}/u.test(word)&&!HEADING_FUNCTION_WORDS.has(word.toLocaleLowerCase()));
+  if(!content.length)return false;
+  return content.every(word=>/^\p{Lu}/u.test(word));
+}
+
 const REVIEW_STOP_WORDS=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
 // These small families help rank ordinary paraphrases and inflections. They
 // are ranking hints only: the semantic reviewer still decides support, and

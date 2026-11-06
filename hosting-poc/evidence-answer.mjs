@@ -7,7 +7,7 @@
  * remain outside model judgment: a passing review is not a truth guarantee.
  */
 import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,sourceProvenance,catalogIdentity,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
-import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans} from './review-spans.mjs';
+import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,isHeadingOnlySpan} from './review-spans.mjs';
 
 export const READER_MODEL='@cf/google/gemma-4-26b-a4b-it';
 const MAX_REVIEW_SPANS_PER_CLAIM=6;
@@ -88,13 +88,15 @@ Claims with an empty sourceIds array are uncited; do not assume from that alone 
 
 Judge each part against the exact question and the kind of response it requests, not just shared words or a related topic. When the reader asks how, why, or for reasons, check that the answer explains the requested reasoning or mechanism rather than merely stating a related rule or conclusion. For a comparison, check that it explains the requested relationship. Check every explicit demand within the part; if any substantive demand is missing, mark answerStatus partial. A blank heading, transition, or corpus-gap statement alone is not an answer. An analogy or adjacent theory may add context, but cannot substitute for a direct answer; the answer must explain the connection. A statement that the library or supplied passages do not answer the question describes the collection, not the answer to the reader; use it only as a brief caveat, and do not treat it as a direct answer unless the reader asked what the collection contains. For open questions, a clear and appropriately qualified explanation of what is known, unknown, and why may directly answer the reader.
 
+Some claims describe the evidence itself rather than a position in it: a statement that the provided passages do not contain, or that the retrieved texts do not establish, a specified point. Judge such a statement against the packet you hold: when it is accurate about the packet and scoped to the provided material, retain it as context; it needs no supporting span, because no span can state an absence. A cited claim of this kind must not fail solely because no span states the absence — treat its source decision as not applicable and judge the claim as context.
+
 Use the supplied requiredAnswerClaimId as a candidate when reviewing directness, not as the only possible answer. It may be an uncited synthesis in the assistant's own voice; judge it as context rather than requiring a passage to state the synthesis verbatim. When a source-derived claim summarizes or combines positions, assess the cited spans together: complementary passages may support different components of a concise synthesis, but each cited source must support the component attributed to it, and the combined evidence must support the claim as a whole. Identify the claim or claims that directly answer the part in directAnswerClaimIds, whether they occur in the opening or later in the response. Mark answerStatus answered only when the direct-answer claims survive review and the remaining answer is coherent and complete. Do not mark a corpus-gap statement or merely adjacent source discussion as an answer to a different question.
 
-For each part, return requirementCoverage with one decision per supplied requirement: requirementId, status (answered|partial|unanswered), and answerClaimIds. Use only claim IDs from that part. An answered requirement must name at least one claim that directly fulfills it. Do not infer coverage from a claim that only shares its topic. A claim may address multiple requirements. For uncited contextClaims listed inside a part, assess them together for relevance, plausibility, usefulness, attribution, coherence, and completion. Return retainedContextClaimIds containing the context claims that should remain in the answer; omit unsupported, irrelevant, or misleading claims. You may nominate one retained claim as a direct answer only when it directly answers the question. Keep direct answer completeness separate from library evidence coverage: a direct, coherent answer using qualified general knowledge can be complete even when library evidence is partial. If an uncited sentence attributes a position to a supplied book, author, or speaker, it is source-derived and must have the needed source ID; do not pass it as general context. Do not mark a part answered when its answer is only related background or ends with an unfinished thought or list introduction. A useful answer may combine cited source claims with uncited context and interpretation. Return answerStatus as answered, partial, or unanswered to describe whether the complete response answers the question; keep status as the library-evidence verdict. Also return repairable as a boolean: true only when a concrete missing or underdeveloped answer element can responsibly be supplied from the already supplied evidence or clearly qualified general knowledge; false when the current limitation is appropriate or the missing element cannot be responsibly resolved. Do not set repairable true merely because the answer is partial.
+For each part, return requirementCoverage with one decision per supplied requirement: requirementId, status (answered|partial|unanswered), and answerClaimIds. Use only claim IDs from that part. An answered requirement must name at least one claim that directly fulfills it. Do not infer coverage from a claim that only shares its topic. A claim may address multiple requirements. For uncited contextClaims listed inside a part, assess them together for relevance, plausibility, usefulness, attribution, coherence, and completion. Return retainedContextClaimIds containing the context claims that should remain in the answer; omit unsupported, irrelevant, or misleading claims. You may nominate one retained claim as a direct answer only when it directly answers the question. Keep direct answer completeness separate from library evidence coverage: a direct, coherent answer using qualified general knowledge can be complete even when library evidence is partial. If an uncited sentence attributes a position to a supplied book, author, or speaker, it is source-derived and must have the needed source ID; do not pass it as general context. Some uncited claims do more than provide background: they restate or combine positions that cited claims in the same part establish — most often the claim that opens a part, the claim that closes it, or a thesis in between. The packet marks an uncited claim that opens or closes its part with frame set to true. For any uncited claim that restates or combines positions established by cited claims in the same part, return a scaffoldingLinks entry for that part naming the claim and the cited claims whose accepted spans establish the restated position, as {claimId, supportClaimIds}. Name only cited claims from the same part that you are accepting with supporting spans in this review. When the uncited claim combines two positions, name supporting claims for each side; never return a one-sided link for a claim that combines two positions — retain it as context or omit it instead. When no cited claim in the part establishes the restated position, do not link the claim. Genuine background, transitions, and interpretation are not restatements: retain them as context without a link, exactly as before. Returning a scaffolding link retains the claim with the named claims' evidence attached; the claim does not need to appear in retainedContextClaimIds as well. A part may also list priorRejections: claims whose citations an earlier review round of this same answer rejected. Do not retain as context, and do not accept, a claim that restates the substance of a prior rejection unless its present spans genuinely establish it under the ordinary standard above; a rejected claim does not become acceptable by returning without its citations or with softer wording. Do not mark a part answered when its answer is only related background or ends with an unfinished thought or list introduction. A useful answer may combine cited source claims with uncited context and interpretation. Return answerStatus as answered, partial, or unanswered to describe whether the complete response answers the question; keep status as the library-evidence verdict. Also return repairable as a boolean: true only when a concrete missing or underdeveloped answer element can responsibly be supplied from the already supplied evidence or clearly qualified general knowledge; false when the current limitation is appropriate or the missing element cannot be responsibly resolved. Do not set repairable true merely because the answer is partial.
 
 If a cited claim combines supported and unsupported material, you may optionally return supportedText: one narrower standalone sentence that preserves only what the supplied exact spans support. Keep the original claim status partial; judge the source decisions against supportedText when provided. Do not add facts, implications, or source attributions absent from those spans. Omit supportedText when no useful narrower claim is directly supported. This is only for cited claims, never uncited general context. The system retains it only if every originally cited source has an accepted exact span and the ordinary attribution, polarity, and citation checks pass. supportedText must be one sentence, contain no line breaks, and contain no citation labels. For a cited claim with multiple independently checkable source-derived clauses, also return clauses: exact clause text copied from the claim. Omit clauses for a simple single-proposition claim. Each clause must include a status (answered|partial|unanswered), an issueCode (scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other, or none), and source decisions containing only cited source IDs and exact supporting span IDs. Split propositions joined by causal or contrastive language when each could be true or false independently; do not split one idea into fragments. Mark a clause partial if the passage supports its topic but not its full scope or relation. Clause text must be a verbatim substring of the supplied claim. If supportedText is returned, clause decisions describe the original claim and source decisions describe the narrowed supportedText. Uncited general-context claims are assessed at the part level and do not need clause spans or citations. For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
 
-Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty"}],"clauses":[{"text":"verbatim clause from claim","status":"answered|partial|unanswered","issueCode":"scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other|none","sources":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"],"requirementCoverage":[{"requirementId":"P1-R1","status":"answered|partial|unanswered","answerClaimIds":["P1-C1"]}]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-speaker claims, provide attributionStatus. Do not include answer text, page text, rationales, or extra fields.`;
+Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty"}],"clauses":[{"text":"verbatim clause from claim","status":"answered|partial|unanswered","issueCode":"scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other|none","sources":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"],"scaffoldingLinks":[{"claimId":"P1-C3","supportClaimIds":["P1-C1"]}],"requirementCoverage":[{"requirementId":"P1-R1","status":"answered|partial|unanswered","answerClaimIds":["P1-C1"]}]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. The scaffoldingLinks list likewise names only that part's supplied contextClaims as its claimId, and only cited claims of that same part as supportClaimIds; a part's scaffoldingLinks may be omitted when no uncited claim in it restates an established position. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-speaker claims, provide attributionStatus. Do not include answer text, page text, rationales, or extra fields.`;
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -212,6 +214,13 @@ export function parseReviewJson(raw){return parseJson(raw,'review');}
 export function parseAnswerRepairJson(raw){return parseJson(raw,'answer-repair');}
 
 const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":""}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
+// Batch 8 (B8-1): decision-completeness repair for review scaffolding.
+// A frame claim the reviewer retained without a scaffolding decision —
+// link, context, or omit — gets exactly one compact round that must
+// choose. Modeled on REVIEW_REPAIR_PROMPT: complete only the listed
+// decisions, reconsider nothing else.
+const SCAFFOLDING_REPAIR_PROMPT=`Complete only the missing scaffolding decisions listed in the request. Do not reconsider other claims or the answer as a whole. Each part lists frameClaims — uncited claims that open or close the part and were retained without a decision — and acceptedClaims, the cited claims of that part that review accepted with supporting spans. For every listed frame claim, decide exactly one action: "link" when the claim restates or combines positions the accepted claims establish, naming in supportClaimIds the accepted claims whose spans establish the restated position (name supporting claims for each side of a combined claim; never return a one-sided link for a two-sided claim); "context" when the claim is genuine background, a transition, or interpretation that needs no citation; "omit" when the claim presents a source-derived position that no accepted claim establishes. Return exactly one decision for every requested frame claim, no more and no fewer, as JSON: {"decisions":[{"partId":"P1","claimId":"P1-C3","action":"link","supportClaimIds":["P1-C1"]},{"partId":"P1","claimId":"P1-C4","action":"context","supportClaimIds":[]}]}. Use only claim IDs listed in the request for that part.`;
+
 const ANSWER_REPAIR_PROMPT=`Patch only the requested claims. Each part lists replaceClaimIds, any missing requirements, and whether answer coverage needs an addition. When missing requirements are listed, make the minimum change that directly addresses each one; do not add optional material. Replace every listed claimId exactly once with one complete sentence; do not rewrite, repeat, remove, or change any other existing claim. Add one or more standalone sentences only when addCoverage is true, and do not repeat claims already present. Use only the already selected evidence and exact spans supplied for that part; do not seek, invent, or cite other sources. A replacement of a source-derived claim must cite only a source supplied for that part, and its citation must support the entire replacement, including attribution, scope, and logical relations. Independent general knowledge may be used for a needed addition when the supplied material does not answer it; keep it distinct from supplied-source claims and leave it uncited. If a requested claim cannot be repaired responsibly, do not invent support; return a replacement that is fully supported or let the bounded repair fail. Return exactly one JSON object with each requested part once and this shape: {"parts":[{"partId":"P1","replacements":[{"claimId":"P1-C2","text":"one replacement sentence"}],"additions":["one new sentence"]}]}. Include empty arrays when there are no replacements or additions. Do not return complete part text, preserved claims, citations to unselected sources, or commentary.`;
 
 function mergeReviewRepairs(rawReview,requested,repair){
@@ -1088,11 +1097,36 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     if(misplacedSourceClaimIds.length)warnings.push({partId:id,
       code:'source-claim-in-retained-context-list',claimIds:misplacedSourceClaimIds});
     if(unknownRetainedContextIds.length)issues.push('invalid-retained-context-claim-id');
+    // Batch 8 (B8-1): scaffolding links name an uncited claim of this
+    // part and cited claims of the same part whose accepted spans
+    // establish the position it restates. Parse-level validation only:
+    // the claim must be one of this part's context claims and the
+    // support list must be a non-empty list of distinct IDs. Whether
+    // the named supports were actually accepted is decided after the
+    // claim loop, in attachScaffoldingToPart. Malformed or misplaced
+    // links are counted, never fatal — a bad link must not invalidate
+    // an otherwise complete review.
+    const rawScaffoldingLinks=Array.isArray(item?.scaffoldingLinks)?
+      item.scaffoldingLinks:[];
+    const scaffoldingLinks=[];let scaffoldingInvalidLinks=0;
+    const seenScaffoldingClaims=new Set();
+    for(const link of rawScaffoldingLinks){
+      const claimId=typeof link?.claimId==='string'?link.claimId:'';
+      const supportClaimIds=Array.isArray(link?.supportClaimIds)?
+        [...new Set(link.supportClaimIds.filter(supportId=>typeof supportId==='string'))]:null;
+      if(!claimId||!uncitedIds.has(claimId)||!supportClaimIds||
+         !supportClaimIds.length||seenScaffoldingClaims.has(claimId)){
+        scaffoldingInvalidLinks++;continue;
+      }
+      seenScaffoldingClaims.add(claimId);
+      scaffoldingLinks.push({claimId,supportClaimIds});
+    }
     suppliedParts.set(id,{status:normalizeStatus(item.status),
       answerStatus,repairable:item.repairable===true,
       ...(requirementIds.size?{requirementCoverage}:{}),
       directAnswerClaimIds:normalizedDirectAnswerClaimIds,
       retainedContextClaimIds,
+      scaffoldingLinks,scaffoldingInvalidLinks,
       invalidDirectAnswerClaimIds:[...new Set(invalidDirectAnswerClaimIds)]});
   }
   if(!Array.isArray(review?.claims))issues.push('missing-claims');
@@ -1154,7 +1188,13 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // source and span validation below.
         const accepted=(reviewerPart?.retainedContextClaimIds||[]).includes(answer.claimId)||
           (reviewerPart?.answerStatus==='answered'&&
-            (reviewerPart?.directAnswerClaimIds||[]).includes(answer.claimId));
+            (reviewerPart?.directAnswerClaimIds||[]).includes(answer.claimId))||
+          // Batch 8 (B8-1): a scaffolding link is itself a retention
+          // decision — the claim ships with the named claims' evidence
+          // attached (validated after the claim loop below). A link
+          // whose supports prove invalid degrades to plain retained
+          // context, never to a fabricated citation.
+          (reviewerPart?.scaffoldingLinks||[]).some(link=>link.claimId===answer.claimId);
         if(accepted){
           const retainedAnswer={...answer,sourceIds:[],
             renderedText:answer.renderedText||answer.text};
@@ -1454,7 +1494,21 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       const requirementIds=requirementClaimIds.get(selection.claimId)||[];
       if(requirementIds.length)selection.requirementIds=[...new Set(requirementIds)];
     }
+    // Batch 8 (B8-1): with every claim of the part decided, attach the
+    // reviewer's scaffolding links. Supports must be claims the draft
+    // cited (the part's own cited set) that review accepted with native
+    // evidence; the copies land in this part's evidence beside the
+    // native entries, and the framing claim ships cited. This runs
+    // after requirement bookkeeping so attached copies never inherit
+    // requirement IDs.
+    const draftCitedIds=new Set((answerPart?.answers||[])
+      .filter(answer=>(answer.sourceIds||[]).length).map(answer=>answer.claimId));
+    const scaffolding=attachScaffoldingToPart({answers:acceptedAnswers,evidence},
+      reviewerPart?.scaffoldingLinks||[],{citedIds:draftCitedIds});
     return {partId:part.id,status,answerStatus,evidence,answers:acceptedAnswers,
+      reviewScaffolding:scaffolding.attached,
+      scaffoldingInvalidLinks:(reviewerPart?.scaffoldingInvalidLinks||0)+
+        scaffolding.invalidLinks,
       ...(plannedRequirements.length?{requirementsComplete,requirementCoverage}:{}),
       directAnswerClaimIds:directAnswerIds,
       acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
@@ -1585,7 +1639,7 @@ function reviewPayloadMetrics(payload,serializedPayload,systemPrompt){
 }
 
 function buildReviewPacket(answerParts,{sources,pageById,plan,question,
- packetSpanLimit=MAX_REVIEW_PACKET_SPANS_PER_SOURCE}){
+ packetSpanLimit=MAX_REVIEW_PACKET_SPANS_PER_SOURCE,priorRejectionsByPart=null}){
   const reviewSpanMaps=new Map(),reviewSpanMapsByPart=new Map();
   const reviewParts=answerParts.map(part=>{
     const citedIds=new Set(part.answers.flatMap(answer=>answer.sourceIds));
@@ -1598,7 +1652,16 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question,
       const source=sources.find(item=>item.id===page.id);
       const spanText=source?.scopeText||page.text||'';
       if(!reviewSpanMaps.has(page.id))reviewSpanMaps.set(page.id,
-        new Map(buildReviewSpans(page.id,spanText).map(span=>[span.spanId,span])));
+        // Batch 8 (B8-4): heading-only spans are never offered as
+        // reviewer-selectable evidence. Sentence-splitting turns a
+        // book's heading lines into spans, and a heading span could be
+        // accepted as a claim's quote and surface as its highlight.
+        // Filtering here — after IDs are assigned, so every remaining
+        // span keeps its stable ID — covers the packet and the span
+        // validation map together.
+        new Map(buildReviewSpans(page.id,spanText)
+          .filter(span=>!isHeadingOnlySpan(span.text))
+          .map(span=>[span.spanId,span])));
       const citedAnswers=part.answers.filter(answer=>answer.sourceIds.includes(page.id));
       const citedAnswerText=citedAnswers.map(answer=>answer.text).join(' ');
       const requiredAnswer=citedAnswers.find(answer=>answer.claimId===part.requiredAnswerClaimId);
@@ -1616,13 +1679,26 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question,
         ...(source?.scopeText?{contextText:compactSourceContext(page.text,source.scopeText)}:{})};
     });
     reviewSpanMapsByPart.set(part.partId,partSpanMaps);
-    const contextClaims=part.answers.filter(answer=>!answer.sourceIds.length)
-      .map(({claimId,text})=>({claimId,text}));
+    // Batch 8 (B8-1): an uncited claim that opens or closes its part is
+    // marked frame:true — framing claims are the ones that restate the
+    // part's established positions, and the reviewer owes each retained
+    // one a scaffolding disposition (link, context, or omit).
+    const contextClaims=part.answers
+      .map((answer,index)=>({answer,index}))
+      .filter(({answer})=>!answer.sourceIds.length)
+      .map(({answer,index})=>({claimId:answer.claimId,text:answer.text,
+        ...(index===0||index===part.answers.length-1?{frame:true}:{})}));
+    // Batch 8 (B8-2): earlier rounds' rejected claim texts for this
+    // part ride along on re-review packets, so a proposition whose
+    // citations were already refused cannot return as uncited context
+    // (the prior-rejection shadow in REVIEW_PROMPT).
+    const priorRejections=priorRejectionsByPart?.get?.(part.partId);
     return {partId:part.partId,question:part.question,requirements:plan.parts.find(item=>item.id===part.partId)?.requirements||[],
       // answerMode reflects evidence the draft actually cited.
       answerMode:evidence.some(entry=>citedIds.has(entry.id))?'source-and-context':'general-context',
       ...(part.requiredAnswerClaimId?{requiredAnswerClaimId:part.requiredAnswerClaimId}:{}),
-      ...(contextClaims.length?{contextClaims}:{}),evidence};
+      ...(contextClaims.length?{contextClaims}:{}),
+      ...(Array.isArray(priorRejections)&&priorRejections.length?{priorRejections}:{}),evidence};
   });
   const reviewClaimCount=answerParts.reduce((count,part)=>count+
     part.answers.filter(answer=>answer.sourceIds.length).length,0);
@@ -1730,7 +1806,11 @@ function buildFallbackEvidenceByPart(checkedParts,sources){
         const source=sourceById.get(sourceId);
         const text=source?.scopeText||source?.text||source?.preview||'';
         if(!text)continue;
-        const top=rankReviewSpans(buildReviewSpans(sourceId,text),
+        // Batch 8 (B8-4): heading-only spans are evidence candidates
+        // nowhere — the fallback builder ranks the same span list the
+        // reviewer would have seen.
+        const top=rankReviewSpans(buildReviewSpans(sourceId,text)
+          .filter(span=>!isHeadingOnlySpan(span.text)),
           {question:part.question,answer:answer.text})[0];
         if(!top||!fallbackSpanVerifiablyOverlaps(answer.text,top.text))continue;
         chosen.push({sourceId,top});
@@ -1817,6 +1897,81 @@ export function findClaimCitationOffenses(partAnswers,segment,linkedByClaim){
 // Remove claims (and their evidence entries) from a part item. When the
 // removal leaves the part with no remaining answer text, the part is
 // downgraded to partial, mirroring the part-level citation gate.
+// Batch 8 (B8-1): attach review scaffolding links to a normalized part.
+// A link names an uncited claim of the part and cited claims of the same
+// part whose accepted evidence establishes the position the uncited
+// claim restates. Validation is structural: every named support must be
+// an accepted claim of the part that ships with native evidence entries
+// (a claim in `citedIds`, the part's draft-cited set, when the caller
+// supplies it) — a link naming a rejected, omitted, or merely retained
+// claim is invalid and attaches nothing. Attached entries are copies of
+// the supports' evidence, flagged reviewLinked:true so the era stays
+// separable from the second look's and inheritance's copies, with
+// requirementIds stripped exactly as inheritance strips them. The
+// target's sourceIds and rendered citation marker are set the same way
+// the deterministic passes set theirs. Mutates part.answers/part.evidence.
+export function attachScaffoldingToPart(part,links,{citedIds=null}={}){
+  const attached=[];let invalidLinks=0;
+  if(!Array.isArray(links)||!links.length)return {attached,invalidLinks};
+  const answersById=new Map((part.answers||[]).map(answer=>[answer.claimId,answer]));
+  const evidenceByClaim=new Map();
+  for(const entry of part.evidence||[]){
+    const list=evidenceByClaim.get(entry.claimId)||[];
+    list.push(entry);evidenceByClaim.set(entry.claimId,list);
+  }
+  for(const link of links){
+    const target=answersById.get(link?.claimId);
+    if(!target)continue;
+    if((target.sourceIds||[]).length)continue;
+    const supportIds=[...new Set(Array.isArray(link?.supportClaimIds)?
+      link.supportClaimIds.filter(id=>typeof id==='string'):[])];
+    let valid=supportIds.length>0;
+    const supports=[];
+    for(const supportId of supportIds){
+      const support=answersById.get(supportId);
+      if(!support||!(support.sourceIds||[]).length||
+         (citedIds&&!citedIds.has(supportId))||
+         !(evidenceByClaim.get(supportId)||[]).length){valid=false;break;}
+      supports.push(support);
+    }
+    if(!valid){invalidLinks++;continue;}
+    const entries=[];
+    for(const support of supports)
+      for(const entry of evidenceByClaim.get(support.claimId)){
+        const {requirementIds,...rest}=entry;
+        entries.push({...rest,claimId:target.claimId,point:target.text,reviewLinked:true});
+      }
+    if(!entries.length){invalidLinks++;continue;}
+    part.evidence.push(...entries);
+    target.sourceIds=[...new Set(entries.map(entry=>entry.sourceId))];
+    target.renderedText=String(target.text||'').trim()+
+      ' ['+target.sourceIds.join(', ')+']';
+    attached.push({claimId:target.claimId,supportClaimIds:supportIds,
+      sourceIds:target.sourceIds});
+  }
+  return {attached,invalidLinks};
+}
+
+// Batch 8 (B8-6a): a list lead-in is a claim whose text ends with a
+// colon and whose shipped segment continues with a list line. The
+// segment test is the ground truth: the claim's rendered text is
+// located in the part's rendered paragraphs and the next non-empty
+// line must be a list line. When the claim cannot be located (markdown
+// normalization reshaped it), the claim is not treated as a lead-in —
+// the conservative direction, matching how the assembly audit treats
+// unlocatable claims.
+export function isListLeadInAnswer(answers,answer){
+  const text=String(answer?.text||'').trim();
+  if(!text.endsWith(':'))return false;
+  const segment=renderAnswerParagraphs(answers);
+  const rendered=String(answer.renderedText||answer.text||'').trim();
+  const at=rendered?segment.indexOf(rendered):-1;
+  if(at<0)return false;
+  const nextLine=segment.slice(at+rendered.length).split('\n')
+    .map(line=>line.trim()).find(line=>line.length);
+  return Boolean(nextLine&&/^(?:[-*•]|\d+[.)])\s+/.test(nextLine));
+}
+
 export function removeClaimsFromPart(item,claimIds){
   const removed=new Set(claimIds);
   const before=item.answers.length;
@@ -1882,7 +2037,10 @@ export function hasAssemblyEndingViolation(text){
   return false;
 }
 
-export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
+// Batch 8 (B8-7): the build itself lives in composeEvidenceAnswerBuild;
+// the exported composeEvidenceAnswer below wraps it with one whole-build
+// retry on provider-transient failure.
+async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options={}){
   const rawPlan=options.plan||inferSelectedHypotheticalPlan(question,sources);
   const normalized=normalizePlan(rawPlan,question,options.catalog||{},options.selectedBookId||'');
   const plan=linkEvidenceToParts(normalized,sources);
@@ -2007,6 +2165,52 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   // normally. They fall back to deterministic evidence and partial status
   // instead of discarding every part's verdicts.
   const failedReviewParts=[];
+  // Batch 8 (B8-1): the scaffolding repair round's outcome, read again
+  // when the final trace is assembled.
+  let scaffoldingRepairTrace={attempted:false,resolved:0};
+  // Batch 8 (B8-2): the rejection archive. B7-2's containment read only
+  // the final review round's state, so a claim whose citations were
+  // rejected before an adopted repair — and whose proposition the repair
+  // then re-shipped as uncited context — was invisible to it (the
+  // batch-7 Smith shape: the final contract showed 1 rejection of 14).
+  // Every review round now records the claims it rejected, under the
+  // same definition B7-2 uses for the final round: cited in that
+  // round's draft, actually decided, no accepted source decision, and
+  // not among that round's shipped claims. Deduplicated by normalized
+  // claim text within a part, since claim IDs are positional and are
+  // reassigned when a repair revalidates a draft.
+  const rejectionArchive=[],rejectionArchiveKeys=new Set();
+  const archiveRoundRejections=(roundReview,roundDraftParts)=>{
+    if(!roundReview||!Array.isArray(roundDraftParts))return;
+    for(const draftPart of roundDraftParts){
+      const decisions=(roundReview.reviewDecisions||[])
+        .filter(decision=>decision.partId===draftPart.partId&&decision.sourceId);
+      if(!decisions.length)continue;
+      const shippedIds=new Set(((roundReview.parts||[])
+        .find(part=>part.partId===draftPart.partId)?.answers||[])
+        .map(answer=>answer.claimId));
+      for(const answer of draftPart.answers||[]){
+        if(!(answer.sourceIds||[]).length)continue;
+        if(shippedIds.has(answer.claimId))continue;
+        const claimDecisions=decisions.filter(decision=>decision.claimId===answer.claimId);
+        if(!claimDecisions.length)continue;
+        if(claimDecisions.some(decision=>decision.accepted===true))continue;
+        const key=draftPart.partId+'|'+normalizedProseSurface(answer.text);
+        if(!normalizedProseSurface(answer.text)||rejectionArchiveKeys.has(key))continue;
+        rejectionArchiveKeys.add(key);
+        rejectionArchive.push({partId:draftPart.partId,claimId:answer.claimId,
+          claimText:String(answer.text||'')});
+      }
+    }
+  };
+  const priorRejectionsByPart=()=>{
+    const byPart=new Map();
+    for(const entry of rejectionArchive){
+      const list=byPart.get(entry.partId)||[];
+      list.push(entry.claimText);byPart.set(entry.partId,list);
+    }
+    return byPart;
+  };
   try{
     const composePayload={question,plan,history,
       parts:plan.parts.map(part=>({partId:part.id,question:part.question,requirements:part.requirements||[],
@@ -2246,6 +2450,11 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           const single=normalizeReview(rawReviewByPart.get(part.id),
             {...plan,parts:[part]},[checkedPart],sources,packet.reviewSpanMapsByPart,
             question,packet.reviewClaims,context);
+          // Batch 8 (B8-2): every round's rejections enter the archive,
+          // including a contract-incomplete part's — its decisions are
+          // real round verdicts even though its part verdict is withheld
+          // from the merged review below.
+          archiveRoundRejections(single,[checkedPart]);
           if(single.issues.length){
             // A part whose own review contract is incomplete fails closed
             // for that part only; the other parts keep their verdicts. The
@@ -2484,7 +2693,8 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
               // in plan order.
               const repairedPackets=await Promise.all(repairedChecked.parts.map(async repairedPart=>{
                 const packet=buildReviewPacket([repairedPart],
-                  {sources,pageById,plan:targetPlan,question});
+                  {sources,pageById,plan:targetPlan,question,
+                   priorRejectionsByPart:priorRejectionsByPart()});
                 const rawReview=await run('answer-re-review',REVIEW_PROMPT,
                   packet.reviewPayload,parseReviewJson,{partId:repairedPart.partId});
                 return {repairedPart,packet,rawReview};
@@ -2523,6 +2733,15 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
                   rejectedRepairParts.some(item=>item.reason==='answer-re-review-incomplete')?
                     'answer-re-review-incomplete':'answer-re-review-unsupported');
               const adoptedIds=new Set(adoptedPartIds);
+              // Batch 8 (B8-2): an adopted repair was judged by a real
+              // review round; its rejections join the archive before
+              // the deterministic gates and containment run.
+              for(const targetPart of targetPlan.parts){
+                if(!adoptedIds.has(targetPart.id))continue;
+                const entry=repairedPackets.find(item=>item.repairedPart.partId===targetPart.id);
+                const outcome=perPartReReviews.get(targetPart.id);
+                if(entry&&outcome)archiveRoundRejections(outcome.single,[entry.repairedPart]);
+              }
               const repairedReview={parts:[],issues:[],warnings:[],supportIssues:[],
                 recovered:[],reviewDecisions:[],partDecisions:[]};
               for(const targetPart of targetPlan.parts){
@@ -2563,6 +2782,122 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             answerRepairTrace.reason=error.code||'answer-repair-failed';
           }
           trace.answerRepair=answerRepairTrace;
+        }
+        // Batch 8 (B8-1): scaffolding decision completeness. A frame
+        // claim (first or last in its part) that the reviewer retained
+        // with no scaffolding link and no omission never received the
+        // disposition the scaffolding class exists to force. One
+        // compact round — in the REVIEW_REPAIR_PROMPT pattern — must
+        // choose link, context, or omit for each. Candidates are
+        // bounded to plausible restatements: the part must hold at
+        // least one natively accepted cited claim, and the frame claim
+        // must share at least two content terms with the part's
+        // accepted cited claims (a frame claim sharing no vocabulary
+        // with them cannot restate them, so no link decision is
+        // missing). Parts the answer repair adopted are skipped: their
+        // re-review was a fresh decision point with a fresh packet, and
+        // this round reads the initial packets. A failed or unusable
+        // round changes nothing — the claims ship as context, exactly
+        // as they would have before batch 8.
+        {
+          const answerRepairAdopted=new Set(trace.answerRepair?.adoptedPartIds||[]);
+          const requested=[];
+          for(const part of plan.parts){
+            if(answerRepairAdopted.has(part.id))continue;
+            const reviewPart=review.parts.find(item=>item.partId===part.id);
+            const packetPart=packetsByPart.get(part.id)?.reviewParts?.[0];
+            if(!reviewPart||!packetPart)continue;
+            const frameIds=new Set((packetPart.contextClaims||[])
+              .filter(claim=>claim.frame===true).map(claim=>claim.claimId));
+            if(!frameIds.size)continue;
+            const nativeCitedIds=new Set((reviewPart.evidence||[])
+              .filter(entry=>entry.reviewLinked!==true).map(entry=>entry.claimId));
+            const acceptedClaims=reviewPart.answers
+              .filter(answer=>(answer.sourceIds||[]).length&&nativeCitedIds.has(answer.claimId))
+              .map(answer=>({claimId:answer.claimId,text:answer.text,
+                sourceIds:[...answer.sourceIds]}));
+            if(!acceptedClaims.length)continue;
+            const acceptedTerms=new Set();
+            for(const claim of acceptedClaims)
+              for(const term of fallbackEvidenceTerms(claim.text))acceptedTerms.add(term);
+            const frameClaims=[];
+            for(const answer of reviewPart.answers){
+              if(!frameIds.has(answer.claimId))continue;
+              if((answer.sourceIds||[]).length)continue;
+              let shared=0;
+              for(const term of fallbackEvidenceTerms(answer.text))
+                if(acceptedTerms.has(term))shared++;
+              if(shared<2)continue;
+              frameClaims.push({claimId:answer.claimId,text:answer.text});
+            }
+            if(frameClaims.length)requested.push({partId:part.id,frameClaims,acceptedClaims,reviewPart});
+          }
+          if(requested.length&&usage.calls>=callLimit){
+            scaffoldingRepairTrace={attempted:false,resolved:0,reason:'call-budget-exceeded'};
+          }else if(requested.length){
+            scaffoldingRepairTrace={attempted:true,resolved:0};
+            try{
+              const repair=await run('scaffolding-repair',SCAFFOLDING_REPAIR_PROMPT,
+                {question,parts:requested.map(({partId,frameClaims,acceptedClaims})=>({
+                  partId,frameClaims,
+                  acceptedClaims:acceptedClaims.map(({claimId,text,sourceIds})=>({claimId,text,sourceIds}))}))},
+                parseReviewJson);
+              const expected=new Map();
+              for(const item of requested)for(const claim of item.frameClaims)
+                expected.set(item.partId+'|'+claim.claimId,item);
+              const decisions=Array.isArray(repair?.decisions)?repair.decisions:[];
+              const seen=new Set();let usable=decisions.length===expected.size;
+              const parsed=[];
+              for(const decision of decisions){
+                const partId=String(decision?.partId||'').toUpperCase();
+                const claimId=String(decision?.claimId||'');
+                const key=partId+'|'+claimId;
+                const item=expected.get(key);
+                const action=String(decision?.action||'');
+                const supportClaimIds=Array.isArray(decision?.supportClaimIds)?
+                  [...new Set(decision.supportClaimIds.filter(id=>typeof id==='string'))]:[];
+                if(!item||seen.has(key)||!['link','context','omit'].includes(action)||
+                   (action==='link'&&(!supportClaimIds.length||
+                     supportClaimIds.some(id=>!item.acceptedClaims.some(claim=>claim.claimId===id))))){
+                  usable=false;break;
+                }
+                seen.add(key);
+                parsed.push({item,claimId,action,supportClaimIds});
+              }
+              if(usable&&seen.size===expected.size){
+                for(const {item,claimId,action,supportClaimIds} of parsed){
+                  const reviewPart=item.reviewPart;
+                  if(action==='context'){scaffoldingRepairTrace.resolved++;continue;}
+                  if(action==='omit'){
+                    reviewPart.answers=reviewPart.answers
+                      .filter(answer=>answer.claimId!==claimId);
+                    reviewPart.evidence=(reviewPart.evidence||[])
+                      .filter(entry=>entry.claimId!==claimId);
+                    // Mirror B7-2's honesty rule: omitting a claim the
+                    // reviewer named as a direct answer downgrades the
+                    // part rather than reporting it fully answered.
+                    if((reviewPart.directAnswerClaimIds||[]).includes(claimId)&&
+                       reviewPart.answerStatus==='answered')
+                      reviewPart.answerStatus='partial';
+                    scaffoldingRepairTrace.resolved++;continue;
+                  }
+                  const nativeCitedIds=new Set((reviewPart.evidence||[])
+                    .filter(entry=>entry.reviewLinked!==true).map(entry=>entry.claimId));
+                  const result=attachScaffoldingToPart(reviewPart,
+                    [{claimId,supportClaimIds}],{citedIds:nativeCitedIds});
+                  reviewPart.scaffoldingInvalidLinks=
+                    (reviewPart.scaffoldingInvalidLinks||0)+result.invalidLinks;
+                  if(result.attached.length){
+                    reviewPart.reviewScaffolding=
+                      [...(reviewPart.reviewScaffolding||[]),...result.attached];
+                    scaffoldingRepairTrace.resolved++;
+                  }
+                }
+              }
+            }catch(error){
+              scaffoldingRepairTrace.reason=error.code||'scaffolding-repair-call-failed';
+            }
+          }
         }
         const syntaxRecoveries=plan.parts.flatMap(part=>{
           const recovery=rawReviewByPart.get(part.id)?.[REVIEW_JSON_RECOVERY];
@@ -2643,6 +2978,8 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     if(answerStatus==='answered'&&hasUnfinishedListIntroduction(renderAnswerParagraphs(answers)))
       answerStatus='partial';
     return {part,answers,status,answerStatus,evidence:reviewed?.evidence||fallbackEvidenceByPart.get(part.id)||[],reviewReason:reviewed?.reason||'',
+      reviewScaffolding:reviewed?.reviewScaffolding||[],
+      scaffoldingInvalidLinks:reviewed?.scaffoldingInvalidLinks||0,
       ...(reviewed?.requirementCoverage?{requirementCoverage:reviewed.requirementCoverage,
         requirementsComplete:reviewed.requirementsComplete===true}:{})};
   });
@@ -2733,14 +3070,22 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       throw new ModelFormatError('answer-repair','Gate repair did not resolve the targeted violation.','answer-repair-invalid');
     return candidate;
   };
+  // Batch 8 (B8-5): parts whose shipped content rests on a gate
+  // re-review rather than on the initial review's part decision; the
+  // coverage check below counts them as covered by that re-review.
+  const reReviewedAdoptedPartIds=new Set();
   const reReviewPartCandidate=async(item,candidate)=>{
     const planPart=item.part;
     const singlePlan={...plan,parts:[planPart]};
-    const packet=buildReviewPacket([candidate],{sources,pageById,plan:singlePlan,question});
+    const packet=buildReviewPacket([candidate],{sources,pageById,plan:singlePlan,question,
+      priorRejectionsByPart:priorRejectionsByPart()});
     const rawReview=await run('answer-re-review',REVIEW_PROMPT,packet.reviewPayload,
       parseReviewJson,{partId:planPart.id});
     const reReview=normalizeReview(rawReview,singlePlan,[candidate],sources,
       packet.reviewSpanMapsByPart,question,packet.reviewClaims);
+    // Batch 8 (B8-2): a gate re-review is a review round like any
+    // other; its rejections join the archive before containment runs.
+    archiveRoundRejections(reReview,[candidate]);
     return {reReview,rePart:reReview.parts[0]};
   };
   const adoptRepairedPart=(item,rePart)=>{
@@ -2748,6 +3093,11 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     item.evidence=rePart.evidence;
     item.status=rePart.status;
     item.answerStatus=rePart.answerStatus;
+    // Batch 8 (B8-1): the re-review's own scaffolding decisions govern
+    // the shipped part.
+    item.reviewScaffolding=rePart.reviewScaffolding||[];
+    item.scaffoldingInvalidLinks=rePart.scaffoldingInvalidLinks||0;
+    reReviewedAdoptedPartIds.add(item.part.partId);
     if(rePart.requirementCoverage){
       item.requirementCoverage=rePart.requirementCoverage;
       item.requirementsComplete=rePart.requirementsComplete===true;
@@ -3301,12 +3651,27 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
   // attribution is never transferred across speakers. Claims that fail
   // the bar stay uncited, exactly as the general-knowledge allowance
   // intends.
+  if(rejectionArchive.length)trace.rejectionArchive={count:rejectionArchive.length,
+    partIds:[...new Set(rejectionArchive.map(entry=>entry.partId))]};
   if(review&&!reviewFailure){
     const containment=[],inheritance=[];
+    const bookKeyBySourceId=new Map(sources.map(source=>[
+      source.id,String(source.bookId??source.title??source.id)]));
     for(const item of parts){
       if(item.answerStatus==='unanswered'||!item.answers.length)continue;
-      if(failedReviewParts.some(failed=>failed.partId===item.part.id))continue;
-      if(!review.parts.some(part=>part.partId===item.part.id))continue;
+      // Batch 8 (B8-2/B8-5): a part the initial review failed or
+      // excluded was skipped wholesale by these passes, so its uncited
+      // claims shipped with no judgment at all. When the archive holds
+      // round verdicts for the part (its failed round still normalized
+      // decisions, or a gate re-reviewed it), containment and
+      // inheritance extend to it — the archive carries the judgment.
+      // A part with no archive entries has no round verdicts to
+      // extend and is skipped exactly as before.
+      const partArchiveEntries=rejectionArchive
+        .filter(entry=>entry.partId===item.part.id);
+      const partUncovered=failedReviewParts.some(failed=>failed.partId===item.part.id)||
+        !review.parts.some(part=>part.partId===item.part.id);
+      if(partUncovered&&!partArchiveEntries.length)continue;
       const partId=item.part.id;
       // --- B7-2: rejection containment ---
       const shippedIds=new Set(item.answers.map(answer=>answer.claimId));
@@ -3326,8 +3691,26 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       const rejected=draftAnswers.filter(answer=>
         (answer.sourceIds||[]).length&&!shippedIds.has(answer.claimId)&&
         reviewedCitedIds.has(answer.claimId)&&!acceptedCitedIds.has(answer.claimId))
-        .map(answer=>({claimId:answer.claimId,terms:fallbackEvidenceTerms(answer.text)}))
+        .map(answer=>({claimId:answer.claimId,terms:fallbackEvidenceTerms(answer.text),
+          surface:normalizedProseSurface(answer.text)}))
         .filter(entry=>entry.terms.size);
+      // Batch 8 (B8-2): the archive extends the rejected set to every
+      // round's verdicts, deduplicated by normalized text. The Smith
+      // shape — a round-1 rejection followed by an adopted repair that
+      // re-ships the proposition as uncited context — is invisible to
+      // the final round alone, whose draft is the repaired one where
+      // the claim was never cited. A rejection that is also a
+      // final-round rejection keeps the final-round entry (and is not
+      // marked viaArchive).
+      const rejectedSurfaces=new Set(rejected.map(entry=>entry.surface));
+      for(const entry of partArchiveEntries){
+        const surface=normalizedProseSurface(entry.claimText);
+        if(!surface||rejectedSurfaces.has(surface))continue;
+        const terms=fallbackEvidenceTerms(entry.claimText);
+        if(!terms.size)continue;
+        rejectedSurfaces.add(surface);
+        rejected.push({claimId:entry.claimId,terms,viaArchive:true});
+      }
       if(rejected.length){
         const citedSiblings=item.answers
           .filter(answer=>(answer.sourceIds||[]).length)
@@ -3347,7 +3730,8 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           for(const candidate of rejected){
             const ratio=overlapRatio(candidate.terms);
             if(ratio>=0.5&&(!matched||ratio>matched.containment))
-              matched={claimId:candidate.claimId,containment:ratio};
+              matched={claimId:candidate.claimId,containment:ratio,
+                viaArchive:candidate.viaArchive===true};
           }
           if(!matched)continue;
           if(citedSiblings.some(sibling=>
@@ -3355,7 +3739,8 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           drops.push(answer.claimId);
           containment.push({partId,claimId:answer.claimId,
             matchedRejectedClaimId:matched.claimId,
-            containment:Math.round(matched.containment*1000)/1000});
+            containment:Math.round(matched.containment*1000)/1000,
+            ...(matched.viaArchive?{viaArchive:true}:{})});
         }
         if(drops.length){
           // A dropped claim the reviewer had accepted as a direct answer
@@ -3374,25 +3759,73 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       if(!citedSiblings.length)continue;
       for(const answer of item.answers){
         if((answer.sourceIds||[]).length)continue;
+        // Batch 8 (B8-6a): heading-only targets and list lead-ins never
+        // inherit. A heading claim (batch 7's bold-heading shape
+        // inherited a sibling's spans at full coverage) is furniture,
+        // not a restatement; a lead-in's continuation is its list, not
+        // the sibling claims. Claims that gained citations through
+        // review scaffolding (B8-1) are already excluded by the
+        // cited-claim check above — inheritance never double-attaches.
+        if(isHeadingOnlySpan(answer.text)||
+           isListLeadInAnswer(item.answers,answer))continue;
         const claimTerms=fallbackEvidenceTerms(answer.text);
         if(!claimTerms.size)continue;
         const ranked=citedSiblings.map(sibling=>{
           const siblingTerms=fallbackEvidenceTerms(sibling.text);
           let shared=0;
           for(const term of claimTerms)if(siblingTerms.has(term))shared++;
-          return {sibling,shared};
+          return {sibling,shared,
+            books:new Set((sibling.sourceIds||[])
+              .map(id=>bookKeyBySourceId.get(id)||id))};
         }).filter(entry=>entry.shared>=1)
           .sort((left,right)=>right.shared-left.shared);
         if(!ranked.length)continue;
-        const contributors=[];
-        let coverage=null;
-        for(const entry of ranked){
-          contributors.push(entry.sibling);
-          coverage=secondLookCoverage(answer.text,
-            contributors.map(sibling=>sibling.text));
-          if(secondLookMeetsCoverage(coverage))break;
+        // Batch 8 (B8-6b): two-sided pool discipline. Contributors come
+        // from the book of the single highest-overlap sibling; siblings
+        // from another book join only when that book's siblings ALONE
+        // meet the coverage bar — a genuine two-sided restatement.
+        // Coverage that exists only jointly across books attaches
+        // nothing: batch 7's two-sided parts let one book's theses
+        // inherit the other book's spans.
+        const accumulate=pool=>{
+          const chosen=[];let poolCoverage=null;
+          for(const entry of pool){
+            chosen.push(entry.sibling);
+            poolCoverage=secondLookCoverage(answer.text,
+              chosen.map(sibling=>sibling.text));
+            if(secondLookMeetsCoverage(poolCoverage))break;
+          }
+          return {chosen,coverage:poolCoverage,
+            met:Boolean(poolCoverage&&secondLookMeetsCoverage(poolCoverage))};
+        };
+        const anchor=ranked[0];
+        const anchorPool=ranked.filter(entry=>
+          [...entry.books].every(book=>anchor.books.has(book)));
+        const anchorResult=accumulate(anchorPool);
+        // A second book contributes only when its own siblings alone
+        // meet the bar; when one does, both books may contribute (the
+        // genuine two-sided restatement). When the anchor pool fails
+        // and no other book qualifies alone, nothing attaches.
+        const otherBooks=new Set();
+        for(const entry of ranked)for(const book of entry.books)
+          if(!anchor.books.has(book))otherBooks.add(book);
+        const extras=[];
+        for(const book of otherBooks){
+          const pool=ranked.filter(entry=>
+            entry.books.size===1&&entry.books.has(book));
+          const result=accumulate(pool);
+          if(result.met)extras.push(...result.chosen);
         }
-        if(!coverage||!secondLookMeetsCoverage(coverage))continue;
+        let contributors=null,coverage=null;
+        if(anchorResult.met||extras.length){
+          const union=[...anchorResult.chosen,...extras];
+          const unionCoverage=secondLookCoverage(answer.text,
+            union.map(sibling=>sibling.text));
+          if(secondLookMeetsCoverage(unionCoverage)){
+            contributors=union;coverage=unionCoverage;
+          }
+        }
+        if(!contributors)continue;
         const claimSpeaker=specificClaimSpeaker(answer.text);
         if(claimSpeaker){
           const speakerMatched=contributors.some(sibling=>{
@@ -3447,7 +3880,10 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       if(!eligibleSpansBySource.has(sourceId)){
         const normalizedSource=normalizedRepetitionText(text);
         eligibleSpansBySource.set(sourceId,buildReviewSpans(sourceId,text)
-          .filter(span=>secondLookSpanEligible(span,normalizedSource)));
+          // Batch 8 (B8-4): heading-only spans join page furniture as
+          // ineligible second-look candidates.
+          .filter(span=>secondLookSpanEligible(span,normalizedSource)&&
+            !isHeadingOnlySpan(span.text)));
       }
       return eligibleSpansBySource.get(sourceId);
     };
@@ -3460,6 +3896,13 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       if(!linkedIds.length)continue;
       for(const answer of item.answers){
         if((answer.sourceIds||[]).length)continue;
+        // Batch 8 (B8-6a, extended to this pass): heading-only claims
+        // and list lead-ins are furniture, not restatements — no
+        // deterministic attachment pass cites them. Inheritance applies
+        // the same exclusion above; a heading the reviewer retained
+        // ships as context, never as a highlighted claim.
+        if(isHeadingOnlySpan(answer.text)||
+           isListLeadInAnswer(item.answers,answer))continue;
         const attached=[];
         for(const sourceId of linkedIds){
           const source=sources.find(entry=>entry.id===sourceId);
@@ -3487,6 +3930,42 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       }
     }
     if(secondLook.length)trace.contextSecondLook=secondLook;
+  }
+  // Batch 8 (B8-5): per-part review-coverage honesty, and the B8-1
+  // scaffolding trace read off the shipped parts. Batch 7's Kierkegaard
+  // shape: one part's review failed at the call level, its sibling
+  // reviewed cleanly, and because reviewFailure stayed null the ANSWER
+  // reported verified-source-draft / claim-review although the failed
+  // part shipped its draft under no review at all. The invariant: a
+  // part that ships claims while named in the review contract's
+  // failedParts, or missing from its partDecisions, is a coverage gap —
+  // named in the trace, capped at partial completeness, and the
+  // answer-level outcome may not claim verified status. A part whose
+  // shipped content was adopted from a gate re-review is covered by
+  // that re-review instead.
+  let hasReviewCoverageGaps=false;
+  if(review&&!reviewFailure){
+    const gaps=[];
+    const decidedPartIds=new Set((review.partDecisions||[]).map(decision=>decision.partId));
+    for(const item of parts){
+      if(!item.answers.length)continue;
+      const failedEntry=failedReviewParts.find(failed=>failed.partId===item.part.id);
+      const covered=decidedPartIds.has(item.part.id)||
+        reReviewedAdoptedPartIds.has(item.part.id);
+      if(!failedEntry&&covered)continue;
+      gaps.push({partId:item.part.id,
+        code:failedEntry?.code||'missing-part-decision'});
+      if(item.answerStatus==='answered')item.answerStatus='partial';
+    }
+    if(gaps.length){
+      hasReviewCoverageGaps=true;
+      trace.reviewCoverageGaps=gaps;
+    }
+    trace.reviewScaffolding={
+      attached:parts.flatMap(item=>(item.reviewScaffolding||[])
+        .map(entry=>({partId:item.part.id,...entry}))),
+      invalidLinks:parts.reduce((sum,item)=>sum+(item.scaffoldingInvalidLinks||0),0),
+      repairRound:scaffoldingRepairTrace};
   }
   const included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
   let answer=normalizeAnswerMarkdown(included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n'));
@@ -3562,7 +4041,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       failure?{stage:failure.stage,code:failure.code}:null,
     reviewFailure,elapsedMs:Date.now()-started};
   const noText=!answer;
-  return {outcome:answer?(unreviewed?'unverified-source-draft':used.size?'verified-source-draft':'general-context-answer'):
+  return {outcome:answer?((unreviewed||hasReviewCoverageGaps)?'unverified-source-draft':used.size?'verified-source-draft':'general-context-answer'):
       failure?'generation-failed':'insufficient-evidence',
     answer:noText?(failure?'I could not complete a reliable answer this time. Please try again.':
       'The retrieved passages did not support a reliable answer to this question. Try a more specific passage or work.'):answer,
@@ -3572,6 +4051,9 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     evidenceMap,evidenceHighlights,reviewStatus:options.review===false?'answer-draft-unverified':
       reviewFailure?(['model-output-invalid-format','review-output-truncated'].includes(reviewFailure.code)?'review-format-failed':'review-contract-incomplete'):
       failure?(failure.code==='model-output-invalid-format'?'generation-format-failed':'pipeline-failed'):
+      // Batch 8 (B8-5): a coverage gap reports the contract as
+      // incomplete even when every other part reviewed cleanly.
+      hasReviewCoverageGaps?'review-contract-incomplete':
       used.size||reviewedLibraryClaims?'claim-review':'general-context-review',
     ...(failure?{failureCode:failure.code,failureStage:failure.stage}:{}),
     ...(reviewFailure?{failureCode:reviewFailure.code,failureStage:reviewFailure.stage}:{}),
@@ -3580,4 +4062,48 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
       'Citations link to fingerprint-verified pages; uncited context and synthesis use the model’s broader knowledge. AI review can still be mistaken.':
       'This answer has no library citations and uses the model’s broader knowledge; AI review can still be mistaken.',
     ...(options.trace?{trace}:{})};
+}
+
+// Batch 8 (B8-7): one whole-build retry on provider-transient failure.
+// The joint is here, in the Worker: 'answer-generation-or-citation-failed'
+// is only the gateway's catch-all label for thrown errors, while the
+// capture failures batch 7 actually lost (the Conrad case failed at the
+// answer stage in both passes) surface inside the build as a
+// 'generation-failed' outcome carrying a provider failure code, or as a
+// thrown provider error. A transient code — the request itself failed,
+// or the provider's deadline passed — says nothing about the question,
+// so the whole build runs once more. Validation and logic failures
+// (citation validation, malformed model output, truncation, incomplete
+// endings, pipeline errors) are never retried: replaying them would
+// reproduce the same verdict at double cost. The retried result carries
+// trace.answerRetry so the era can measure how often the retry fires
+// and whether it recovers.
+const ANSWER_RETRY_TRANSIENT_CODES=new Set([
+  'answer-request-failed','inference-deadline-exceeded','review-request-failed']);
+export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
+  let firstCode=null;
+  try{
+    const result=await composeEvidenceAnswerBuild(question,sources,ai,history,options);
+    if(result?.outcome!=='generation-failed')return result;
+    // 'answer-pipeline-failed' is the build's catch-all label for a
+    // thrown error carrying no code of its own. At the compose stage
+    // that is a provider request failure by the codebase's own
+    // convention — composeFailureCode and the per-stage traces both
+    // normalize a code-less provider error to 'answer-request-failed'.
+    // Coded compose failures (citation validation, output format,
+    // truncation, incomplete endings) keep their own codes, land
+    // outside this branch, and are never retried.
+    const pipelineTransient=result.failureCode==='answer-pipeline-failed'&&
+      result.failureStage==='compose';
+    if(!ANSWER_RETRY_TRANSIENT_CODES.has(result.failureCode)&&!pipelineTransient)
+      return result;
+    firstCode=pipelineTransient?'answer-request-failed':result.failureCode;
+  }catch(error){
+    if(!ANSWER_RETRY_TRANSIENT_CODES.has(error?.code))throw error;
+    firstCode=error.code;
+  }
+  const retried=await composeEvidenceAnswerBuild(question,sources,ai,history,options);
+  if(retried?.trace)retried.trace.answerRetry={code:firstCode,
+    outcome:retried.outcome==='generation-failed'?'failed-again':'recovered'};
+  return retried;
 }

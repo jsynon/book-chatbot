@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
-import {buildReviewSpans,rankReviewSpans} from './review-spans.mjs';
+import {buildReviewSpans,rankReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 
 const catalog={35:'An Enquiry Concerning Human Understanding — David Hume',40:'Critique of Pure Reason — Immanuel Kant'};
 function parsePayload(messages){
@@ -1164,7 +1164,12 @@ test('comparison handoff preserves uncited context while dropping an unrequested
   'Hume ties causal expectation to custom. [S1] Kant treats causality as an a priori category. [S2]\n'+inference),
   review([['P1','answered'],['P2','answered'],['P3','answered']]),
   review([['P1','answered'],['P2','answered'],['P3','answered']]),
-  review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+  review([['P1','answered'],['P2','answered'],['P3','answered']]),
+  // Batch 8 (B8-1): P3's opening claim is a retained frame claim with
+  // no scaffolding decision, so the scaffolding repair round runs and
+  // decides it is genuine context.
+  {response:JSON.stringify({decisions:[{partId:'P3',claimId:'P3-C1',
+   action:'context',supportClaimIds:[]}]})}]);
  const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
   [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
   {plan:twoSidePlan,catalog,trace:true});
@@ -1177,7 +1182,8 @@ test('comparison handoff preserves uncited context while dropping an unrequested
  assert.equal(comparisonDecision.finalStatus,'answered',
   'the trace preserves the reviewer-stage status after exact-span checks');
  assert.equal(comparisonDecision.outputStatus,'supported');
- assert.equal(ai.calls.length,4,'the handoff stays within one compose and one review call per part');
+ assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:true,resolved:1});
+ assert.equal(ai.calls.length,5,'one compose, one review call per part, and the batch-8 scaffolding decision round');
 });
 
 test('an unsupported counterfactual-only comparison exposes its bounded validation reason',async()=>{
@@ -1311,7 +1317,13 @@ test('a retained direct synthesis remains complete when library evidence is part
     directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:
     payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',sources:
      claim.sourceIds.map(sourceId=>({sourceId,spanIds:[spanId]}))}))})};
-  }],{decorateReview:false});
+  },
+  // Batch 8 (B8-1): the synthesis opens the part uncited, so it is a
+  // retained frame claim; the scaffolding repair round decides it is
+  // genuine context (a direct synthesis, not a restatement of the one
+  // cited claim), and it ships exactly as before.
+  {response:JSON.stringify({decisions:[{partId:'P1',claimId:'P1-C1',
+   action:'context',supportClaimIds:[]}]})}],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
  assert.equal(result.questionParts[0].status,'partial','library support remains visibly partial');
@@ -1320,7 +1332,8 @@ test('a retained direct synthesis remains complete when library evidence is part
  assert.equal(result.answerCompleteness,'full');
  assert.match(result.answer,/Causal necessity can be understood as an expectation/);
  assert.match(result.answer,/Hume locates that expectation.*\[S1\]/);
- assert.equal(ai.calls.length,2,'synthesis review reuses the existing composition and review calls');
+ assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:true,resolved:1});
+ assert.equal(ai.calls.length,3,'composition, review, and the batch-8 scaffolding decision round for the frame claim');
 });
 
 test('known cited claims misplaced in context-retention IDs warn without invalidating source review',async()=>{
@@ -3705,7 +3718,15 @@ test('one part’s failed review keeps the other parts’ verdicts and falls bac
   ['supported','partial','supported'],
   'the failed part is partial while the reviewed parts keep their verdicts');
  assert.equal(result.coverage,'partial');
- assert.equal(result.outcome,'verified-source-draft');
+ // Batch 8 (B8-5): P2 ships claims with no review coverage, so the
+ // answer may no longer report itself as a verified draft — the gap
+ // is named in the trace and the review status reports the contract
+ // as incomplete. (Before batch 8 this asserted the old
+ // 'verified-source-draft' outcome, the batch-7 Kierkegaard shape.)
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.reviewStatus,'review-contract-incomplete');
+ assert.deepEqual(result.trace.reviewCoverageGaps,
+  [{partId:'P2',code:'inference-deadline-exceeded'}]);
  assert.deepEqual(result.trace.reviewContract.failedParts,
   [{partId:'P2',code:'inference-deadline-exceeded'}]);
  assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'inference-deadline-exceeded',
@@ -4614,6 +4635,7 @@ test('assembly audit flags an unbalanced bold seam in prose (C)',async()=>{
  assert.equal(result.questionParts[0].answerStatus,'partial');
 });
 
+
 test('assembly audit flags list markers spliced into a prose paragraph (B6-5)',async()=>{
  const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
    'The crossing teaches patience. * Patience under a wide sky. * Humility before distance.'),
@@ -4990,24 +5012,40 @@ test('rejection containment spares a restatement of an accepted sibling (B7-2)',
   'the restatement of the accepted claim still ships');
 });
 
-test('claim-to-claim inheritance cites a part thesis from its contributing siblings (B7-3)',async()=>{
+test('a thesis covered only jointly across two books is not inherited (B8-6b); the span second look still cites it',async()=>{
+ // Batch 7's B7-3 fixture: the closing thesis restates one claim from
+ // each of two books, and neither sibling alone covers half of its 25
+ // terms (together they cover 16). Batch 7's inheritance attached both
+ // books' entries. Batch 8 (B8-6b) deliberately ends that: cross-book
+ // coverage that exists only jointly attaches nothing through
+ // inheritance — the discipline that keeps one book's theses from
+ // inheriting another book's spans. The thesis is still cited in the
+ // shipped answer, but by the span-level second look, whose verbatim
+ // spans from both pages verifiably cover it — a different evidence
+ // standard, and the reason the answer text is unchanged.
  const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
    'Geese read the stars on clear nights and hold their course by the brightest patterns. [S2]\n'+
    'Ines Vidal learned that a horizon recedes exactly as fast as a walker advances toward it, while the geese hold their course by the brightest star patterns, and both accounts suggest direction is found by attending to distant markers.'),
-  review([['P1','answered']])]);
+  review([['P1','answered']]),
+  // Batch 8 (B8-1): the thesis closes the part uncited, so it is a
+  // retained frame claim and the scaffolding repair round runs first;
+  // it decides the thesis is context.
+  {response:JSON.stringify({decisions:[{partId:'P1',claimId:'P1-C3',
+   action:'context',supportClaimIds:[]}]})}]);
  const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
   [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,2,'inheritance is deterministic and makes no model call');
- assert.deepEqual(result.trace.claimInheritance,
-  [{partId:'P1',claimId:'P1-C3',sourceIds:['S1','S2'],coverageRatio:0.64}],
-  'neither sibling alone covers half the thesis; together they cover 16 of its 25 terms');
+ assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:true,resolved:1});
+ assert.equal(ai.calls.length,3,'compose, review, and the batch-8 scaffolding decision round');
+ assert.equal(result.trace.claimInheritance,undefined,
+  'neither book alone covers half the thesis, so inheritance attaches nothing under B8-6b');
+ assert.deepEqual(result.trace.contextSecondLook,
+  [{partId:'P1',claimId:'P1-C3',sourceIds:['S1','S2'],spanIds:['S1-Q1','S2-Q1'],coverageRatio:0.52}],
+  'the span-level second look cites the thesis from verbatim spans of both pages');
  assert.match(result.answer,/attending to distant markers\. \[S1, S2\]/,
-  'the thesis ships with the contributing claims’ citations appended');
+  'the thesis still ships with both citations appended');
  assert.deepEqual(result.evidenceMap.filter(item=>item.claimId==='P1-C3')
   .map(item=>item.id),['S1','S2'],
-  'the contributing siblings’ evidence entries are copied onto the thesis');
- assert.equal(result.trace.contextSecondLook,undefined,
-  'the second look has nothing left to attach in this part');
+  'the thesis carries evidence entries from both sources');
 });
 
 test('claim-to-claim inheritance leaves a paraphrase-heavy synthesis uncited (B7-3)',async()=>{
@@ -5081,4 +5119,463 @@ test('assembly audit flags a list introduction stranded mid-segment (B7-6.1)',as
   'batch 6 caught only a colon line at the segment’s end; the mid-segment shape is flagged now');
  assert.equal(result.trace.assemblyAudit.action,'downgraded');
  assert.equal(result.questionParts[0].answerStatus,'partial');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 8: review-side scaffolding decisions (B8-1), the rejection archive
+// (B8-2), disclosure-claim protection (B8-3), heading-only spans (B8-4),
+// per-part review-coverage honesty (B8-5), inheritance smalls (B8-6), and
+// the answer-stage transient retry (B8-7). Fixtures are invented; no
+// evaluation questions or authors are used.
+// ---------------------------------------------------------------------------
+
+test('batch 8 prompt additions: scaffolding links, prior-rejection shadow, disclosure claims (B8-1/B8-2/B8-3)',()=>{
+ // B8-1: the scaffolding disposition and its guardrails.
+ assert.match(REVIEW_PROMPT,/scaffoldingLinks/);
+ assert.match(REVIEW_PROMPT,/restate or combine positions that cited claims in the same part establish/);
+ assert.match(REVIEW_PROMPT,/never return a one-sided link for a claim that combines two positions/);
+ assert.match(REVIEW_PROMPT,/When no cited claim in the part establishes the restated position, do not link the claim/);
+ assert.match(REVIEW_PROMPT,/frame set to true/);
+ // B8-2: the prior-rejection shadow.
+ assert.match(REVIEW_PROMPT,/priorRejections/);
+ assert.match(REVIEW_PROMPT,/Do not retain as context, and do not accept, a claim that restates the substance of a prior rejection/);
+ assert.match(REVIEW_PROMPT,/does not become acceptable by returning without its citations or with softer wording/);
+ // B8-3: statements about the evidence itself.
+ assert.match(REVIEW_PROMPT,/Some claims describe the evidence itself rather than a position in it/);
+ assert.match(REVIEW_PROMPT,/no span can state an absence/);
+ assert.match(REVIEW_PROMPT,/treat its source decision as not applicable and judge the claim as context/);
+ // The pre-existing general-knowledge allowances are untouched.
+ assert.match(REVIEW_PROMPT,/independent background and synthesis may remain uncited/);
+ assert.match(REVIEW_PROMPT,/Genuine background, transitions, and interpretation are not restatements/);
+ assert.match(REVIEW_PROMPT,/Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness/);
+});
+
+test('heading-only span predicate classifies headings and spares sentences (B8-4)',()=>{
+ for(const heading of ['Relation of the Baptist to Elijah.',
+   'Chapter V. The Grand Inquisitor 325','18.4.1.1.4 ITALY',
+   'Chap. XXVII.—How little the precepts of philosophers contribute to true…',
+   '**Internal Decay**'])
+  assert.equal(isHeadingOnlySpan(heading),true,heading);
+ for(const sentence of ['God is dead.',
+   'Causality is one of the categories of relation.',
+   'Custom is the great guide of human life.',
+   hume.text,kant.text])
+  assert.equal(isHeadingOnlySpan(sentence),false,sentence.slice(0,40));
+});
+
+test('the review packet offers no heading-only span while body spans remain (B8-4)',async()=>{
+ const body='The narrative then turns to the ministry by the river, where crowds gathered each morning to hear the preaching, to ask what they should do in the days ahead, and to wonder aloud whether the long expected teacher had finally come among them in their own generation after so many years of waiting and watching for a sign from heaven.';
+ const source={id:'S1',bookId:'88',title:'The River Ministry — A. Chronicler',page:9,
+  text:'Relation of the Baptist to Elijah.\n'+body,preview:body};
+ assert.ok(buildReviewSpans('S1',source.text)
+  .some(span=>span.text==='Relation of the Baptist to Elijah.'),
+  'the fixture page really does yield the heading as its own span');
+ let captured;
+ const ai=makeAI([answer('PART P1\nThe narrative turns to the ministry by the river, where crowds gathered each morning. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);captured=payload;
+   const claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+     directAnswerClaimIds:[claim.claimId]}],
+    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',
+     status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
+  }]);
+ const plan={...onePartPlan,sources:[{label:'A. Chronicler',role:'primary',bookIds:['88']}],
+  parts:[{...onePartPlan.parts[0],question:'What does the narrative describe by the river?',
+   sourceBookIds:['88'],candidateSourceIds:['S1']}]};
+ const result=await composeEvidenceAnswer('What does the narrative describe by the river?',
+  [source],ai,[],{plan,catalog:{88:source.title},trace:true});
+ assert.ok(captured.spanCatalog.length>0,'body spans are still offered');
+ assert.ok(captured.spanCatalog.every(span=>!isHeadingOnlySpan(span.text)),
+  'no heading-only span reaches the reviewer-selectable catalog');
+ assert.ok(!captured.spanCatalog.some(span=>span.text.includes('Relation of the Baptist')),
+  'the heading text itself is absent from the catalog');
+ assert.equal(result.outcome,'verified-source-draft');
+});
+
+test('attachScaffoldingToPart copies accepted evidence flagged reviewLinked (B8-1)',()=>{
+ const part={answers:[
+   {claimId:'P1-C1',text:'First established position.',sourceIds:['S1'],
+    renderedText:'First established position. [S1]'},
+   {claimId:'P1-C2',text:'A framing restatement.',sourceIds:[],
+    renderedText:'A framing restatement.'}],
+  evidence:[{sourceId:'S1',claimId:'P1-C1',point:'First established position.',
+   quote:'Verbatim span text.',anchorQuote:'Verbatim span text.',start:0,end:18,
+   requirementIds:['P1-R1']}]};
+ const {attached,invalidLinks}=attachScaffoldingToPart(part,
+  [{claimId:'P1-C2',supportClaimIds:['P1-C1']}],{citedIds:new Set(['P1-C1'])});
+ assert.equal(invalidLinks,0);
+ assert.deepEqual(attached,[{claimId:'P1-C2',supportClaimIds:['P1-C1'],sourceIds:['S1']}]);
+ const copy=part.evidence.find(entry=>entry.claimId==='P1-C2');
+ assert.equal(copy.reviewLinked,true,'attached copies are flagged as review-linked');
+ assert.equal('requirementIds' in copy,false,'requirement IDs are stripped, as inheritance strips them');
+ assert.deepEqual(part.answers[1].sourceIds,['S1']);
+ assert.equal(part.answers[1].renderedText,'A framing restatement. [S1]');
+ // A support the draft never cited is invalid and attaches nothing.
+ const fresh={answers:[
+   {claimId:'P1-C1',text:'Retained context.',sourceIds:[],renderedText:'Retained context.'},
+   {claimId:'P1-C2',text:'Another framing restatement.',sourceIds:[],
+    renderedText:'Another framing restatement.'}],evidence:[]};
+ const rejected=attachScaffoldingToPart(fresh,
+  [{claimId:'P1-C2',supportClaimIds:['P1-C1']}],{citedIds:new Set(['P1-C9'])});
+ assert.equal(rejected.invalidLinks,1);
+ assert.deepEqual(fresh.answers[1].sourceIds,[]);
+});
+
+const scaffoldingPlan={version:'reader-evidence-v2',intent:'compare',
+ sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+  {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+ parts:[{id:'P1',question:'How do Hume and Kant each explain causal necessity?',
+  sourceBookIds:['35','40'],candidateSourceIds:['S1','S2']}],queries:[]};
+const scaffoldingDraft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+ 'Kant treats causality as a category supplied by the understanding itself. [S2]\n'+
+ 'Together, the two accounts treat causal connection as something the mind contributes rather than a power read off from events.';
+function scaffoldingReview({links=null,retain=[]}={}){
+ return (_model,{messages})=>{
+  const payload=parsePayload(messages);
+  scaffoldingReview.captured=payload;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:retain,
+    ...(links?{scaffoldingLinks:links}:{})}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+}
+
+test('a reviewer scaffolding link cites a framing claim from both accepted siblings (B8-1)',async()=>{
+ const ai=makeAI([answer(scaffoldingDraft),
+  scaffoldingReview({links:[{claimId:'P1-C3',supportClaimIds:['P1-C1','P1-C2']}]})]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant each explain causal necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],
+  {plan:scaffoldingPlan,catalog,trace:true});
+ assert.deepEqual(scaffoldingReview.captured.parts[0].contextClaims,
+  [{claimId:'P1-C3',text:'Together, the two accounts treat causal connection as something the mind contributes rather than a power read off from events.',frame:true}],
+  'the packet marks the closing uncited claim as a frame claim');
+ assert.deepEqual(result.trace.reviewScaffolding.attached,
+  [{partId:'P1',claimId:'P1-C3',supportClaimIds:['P1-C1','P1-C2'],sourceIds:['S1','S2']}]);
+ assert.equal(result.trace.reviewScaffolding.invalidLinks,0);
+ assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:false,resolved:0},
+  'a decided frame claim needs no repair round');
+ assert.match(result.answer,/mind contributes rather than a power read off from events\. \[S1, S2\]/);
+ assert.deepEqual(result.evidenceMap.filter(item=>item.claimId==='P1-C3')
+  .map(item=>item.id),['S1','S2'],'both supports’ evidence entries ride on the framing claim');
+ assert.equal(result.trace.claimInheritance,undefined,
+  'inheritance never double-attaches a claim the reviewer already linked');
+ assert.equal(ai.calls.length,2);
+});
+
+test('a scaffolding link naming a rejected support is invalid and attaches nothing (B8-1)',async()=>{
+ const rejectingReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C3'],
+    scaffoldingLinks:[{claimId:'P1-C3',supportClaimIds:['P1-C2']}]}],
+   claims:payload.claims.map(claim=>{
+    const rejected=claim.claimId==='P1-C2';
+    return {claimId:claim.claimId,status:rejected?'partial':'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,
+      status:rejected?'partial':'answered',
+      spanIds:rejected?[]:[claim.sourceEvidence
+       .find(item=>item.sourceId===sourceId).spanIds[0]]}))};
+   })})};
+ };
+ const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+   'Kant treats causality as an a priori category that the understanding supplies to experience when it organizes the manifold of intuition into objective judgments. [S2]\n'+
+   'So causality, on the second view, is a category the understanding supplies, a habit of mind formed by experience.'),
+  rejectingReview]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant each explain causal necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],
+  {plan:scaffoldingPlan,catalog,trace:true});
+ assert.deepEqual(result.trace.reviewScaffolding.attached,[]);
+ assert.equal(result.trace.reviewScaffolding.invalidLinks,1,
+  'the rejected claim cannot support a link; the invalid link is counted, not fatal');
+ assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:false,resolved:0});
+ assert.match(result.answer,/a habit of mind formed by experience\./,
+  'the framing claim still ships, as plain context');
+ assert.doesNotMatch(result.answer,/habit of mind formed by experience\. \[S/);
+ assert.equal(ai.calls.length,2,'no repair round fires: the claim shares too little with the accepted sibling to be a plausible restatement');
+});
+
+test('a retained frame claim with no decision gets one scaffolding repair round (B8-1)',async()=>{
+ const ai=makeAI([answer(scaffoldingDraft),
+  scaffoldingReview({retain:['P1-C3']}),
+  {response:JSON.stringify({decisions:[{partId:'P1',claimId:'P1-C3',action:'link',
+   supportClaimIds:['P1-C1','P1-C2']}]})}]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant each explain causal necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],
+  {plan:scaffoldingPlan,catalog,trace:true});
+ assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:true,resolved:1});
+ assert.deepEqual(result.trace.reviewScaffolding.attached,
+  [{partId:'P1',claimId:'P1-C3',supportClaimIds:['P1-C1','P1-C2'],sourceIds:['S1','S2']}],
+  'the repair round’s link is applied through the same validation path');
+ assert.match(result.answer,/mind contributes rather than a power read off from events\. \[S1, S2\]/);
+ assert.equal(ai.calls.length,3,'compose, review, and exactly one scaffolding repair round');
+});
+
+test('a non-frame context claim ships unchanged and triggers no repair round (B8-1)',async()=>{
+ let captured;
+ const retainingReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);captured=payload;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2']}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+   'This distinction frames the disagreement that follows.\n'+
+   'Hume grounds the idea of necessity in repeated conjunction and custom. [S1]'),
+  retainingReview]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.deepEqual(captured.parts[0].contextClaims,
+  [{claimId:'P1-C2',text:'This distinction frames the disagreement that follows.'}],
+  'a mid-part uncited claim carries no frame mark');
+ assert.match(result.answer,/This distinction frames the disagreement that follows\./);
+ assert.doesNotMatch(result.answer,/disagreement that follows\. \[S1\]/);
+ assert.deepEqual(result.trace.reviewScaffolding,
+  {attached:[],invalidLinks:0,repairRound:{attempted:false,resolved:0}});
+ assert.equal(ai.calls.length,2,'no extra call of any kind');
+});
+
+// B8-2 fixtures in the Smith shape: round 1 rejects claim C2's citations;
+// an answer repair is adopted; what the repair ships decides whether the
+// archive matters.
+const archiveDraft='PART P1\nHume grounds causal necessity in repeated conjunction and custom. [S1]\n'+
+ 'Hume insists that necessity is a power perceived directly in the objects themselves. [S1]\n'+
+ 'The account rests on observed regularities.';
+function archiveFirstReview(_model,{messages}){
+ const payload=parsePayload(messages);
+ return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+   repairable:true,directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C3']}],
+  claims:payload.claims.map(claim=>{
+   const rejected=claim.claimId==='P1-C2';
+   return {claimId:claim.claimId,status:rejected?'partial':'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,
+     status:rejected?'partial':'answered',
+     spanIds:rejected?[]:[claim.sourceEvidence
+      .find(item=>item.sourceId===sourceId).spanIds[0]]}))};
+  })})};
+}
+function archiveReReview(acceptRestated){
+ const fn=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  fn.captured=payload;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C3',
+     ...(acceptRestated?[]:['P1-C2'])]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ return fn;
+}
+
+test('containment reaches across rounds through the rejection archive (B8-2)',async()=>{
+ const reReview=archiveReReview(false);
+ const ai=makeAI([answer(archiveDraft),archiveFirstReview,
+  {response:JSON.stringify({parts:[{partId:'P1',
+   replacements:[{claimId:'P1-C2',
+    text:'Necessity is a power perceived directly in the objects themselves.'}],
+   additions:[]}]})},
+  reReview]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,4,'compose, first review, answer repair, re-review');
+ assert.deepEqual(reReview.captured.parts[0].priorRejections,
+  ['Hume insists that necessity is a power perceived directly in the objects themselves.'],
+  'the re-review packet carries the first round’s rejected claim text');
+ assert.deepEqual(result.trace.rejectionArchive,{count:1,partIds:['P1']});
+ assert.deepEqual(result.trace.rejectionContainment,
+  [{partId:'P1',claimId:'P1-C2',matchedRejectedClaimId:'P1-C2',containment:0.75,viaArchive:true}],
+  'the adopted repair re-shipped the rejected proposition as uncited context; the archive still catches it');
+ assert.doesNotMatch(result.answer,/power perceived directly/,
+  'the laundered restatement is dropped from the shipped answer');
+ assert.match(result.answer,/grounds causal necessity in repeated conjunction and custom\. \[S1\]/);
+ assert.match(result.answer,/The account rests on observed regularities\./,
+  'unrelated retained context is untouched');
+});
+
+test('a repair that genuinely fixes support ships the claim cited (B8-2 control)',async()=>{
+ const reReview=archiveReReview(true);
+ const ai=makeAI([answer(archiveDraft),archiveFirstReview,
+  {response:JSON.stringify({parts:[{partId:'P1',
+   replacements:[{claimId:'P1-C2',
+    text:'Hume presents necessity as a power perceived directly in the objects themselves. [S1]'}],
+   additions:[]}]})},
+  reReview]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.deepEqual(result.trace.rejectionArchive,{count:1,partIds:['P1']},
+  'the first round’s rejection is still archived');
+ assert.equal(result.trace.rejectionContainment,undefined,
+  'nothing is contained: the repaired claim ships cited and accepted');
+ assert.match(result.answer,/power perceived directly in the objects themselves\. \[S1\]/);
+});
+
+test('a part missing from the review contract ships as an uncovered gap (B8-5)',async()=>{
+ const dispatcher=(_model,{messages})=>{
+  const system=String(messages[0].content||'');
+  if(system.includes('missing source decisions'))return {response:'{}'};
+  const payload=parsePayload(messages);
+  if(payload.parts[0].partId==='P1'){
+   // The reviewer decides only the first of P1's two cited claims: the
+   // part contract is incomplete and the part is excluded.
+   const claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+     directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:[]}],
+    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',
+     status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
+  }
+  return review([['P2','answered']])(_model,{messages});
+ };
+ const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+   'Hume grounds the idea of necessity in repeated conjunction and custom. [S1]\n'+
+   'PART P2\nKant treats causality as a category of relation. [S2]'),
+  dispatcher,dispatcher,dispatcher,dispatcher]);
+ const plan={...twoSidePlan,parts:twoSidePlan.parts.slice(0,2)};
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],
+  {plan,catalog,trace:true});
+ assert.deepEqual(result.trace.reviewCoverageGaps,
+  [{partId:'P1',code:'review-contract-incomplete'}]);
+ assert.equal(result.reviewStatus,'review-contract-incomplete',
+  'the answer-level status reports the incomplete contract');
+ assert.equal(result.outcome,'unverified-source-draft',
+  'the answer may not claim verified status while a part ships unreviewed');
+ assert.equal(result.questionParts.find(part=>part.partId==='P2').status,'supported',
+  'the covered part keeps its verdict');
+ assert.equal(result.questionParts.find(part=>part.partId==='P1').answerStatus,'partial',
+  'the uncovered part is capped at partial completeness');
+ assert.match(result.answer,/Hume explains causal expectation/,
+  'the uncovered part’s draft still ships — labeled, not hidden');
+});
+
+test('inheritance never attaches to a heading-only claim (B8-6a)',async()=>{
+ const source={id:'S1',bookId:'73',title:'The Fall of the Empire — A. Chronicler',page:4,
+  text:'The chronicle attributes the decline to internal decay within the court, where faction consumed the treasury and the roads went unrepaired for a generation.',
+  preview:'The chronicle attributes the decline to internal decay within the court.'};
+ const plan={...onePartPlan,sources:[{label:'A. Chronicler',role:'primary',bookIds:['73']}],
+  parts:[{...onePartPlan.parts[0],question:'Why did the empire decline?',
+   sourceBookIds:['73'],candidateSourceIds:['S1']}]};
+ const ai=makeAI([answer('PART P1\nThe chronicle attributes the decline to internal decay within the court. [S1]\n'+
+   '**Internal Decay**'),
+  review([['P1','answered']]),
+  {response:JSON.stringify({decisions:[{partId:'P1',claimId:'P1-C2',
+   action:'context',supportClaimIds:[]}]})}]);
+ const result=await composeEvidenceAnswer('Why did the empire decline?',[source],ai,[],
+  {plan,catalog:{73:source.title},trace:true});
+ assert.equal(result.trace.claimInheritance,undefined,
+  'batch 7 attached the sibling’s spans to this heading at full coverage; B8-6a forbids it');
+ assert.match(result.answer,/\*\*Internal Decay\*\*/,'the heading still ships as context');
+ assert.doesNotMatch(result.answer,/\*\*Internal Decay\*\* \[S1\]/);
+ assert.ok(!result.evidenceMap.some(item=>item.claimId==='P1-C2'));
+});
+
+test('list lead-in detection reads the shipped segment (B8-6a)',()=>{
+ const answers=[
+  {claimId:'P1-C1',text:'The harbor towns grew rich on steady trade winds.',
+   renderedText:'The harbor towns grew rich on steady trade winds. [S1]',
+   sourceIds:['S1'],paragraphIndex:0},
+  {claimId:'P1-C2',text:'The strategy rests on two supports:',
+   renderedText:'The strategy rests on two supports:',sourceIds:[],paragraphIndex:1},
+  {claimId:'P1-C3',text:'Patient capital and careful maintenance.',
+   renderedText:'- Patient capital\n- Careful maintenance',sourceIds:[],paragraphIndex:1}];
+ assert.equal(isListLeadInAnswer(answers,answers[1]),true,
+  'a colon claim whose segment continues with list lines is a lead-in');
+ assert.equal(isListLeadInAnswer(answers,answers[0]),false,
+  'a claim without a trailing colon is never a lead-in');
+ const prose=[...answers.slice(0,2),
+  {claimId:'P1-C3',text:'Patient capital mattered most of all.',
+   renderedText:'Patient capital mattered most of all.',sourceIds:[],paragraphIndex:1}];
+ assert.equal(isListLeadInAnswer(prose,prose[1]),false,
+  'a colon claim followed by prose is not a lead-in');
+});
+
+// B8-6b fixtures: two invented books. Book A (S1, the Northern League
+// annals) and book B (S2, the Coastal Watch log).
+const leagueSourceA={id:'S1',bookId:'601',title:'Annals of the Northern League — R. Calloway',page:11,
+ text:'The harbors and guilds set the tolls that kept channels open to the tides and beacons. Pilots read the currents and marked their charts each night.',
+ preview:'The harbors and guilds set the tolls that kept channels open.'};
+const leagueSourceB={id:'S2',bookId:'602',title:'Log of the Coastal Watch — M. Ferreira',page:23,
+ text:'The guilds recorded tolls in ledgers and watched for storms along the coast.',
+ preview:'The guilds recorded tolls in ledgers.'};
+const leaguePlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'R. Calloway',role:'primary',bookIds:['601']},
+  {label:'M. Ferreira',role:'primary',bookIds:['602']}],
+ parts:[{id:'P1',question:'What held the league together?',
+  sourceBookIds:['601','602'],candidateSourceIds:['S1','S2']}],queries:[]};
+const leagueCatalog={601:leagueSourceA.title,602:leagueSourceB.title};
+
+test('inheritance draws only on the anchor book when the second book cannot qualify alone (B8-6b)',async()=>{
+ // The thesis has 13 content terms (bar 7). Book A's claims cover 8 of
+ // them together (5 + 3 disjoint); book B's claim covers 4 and cannot
+ // qualify alone. Batch 7's greedy accumulation reached the bar
+ // through A1 + B1 first and attached both books; the pool discipline
+ // attaches book A only.
+ const ai=makeAI([answer('PART P1\nThe harbors and guilds set the tolls that kept channels open to the tides and beacons. [S1]\n'+
+   'The guilds recorded tolls in ledgers and watched for storms along the coast. [S2]\n'+
+   'Pilots read the currents and marked their charts each night. [S1]\n'+
+   'The league rested on harbors, guilds, tolls, channels, tides, charts, storms, pilots, ledgers, beacons, currents, and markets.'),
+  review([['P1','answered']]),
+  {response:JSON.stringify({decisions:[{partId:'P1',claimId:'P1-C4',
+   action:'context',supportClaimIds:[]}]})}]);
+ const result=await composeEvidenceAnswer('What held the league together?',
+  [leagueSourceA,leagueSourceB],ai,[],{plan:leaguePlan,catalog:leagueCatalog,trace:true});
+ assert.deepEqual(result.trace.claimInheritance,
+  [{partId:'P1',claimId:'P1-C4',sourceIds:['S1'],coverageRatio:0.615}],
+  'only the anchor book’s claims contribute');
+ assert.match(result.answer,/currents, and markets\. \[S1\]/);
+ assert.doesNotMatch(result.answer,/markets\. \[S1, S2\]/);
+});
+
+test('inheritance draws on both books when each qualifies alone (B8-6b)',async()=>{
+ // The thesis has 10 content terms (bar 5); book A's claim covers 5
+ // and book B's claim covers the other 5 — each side independently
+ // established, so both books may contribute.
+ const sourceA={...leagueSourceA,text:'The guilds pooled tolls for the harbor works each year, and the annals record the levy in full.',
+  preview:'The guilds pooled tolls for the harbor works each year.'};
+ const sourceB={...leagueSourceB,text:'The councils bound the passes with watchtowers and signal fires.',
+  preview:'The councils bound the passes with watchtowers and signal fires.'};
+ const ai=makeAI([answer('PART P1\nThe guilds pooled tolls for the harbor works each year. [S1]\n'+
+   'The councils bound the passes with watchtowers and signal fires. [S2]\n'+
+   'The guilds pooled tolls for the harbor works, and the councils bound the passes with watchtowers and signal fires.'),
+  review([['P1','answered']]),
+  {response:JSON.stringify({decisions:[{partId:'P1',claimId:'P1-C3',
+   action:'context',supportClaimIds:[]}]})}]);
+ const result=await composeEvidenceAnswer('What held the league together?',
+  [sourceA,sourceB],ai,[],{plan:leaguePlan,catalog:leagueCatalog,trace:true});
+ assert.deepEqual(result.trace.claimInheritance,
+  [{partId:'P1',claimId:'P1-C3',sourceIds:['S1','S2'],coverageRatio:1}],
+  'a genuine two-sided restatement inherits from both books');
+ assert.match(result.answer,/watchtowers and signal fires\. \[S1, S2\]/);
+});
+
+test('a transient answer-stage failure is retried once and recovers (B8-7)',async()=>{
+ const ai=makeAI([new Error('Provider returned 502'),new Error('Provider returned 502'),
+  answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft',
+  'the retried build ships its answer');
+ assert.deepEqual(result.trace.answerRetry,
+  {code:'answer-request-failed',outcome:'recovered'});
+ assert.equal(ai.calls.length,4,
+  'two failed compose attempts in the first build, compose + review in the retry');
+});
+
+test('a citation-validation failure is never retried (B8-7)',async()=>{
+ const ai=makeAI([
+  answer('PART P1\nHume links necessity to custom. [S99]\n\nPART P2\nKant describes causality as a priori. [S1]'),
+  review([['P1','answered'],['P2','answered']])]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant explain necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],
+  {plan:{...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)},catalog,trace:true});
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureCode,'answer-citation-validation-failed');
+ assert.equal(result.trace.answerRetry,undefined,
+  'validation failures are logic outcomes, not provider transients');
+ assert.equal(ai.calls.length,1,'exactly one build was attempted');
 });
