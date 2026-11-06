@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 
@@ -3586,13 +3586,26 @@ test('run 48 reviewer typo fails closed to an unverified draft; the weak fallbac
  // builder to the second look's union-coverage standard: this claim's
  // only span covers two of its six content terms (necessity, custom —
  // the span's "conjoined" is not the claim's "conjunction"), so no
- // span link is fabricated. The draft and its own citation marker
- // still ship, marked partial, exactly as the fail-closed path intends.
+ // span link is fabricated.
+ // Batch 10 (B10-1) REVERSES the second half of the B7-5b pin — this
+ // reversal is approved and intentional. B7-5b shipped the draft with
+ // its citation marker intact; batch 9's evaluation then shipped 14
+ // such markers with no mechanism behind them, visibly citing sources
+ // nothing had validated. The claim is now untraced (fallback is the
+ // only mechanism in a whole-review failure, and it withheld), so the
+ // marker is stripped and the prose ships as what it honestly is: an
+ // unverified draft sentence. The downgrade is unchanged.
  assert.equal(result.trace.fallbackEvidence,undefined);
  assert.equal(result.evidenceMap.length,0);
  assert.equal(result.evidenceHighlights.length,0);
- assert.match(result.answer,/Hume links necessity to custom and regular conjunction\. \[S1\]/,
-  'the draft claim ships with its citation; only the weak span link is withheld');
+ assert.match(result.answer,/Hume links necessity to custom and regular conjunction\./,
+  'the draft prose still ships');
+ assert.doesNotMatch(result.answer,/\[S1\]/,
+  'but its citation marker is stripped — nothing validated it');
+ assert.deepEqual(result.trace.untracedCitedClaims,
+  [{partId:'P1',claimId:'P1-C1'}]);
+ assert.deepEqual(result.trace.strippedCitations,
+  {count:1,claimIds:['P1-C1'],partIds:['P1'],passes:1});
  assert.equal(result.trace.reviewContract.issues[0],'model-output-invalid-format');
  assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false,
   parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false}]});
@@ -3737,6 +3750,48 @@ test('one part’s failed review keeps the other parts’ verdicts and falls bac
   'the failed part keeps a deterministic citation link');
  assert.match(result.answer,/Kant treats causality as a category of relation/,
   'the failed part’s draft still ships, marked partial');
+});
+
+test('a failed part’s untraced claim is stripped while its fallback-covered sibling keeps its marker (batch 10 B10-1)',async()=>{
+ // P2's review fails outright. Its first claim is one the
+ // deterministic fallback covers (the shape of the sibling test
+ // above); its second shares almost no content terms with Kant's
+ // spans, so the fallback withholds — the batch-9 failed-contract
+ // shape, where the draft marker shipped with nothing behind it.
+ // Batch 10 strips that marker; the covered sibling is untouched.
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant treats causality as a category of relation and a pure conception of the understanding. [S2]\n'+
+  'Kant argues that synthetic judgments extend knowledge beyond the boundaries of possible experience altogether. [S2]\n'+
+  'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]';
+ const dispatchReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  if(payload.parts[0].partId==='P2'){
+   const error=new Error('Inference deadline exceeded');
+   error.code='inference-deadline-exceeded';error.stage='review';
+   throw error;
+  }
+  return review([['P1','answered'],['P2','answered'],['P3','answered']])(_model,{messages});
+ };
+ const ai=makeAI([answer(draft),dispatchReviewer,dispatchReviewer,dispatchReviewer,dispatchReviewer]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:twoSidePlan,catalog,trace:true});
+ assert.equal(ai.calls.length,5);
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.deepEqual(result.trace.untracedCitedClaims,
+  [{partId:'P2',claimId:'P2-C2'}],
+  'only the fallback-withheld claim is untraced');
+ assert.deepEqual(result.trace.strippedCitations,
+  {count:1,claimIds:['P2-C2'],partIds:['P2'],passes:1});
+ assert.match(result.answer,/synthetic judgments extend knowledge beyond the boundaries of possible experience altogether\./,
+  'the untraced claim’s prose still ships');
+ assert.doesNotMatch(result.answer,/altogether\. \[S2\]/,
+  'without its citation marker');
+ assert.match(result.answer,/category of relation and a pure conception of the understanding\. \[S2\]/,
+  'the fallback-covered sibling keeps its marker');
+ assert.ok(result.evidenceMap.some(item=>item.partId==='P2'&&item.id==='S2'&&item.claimId==='P2-C1'),
+  'and its evidence entry still ships');
+ assert.equal(result.questionParts.find(part=>part.partId==='P2').status,'partial');
 });
 
 test('a review request failure is retried once per part like other review-output failures',async()=>{
@@ -4968,9 +5023,12 @@ test('rejection containment drops a softened rewrite of a rejected claim (B7-2)'
  const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
   [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
  assert.equal(ai.calls.length,2,'containment is deterministic and makes no model call');
+ // Batch 10 (B10-3): the recorded measure is the overlap coefficient —
+ // the rewrite's 6 shared terms over the smaller term set (its own 7),
+ // not the one-sided 6/12 = 0.5 this fixture recorded before.
  assert.deepEqual(result.trace.rejectionContainment,
-  [{partId:'P1',claimId:'P1-C3',matchedRejectedClaimId:'P1-C2',containment:0.5}],
-  'the uncited rewrite covers half of the rejected claim’s content terms');
+  [{partId:'P1',claimId:'P1-C3',matchedRejectedClaimId:'P1-C2',containment:0.857}],
+  'the uncited rewrite covers most of its own terms from the rejected claim');
  assert.doesNotMatch(result.answer,/empires decline as luxury corrupts citizens/,
   'the post-rejection rewrite does not ship');
  assert.deepEqual(result.questionParts[0].claimIds,['P1-C1'],
@@ -5002,14 +5060,42 @@ test('rejection containment spares a restatement of an accepted sibling (B7-2)',
   selectiveReview({rejectPattern:/flats prove/})]);
  const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
   [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- // The uncited claim covers 8 of the rejected claim's 14 terms (0.571),
- // but it covers 9 of the accepted sibling's 11 terms (0.818): it is a
- // restatement of what the part established, not a rewrite of what
- // review refused, so containment must not drop it.
+ // The uncited claim shares 8 terms with the rejected claim and 9 with
+ // the accepted sibling. Under batch 10's overlap coefficient (B10-3)
+ // those measure 8/9 = 0.889 against the rejected claim but 9/9 = 1.0
+ // against the sibling: it is a restatement of what the part
+ // established, not a rewrite of what review refused, so the dominance
+ // exemption still spares it.
  assert.equal(result.trace.rejectionContainment,undefined);
  assert.match(result.answer,/Vidal learned that a horizon recedes exactly as fast as a walker advances toward it\./);
  assert.ok(result.questionParts[0].claimIds.includes('P1-C3'),
   'the restatement of the accepted claim still ships');
+});
+
+test('rejection containment drops a softened rewrite whose terms mostly live inside a long rejected claim (batch 10 B10-3)',async()=>{
+ // The batch-9 Plato shape: the rejected claim is long (21 content
+ // terms) and the uncited rewrite is short, drawing 6 of its 7 terms
+ // from it. The one-sided ratio measured 6/21 = 0.286 — softening the
+ // claim defeated the measure mechanically — while the overlap
+ // coefficient measures 6/7 = 0.857. The part's accepted sibling is on
+ // the same broad topic (the crossing, the caravans) but overlaps the
+ // rewrite by a single term (coefficient 0.143), so the dominance
+ // exemption does not save the rewrite.
+ const ai=makeAI([answer('PART P1\nInes Vidal describes the caravan staging posts where guides water the camels before the crossing. [S1]\n'+
+   'Vidal argues that the salt flats crossing proves distant empires decline when luxury corrupts their citizens, that caravans abandon the roads, and that tribute burdens empty the treasury of every province. [S1]\n'+
+   'The crossing suggests that empires decline as luxury corrupts citizens.'),
+  selectiveReview({rejectPattern:/distant empires decline/})]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2,'containment is deterministic and makes no model call');
+ assert.deepEqual(result.trace.rejectionContainment,
+  [{partId:'P1',claimId:'P1-C3',matchedRejectedClaimId:'P1-C2',containment:0.857}],
+  'the softened rewrite is measured against the smaller term set and drops');
+ assert.doesNotMatch(result.answer,/empires decline as luxury corrupts citizens/,
+  'the softened post-rejection rewrite does not ship');
+ assert.deepEqual(result.questionParts[0].claimIds,['P1-C1'],
+  'the accepted sibling is untouched');
+ assert.match(result.answer,/caravan staging posts/);
 });
 
 test('a thesis covered only jointly across two books is not inherited (B8-6b); the span second look still cites it',async()=>{
@@ -5102,8 +5188,16 @@ test('fallback evidence attaches nothing when the only span fails the union cove
  assert.equal(result.trace.fallbackEvidence,undefined);
  assert.equal(result.evidenceMap.length,0);
  assert.equal(result.evidenceHighlights.length,0);
- assert.match(result.answer,/The empire gradually declined as trade withered and the treasury emptied\. \[S1\]/,
-  'the draft claim still ships with its own citation; only the span link is withheld');
+ // Batch 10 (B10-1): the same approved reversal as the run-48 B7-5b
+ // test — with the review failed and the fallback link withheld, the
+ // claim is untraced, so its marker is stripped and the prose ships
+ // bare. (Before batch 10 this asserted the marker ships.)
+ assert.match(result.answer,/The empire gradually declined as trade withered and the treasury emptied\./,
+  'the draft prose still ships');
+ assert.doesNotMatch(result.answer,/\[S1\]/,
+  'its citation marker is stripped — nothing validated it');
+ assert.deepEqual(result.trace.strippedCitations,
+  {count:1,claimIds:['P1-C1'],partIds:['P1'],passes:1});
 });
 
 test('assembly audit flags a list introduction stranded mid-segment (B7-6.1)',async()=>{
@@ -5303,9 +5397,18 @@ test('a scaffolding link naming a rejected support is invalid and attaches nothi
        .find(item=>item.sourceId===sourceId).spanIds[0]]}))};
    })})};
  };
+ // Batch 10 (B10-3) note: the framing claim below used to restate the
+ // rejected Kant claim ("a category the understanding supplies…"),
+ // sharing 5 of its 10 content terms with it — an overlap coefficient
+ // of exactly 0.5 — so rejection containment now drops it as a
+ // softened rewrite, independently of the link question this fixture
+ // pins. The frame is worded as a non-restating comparison so the two
+ // mechanisms' fixtures stay independent: this test is about the
+ // invalid link, and the claim it targets is not a rewrite of the
+ // rejected claim.
  const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
    'Kant treats causality as an a priori category that the understanding supplies to experience when it organizes the manifold of intuition into objective judgments. [S2]\n'+
-   'So causality, on the second view, is a category the understanding supplies, a habit of mind formed by experience.'),
+   'So the two accounts part company over where causal connection is located.'),
   rejectingReview]);
  const result=await composeEvidenceAnswer('How do Hume and Kant each explain causal necessity?',
   [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],
@@ -5314,9 +5417,9 @@ test('a scaffolding link naming a rejected support is invalid and attaches nothi
  assert.equal(result.trace.reviewScaffolding.invalidLinks,1,
   'the rejected claim cannot support a link; the invalid link is counted, not fatal');
  assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:false,resolved:0});
- assert.match(result.answer,/a habit of mind formed by experience\./,
+ assert.match(result.answer,/the two accounts part company over where causal connection is located\./,
   'the framing claim still ships, as plain context');
- assert.doesNotMatch(result.answer,/habit of mind formed by experience\. \[S/);
+ assert.doesNotMatch(result.answer,/causal connection is located\. \[S/);
  assert.equal(ai.calls.length,2,'no repair round fires: the claim shares too little with the accepted sibling to be a plausible restatement');
 });
 
@@ -5414,8 +5517,12 @@ test('containment reaches across rounds through the rejection archive (B8-2)',as
   ['Hume insists that necessity is a power perceived directly in the objects themselves.'],
   'the re-review packet carries the first round’s rejected claim text');
  assert.deepEqual(result.trace.rejectionArchive,{count:1,partIds:['P1']});
+ // Batch 10 (B10-3): the recorded measure is the overlap coefficient —
+ // all 6 of the restatement's terms live inside the rejected claim's 8,
+ // so it records 1, not the one-sided 6/8 = 0.75. The catch itself is
+ // unchanged.
  assert.deepEqual(result.trace.rejectionContainment,
-  [{partId:'P1',claimId:'P1-C2',matchedRejectedClaimId:'P1-C2',containment:0.75,viaArchive:true}],
+  [{partId:'P1',claimId:'P1-C2',matchedRejectedClaimId:'P1-C2',containment:1,viaArchive:true}],
   'the adopted repair re-shipped the rejected proposition as uncited context; the archive still catches it');
  assert.doesNotMatch(result.answer,/power perceived directly/,
   'the laundered restatement is dropped from the shipped answer');
@@ -5439,6 +5546,74 @@ test('a repair that genuinely fixes support ships the claim cited (B8-2 control)
  assert.equal(result.trace.rejectionContainment,undefined,
   'nothing is contained: the repaired claim ships cited and accepted');
  assert.match(result.answer,/power perceived directly in the objects themselves\. \[S1\]/);
+});
+
+test('more than six missing source decisions degrade to a round-robin repair subset (batch 10 B10-2)',async()=>{
+ // Both parts' reviewers decide S1 for every claim and omit S2
+ // entirely: 8 missing claim-source decisions, 4 per part. Before
+ // batch 10 the count alone blocked the repair (limit 6) and nothing
+ // was attempted. Now six are attempted, split 3/3 across the parts
+ // by the round-robin selection — a prefix slice would have taken
+ // P1's four and only two of P2's — and the two unrepaired decisions
+ // keep their fail-closed recovered treatment.
+ const s1OnlyReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const partIds=[...new Set(payload.claims.map(claim=>claim.partId))];
+  return {response:JSON.stringify({parts:partIds.map(partId=>({partId,
+     status:'answered',answerStatus:'answered',
+     directAnswerClaimIds:[payload.claims.find(claim=>claim.partId===partId).claimId],
+     retainedContextClaimIds:[]})),
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0]]}]}))})};
+ };
+ const repairCall={captured:null};
+ const repairDecisions=(_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  repairCall.captured=payload;
+  return {response:JSON.stringify({decisions:payload.decisions.map(decision=>({
+   claimId:decision.claimId,sourceId:decision.sourceId,status:'answered',
+   spanIds:decision.spanIds.slice(0,1),attributionStatus:'not_applicable',
+   attributedSpeaker:''}))})};
+ };
+ const dualPlan={version:'reader-evidence-v2',intent:'compare',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[
+   {id:'P1',question:'How do Hume and Kant each explain causal necessity?',
+    sourceBookIds:['35','40'],candidateSourceIds:['S1','S2']},
+   {id:'P2',question:'How do Hume and Kant differ on causal necessity?',
+    sourceBookIds:['35','40'],candidateSourceIds:['S1','S2']}],
+  queries:[]};
+ const ai=makeAI([answer('PART P1\n'+
+   'Hume explains causal expectation through custom rather than reasoning, while Kant treats causality as an a priori category. [S1, S2]\n'+
+   'For Hume necessity arises from repeated conjunction, while for Kant the understanding supplies the category itself. [S1, S2]\n'+
+   'Hume grounds inference in habit formed by experience, while Kant grounds it in the structure of the understanding. [S1, S2]\n'+
+   'Hume denies that reason perceives necessary connection, while Kant locates the connection in a category of relation. [S1, S2]\n'+
+   'PART P2\n'+
+   'The contrast begins with custom on one side and an a priori category on the other. [S1, S2]\n'+
+   'Necessity and causation arise for Hume from constant conjunction, while the categories are for Kant pure conceptions of the understanding. [S1, S2]\n'+
+   'Necessity for Hume is a determination of the mind, while for Kant it is a condition of objective judgment. [S1, S2]\n'+
+   'The two accounts divide over whether causal connection is found in objects or contributed by the understanding. [S1, S2]'),
+  s1OnlyReview,s1OnlyReview,repairDecisions]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ about causal necessity?',
+  [{...hume,candidatePartIds:['P1','P2']},{...kant,candidatePartIds:['P1','P2']}],ai,[],
+  {plan:dualPlan,catalog,trace:true});
+ assert.deepEqual(result.trace.reviewRepair,
+  {attempted:true,requestedCount:8,attemptedCount:6,applied:true,reason:'complete'},
+  'the repair runs on a subset instead of not running at all');
+ assert.deepEqual(repairCall.captured.decisions.map(decision=>decision.claimId),
+  ['P1-C1','P2-C1','P1-C2','P2-C2','P1-C3','P2-C3'],
+  'the subset alternates across parts instead of exhausting the first part');
+ assert.equal(ai.calls.length,4,'compose, two reviews, one repair call');
+ assert.match(result.answer,/an a priori category\. \[S1, S2\]/,
+  'a repaired claim ships with both citations');
+ assert.deepEqual(result.questionParts.map(part=>part.claimIds),
+  [['P1-C1','P1-C2','P1-C3'],['P2-C1','P2-C2','P2-C3']],
+  'the six repaired claims ship; the two unrepaired ones keep the '+
+  'fail-closed treatment — a claim citing two book groups with only '+
+  'one group’s support decided is omitted, not shipped narrowed');
+ assert.doesNotMatch(result.answer,/a category of relation\./);
 });
 
 test('a part missing from the review contract ships as an uncovered gap (B8-5)',async()=>{
@@ -5477,6 +5652,17 @@ test('a part missing from the review contract ships as an uncovered gap (B8-5)',
   'the uncovered part is capped at partial completeness');
  assert.match(result.answer,/Hume explains causal expectation/,
   'the uncovered part’s draft still ships — labeled, not hidden');
+ // Batch 10 (B10-1): no mechanism stands behind the gap part's
+ // citations — it was excluded from the review and the fallback
+ // builder produced no entries for it — so both claims are untraced
+ // and their markers are stripped. The prose, the partial cap, and
+ // the unverified label are unchanged.
+ assert.deepEqual(result.trace.strippedCitations,
+  {count:2,claimIds:['P1-C1','P1-C2'],partIds:['P1'],passes:1});
+ assert.doesNotMatch(result.answer,/\[S1\]/,
+  'no shipped claim carries a marker without an evidence entry');
+ assert.match(result.answer,/Kant treats causality as a category of relation\. \[S2\]/,
+  'the reviewed part’s citations are untouched');
 });
 
 test('inheritance never attaches to a heading-only claim (B8-6a)',async()=>{
@@ -5794,6 +5980,104 @@ test('attachScaffoldingToPart refuses a link onto the pool that failed the rejec
   'a target with no substantial text match to the rejection attaches normally');
 });
 
+test('attachScaffoldingToPart records a reason for every refused or skipped link (batch 10 B10-5)',()=>{
+ const part={answers:[
+   {claimId:'P1-C1',text:'First established position.',sourceIds:['S1'],
+    renderedText:'First established position. [S1]'},
+   {claimId:'P1-C2',text:'A framing restatement.',sourceIds:[],
+    renderedText:'A framing restatement.'},
+   {claimId:'P1-C3',text:'A second framing restatement.',sourceIds:[],
+    renderedText:'A second framing restatement.'},
+   {claimId:'P1-C4',text:'An uncited sibling offered as a support.',sourceIds:[],
+    renderedText:'An uncited sibling offered as a support.'},
+   {claimId:'P1-C5',text:'A cited claim the draft citations never named.',sourceIds:['S2'],
+    renderedText:'A cited claim the draft citations never named. [S2]'},
+   {claimId:'P1-C6',text:'A cited claim with no evidence entries.',sourceIds:['S3'],
+    renderedText:'A cited claim with no evidence entries. [S3]'}],
+  evidence:[{sourceId:'S1',claimId:'P1-C1',point:'First established position.',
+   quote:'Verbatim span text.',anchorQuote:'Verbatim span text.',start:0,end:18}]};
+ const result=attachScaffoldingToPart(part,[
+  {claimId:'P1-C9',supportClaimIds:['P1-C1']},
+  {claimId:'P1-C1',supportClaimIds:['P1-C1']},
+  {claimId:'P1-C2',supportClaimIds:['P1-C9']},
+  {claimId:'P1-C2',supportClaimIds:['P1-C4']},
+  {claimId:'P1-C2',supportClaimIds:['P1-C5']},
+  {claimId:'P1-C2',supportClaimIds:['P1-C6']},
+  {claimId:'P1-C2',supportClaimIds:[]},
+  {claimId:'P1-C2',supportClaimIds:['P1-C1']},
+  {claimId:'P1-C3',supportClaimIds:['P1-C1']}],
+  {citedIds:new Set(['P1-C1','P1-C6'])});
+ assert.equal(result.invalidLinks,5,'only the five support refusals count');
+ assert.deepEqual(result.attached.map(item=>item.claimId),['P1-C2','P1-C3']);
+ assert.deepEqual(result.invalidLinkDetails,[
+  {claimId:'P1-C9',reason:'target-missing'},
+  {claimId:'P1-C1',reason:'target-already-cited'},
+  {claimId:'P1-C2',reason:'invalid-support',supportClaimIds:['P1-C9'],
+   failedSupportId:'P1-C9',condition:'support-not-found'},
+  {claimId:'P1-C2',reason:'invalid-support',supportClaimIds:['P1-C4'],
+   failedSupportId:'P1-C4',condition:'support-uncited'},
+  {claimId:'P1-C2',reason:'invalid-support',supportClaimIds:['P1-C5'],
+   failedSupportId:'P1-C5',condition:'support-not-draft-cited'},
+  {claimId:'P1-C2',reason:'invalid-support',supportClaimIds:['P1-C6'],
+   failedSupportId:'P1-C6',condition:'support-no-evidence'},
+  {claimId:'P1-C2',reason:'invalid-support',supportClaimIds:[],
+   condition:'support-list-empty'}],
+  'every non-attaching link is explained, in proposal order');
+ const counted=result.invalidLinkDetails.filter(detail=>
+  !['target-missing','target-already-cited'].includes(detail.reason));
+ assert.equal(counted.length,result.invalidLinks,
+  'counted reasons sum to the invalidLinks counter');
+});
+
+test('every counted scaffolding refusal in a build carries a detail (batch 10 B10-5)',async()=>{
+ // One part whose reviewer proposes five links: one attaches, one is a
+ // duplicate, one targets a cited claim, one has an empty support
+ // list, and one names a claim this same review rejects as its
+ // support. The trace must explain all four refusals and the counted
+ // reasons must sum to invalidLinks.
+ const mixedReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C3','P1-C4'],
+    scaffoldingLinks:[
+     {claimId:'P1-C3',supportClaimIds:['P1-C1']},
+     {claimId:'P1-C3',supportClaimIds:['P1-C1']},
+     {claimId:'P1-C1',supportClaimIds:['P1-C1']},
+     {claimId:'P1-C3',supportClaimIds:[]},
+     {claimId:'P1-C4',supportClaimIds:['P1-C2']}]}],
+   claims:payload.claims.map(claim=>{
+    const rejected=claim.claimId==='P1-C2';
+    return {claimId:claim.claimId,status:rejected?'partial':'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,
+      status:rejected?'partial':'answered',
+      spanIds:rejected?[]:[claim.sourceEvidence
+       .find(item=>item.sourceId===sourceId).spanIds[0]]}))};
+   })})};
+ };
+ const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+   'Kant treats causality as a category supplied by the understanding itself. [S2]\n'+
+   'Together, the two accounts treat causal connection as something the mind contributes rather than a power read off from events.\n'+
+   'The contrast between the two positions frames the question of causal necessity.'),
+  mixedReview]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant each explain causal necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],
+  {plan:scaffoldingPlan,catalog,trace:true});
+ const scaffolding=result.trace.reviewScaffolding;
+ assert.equal(scaffolding.invalidLinks,4);
+ assert.ok(Array.isArray(scaffolding.invalidLinkDetails),
+  'invalidLinkDetails is present whenever invalidLinks > 0');
+ const counted=scaffolding.invalidLinkDetails.filter(detail=>
+  !['target-missing','target-already-cited'].includes(detail.reason));
+ assert.equal(counted.length,scaffolding.invalidLinks,
+  'the counted refusal reasons sum to the invalidLinks counter');
+ assert.deepEqual(new Set(counted.map(detail=>detail.reason)),
+  new Set(['duplicate-link','target-not-uncited','support-list-invalid','invalid-support']),
+  'parse-level and attach-level refusals are both explained');
+ assert.deepEqual(scaffolding.attached,
+  [{partId:'P1',claimId:'P1-C3',supportClaimIds:['P1-C1'],sourceIds:['S1']}],
+  'the one well-formed link still attaches');
+});
+
 test('review prompt forbids linking a restatement of a claim being rejected (batch 9 B9-3)',()=>{
  assert.match(REVIEW_PROMPT,/Do not link an uncited claim that restates, in different words, a claim whose citations you are rejecting in this review/);
 });
@@ -5861,6 +6145,55 @@ test('findUntracedCitedClaims lists cited claims no mechanism covers (batch 9 B9
   reviewLinked:new Set(['P1|P1-C4']),
   secondLook:new Set(['P2|P2-C1'])}),[],
   'a fully mechanized answer has an empty untraced list');
+});
+
+test('stripUntracedCitedClaims demotes claims to the context shape, prose intact (batch 10 B10-1)',()=>{
+ const parts=[{partId:'P1',answers:[
+   {claimId:'P1-C1',text:'A validated claim.',sourceIds:['S1'],
+    renderedText:'A validated claim. [S1]'},
+   {claimId:'P1-C2',text:'An untraced claim.',sourceIds:['S1'],
+    renderedText:'An untraced claim. [S1]'}]},
+  {partId:'P2',answers:[
+   {claimId:'P2-C1',text:'An untouched claim.',sourceIds:['S2'],
+    renderedText:'An untouched claim. [S2]'}]}];
+ const stripped=stripUntracedCitedClaims(parts,[{partId:'P1',claimId:'P1-C2'}]);
+ assert.deepEqual(stripped,{claimIds:['P1-C2'],partIds:['P1']});
+ assert.deepEqual(parts[0].answers[1].sourceIds,[]);
+ assert.equal(parts[0].answers[1].renderedText,'An untraced claim.',
+  'renderedText becomes the bare prose — the retained-context shape');
+ assert.equal(parts[0].answers[1].text,'An untraced claim.','the prose itself is unchanged');
+ assert.deepEqual(parts[0].answers[0].sourceIds,['S1'],'siblings are untouched');
+ assert.deepEqual(parts[1].answers[0].sourceIds,['S2'],'other parts are untouched');
+});
+
+test('the strip runs to a fixpoint: a sibling whose entries rode on the stripped source is stripped in pass 2 (batch 10 B10-1)',()=>{
+ // The coupling shape: C2 carries an S1 evidence entry, but its own
+ // rendered text carries no marker — the part's only S1 citation in
+ // the rendered text is C1's. No current mechanism produces this
+ // desync (every attach path sets a claim's entries and its marker
+ // together), so the cascade is pinned here at the driver level, on
+ // the same function the build calls: when C1 is stripped, S1 leaves
+ // the part's cited sources, C2's entry loses the eligibility that
+ // made it shippable, and C2 is stripped in the second pass. C3,
+ // cited on its own source with its own marker, is untouched.
+ const parts=[{partId:'P1',answers:[
+   {claimId:'P1-C1',text:'The claim review never validated.',sourceIds:['S1'],
+    renderedText:'The claim review never validated. [S1]'},
+   {claimId:'P1-C2',text:'A claim whose entry rode on the shared source.',sourceIds:['S1'],
+    renderedText:'A claim whose entry rode on the shared source.'},
+   {claimId:'P1-C3',text:'A claim cited on its own source.',sourceIds:['S2'],
+    renderedText:'A claim cited on its own source. [S2]'}],
+  evidence:[
+   {claimId:'P1-C2',sourceId:'S1',quote:'Shared source span.'},
+   {claimId:'P1-C3',sourceId:'S2',quote:'Own source span.'}]}];
+ const result=stripUntracedCitedClaimsToFixpoint(parts,
+  [{partId:'P1',claimId:'P1-C1'}]);
+ assert.deepEqual(result,{claimIds:['P1-C1','P1-C2'],partIds:['P1'],passes:2});
+ assert.deepEqual(parts[0].answers[1].sourceIds,[],'the coupled sibling is demoted in pass 2');
+ assert.equal(parts[0].answers[1].renderedText,
+  'A claim whose entry rode on the shared source.');
+ assert.deepEqual(parts[0].answers[2].sourceIds,['S2'],'the self-cited claim is untouched');
+ assert.equal(parts[0].answers[2].renderedText,'A claim cited on its own source. [S2]');
 });
 
 test('a gate-repair adoption records its re-review decisions and keeps verified status (batch 9 B9-5)',async()=>{
