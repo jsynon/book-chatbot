@@ -3036,10 +3036,15 @@ test('complete Markdown-wrapped numeric part headings are normalized safely',asy
 });
 
 test('Markdown numeric headings with a skipped part number remain malformed',async()=>{
- const ai=makeAI([answer('### PART 2\nThis cannot be safely assigned to P1. [S1]')]);
+ // Batch 6 (B6-4): an invalid heading sequence earns one compose retry;
+ // when the retry is malformed the same way, the original failure stands.
+ const malformed=answer('### PART 2\nThis cannot be safely assigned to P1. [S1]');
+ const ai=makeAI([malformed,malformed]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,1);
+ assert.equal(ai.calls.length,2,'the initial compose and its one retry');
+ assert.deepEqual(result.trace.composeRetry,
+  {attempted:true,reason:'model-output-invalid-format',applied:false});
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.failureCode,'model-output-invalid-format');
  assert.deepEqual(result.trace.formatRecoveries,[{stage:'compose',code:'invalid-numeric-part-heading-sequence',
@@ -3945,12 +3950,17 @@ test('a one-part uncited answer without its heading is recovered and sent to rev
 });
 
 test('a composer response truncated by the model is not reviewed or shown as complete',async()=>{
- const ai=makeAI([{choices:[{finish_reason:'length',message:{content:
-  'PART P1\nThe simulation hypothesis is a possibility because'}}]}]);
+ // Batch 6 (B6-4): a truncated compose earns one retry; a second
+ // truncation fails with the original code, exactly as the first did.
+ const truncated={choices:[{finish_reason:'length',message:{content:
+  'PART P1\nThe simulation hypothesis is a possibility because'}}]};
+ const ai=makeAI([truncated,truncated]);
  const result=await composeEvidenceAnswer('Are we living in a simulation?',[],ai,[],{
-  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question:'Are we living in a simulation?'}]},catalog
+  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question:'Are we living in a simulation?'}]},catalog,trace:true
  });
- assert.equal(ai.calls.length,1);
+ assert.equal(ai.calls.length,2,'the initial compose and its one retry');
+ assert.deepEqual(result.trace.composeRetry,
+  {attempted:true,reason:'answer-output-truncated',applied:false});
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.failureCode,'answer-output-truncated');
  assert.equal(result.answer,'I could not complete a reliable answer this time. Please try again.');
@@ -4330,8 +4340,11 @@ test('assembly audit repair can complete an unfinished lead-in ending',async()=>
   plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question:'Are we living in a simulation?'}]},
   catalog,trace:true});
  assert.equal(ai.calls.length,4,'compose, review, one audit repair, and its re-review');
+ // Batch 6 (B6-5): the same colon ending is also a dangling list
+ // introduction; the one repair resolves both violations.
  assert.deepEqual(result.trace.assemblyAudit,
-  {violations:[{partId:'P1',type:'unfinished-ending'}],action:'repair-applied'});
+  {violations:[{partId:'P1',type:'dangling-list-introduction'},
+    {partId:'P1',type:'unfinished-ending'}],action:'repair-applied'});
  assert.notEqual(result.outcome,'generation-failed',
   'a repaired ending ships instead of being discarded by the legacy check');
  assert.equal(result.failureCode,undefined);
@@ -4346,13 +4359,15 @@ test('assembly audit repair can complete an unfinished lead-in ending',async()=>
 // --- Batch 5: Q1 claim linkage, A1 second look, R1 synthesis review,
 // C assembly seams + representation hardening, B speaker-cue scoping,
 // D closing synthesis, L2/L3/L4/L6 latency-and-repair mechanics.
+// Batch 6 updates in this section: B6-1 second-look coverage standard
+// and furniture exclusion, B6-3 R1 removal, B6-4 compose retry,
+// B6-5 seam taxonomy round 2.
 // All fixtures below are invented for these tests.
 
-test('batch 5 prompt additions: synthesis review guidance and closing synthesis',()=>{
- assert.match(REVIEW_PROMPT,/synthesisCoverage/);
- assert.match(REVIEW_PROMPT,/contextClaimLinks/);
- assert.match(REVIEW_PROMPT,/tightly paraphrases a supplied span/);
- assert.match(REVIEW_PROMPT,/prefer the span that states the claim's proposition/);
+test('batch 6 prompt state: R1 synthesis guidance removed, allowances and closing synthesis kept (B6-3)',()=>{
+ assert.doesNotMatch(REVIEW_PROMPT,/synthesisCoverage/);
+ assert.doesNotMatch(REVIEW_PROMPT,/contextClaimLinks/);
+ assert.doesNotMatch(REVIEW_PROMPT,/linkedEvidence/);
  assert.match(REVIEW_PROMPT,/independent background and synthesis may remain uncited/,
   'the general-knowledge allowance language is unchanged');
  assert.match(COMPOSER_PROMPT,/Close each part with one sentence stating what the part established/);
@@ -4380,6 +4395,8 @@ test('context-claim second look cites a retained claim that verifiably paraphras
  assert.equal(result.trace.contextSecondLook[0].partId,'P1');
  assert.equal(result.trace.contextSecondLook[0].claimId,'P1-C2');
  assert.deepEqual(result.trace.contextSecondLook[0].sourceIds,['S1']);
+ assert.equal(result.trace.contextSecondLook[0].coverageRatio,0.917,
+  'batch 6 (B6-1): the trace records the union coverage ratio per attachment');
  assert.match(result.answer,/survey chain and a tin of well water\. \[S1\]/,
   'the passing claim ships with its citation attached');
  assert.ok(result.evidenceMap.some(item=>item.claimId==='P1-C2'),
@@ -4390,16 +4407,128 @@ test('context-claim second look cites a retained claim that verifiably paraphras
   'the general-knowledge allowance is intact for the failing claim');
 });
 
-test('synthesis parts link a tight paraphrase through reviewer contextClaimLinks (R1)',async()=>{
+test('second look no longer attaches a one-leg synthesis claim (B6-1)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Vidal crossed the salt flats, and the crossing shows that distant empires decline when luxury corrupts their citizens.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ // The salt-flats span shares three content terms with the claim, which
+ // passed the old per-span bar; the claim's other leg (empires, luxury,
+ // decline) is in no span, so the union covers 3 of 11 terms — under
+ // the batch-6 half-coverage bar the claim honestly stays context.
+ assert.equal(result.trace.contextSecondLook,undefined);
+ assert.ok(!result.evidenceMap.some(item=>item.claimId==='P1-C2'));
+ assert.doesNotMatch(result.answer,/corrupts their citizens\. \[S/);
+ assert.match(result.answer,/corrupts their citizens\./,
+  'the claim still ships, uncited, as retained context');
+});
+
+test('second look attaches both sources when together they cover a synthesis claim (B6-1)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'Vidal learned that a horizon can recede as she advances, while the geese hold their course by the brightest star patterns.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(result.trace.contextSecondLook.length,1);
+ assert.equal(result.trace.contextSecondLook[0].claimId,'P1-C2');
+ assert.deepEqual(result.trace.contextSecondLook[0].sourceIds,['S1','S2'],
+  'neither side alone covers half the claim; the union of both does');
+ assert.equal(result.trace.contextSecondLook[0].coverageRatio,0.833);
+ assert.match(result.answer,/brightest star patterns\. \[S1, S2\]/);
+});
+
+test('second look treats a thrice-repeated sentence as page furniture (B6-1)',async()=>{
+ const headerSentence='The meridian survey party recorded the salt flats crossings in a leather ledger bound with brass corners and kept beside the survey chain.';
+ const furnitureSource={id:'S1',bookId:'501',title:batch4Catalog[501],page:12,
+  url:'https://example.test/salt-meridian#page=12',
+  text:['I learned that a horizon can recede exactly as fast as a walker advances toward it.',
+   headerSentence,
+   'The cook fed the mules at dusk and mended the torn canvas of the largest tent before the wind rose over the flats that night.',
+   headerSentence,
+   'A cold rain began near midnight and the guides argued quietly about the northern route until the fire burned down to ash.',
+   headerSentence].join(' '),
+  preview:'I learned that a horizon can recede.'};
+ const ai=makeAI([answer('PART P1\nThe narrator learned that a horizon can recede exactly as fast as a walker advances toward it. [S1]\n'+
+   'The survey party recorded the salt flats crossings in a leather ledger kept beside the chain.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [furnitureSource],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ // The repeated sentence is the only span covering the claim, and it
+ // would have passed the old bar; as furniture it is ineligible, so
+ // the claim stays uncited instead of citing a running header.
+ assert.equal(result.trace.contextSecondLook,undefined);
+ assert.ok(!result.evidenceMap.some(item=>item.claimId==='P1-C2'));
+ assert.doesNotMatch(result.answer,/kept beside the chain\. \[S1\]/);
+});
+
+test('second look ignores spans too short to state a proposition (B6-1)',async()=>{
+ const shortSpanSource={id:'S1',bookId:'501',title:batch4Catalog[501],page:12,
+  url:'https://example.test/salt-meridian#page=12',
+  text:'The well at the third station held sweet water through the driest month of the year, and the guides rationed it carefully among the mules and the survey party, filling each tin slowly so that none of the precious store would spill on the stones beside the trough. The flats gleam white.',
+  preview:'The well at the third station held sweet water.'};
+ const ai=makeAI([answer('PART P1\nThe well at the third station held sweet water through the driest month of the year. [S1]\n'+
+   'The flats gleam white.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [shortSpanSource],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ // The 22-character fragment is the claim's only lexical match; under
+ // the old bar it attached. A fragment that short is ineligible now.
+ assert.equal(result.trace.contextSecondLook,undefined);
+ assert.ok(!result.evidenceMap.some(item=>item.claimId==='P1-C2'));
+ assert.doesNotMatch(result.answer,/gleam white\. \[S1\]/);
+});
+
+test('a malformed first compose is retried once and the retried draft ships (B6-4)',async()=>{
+ const ai=makeAI([{},
+  answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,3,'two compose attempts and the review');
+ assert.deepEqual(result.trace.composeRetry,
+  {attempted:true,reason:'model-output-invalid-format',applied:true});
+ assert.notEqual(result.outcome,'generation-failed');
+ assert.match(result.answer,/Ines Vidal describes learning/);
+});
+
+test('a compose call that hits the inference deadline is retried once and ships (B6-4)',async()=>{
+ const deadline=Object.assign(new Error('Inference deadline exceeded'),
+  {stage:'compose',code:'inference-deadline-exceeded'});
+ const ai=makeAI([deadline,
+  answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,3,'two compose attempts and the review');
+ assert.deepEqual(result.trace.composeRetry,
+  {attempted:true,reason:'inference-deadline-exceeded',applied:true});
+ assert.notEqual(result.outcome,'generation-failed');
+ assert.match(result.answer,/Ines Vidal describes learning/);
+});
+
+test('a healthy compose is called exactly once with no retry recorded (B6-4)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2,'one compose call and one review call');
+ assert.equal(result.trace.composeRetry,undefined);
+});
+
+test('an uncited claim in a multi-source part is linked only by the deterministic second look (B6-3/B6-1)',async()=>{
  let packetPart;
  const linkingReview=(_model,{messages})=>{
   const payload=parsePayload(messages);
   packetPart=payload.parts[0];
-  const s2Span=packetPart.evidence.find(entry=>entry.id==='S2').spans[0].spanId;
   const claim=payload.claims[0];
+  // The reviewer still offers a contextClaimLinks entry, as it could
+  // under batch 5's R1. Batch 6 removed that mechanism: the entry must
+  // change nothing, and only the deterministic second look may attach
+  // a citation to the uncited paraphrase.
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:['P1-C3'],
-    contextClaimLinks:[{claimId:'P1-C2',sourceId:'S2',spanIds:[s2Span]}]}],
+    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:['P1-C2','P1-C3'],
+    contextClaimLinks:[{claimId:'P1-C2',sourceId:'S2',spanIds:['S2-Q1']}]}],
    claims:[{claimId:claim.claimId,status:'answered',
     sources:[{sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
  };
@@ -4409,24 +4538,24 @@ test('synthesis parts link a tight paraphrase through reviewer contextClaimLinks
   linkingReview]);
  const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
   [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
- assert.equal(packetPart.synthesisCoverage,true,'the multi-source part is flagged');
- assert.equal(packetPart.evidence.find(entry=>entry.id==='S2').linkedEvidence,true,
-  'the packet extends to the linked-but-uncited source');
- assert.equal(packetPart.evidence.find(entry=>entry.id==='S1').linkedEvidence,undefined,
-  'draft-cited evidence is not marked as linked');
- const linked=result.trace.reviewContract.reviewDecisions
-  .find(decision=>decision.claimId==='P1-C2');
- assert.equal(linked?.contextClaimLink,true);
- assert.equal(linked?.accepted,true);
+ assert.equal(packetPart.synthesisCoverage,undefined,
+  'the review packet no longer flags synthesis parts');
+ assert.ok(packetPart.evidence.every(entry=>entry.linkedEvidence===undefined),
+  'the packet no longer extends to linked-but-uncited sources');
+ assert.ok(!result.trace.reviewContract.reviewDecisions
+  .some(decision=>decision.contextClaimLink),
+  'no review decision carries a reviewer-supplied link');
+ assert.deepEqual(result.trace.contextSecondLook?.map(entry=>entry.claimId),['P1-C2'],
+  'the paraphrase is attached by the deterministic second look instead');
  assert.match(result.answer,/brightest patterns\. \[S2\]/,
-  'the linked paraphrase ships with its citation');
+  'the second-look paraphrase ships with its citation');
  assert.ok(result.evidenceMap.some(item=>item.claimId==='P1-C2'));
  assert.ok(!result.evidenceMap.some(item=>item.claimId==='P1-C3'),
   'a genuinely general claim in the same part remains context');
  assert.match(result.answer,/Patience is a virtue/);
 });
 
-test('contextClaimLinks are ignored outside flagged synthesis parts (R1 guardrail)',async()=>{
+test('reviewer contextClaimLinks change nothing in a single-source part either (B6-3)',async()=>{
  let packetPart;
  const linkingReview=(_model,{messages})=>{
   const payload=parsePayload(messages);
@@ -4447,7 +4576,9 @@ test('contextClaimLinks are ignored outside flagged synthesis parts (R1 guardrai
   'a single-source expository part is not flagged');
  assert.ok(!result.trace.reviewContract.reviewDecisions
   .some(decision=>decision.claimId==='P1-C2'&&decision.contextClaimLink),
-  'classification for single-source parts is unchanged by the R1 mechanism');
+  'no decision carries a reviewer-link flag');
+ assert.deepEqual(result.trace.contextSecondLook?.map(entry=>entry.claimId),['P1-C2'],
+  'the claim is cited only because the deterministic second look attaches it');
 });
 
 test('claimTextAppears no longer passes absent claims (C)',()=>{
@@ -4481,6 +4612,67 @@ test('assembly audit flags an unbalanced bold seam in prose (C)',async()=>{
   [{partId:'P1',type:'unbalanced-bold'}]);
  assert.equal(result.trace.assemblyAudit.action,'downgraded');
  assert.equal(result.questionParts[0].answerStatus,'partial');
+});
+
+test('assembly audit flags list markers spliced into a prose paragraph (B6-5)',async()=>{
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'The crossing teaches patience. * Patience under a wide sky. * Humility before distance.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
+ assert.deepEqual(result.trace.assemblyAudit.violations,
+  [{partId:'P1',type:'inline-list-marker-splice'}]);
+ assert.equal(result.trace.assemblyAudit.action,'downgraded');
+ assert.equal(result.questionParts[0].answerStatus,'partial');
+});
+
+test('assembly audit flags a part ending on a list introduction with no list (B6-5)',async()=>{
+ const twoPartPlan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Ines Vidal',role:'primary',bookIds:['501']},
+   {label:'Aaron Feld',role:'primary',bookIds:['502']}],
+  parts:[{id:'P1',question:'What does Vidal describe learning from crossing the salt flats?',
+    sourceBookIds:['501'],searchQueries:['salt flats horizon'],candidateSourceIds:['S1']},
+   {id:'P2',question:'What does Feld describe about geese finding direction?',
+    sourceBookIds:['502'],searchQueries:['geese stars'],candidateSourceIds:['S2']}],
+  queries:['salt flats horizon','geese stars']};
+ const perPartReview=review([['P1','answered'],['P2','answered']]);
+ const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'The primary shifts include:\n'+
+   'PART P2\nGeese read the stars on clear nights and hold their course by the brightest patterns. [S2]'),
+  perPartReview,perPartReview]);
+ const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
+  [vidalSalt,feldGeese],ai,[],{plan:twoPartPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,4,'compose, two per-part reviews, and the failed audit repair attempt');
+ assert.deepEqual(result.trace.assemblyAudit.violations,
+  [{partId:'P1',type:'dangling-list-introduction'}]);
+ assert.equal(result.trace.assemblyAudit.action,'downgraded');
+ assert.equal(result.questionParts[0].answerStatus,'partial');
+ assert.equal(result.questionParts[1].answerStatus,'answered',
+  'the clean part is untouched by the other part’s seam');
+});
+
+test('assembly audit flags a part opening on a lowercase fragment (B6-5)',async()=>{
+ const ai=makeAI([answer('PART P1\nthe horizon recedes exactly as fast as a walker advances toward it, and the crossing teaches patience. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
+ assert.deepEqual(result.trace.assemblyAudit.violations,
+  [{partId:'P1',type:'lowercase-segment-opening'}]);
+ assert.equal(result.trace.assemblyAudit.action,'downgraded');
+ assert.equal(result.questionParts[0].answerStatus,'partial');
+});
+
+test('legitimate lists, bold lead-ins, and mid-part colons stay seam-free (B6-5)',async()=>{
+ const ai=makeAI([answer('PART P1\n**Field summary:** Ines Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
+   'The lessons are plain:\n- Cross slowly\n- Watch the horizon\n'+
+   'Vidal crossed the salt flats in her nineteenth year, carrying her father’s survey chain and a tin of well water.'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
+  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
+ assert.equal(ai.calls.length,2,'no audit repair runs for a seam-free answer');
+ assert.deepEqual(result.trace.assemblyAudit,{violations:[],action:'none'});
 });
 
 test('person name matching tolerates middle initials but not different people (B)',()=>{

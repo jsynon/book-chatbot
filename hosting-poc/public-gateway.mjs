@@ -53,7 +53,23 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     // Keep only an exact suffix of the verified span. This handles common
     // OCR page furniture without rewriting or synthesizing source wording.
     const header=/^(?:(?:[A-Z][A-Z0-9'’:-]*\s+){2,}[A-Z][A-Z0-9'’:-]*\s*\/\s*\d{1,4}|\d{1,4}\s+(?:[A-Z][A-Z0-9'’:-]*\s+){2,})\s*/u.exec(quote);
-    return header?quote.slice(header[0].length).trim():quote.trim();
+    if(header)return quote.slice(header[0].length).trim();
+    // Batch 6 (B6-2): the mixed-case running-header form — title words, a
+    // standalone page number, then author-name words (observed in phase
+    // 2 as "The Prince 9 Nicolo Machiavelli the ruling power", which the
+    // all-caps patterns above cannot see). Kept narrow so ordinary prose
+    // openings cannot match: at least two capitalized title words before
+    // the number, at least two capitalized name words after it, a
+    // bounded prefix, and a remainder that begins sentence text. Only
+    // the exact suffix survives, exactly as above.
+    const mixed=/^((?:[A-Z][\p{L}'’-]*|of|on|the|and|de|in)(?:\s+(?:[A-Z][\p{L}'’-]*|of|on|the|and|de|in)){1,5})\s+(\d{1,4})\s+([A-Z][\p{L}'’.-]*(?:\s+[A-Z][\p{L}'’.-]*){1,3})\s+/u.exec(quote);
+    if(mixed&&mixed[0].length<=64){
+      const titleCaps=(mixed[1].match(/(?:^|\s)[A-Z]/g)||[]).length;
+      const remainder=quote.slice(mixed[0].length);
+      if(titleCaps>=2&&remainder.length>=8&&/^\p{L}/u.test(remainder))
+        return remainder.trim();
+    }
+    return quote.trim();
   };
   const usefulQuote=value=>{
     const quote=removeLeadingRunningHeader(value);
@@ -116,13 +132,20 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     // excerpts from that same claim are shown only when they are adjacent and
     // can be joined into one continuous, source-exact passage. A merely related
     // second quote should not dilute the primary highlight.
+    const claimKey=item=>item.claimId?item.partId+'|'+item.claimId:'span:'+item.index;
+    // Batch 6 (B6-2): the quote dedupe is scoped per claim. One accepted
+    // span can be the evidence for two distinct claims; dropping the
+    // second claim's only candidate orphaned it from the highlights —
+    // in phase 2, source-level linkage was 100% while claim-level
+    // linkage pooled 0.80, concentrated in exactly these shared-span
+    // claims. Repeats for the SAME claim still dedupe.
     const seenQuotes=new Set();
     const distinctCandidates=candidates.filter(item=>{
-      if(seenQuotes.has(item.quote))return false;
-      seenQuotes.add(item.quote);return true;
+      const seenKey=claimKey(item)+'\n'+item.quote;
+      if(seenQuotes.has(seenKey))return false;
+      seenQuotes.add(seenKey);return true;
     });
     const sourceText=String(sourceTexts?.[id]||'');
-    const claimKey=item=>item.claimId?item.partId+'|'+item.claimId:'span:'+item.index;
     const selected=[],selectedClaims=new Map();
     for(const item of distinctCandidates){
       const key=claimKey(item);
@@ -137,9 +160,10 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       }
       // Batch 5 (Q1): the distinct-claim cap rises from 3 to 6 per source.
       // At 3 it bound hard on single-source answers — exactly the answers
-      // whose claims most need their accepted spans surfaced. The outer
-      // bound is unchanged (six cited pages, best excerpt per claim plus
-      // adjacent joins), so a page's highlight block stays bounded.
+      // whose claims most need their accepted spans surfaced. This
+      // per-source claim cap stays 6; batch 6 raises the caller's outer
+      // cited-page bound from 6 to 10, so a page's highlight block stays
+      // bounded while more cited pages can carry their claims' linkage.
       if(!selectedClaims.has(key)&&selectedClaims.size>=6)continue;
       selected.push(item);
       selectedClaims.set(key,count+1);
@@ -163,7 +187,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
     }
     return [id,merged];
   }));
-  // The six-item cap applies to cited pages, not to individual approved
+  // The limit cap applies to cited pages, not to individual approved
   // excerpts. Keep up to three exact spans per page so one citation can
   // expose complementary support for the same claim. The legacy `quote`
   // field remains the best-ranked excerpt; `quotes` preserves claim links.
@@ -4526,7 +4550,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       output.questionParts.some(part=>Array.isArray(part?.claimIds))?
       new Set(output.questionParts.flatMap(part=>part.claimIds||[])):null;
     const evidenceHighlights=selectPublicEvidenceHighlights(output.answer,
-      output.citations||[],output.evidenceMap||[],6,data.question,sourceTexts,
+      output.citations||[],output.evidenceMap||[],10,data.question,sourceTexts,
       shippedClaimIds);
     // Suggestions only populate the next question; they are not model claims
     // or an implicit extra billable AI call. Fresh retrieval occurs each turn.

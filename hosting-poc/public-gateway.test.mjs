@@ -2317,6 +2317,63 @@ test('public highlights surface up to six distinct claims from one source (batch
  assert.equal(highlights[0].quotes.length,4,
   'the old per-source cap of three claims would have dropped the fourth');
 });
+test('public highlights link every distinct claim that shares one accepted span (batch 6 B6-2)',()=>{
+ const source={id:'S1',title:'An Enquiry Concerning Human Understanding — David Hume',page:42};
+ const quote='All inferences from experience, therefore, are effects of custom, not of reasoning. Custom, then, is the great guide of human life.';
+ const firstPoint='Hume explains that inference from cause to effect comes from custom rather than reasoning.';
+ const secondPoint='Hume calls custom the great guide of human life.';
+ const answer=firstPoint+' '+secondPoint+' [S1]';
+ const highlights=selectPublicEvidenceHighlights(answer,[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:firstPoint,quote,quoteVerified:true},
+  {id:'S1',claimId:'P1-C2',partId:'P1',point:secondPoint,quote,quoteVerified:true}
+ ],6,'How does Hume explain inference?',{},new Set(['P1-C1','P1-C2']));
+ assert.equal(highlights.length,1);
+ assert.deepEqual(highlights[0].quotes.map(item=>item.claim_id).sort(),['P1-C1','P1-C2'],
+  'the shared span keeps a highlight link for each distinct claim, not just the first');
+ assert.ok(highlights[0].quotes.every(item=>item.quote===quote));
+});
+test('public highlights link claims on sources beyond the old six-page cap at the raised limit (batch 6 B6-2)',()=>{
+ const citations=[],map=[],claimIds=[],answerParts=[];
+ for(let n=1;n<=8;n++){
+  citations.push({id:'S'+n,title:'Work '+n+' — Author '+n,page:n});
+  const point='Claim number '+n+' states a distinct verified point about its subject.';
+  const quote='Passage number '+n+' gives the exact verified wording for its own distinct claim in full.';
+  map.push({id:'S'+n,claimId:'P1-C'+n,partId:'P1',point,quote,quoteVerified:true});
+  claimIds.push('P1-C'+n);
+  answerParts.push(point+' [S'+n+']');
+ }
+ const answer=answerParts.join(' ');
+ const highlights=selectPublicEvidenceHighlights(answer,citations,map,10,
+  'What do the sources say?',{},new Set(claimIds));
+ assert.equal(highlights.length,8,'all eight cited pages carry highlights at the raised cap');
+ assert.deepEqual(highlights.flatMap(item=>item.quotes.map(quote=>quote.claim_id)).sort(),
+  [...claimIds].sort(),'claims on pages seven and eight are linked, not capped away');
+ const capped=selectPublicEvidenceHighlights(answer,citations,map,6,
+  'What do the sources say?',{},new Set(claimIds));
+ assert.equal(capped.length,6,'the limit parameter still bounds the page count when set lower');
+});
+test('public highlights strip a mixed-case running header to the exact suffix (batch 6 B6-2)',()=>{
+ const source={id:'S1',title:'The Salt Meridian — Ines Vidal',page:12};
+ const point='Vidal describes a horizon receding as the walker advances.';
+ const remainder='the horizon recedes exactly as fast as a walker advances toward it and keeps receding beyond each ridge line.';
+ const quote='The Salt Meridian 12 Ines Vidal '+remainder;
+ const highlights=selectPublicEvidenceHighlights(point+' [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point,quote,quoteVerified:true}
+ ],6,'What does Vidal describe?',{},new Set(['P1-C1']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,remainder,
+  'the title, page number, and author name prefix is stripped, leaving the exact suffix');
+});
+test('public highlights leave an ordinary prose opening untouched (batch 6 B6-2)',()=>{
+ const source={id:'S1',title:'Collected Essays — A. Essayist',page:3};
+ const point='The essayist dates the pamphlet to the revolutionary year.';
+ const quote='In 1848 Marx published a pamphlet arguing that history moves through class struggle and material change over time.';
+ const highlights=selectPublicEvidenceHighlights(point+' [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point,quote,quoteVerified:true}
+ ],6,'When was the pamphlet published?',{},new Set(['P1-C1']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,quote,'a prose opening is not mistaken for a running header');
+});
 test('fingerprint packets are served from cache on repeat verification (batch 5 verification diet)',async()=>{
  const content='The real cause of this historical conflict was increased strength and fear among rival cities. The truce disagreements were immediate disputes.';
  const raw=new TextEncoder().encode(content);

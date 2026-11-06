@@ -135,7 +135,7 @@ test('public highlights omit nonadjacent secondary quotes for the same claim',()
   'Christianity is a destructive, life-hostile principle that emerged from resentment.');
 });
 
-test('repeated claim links do not crowd a distinct verified highlight off a source page',()=>{
+test('a shared span keeps a link per distinct claim without crowding out a distinct highlight (B6-2)',()=>{
  const citation={id:'S5',title:'An Enquiry Concerning Human Understanding — David Hume',
   page:24,url:'https://example.test/hume#page=24'};
  const custom='All inferences from experience, therefore, are effects of custom, not of reasoning. Custom, then, is the great guide of human life.';
@@ -150,8 +150,14 @@ test('repeated claim links do not crowd a distinct verified highlight off a sour
    {id:'S5',claimId:'P1-C2',partId:'P1',point:heatPoint,quote:heat,quoteVerified:true}
   ],1);
  const quotes=highlights[0].quotes.map(item=>item.quote);
- assert.equal(quotes.filter(quote=>quote===custom).length,1,
-  'the same source sentence keeps only its best-ranked claim association');
+ // Pre-batch-6 this fixture pinned the opposite contract (the shared
+ // quote kept only its best-ranked claim association). B6-2 scopes the
+ // dedupe per claim so every distinct claim sharing the span keeps its
+ // link; the client dedupes the repeated text at display time.
+ const sharedLinks=highlights[0].quotes.filter(item=>item.quote===custom);
+ assert.deepEqual(sharedLinks.map(item=>item.claim_id).sort(),
+  ['P1-C1','P1-C3','P2-C1'],
+  'each distinct claim sharing the span keeps its own highlight link');
  assert.ok(quotes.includes(heat),
   'a distinct approved example is available among the page excerpts');
  assert.equal(highlights[0].quotes.find(item=>item.quote===custom).point,inferencePoint);
