@@ -1106,7 +1106,7 @@ test('named-author comparison repairs an omitted side from a submitted source an
   assert.match(input.messages[0].content,/exactly two developed paragraphs/);
   assert.match(input.messages[0].content,/120–180 words/);
   return {choices:[{finish_reason:'stop',message:{content:
-   'Kierkegaard describes faith through the paradox of the individual’s absolute relation to God. The individual may stand above the ethical universal, though Kierkegaard treats this as a terrifying exception rather than a general license to disregard ethics. His focus is the believer’s inward responsibility before God, which cannot be reduced to a public rule or explained away by a rational system [S2].\n\nShestov attacks the authority of universal and necessary truths, arguing that reason can make human beings accept constraint as inevitable. He calls for a struggle against Necessity so that freedom may be recovered beyond reason and knowledge [S1]. The difference in these passages is one of emphasis: Kierkegaard centers faith’s paradoxical relation between the individual and God, while Shestov emphasizes revolt against reason’s claim to define what is possible. This comparison synthesizes the two texts; neither passage presents a direct debate between the authors [S1, S2].'}}],usage:{neurons:5}};
+   'Kierkegaard describes faith through the paradox of the individual’s absolute relation to God [S2]. The individual may stand above the ethical universal, though Kierkegaard treats this as a terrifying exception rather than a general license to disregard ethics [S2]. His focus is the believer’s inward responsibility before God, which cannot be reduced to a public rule or explained away by a rational system [S2].\n\nShestov attacks the authority of universal and necessary truths, arguing that reason can make human beings accept constraint as inevitable [S1]. He calls for a struggle against Necessity so that freedom may be recovered beyond reason and knowledge [S1]. The difference in these passages is one of emphasis: Kierkegaard centers faith’s paradoxical relation between the individual and God, while Shestov emphasizes revolt against reason’s claim to define what is possible. This comparison synthesizes the two texts; neither passage presents a direct debate between the authors [S1, S2].'}}],usage:{neurons:5}};
  }};
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(calls.length,4);
@@ -1132,7 +1132,7 @@ test('a partial comparison with both sides supported uses the existing compariso
  ];
  const calls=[];
  const draft='Aristotle describes political science as pursuing the highest good achievable by action, generally understood as happiness [S1]. This gives political inquiry a stated end.\n\nHobbes describes the sovereign as acting for common peace and safety [S2]. This identifies what public power is to secure.\n\nThe accounts differ in emphasis.';
- const expanded='Aristotle describes political science as aiming at the highest good achievable by action, generally understood as happiness [S1]. The passage presents political inquiry through the end it should serve. That purpose gives the account its central criterion for judging civic institutions and action. It grounds the account in a purpose rather than in a specific enforcement mechanism.\n\nHobbes describes the sovereign as acting for common peace and safety [S2]. His passage focuses on the authority responsible for securing those conditions. Read together, the excerpts contrast an account framed by its public end with one framed by the power that maintains peace and safety [S1, S2]. This is a reader-level comparison of the supplied passages, whose claims remain distinct and are not presented as a direct exchange between the authors.';
+ const expanded='Aristotle describes political science as aiming at the highest good achievable by action, generally understood as happiness [S1]. The passage presents political inquiry through the end it should serve [S1]. That purpose gives the account its central criterion for judging civic institutions and action [S1]. It grounds the account in a purpose rather than in a specific enforcement mechanism [S1].\n\nHobbes describes the sovereign as acting for common peace and safety [S2]. His passage focuses on the authority responsible for securing those conditions [S2]. Read together, the excerpts contrast an account framed by its public end with one framed by the power that maintains peace and safety [S1, S2]. This is a reader-level comparison of the supplied passages, whose claims remain distinct and are not presented as a direct exchange between the authors.';
  const ai={run:async(_model,input)=>{
   calls.push(input);
   if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
@@ -1436,7 +1436,7 @@ test('repairs a partial comparison when supported source positions are only summ
  ];
  const calls=[];
  const separate='Aristotle frames political science around the highest good achievable through action, which the passage identifies with happiness [S1]. The passage treats this as the end of political inquiry. Its focus is therefore on the good political activity seeks to achieve.\n\nHobbes describes common power as necessary to keep people in awe so they can observe justice and the laws of nature [S2]. The passage presents authority as a condition for those rules to be followed. Its focus is on what sustains public order among people.';
- const synthesis='Aristotle frames political science around the highest good achievable through action, which the passage identifies with happiness [S1]. The account describes political inquiry through the human good it seeks to achieve. Its emphasis is on the end that political activity should serve.\n\nHobbes describes common power as necessary to keep people in awe so they can observe justice and the laws of nature [S2]. The passage presents authority as a condition for those rules to be followed. Its emphasis is on what sustains public order among people. As a reader-level comparison, Aristotle emphasizes the good political life should pursue, whereas Hobbes emphasizes the power needed to maintain justice and order [S1, S2]. This contrast synthesizes the separate passages; neither excerpt directly compares the two thinkers.';
+ const synthesis='Aristotle frames political science around the highest good achievable through action, which the passage identifies with happiness [S1]. The account describes political inquiry through the human good it seeks to achieve [S1]. Its emphasis is on the end that political activity should serve [S1].\n\nHobbes describes common power as necessary to keep people in awe so they can observe justice and the laws of nature [S2]. The passage presents authority as a condition for those rules to be followed. Its emphasis is on what sustains public order among people. As a reader-level comparison, Aristotle emphasizes the good political life should pursue, whereas Hobbes emphasizes the power needed to maintain justice and order [S1, S2]. This contrast synthesizes the separate passages; neither excerpt directly compares the two thinkers.';
  const ai={run:async(_model,input)=>{
   calls.push(input);
   if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
@@ -1558,7 +1558,7 @@ test('repairs prose that denies a comparison while coverage marks it supported',
   {part:'How the accounts differ',status:'supported',evidenceIds:['S1','S2']}
  ];
  const refusal='Aristotle describes political order in terms of human good and citizens obeying laws [S1]. Hobbes describes common power as keeping people in awe so justice and natural law can be observed [S2]. The texts do not offer a direct comparison, and the evidence cannot establish a difference between their accounts [S1, S2].';
- const repaired='Aristotle connects political order with the human good and with forming citizens who obey the laws [S1]. This frames civic order through the purpose political life should serve and the character citizens should develop. The passage therefore presents the good of the community as central to political inquiry, rather than describing authority only as a means of control.\n\nHobbes gives common power a different role: it keeps people in awe so that justice and the laws of nature can be observed [S2]. Political order here depends on an authority capable of securing obedience. The passage emphasizes the power needed to make shared rules effective, linking public order to the conditions for following them.\n\nThe accounts differ in their emphasis. Aristotle links political order to human good and civic formation, whereas Hobbes stresses common power as the means that sustains justice and obedience [S1, S2]. This contrast is a synthesis of the two supplied passages, each of which supports its own side. Together they point to a difference between the end political life should pursue and the authority that helps maintain order. The comparison stays within the emphasis visible in these excerpts.';
+ const repaired='Aristotle connects political order with the human good and with forming citizens who obey the laws [S1]. This frames civic order through the purpose political life should serve and the character citizens should develop [S1]. The passage therefore presents the good of the community as central to political inquiry, rather than describing authority only as a means of control [S1].\n\nHobbes gives common power a different role: it keeps people in awe so that justice and the laws of nature can be observed [S2]. Political order here depends on an authority capable of securing obedience [S2]. The passage emphasizes the power needed to make shared rules effective, linking public order to the conditions for following them [S2].\n\nThe accounts differ in their emphasis. Aristotle links political order to human good and civic formation, whereas Hobbes stresses common power as the means that sustains justice and obedience [S1, S2]. This contrast is a synthesis of the two supplied passages, each of which supports its own side. Together they point to a difference between the end political life should pursue and the authority that helps maintain order. The comparison stays within the emphasis visible in these excerpts.';
  const ai={run:async(_model,input)=>{
   calls.push(input);
   if(calls.length===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
@@ -1876,7 +1876,7 @@ test('public pilot identifies and measures an oversized initial composition safe
      questionParts:[{part:'causes',status:'supported',evidenceIds:['S1']}],
      evidence:[{id:'S1',point:'The source passage gives a cause.'}]
    })}}]};
-   const answer=('The source passage explains a supported cause [S1]. ').repeat(110);
+   const answer=('The source passage explains a supported cause [S1]. ').repeat(140);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      answer,partChecks:[{part:'causes',status:'supported',evidenceIds:['S1']}]
    })}}]};
@@ -1886,7 +1886,7 @@ test('public pilot identifies and measures an oversized initial composition safe
  const failure=await response.json();
  assert.equal(failure.failureCode,'answer-initial-composition-too-long');
  assert.equal(failure.failureStage,'initial-composition');
- assert(failure.failureAnswerCharacters>4800);
+ assert(failure.failureAnswerCharacters>7200);
  assert.equal(pilot.stats().calls,2);
 });
 
@@ -1897,7 +1897,7 @@ test('public pilot returns detailed cited answers above the former character cei
      questionParts:[{part:'causes',status:'supported',evidenceIds:['S1']}],
      evidence:[{id:'S1',point:'The source passage gives a cause.'}]
    })}}]};
-   const answer=('The source passage explains a supported cause and gives its reason [S1]. ').repeat(45);
+   const answer=('The source passage explains a supported cause and gives its reason [S1]. ').repeat(70);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
      answer,partChecks:[{part:'causes',status:'supported',evidenceIds:['S1']}]
    })}}]};
@@ -1906,7 +1906,7 @@ test('public pilot returns detailed cited answers above the former character cei
  assert.equal(response.status,200);
  const result=await response.json();
  assert.equal(result.outcome,'verified-source-draft');
- assert(result.answer.length>2400&&result.answer.length<=4800);
+ assert(result.answer.length>4800&&result.answer.length<=7200);
  assert.deepEqual(result.citations.map(source=>source.id),['S1']);
  assert.equal(pilot.stats().calls,2);
 });

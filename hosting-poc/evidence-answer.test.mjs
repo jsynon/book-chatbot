@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 
@@ -5163,6 +5163,29 @@ test('heading-only span predicate classifies headings and spares sentences (B8-4
   assert.equal(isHeadingOnlySpan(sentence),false,sentence.slice(0,40));
 });
 
+test('heading-only span predicate covers multi-line heading blocks (batch 9 B9-7b)',()=>{
+ // The batch-8 scorer-note shapes: a running title with page number, a
+ // bare chapter marker line, and the repeated title — three heading
+ // lines and nothing else.
+ assert.equal(isHeadingOnlySpan(
+  'THE VENERABLE, 27\r\n\r\nCHAPTER VII.\r\nTHE VENERABLE (ARHAT).'),true,
+  'a multi-line block of heading lines is heading-only');
+ assert.equal(isHeadingOnlySpan(
+  'CHAPTER VII.\nTHE VENERABLE (ARHAT).'),true,
+  'a doubled chapter heading across two lines is heading-only');
+ assert.equal(isHeadingOnlySpan('CHAPTER VII.'),true,
+  'a bare structural marker line is a heading on its own');
+ // One substantive line keeps the whole span body text: a heading line
+ // glued onto a real sentence is a prefix problem (handled at display),
+ // not a heading-only span.
+ assert.equal(isHeadingOnlySpan(
+  'CHAPTER VII.\nThere is no suffering for him who has finished his journey and abandoned grief.'),false,
+  'a heading line plus a substantive sentence is not heading-only');
+ assert.equal(isHeadingOnlySpan(
+  'The venerable teacher then left the village.\nHe walked north for three days before resting.'),false,
+  'ordinary multi-line prose stays body text');
+});
+
 test('the review packet offers no heading-only span while body spans remain (B8-4)',async()=>{
  const body='The narrative then turns to the ministry by the river, where crowds gathered each morning to hear the preaching, to ask what they should do in the days ahead, and to wonder aloud whether the long expected teacher had finally come among them in their own generation after so many years of waiting and watching for a sign from heaven.';
  const source={id:'S1',bookId:'88',title:'The River Ministry — A. Chronicler',page:9,
@@ -5323,9 +5346,13 @@ test('a non-frame context claim ships unchanged and triggers no repair round (B8
     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
  };
+ // Batch 9 (B9-4): the part carries four claims so the context claim
+ // stays genuinely mid-part — in a three-claim part the middle claim
+ // is the penultimate claim and is frame under the extended marking.
  const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
    'This distinction frames the disagreement that follows.\n'+
-   'Hume grounds the idea of necessity in repeated conjunction and custom. [S1]'),
+   'Hume grounds the idea of necessity in repeated conjunction and custom. [S1]\n'+
+   'Hume treats the inference from cause to effect as an effect of custom rather than reasoning. [S1]'),
   retainingReview]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
@@ -5578,4 +5605,295 @@ test('a citation-validation failure is never retried (B8-7)',async()=>{
  assert.equal(result.trace.answerRetry,undefined,
   'validation failures are logic outcomes, not provider transients');
  assert.equal(ai.calls.length,1,'exactly one build was attempted');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 9 (B9-8): whole-paragraph bold unwrap. The live defect: a part's
+// opening paragraph ships fully wrapped in one balanced **…** pair with
+// the section title as its first words — the seam scan only looks for
+// UNBALANCED bold, so it shipped, and the client rendered the whole
+// paragraph bold with the title inline.
+// ---------------------------------------------------------------------------
+test('bold unwrap strips a whole-paragraph wrap and spares labels, titles, and short bold lines (batch 9 B9-8)',()=>{
+ const wrapped='**Faith as a Paradoxical Encounter In Philosophical Fragments, the pseudonymous speaker describes faith as the result of an encounter between Reason and the Paradox [S1]. This encounter occurs in a Moment where Reason sets itself aside to allow the Paradox to bestow itself upon the learner [S1].**';
+ const unwrapped=unwrapBoldWrappedParagraphs(wrapped);
+ assert.equal(unwrapped.count,1);
+ assert.equal(unwrapped.text,wrapped.slice(2,-2),
+  'only the outer marker pair is removed; text and citations are byte-identical');
+ // (b) a short fully-bold single-sentence paragraph is under the threshold.
+ const short='**The individual stands higher than the universal.**';
+ assert.deepEqual(unwrapBoldWrappedParagraphs(short),{text:short,count:0});
+ // (c) a bold lead-in label followed by prose is not a wrap.
+ const leadIn='**Non-Rationality:** The leap is not a conclusion of reason but a movement of the whole person toward what reason cannot settle.';
+ assert.deepEqual(unwrapBoldWrappedParagraphs(leadIn),{text:leadIn,count:0});
+ // (d) a standalone bold title line is the client heading case.
+ const title='**Section Title**';
+ assert.deepEqual(unwrapBoldWrappedParagraphs(title),{text:title,count:0});
+ // Two separate bold spans in one block are not one wrap.
+ const twoSpans='**Alpha is the first point.** **Beta is the second point, stated just as plainly.**';
+ assert.deepEqual(unwrapBoldWrappedParagraphs(twoSpans),{text:twoSpans,count:0});
+ // The underscore form unwraps on length alone (one long sentence).
+ const underscore='__A single wrapped sentence that keeps developing its one long point with clause after clause, adding circumstance and qualification and example, until the sentence itself runs well past two hundred characters of continuous prose in total.__';
+ const unUnderscored=unwrapBoldWrappedParagraphs(underscore);
+ assert.equal(unUnderscored.count,1);
+ assert.equal(unUnderscored.text,underscore.slice(2,-2));
+ // Paragraphs around a wrapped one are untouched.
+ const mixed='Opening prose stays as it is.\n\n'+wrapped+'\n\nClosing prose stays as it is.';
+ const mixedResult=unwrapBoldWrappedParagraphs(mixed);
+ assert.equal(mixedResult.count,1);
+ assert.equal(mixedResult.text,'Opening prose stays as it is.\n\n'+wrapped.slice(2,-2)+'\n\nClosing prose stays as it is.');
+ // The orphaned opener: claim validation strips a paragraph-final
+ // marker, so the shipped segment often carries only the opening **.
+ const orphaned='**Necessity and Custom Hume explains that our idea of necessity arises from the uniformity observable in nature [S1]. The mind is then determined by custom to infer one event from the other [S1].';
+ const orphanResult=unwrapBoldWrappedParagraphs(orphaned);
+ assert.equal(orphanResult.count,1);
+ assert.equal(orphanResult.text,orphaned.slice(2));
+ // A short orphaned opener stays — it is a fragment, not a paragraph.
+ const shortOrphan='**A stray label fragment';
+ assert.deepEqual(unwrapBoldWrappedParagraphs(shortOrphan),{text:shortOrphan,count:0});
+});
+
+test('composer prompt keeps titles on their own line and paragraphs out of bold (batch 9 B9-8)',()=>{
+ assert.match(COMPOSER_PROMPT,/Keep each section title on its own line, and never wrap a paragraph in bold/);
+ assert.match(COMPOSER_PROMPT,/bold is for a short label or lead-in phrase only/);
+});
+
+test('final assembly unwraps every part opener wrapped in bold (batch 9 B9-8)',async()=>{
+ const sage={id:'S3',bookId:'99',title:'Groundwork Sketches — C. Sage',page:12,
+  text:'Custom in reasoning is a settled readiness to pass from one idea to another without fresh proof each time. The readiness grows through repetition and quietly shapes what a person expects to find.',
+  preview:'Custom in reasoning is a settled readiness to pass from one idea to another.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']},
+   {label:'C. Sage',role:'primary',bookIds:['99']}],
+  parts:[
+   {id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],candidateSourceIds:['S1']},
+   {id:'P2',question:'How does Kant explain causality?',sourceBookIds:['40'],candidateSourceIds:['S2']},
+   {id:'P3',question:'How does Sage describe custom in reasoning?',sourceBookIds:['99'],candidateSourceIds:['S3']}]};
+ const opener=(title,first,second)=>'**'+title+' '+first+' '+second+'**';
+ const draft=[
+  'PART P1\n'+opener('Necessity and Custom',
+   'Hume explains that our idea of necessity arises from the uniformity observable in nature, where similar objects are constantly conjoined [S1].',
+   'The mind is then determined by custom to infer one event from the other whenever the first appears [S1].'),
+  'PART P2\n'+opener('Causality as a Category',
+   'Kant explains that causality is one of the categories of relation, a pure conception of the understanding [S2].',
+   'The categories are a priori, so the causal relation is contributed by the mind rather than copied from impressions [S2].'),
+  'PART P3\n'+opener('Custom as Readiness',
+   'Sage describes custom in reasoning as a settled readiness to pass from one idea to another without fresh proof [S3].',
+   'The readiness grows through repetition and quietly shapes what a person expects to find in new cases [S3].')
+ ].join('\n');
+ const ai=makeAI([answer(draft),
+  review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer(
+  'How do Hume, Kant, and Sage each explain the grounds of causal inference?',
+  [hume,kant,sage],ai,[],{plan,catalog:{...catalog,99:'Groundwork Sketches — C. Sage'},trace:true});
+ // Claim validation strips each paragraph's closing marker, so the
+ // segments reach the assembly audit carrying an orphaned opener,
+ // which the seam scan flags as unbalanced bold; with no repair
+ // offered by this fixture the audit honestly downgrades (pre-existing
+ // behavior). The B9-8 unwrap at final assembly is the rendering
+ // backstop for exactly that outcome: whatever ships, ships unwrapped.
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.deepEqual(result.trace.formattingNormalizations,
+  {boldParagraphsUnwrapped:3,partIds:['P1','P2','P3']},
+  'all three wrapped part openers are unwrapped and traced');
+ assert.ok(!result.answer.includes('**'),
+  'no bold markers survive in the shipped answer');
+ assert.match(result.answer,/Necessity and Custom Hume explains that our idea of necessity arises/);
+ assert.match(result.answer,/Causality as a Category Kant explains that causality is one of the categories/);
+ assert.match(result.answer,/Custom as Readiness Sage describes custom in reasoning as a settled readiness/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1','S2','S3'],
+  'citation mapping is untouched by the marker-level unwrap');
+ assert.equal(result.evidenceMap.filter(item=>item.quoteVerified).length>=3,true,
+  'evidence links are untouched');
+});
+
+test('review packet marks the first and last two claims of a part as frame (batch 9 B9-4)',async()=>{
+ let captured;
+ const capture=(_model,{messages})=>{
+  captured=parsePayload(messages);
+  return review([['P1','partial']])(_model,{messages});
+ };
+ const ai=makeAI([answer('PART P1\nAn opening framing sentence about the topic. '+
+   'Hume explains that necessity arises from uniformity observable in nature [S1]. '+
+   'A middle framing sentence develops the theme further. '+
+   'A closing framing sentence draws the threads together.'),capture]);
+ await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ const context=captured.parts[0].contextClaims;
+ assert.deepEqual(context.map(claim=>claim.claimId),['P1-C1','P1-C3','P1-C4'],
+  'only the uncited claims ride in contextClaims');
+ assert.deepEqual(context.map(claim=>claim.frame===true),[true,true,true],
+  'the opener and BOTH closing claims are marked frame');
+});
+
+test('review packet marks both claims of a two-claim part as frame, once each (batch 9 B9-4)',async()=>{
+ let captured;
+ const capture=(_model,{messages})=>{
+  captured=parsePayload(messages);
+  return review([['P1','partial']])(_model,{messages});
+ };
+ const ai=makeAI([answer('PART P1\nAn opening framing sentence about the topic.\n\n'+
+   'A closing framing sentence draws the threads together.'),capture]);
+ await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ const context=captured.parts[0].contextClaims;
+ assert.equal(context.length,2,'no duplicate entries for the overlapping marks');
+ assert.deepEqual(context.map(claim=>claim.frame===true),[true,true]);
+});
+
+// ---------------------------------------------------------------------------
+// Batch 9 (B9-3): archive-vs-link validation. Batch 8 shipped a bypass —
+// a claim whose citations the reviewer rejected re-entered the answer
+// as an uncited paraphrase and received a scaffolding link from the
+// very source whose spans had failed it. The link must now refuse.
+// ---------------------------------------------------------------------------
+test('attachScaffoldingToPart refuses a link onto the pool that failed the rejected original (batch 9 B9-3)',()=>{
+ const part={answers:[
+   {claimId:'P1-C1',text:'First established position.',sourceIds:['S1'],
+    renderedText:'First established position. [S1]'},
+   {claimId:'P1-C3',text:'Necessity is a power perceived directly in the objects themselves.',sourceIds:[],
+    renderedText:'Necessity is a power perceived directly in the objects themselves.'}],
+  evidence:[{sourceId:'S1',claimId:'P1-C1',point:'First established position.',
+   quote:'Verbatim span text.',anchorQuote:'Verbatim span text.',start:0,end:18}]};
+ const rejectedClaims=[{claimId:'P1-C2',
+  claimText:'Hume insists that necessity is a power perceived directly in the objects themselves.',
+  sourceIds:['S1']}];
+ const refused=attachScaffoldingToPart(part,
+  [{claimId:'P1-C3',supportClaimIds:['P1-C1']}],
+  {citedIds:new Set(['P1-C1']),rejectedClaims});
+ assert.equal(refused.attached.length,0,'nothing attaches through the archive hit');
+ assert.equal(refused.invalidLinks,1);
+ assert.equal(refused.invalidLinkDetails.length,1);
+ assert.equal(refused.invalidLinkDetails[0].claimId,'P1-C3');
+ assert.equal(refused.invalidLinkDetails[0].reason,'archived-rejection');
+ assert.equal(refused.invalidLinkDetails[0].matchedRejectedClaimId,'P1-C2');
+ assert.ok(refused.invalidLinkDetails[0].containment>=0.5);
+ assert.deepEqual(part.answers[1].sourceIds,[],'the target stays uncited');
+ assert.equal(part.evidence.filter(entry=>entry.claimId==='P1-C3').length,0);
+ // Control: the same link attaches when the rejected claim failed on a
+ // DIFFERENT source — the pool on offer is not the pool that failed it.
+ const control={answers:structuredClone(part.answers),evidence:structuredClone(part.evidence)};
+ const attached=attachScaffoldingToPart(control,
+  [{claimId:'P1-C3',supportClaimIds:['P1-C1']}],
+  {citedIds:new Set(['P1-C1']),
+   rejectedClaims:[{...rejectedClaims[0],sourceIds:['S2']}]});
+ assert.equal(attached.invalidLinks,0);
+ assert.equal(attached.attached.length,1,'a link with no archive match on its pool attaches normally');
+ // Control: a target that does not restate the rejection attaches.
+ const unrelated={answers:[
+   {claimId:'P1-C1',text:'First established position.',sourceIds:['S1'],
+    renderedText:'First established position. [S1]'},
+   {claimId:'P1-C3',text:'A framing remark about how the chapter is organized and what it sets aside.',sourceIds:[],
+    renderedText:'A framing remark about how the chapter is organized and what it sets aside.'}],
+  evidence:structuredClone(part.evidence)};
+ const attachedUnrelated=attachScaffoldingToPart(unrelated,
+  [{claimId:'P1-C3',supportClaimIds:['P1-C1']}],
+  {citedIds:new Set(['P1-C1']),rejectedClaims});
+ assert.equal(attachedUnrelated.attached.length,1,
+  'a target with no substantial text match to the rejection attaches normally');
+});
+
+test('review prompt forbids linking a restatement of a claim being rejected (batch 9 B9-3)',()=>{
+ assert.match(REVIEW_PROMPT,/Do not link an uncited claim that restates, in different words, a claim whose citations you are rejecting in this review/);
+});
+
+test('a scaffolding link cannot resurrect a rejected claim as its uncited paraphrase (batch 9 B9-3)',async()=>{
+ const launderingReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[],
+    scaffoldingLinks:[{claimId:'P1-C3',supportClaimIds:['P1-C1']}]}],
+   claims:payload.claims.map(claim=>{
+    const rejected=claim.claimId==='P1-C2';
+    return {claimId:claim.claimId,status:rejected?'partial':'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,
+      status:rejected?'partial':'answered',
+      spanIds:rejected?[]:[claim.sourceEvidence
+       .find(item=>item.sourceId===sourceId).spanIds[0]]}))};
+   })})};
+ };
+ const ai=makeAI([answer('PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+   'Hume insists that necessity is a power perceived directly in the objects themselves. [S1]\n'+
+   'Necessity, on this account, is a power perceived directly in the objects themselves.'),
+  launderingReview]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.deepEqual(result.trace.reviewScaffolding.attached,[],
+  'the paraphrase receives no link from the failed source pool');
+ assert.equal(result.trace.reviewScaffolding.invalidLinks,1);
+ const details=result.trace.reviewScaffolding.invalidLinkDetails||[];
+ assert.equal(details.length,1,'the archive hit is recorded in the trace');
+ assert.equal(details[0].partId,'P1');
+ assert.equal(details[0].claimId,'P1-C3');
+ assert.equal(details[0].reason,'archived-rejection');
+ assert.equal(details[0].matchedRejectedClaimId,'P1-C2');
+ assert.equal(result.evidenceMap.filter(item=>item.claimId==='P1-C3').length,0,
+  'no evidence entries ride on the refused claim');
+ assert.equal(ai.calls.length,2,'the refused link was decided in the review; no repair round follows');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 9 (B9-5): traceability invariant. Batch 8 shipped a cited claim
+// (idea-of-progress P4-C6) with zero review decisions and no attachment
+// trace under a verified outcome: gate repairs adopt re-reviewed parts
+// whose claim IDs were reassigned at revalidation, and the adoption
+// discarded the re-review's decisions — the only record that the
+// shipped claims were ever reviewed.
+// ---------------------------------------------------------------------------
+test('findUntracedCitedClaims lists cited claims no mechanism covers (batch 9 B9-5)',()=>{
+ const parts=[{partId:'P1',answers:[
+  {claimId:'P1-C1',sourceIds:['S1']},
+  {claimId:'P1-C2',sourceIds:['S1']},
+  {claimId:'P1-C3',sourceIds:[]},
+  {claimId:'P1-C4',sourceIds:['S2']}]},
+  {partId:'P2',answers:[{claimId:'P2-C1',sourceIds:['S1']}]}];
+ const untraced=findUntracedCitedClaims(parts,{
+  accepted:new Set(['P1|P1-C1']),
+  reviewLinked:new Set(['P1|P1-C4']),
+  inherited:new Set(),
+  secondLook:new Set(['P2|P2-C1']),
+  fallback:new Set()});
+ assert.deepEqual(untraced,[{partId:'P1',claimId:'P1-C2'}],
+  'only the cited claim covered by no mechanism is listed; uncited claims are ignored');
+ assert.deepEqual(findUntracedCitedClaims(parts,{
+  accepted:new Set(['P1|P1-C1','P1|P1-C2']),
+  reviewLinked:new Set(['P1|P1-C4']),
+  secondLook:new Set(['P2|P2-C1'])}),[],
+  'a fully mechanized answer has an empty untraced list');
+});
+
+test('a gate-repair adoption records its re-review decisions and keeps verified status (batch 9 B9-5)',async()=>{
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
+ const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction. [S1]'}],
+  additions:[]}]})};
+ const citedReReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.'),
+  uncitedReview,citedRepair,citedReReview],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.deepEqual(result.trace.citationGate,[{partId:'P1',action:'repair-applied'}]);
+ assert.equal(result.outcome,'verified-source-draft',
+  'the adopted claim is traced, so verified status stands');
+ assert.equal(result.trace.untracedCitedClaims,undefined,
+  'no shipped cited claim lacks a mechanism');
+ const shippedClaimIds=result.questionParts[0].claimIds;
+ assert.ok(shippedClaimIds.length>=1);
+ const acceptedKeys=new Set((result.trace.reReviewDecisions||[])
+  .filter(decision=>decision.accepted===true&&decision.sourceId)
+  .map(decision=>decision.partId+'|'+decision.claimId));
+ assert.ok(shippedClaimIds.every(claimId=>acceptedKeys.has('P1|'+claimId)),
+  'every shipped claim of the adopted part is accepted in the recorded re-review decisions');
+ assert.ok((result.trace.reReviewDecisions||[])
+  .some(decision=>decision.sourceId==='S1'&&decision.accepted===true),
+  'the re-review acceptance for the restored citation is in the trace');
 });

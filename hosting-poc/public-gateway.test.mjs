@@ -852,7 +852,7 @@ test('lowercase author surnames activate per-author evidence review for comparis
    ]
   })}}],usage:{neurons:2}};
   return {choices:[{finish_reason:'stop',message:{content:
-   'Kierkegaard presents faith as the individual’s paradoxical relation to God [S2]. His passage centers on the believer’s religious commitment and the individual’s relation to God. It frames his thought here through faith and the single person. The excerpt therefore offers a religious account tied to the individual’s relation with God, rather than an abstract definition of faith [S2].\n\nShestov attacks the authority of rational necessity [S1]. He treats necessary truths as limits on human freedom and calls for a struggle against that constraint. The difference in these excerpts is one of emphasis: Kierkegaard focuses on the individual’s relation to God through faith, while Shestov challenges reason’s claim that necessity sets the limits of possibility. This comparison synthesizes the two passages, rather than presenting a direct debate between the authors [S1, S2].'}}],usage:{neurons:3}};
+   'Kierkegaard presents faith as the individual’s paradoxical relation to God [S2]. His passage centers on the believer’s religious commitment and the individual’s relation to God [S2]. It frames his thought here through faith and the single person. The excerpt therefore offers a religious account tied to the individual’s relation with God, rather than an abstract definition of faith [S2].\n\nShestov attacks the authority of rational necessity [S1]. He treats necessary truths as limits on human freedom and calls for a struggle against that constraint [S1]. The difference in these excerpts is one of emphasis: Kierkegaard focuses on the individual’s relation to God through faith, while Shestov challenges reason’s claim that necessity sets the limits of possibility [S1]. This comparison synthesizes the two passages, rather than presenting a direct debate between the authors [S1, S2].'}}],usage:{neurons:3}};
  }};
  const result=await composeVerifiedAnswer(question,sources,ai);
  assert.equal(calls.length,2);
@@ -2332,6 +2332,87 @@ test('public highlights link every distinct claim that shares one accepted span 
   'the shared span keeps a highlight link for each distinct claim, not just the first');
  assert.ok(highlights[0].quotes.every(item=>item.quote===quote));
 });
+test('public highlights key shared quotes under every claim without a claim-count cap (batch 9 B9-6)',()=>{
+ const source={id:'S1',title:'An Enquiry Concerning Human Understanding — David Hume',page:42};
+ const quoteA='All inferences from experience, therefore, are effects of custom, not of reasoning.';
+ const quoteB='Custom, then, is the great guide of human life and conduct in every circumstance.';
+ // Eight cited claims over two distinct passages — the batch-8
+ // single-source shape (13 claims, ~5 quotes, only 6 linked). The old
+ // budget counted claims and stopped at six; the box budget counts
+ // distinct passages, so every claim links.
+ const claims=[];
+ for(let n=1;n<=8;n++)claims.push({id:'S1',claimId:'P1-C'+n,partId:'P1',
+  point:'Hume point number '+n+' about custom and inference from experience.',
+  quote:n<=4?quoteA:quoteB,quoteVerified:true});
+ const highlights=selectPublicEvidenceHighlights('Hume explains inference [S1].',[source],claims,6,
+  'How does Hume explain inference?',{},
+  new Set(claims.map(item=>item.claimId)));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quotes.length,8,
+  'all eight claims carry a recorded highlight link, not just the first six');
+ const boxIndexes=new Set(highlights[0].quotes.map(item=>item.box));
+ assert.deepEqual([...boxIndexes].sort(),[0,1],
+  'the eight links render as two display boxes, one per distinct passage');
+ for(const item of highlights[0].quotes){
+  assert.deepEqual([...item.claim_ids].sort(),
+   claims.filter(claim=>claim.quote===item.quote).map(claim=>claim.claimId).sort(),
+   'each entry names the full claim set sharing its box');
+ }
+});
+test('public highlights merge adjacent fragments recorded under different claims into one box (batch 9 B9-2)',()=>{
+ const source={id:'S1',title:'On Liberty — John Stuart Mill',page:6};
+ const first='The first complete sentence explains the principle.';
+ const second='The second sentence immediately continues its explanation.';
+ const text=first+' '+second+' A distant sentence remains separate.';
+ const start2=first.length+1;
+ const highlights=selectPublicEvidenceHighlights('Mill explains the principle [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:'Mill explains the principle.',quote:first,quoteVerified:true,start:0,end:first.length},
+  {id:'S1',claimId:'P1-C2',partId:'P1',point:'Mill continues the explanation.',quote:second,quoteVerified:true,start:start2,end:start2+second.length}
+ ],3,'Mill principle',{S1:text},new Set(['P1-C1','P1-C2']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,first+' '+second,
+  'contiguous fragments of one passage join verbatim into a single display quote');
+ assert.deepEqual(highlights[0].quotes.map(item=>item.claim_id).sort(),['P1-C1','P1-C2'],
+  'both claims keep their recorded link on the merged box');
+ assert.ok(highlights[0].quotes.every(item=>item.box===0&&item.quote===first+' '+second),
+  'the display box count for the source stays one');
+});
+test('public highlights prefer the longer covering span for a claim (batch 9 B9-7a)',()=>{
+ const source={id:'S1',title:'On Liberty — John Stuart Mill',page:6};
+ const longer='The principle requires each person to have a protected sphere of liberty and thought.';
+ const shorter='each person to have a protected sphere of liberty';
+ const text='An opening sentence sets the scene. '+longer+' A closing sentence follows.';
+ const longStart=text.indexOf(longer),shortStart=text.indexOf(shorter);
+ const highlights=selectPublicEvidenceHighlights('Mill explains liberty [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:'Mill protects a sphere of liberty.',quote:shorter,quoteVerified:true,start:shortStart,end:shortStart+shorter.length},
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:'Mill protects a sphere of liberty.',quote:longer,quoteVerified:true,start:longStart,end:longStart+longer.length}
+ ],3,'Mill liberty',{S1:text},new Set(['P1-C1']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,longer,
+  'the covering span, not the fragment it contains, is the claim highlight');
+ assert.deepEqual(highlights[0].quotes.map(item=>item.quote),[longer]);
+});
+test('public highlights strip glued heading lines from a body quote (batch 9 B9-7b)',()=>{
+ const source={id:'S1',title:'The Dhammapada — Traditional',page:27};
+ const body='There is no suffering for him who has finished his journey and abandoned all grief for the world.';
+ const glued='CHAPTER VII.\r\nTHE VENERABLE (ARHAT).\r\n'+body;
+ const highlights=selectPublicEvidenceHighlights('The teaching explains suffering [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:'The teaching explains the end of suffering.',quote:glued,quoteVerified:true}
+ ],3,'suffering journey',{S1:glued},new Set(['P1-C1']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,body,
+  'heading lines glued onto the quote are stripped to the exact body suffix');
+});
+test('public highlights leave line-wrapped prose quotes untouched (batch 9 B9-7b)',()=>{
+ const source={id:'S1',title:'Early Meditations — A. Writer',page:11};
+ const wrapped='the writer argues that faith is trust\nbuilt up slowly through repeated experience of fidelity.';
+ const highlights=selectPublicEvidenceHighlights('The writer explains faith [S1].',[source],[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point:'The writer explains faith as trust.',quote:wrapped,quoteVerified:true}
+ ],3,'faith trust',{S1:wrapped},new Set(['P1-C1']));
+ assert.equal(highlights.length,1);
+ assert.equal(highlights[0].quote,wrapped.trim(),
+  'a lowercase prose first line is not a heading line and nothing is stripped');
+});
 test('public highlights link claims on sources beyond the old six-page cap at the raised limit (batch 6 B6-2)',()=>{
  const citations=[],map=[],claimIds=[],answerParts=[];
  for(let n=1;n<=8;n++){
@@ -2490,4 +2571,155 @@ test('retrieval gap planning fails at its 20 s deadline instead of hanging (batc
   t.mock.timers.tick(20000);
   await rejection;
  }finally{t.mock.timers.reset();}
+});
+
+// ---------------------------------------------------------------------------
+// Batch 9 (B9-1c): the depth-repair gate gains a per-part underdevelopment
+// condition and a recorded trace. Before the fix, the gate measured only
+// whole-answer bulk (words / paragraphs / paragraph sentence counts) and
+// required supportedPartCount >= 3, so a part that shipped as a single
+// sentence inside an adequate-length answer was never developed.
+// ---------------------------------------------------------------------------
+const depthSources=[
+ {id:'S1',bookId:'901',title:'Early Meditations — A. Writer',page:11,
+  preview:'In the early work the writer argues that faith is trust built up slowly through repeated experience of fidelity in ordinary life, and he returns to this account whenever he describes how belief steadies conduct.'},
+ {id:'S2',bookId:'902',title:'Middle Meditations — A. Writer',page:23,
+  preview:'In the middle work the writer argues that faith ventures without assurance, since the outcome cannot be known in advance and the venture is precisely what gives the belief its weight.'},
+ {id:'S3',bookId:'903',title:'Late Meditations — A. Writer',page:37,
+  preview:'The late work turns to other questions and does not develop an account of faith at any length in these pages.'}
+];
+const depthReview={coverage:'partial',missing:'The late work part is not established by the excerpts.',
+ questionParts:[
+  {part:'faith in the early work',status:'supported',evidenceIds:['S1']},
+  {part:'faith in the middle work',status:'partial',evidenceIds:['S2']},
+  {part:'hope in the late work',status:'unsupported',evidenceIds:[]}],
+ evidence:[
+  {id:'S1',point:'The early work treats faith as trust grounded in repeated experience of fidelity.',quote:'faith is trust built up slowly',speaker:'A. Writer',qualifier:''},
+  {id:'S2',point:'The middle work treats faith as a venture taken without assurance.',quote:'faith ventures without assurance',speaker:'A. Writer',qualifier:''}]};
+const thinPartAnswer=[
+ 'The early work presents faith as trust that is built up slowly through repeated experience of fidelity in ordinary life [S1]. Because the trust rests on what has already been experienced, the writer treats it as steadier than a sudden conviction adopted all at once [S1]. He returns to this account whenever he describes how belief steadies conduct under pressure [S1]. On this view, faith is less a leap than a habit of reliance formed over time [S1].',
+ 'The late work turns mostly to other questions in these pages and gives faith little direct attention. Its pages are occupied with the ordering of a life, the discipline of attention, and the conduct owed to neighbours. Readers looking there for a developed account will find remarks scattered among other topics rather than a sustained treatment. The middle work stands apart: faith ventures without assurance there [S2].',
+ 'Taken together, the early account gives the reader the fullest picture of what the writer means by faith in these writings [S1]. It explains both where the trust comes from and why it endures when circumstances press against it [S1]. The other writings add emphasis rather than a rival account of the matter [S1].'
+].join('\n\n');
+const developedPartAnswer=[
+ 'The early work presents faith as trust that is built up slowly through repeated experience of fidelity in ordinary life [S1]. Because the trust rests on what has already been experienced, the writer treats it as steadier than a sudden conviction adopted all at once [S1]. He returns to this account whenever he describes how belief steadies conduct under pressure [S1]. On this view, faith is less a leap than a habit of reliance formed over time [S1].',
+ 'The middle work gives faith a distinct centre of gravity: faith ventures without assurance, since the outcome cannot be known in advance [S2]. The venture is not a defect of the belief but precisely what gives it weight, because nothing compels the step and no evidence removes the risk [S2]. Where the early work builds trust from what has already happened, this account begins exactly where experience runs out [S2]. The late work turns mostly to other questions in these pages and gives faith little direct attention.',
+ 'Taken together, the early account gives the reader the fullest picture of what the writer means by faith in these writings [S1]. It explains both where the trust comes from and why it endures when circumstances press against it [S1]. The other writings add emphasis rather than a rival account of the matter [S1].'
+].join('\n\n');
+
+test('depth repair develops a thin part inside an adequate-length answer (batch 9 B9-1c)',async()=>{
+ const inputs=[];let call=0;
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(depthReview)}}]};
+  if(call===2)return {choices:[{finish_reason:'stop',message:{content:thinPartAnswer}}]};
+  return {choices:[{finish_reason:'stop',message:{content:developedPartAnswer}}]};
+ }};
+ const result=await composeVerifiedAnswer('What does the writer say about faith in these writings?',
+  depthSources,ai);
+ // Before the fix this fixture took exactly 2 calls: the whole-answer
+ // gate passed on bulk (199 words, 3 paragraphs, every paragraph >= 3
+ // sentences) and supportedPartCount was 2 (supported + partial), below
+ // the >= 3 gate — so the middle part's single sentence shipped as-is.
+ assert.equal(call,3,'compose, review, and exactly one depth repair');
+ assert.deepEqual(result.depthRepair,{triggered:true,
+  reasons:['thin-part:faith in the middle work'],applied:true});
+ assert.match(inputs[2].messages[0].content,/faith in the middle work/,
+  'the repair instruction names the thin part it must develop');
+ assert.match(result.answer,/distinct centre of gravity/,
+  'the developed middle part ships');
+ assert.equal(result.outcome,'verified-source-draft');
+});
+
+test('depth repair does not fire for a well-developed multi-part answer (batch 9 B9-1c)',async()=>{
+ let call=0;
+ const ai={run:async(_model,_input)=>{
+  call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   ...depthReview,coverage:'full',missing:'',
+   questionParts:[
+    {part:'faith in the early work',status:'supported',evidenceIds:['S1']},
+    {part:'faith in the middle work',status:'supported',evidenceIds:['S2']},
+    {part:'faith in the late work',status:'supported',evidenceIds:['S1']}]})}}]};
+  return {choices:[{finish_reason:'stop',message:{content:developedPartAnswer}}]};
+ }};
+ const result=await composeVerifiedAnswer('What does the writer say about faith in these writings?',
+  depthSources,ai);
+ assert.equal(call,2,'no repair call runs for a developed answer');
+ assert.deepEqual(result.depthRepair,{triggered:false,reasons:[],applied:false});
+});
+
+test('depth repair per-part condition does not fire for single-part answers (batch 9 B9-1c)',async()=>{
+ let call=0;
+ const ai={run:async(_model,_input)=>{
+  call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   coverage:'full',missing:'',
+   questionParts:[{part:'faith in the early work',status:'supported',evidenceIds:['S1']}],
+   evidence:[depthReview.evidence[0]]})}}]};
+  return {choices:[{finish_reason:'stop',message:{content:
+   'The early work presents faith as trust built up slowly through repeated experience of fidelity in ordinary life [S1].'}}]};
+ }};
+ const result=await composeVerifiedAnswer('What does the writer say about faith in the early work?',
+  depthSources,ai);
+ assert.equal(call,2,'a single short part is not, by itself, underdevelopment');
+ assert.deepEqual(result.depthRepair,{triggered:false,reasons:[],applied:false});
+ assert.equal(result.outcome,'verified-source-draft');
+});
+
+// The thin part below is its own paragraph (sentence counts [4, 3, 1]),
+// so the whole-answer sentence-count measure fails on the thin part's
+// own shape: gating the per-part check on full bulk adequacy skipped
+// it, and with supportedPartCount at 2 the legacy gate refused too.
+// The per-part check now runs on the word-count floor alone (246 words
+// here, above the 180 floor), so this live shape must trigger.
+const ownParagraphThinPartAnswer=[
+ 'The early work presents faith as trust that is built up slowly through repeated experience of fidelity in ordinary life, where each kept promise and each return of loyalty adds another layer to the reliance the believer places in what cannot yet be seen [S1]. Because the trust rests on what has already been experienced, the writer treats it as steadier and more durable than a sudden conviction adopted all at once in a single moment of enthusiasm [S1]. He returns to this account whenever he describes how belief steadies conduct under pressure, and he treats the steadiness itself as evidence that the trust has been properly formed [S1]. On this view, faith is less a leap than a habit of reliance formed over time, tested in small things long before it is asked to bear great ones [S1].',
+ 'Taken together, the early account gives the reader the fullest picture of what the writer means by faith in these writings, because it explains both where the trust comes from and why it endures when circumstances press against it [S1]. The other writings add emphasis rather than a rival account of the matter, and their remarks on faith are best read as variations on this central theme rather than as replacements for it [S1]. Any judgement about the writer’s considered view should therefore begin from the early work’s patient, experience-tested account of trust [S1].',
+ 'The middle work stands apart from both: faith ventures without assurance there [S2].'
+].join('\n\n');
+const briefThinPartAnswer=[
+ 'The early work presents faith as trust built up slowly through repeated experience of fidelity in ordinary life [S1]. The writer treats that trust as steadier than a sudden conviction adopted all at once [S1].',
+ 'The middle work stands apart: faith ventures without assurance there [S2].',
+ 'The late work turns mostly to other questions in these pages.'
+].join('\n\n');
+
+test('depth repair develops a thin part that is its own paragraph (batch 9 B9-1c)',async()=>{
+ const inputs=[];let call=0;
+ const ai={run:async(_model,input)=>{
+  inputs.push(input);call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(depthReview)}}]};
+  if(call===2)return {choices:[{finish_reason:'stop',message:{content:ownParagraphThinPartAnswer}}]};
+  return {choices:[{finish_reason:'stop',message:{content:developedPartAnswer}}]};
+ }};
+ const result=await composeVerifiedAnswer('What does the writer say about faith in these writings?',
+  depthSources,ai);
+ // Before the word-floor fix this fixture triggered nothing: the
+ // whole-answer bulk measures failed on the thin part's own
+ // one-sentence paragraph, and supportedPartCount was 2 (supported +
+ // partial), below the legacy >= 3 gate — so it took exactly 2 calls.
+ assert.equal(call,3,'compose, review, and exactly one depth repair');
+ assert.deepEqual(result.depthRepair,{triggered:true,
+  reasons:['thin-part:faith in the middle work'],applied:true});
+ assert.match(inputs[2].messages[0].content,/faith in the middle work/,
+  'the repair instruction names the thin part it must develop');
+ assert.match(result.answer,/distinct centre of gravity/,
+  'the developed middle part ships');
+ assert.equal(result.outcome,'verified-source-draft');
+});
+
+test('depth repair per-part condition stays off below the word floor (batch 9 B9-1c)',async()=>{
+ let call=0;
+ const ai={run:async(_model,_input)=>{
+  call++;
+  if(call===1)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(depthReview)}}]};
+  return {choices:[{finish_reason:'stop',message:{content:briefThinPartAnswer}}]};
+ }};
+ const result=await composeVerifiedAnswer('What does the writer say about faith in these writings?',
+  depthSources,ai);
+ // The middle part is thin in shape (a single cited sentence), but the
+ // whole answer is 57 words — under the 180-word floor — so the
+ // per-part condition must not fire for a brief answer.
+ assert.equal(call,2,'no repair call runs below the word floor');
+ assert.deepEqual(result.depthRepair,{triggered:false,reasons:[],applied:false});
 });
