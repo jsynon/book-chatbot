@@ -250,6 +250,32 @@ function mergeReviewRepairs(rawReview,requested,repair){
   return {ok:true,review:{...rawReview,claims}};
 }
 
+// Batch 10 (B10-2): round-robin selection across parts for the
+// missing-decision repair subset — group the decisions by part in
+// first-appearance order, then cycle through the groups taking one
+// untaken decision from each until the limit is reached, so one
+// part's omissions cannot consume another part's share of the budget
+// (a plain prefix slice would).
+function roundRobinMissingDecisions(decisions,limit){
+  const groups=new Map();
+  for(const decision of decisions){
+    const group=groups.get(decision.partId)||[];
+    group.push(decision);
+    groups.set(decision.partId,group);
+  }
+  const queues=[...groups.values()];
+  const selected=[];
+  while(selected.length<limit){
+    let progressed=false;
+    for(const queue of queues){
+      if(selected.length>=limit)break;
+      if(queue.length){selected.push(queue.shift());progressed=true;}
+    }
+    if(!progressed)break;
+  }
+  return selected;
+}
+
 function linkEvidenceToParts(plan,sources){
   const groups=(plan.sources||[]).filter(source=>['primary','subject'].includes(source.role)&&
     Array.isArray(source.bookIds)&&source.bookIds.length).map((source,index)=>({index,
@@ -1162,6 +1188,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     const rawScaffoldingLinks=Array.isArray(item?.scaffoldingLinks)?
       item.scaffoldingLinks:[];
     const scaffoldingLinks=[];let scaffoldingInvalidLinks=0;
+    const scaffoldingInvalidLinkDetails=[];
     const seenScaffoldingClaims=new Set();
     for(const link of rawScaffoldingLinks){
       const claimId=typeof link?.claimId==='string'?link.claimId:'';
@@ -1169,7 +1196,16 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         [...new Set(link.supportClaimIds.filter(supportId=>typeof supportId==='string'))]:null;
       if(!claimId||!uncitedIds.has(claimId)||!supportClaimIds||
          !supportClaimIds.length||seenScaffoldingClaims.has(claimId)){
-        scaffoldingInvalidLinks++;continue;
+        // Batch 10 (B10-5): record WHY the link was refused, in the
+        // first failing order — target, support list, duplicate — so
+        // the trace invariant (counted details sum to the counter)
+        // covers parse-level refusals too.
+        scaffoldingInvalidLinks++;
+        scaffoldingInvalidLinkDetails.push({claimId,
+          reason:(!claimId||!uncitedIds.has(claimId))?'target-not-uncited':
+            (!supportClaimIds||!supportClaimIds.length)?
+              'support-list-invalid':'duplicate-link'});
+        continue;
       }
       seenScaffoldingClaims.add(claimId);
       scaffoldingLinks.push({claimId,supportClaimIds});
@@ -1179,7 +1215,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       ...(requirementIds.size?{requirementCoverage}:{}),
       directAnswerClaimIds:normalizedDirectAnswerClaimIds,
       retainedContextClaimIds,
-      scaffoldingLinks,scaffoldingInvalidLinks,
+      scaffoldingLinks,scaffoldingInvalidLinks,scaffoldingInvalidLinkDetails,
       invalidDirectAnswerClaimIds:[...new Set(invalidDirectAnswerClaimIds)]});
   }
   if(!Array.isArray(review?.claims))issues.push('missing-claims');
@@ -1580,8 +1616,15 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       rejectedClaims:[...rejectedClaims,...(priorArchiveByPart?.get(part.id)||[])]});
     return {partId:part.id,status,answerStatus,evidence,answers:acceptedAnswers,
       reviewScaffolding:scaffolding.attached,
-      ...(scaffolding.invalidLinkDetails.length?
-        {scaffoldingInvalidLinkDetails:scaffolding.invalidLinkDetails}:{}),
+      // Batch 10 (B10-5): the part's details channel merges the
+      // parse-level refusals recorded on the supplied part with the
+      // attach-level refusals from this call, so the final trace sees
+      // every refusal for the part in one array.
+      ...((reviewerPart?.scaffoldingInvalidLinkDetails?.length||
+          scaffolding.invalidLinkDetails.length)?
+        {scaffoldingInvalidLinkDetails:[
+          ...(reviewerPart?.scaffoldingInvalidLinkDetails||[]),
+          ...scaffolding.invalidLinkDetails]}:{}),
       scaffoldingInvalidLinks:(reviewerPart?.scaffoldingInvalidLinks||0)+
         scaffolding.invalidLinks,
       ...(plannedRequirements.length?{requirementsComplete,requirementCoverage}:{}),
@@ -2000,32 +2043,66 @@ export function attachScaffoldingToPart(part,links,{citedIds=null,rejectedClaims
   }
   for(const link of links){
     const target=answersById.get(link?.claimId);
-    if(!target)continue;
-    if((target.sourceIds||[]).length)continue;
+    // Batch 10 (B10-5): every proposed link is accounted for in the
+    // details array. The two skips below are not refusals — the link
+    // names a claim outside the part, or one that already carries
+    // citations — so they stay uncounted in invalidLinks, but they
+    // are recorded so a trace can explain every link that did not
+    // attach. Counted refusals (invalid-support, empty-evidence,
+    // archived-rejection, and the parse-level reasons in
+    // normalizeReview) each increment invalidLinks exactly once, so
+    // the counted reasons always sum to the counter.
+    if(!target){
+      invalidLinkDetails.push({claimId:typeof link?.claimId==='string'?
+        link.claimId:'',reason:'target-missing'});
+      continue;
+    }
+    if((target.sourceIds||[]).length){
+      invalidLinkDetails.push({claimId:target.claimId,
+        reason:'target-already-cited'});
+      continue;
+    }
     const supportIds=[...new Set(Array.isArray(link?.supportClaimIds)?
       link.supportClaimIds.filter(id=>typeof id==='string'):[])];
     let valid=supportIds.length>0;
+    let supportFailure=supportIds.length?null:{condition:'support-list-empty'};
     const supports=[];
     for(const supportId of supportIds){
       const support=answersById.get(supportId);
-      if(!support||!(support.sourceIds||[]).length||
-         (citedIds&&!citedIds.has(supportId))||
-         !(evidenceByClaim.get(supportId)||[]).length){valid=false;break;}
+      const condition=!support?'support-not-found':
+        !(support.sourceIds||[]).length?'support-uncited':
+        (citedIds&&!citedIds.has(supportId))?'support-not-draft-cited':
+        !(evidenceByClaim.get(supportId)||[]).length?'support-no-evidence':null;
+      if(condition){valid=false;supportFailure={supportId,condition};break;}
       supports.push(support);
     }
-    if(!valid){invalidLinks++;continue;}
+    if(!valid){
+      invalidLinks++;
+      invalidLinkDetails.push({claimId:target.claimId,reason:'invalid-support',
+        supportClaimIds:supportIds,
+        ...(supportFailure?.supportId?
+          {failedSupportId:supportFailure.supportId}:{}),
+        condition:supportFailure?.condition||'support-list-empty'});
+      continue;
+    }
     const entries=[];
     for(const support of supports)
       for(const entry of evidenceByClaim.get(support.claimId)){
         const {requirementIds,...rest}=entry;
         entries.push({...rest,claimId:target.claimId,point:target.text,reviewLinked:true});
       }
-    if(!entries.length){invalidLinks++;continue;}
+    if(!entries.length){
+      invalidLinks++;
+      invalidLinkDetails.push({claimId:target.claimId,reason:'empty-evidence',
+        supportClaimIds:supportIds});
+      continue;
+    }
     // Batch 9 (B9-3): archive-vs-link validation. A scaffolding link
     // must not resurrect a rejected claim in uncited dress: when the
     // target's text substantially restates a claim this part's
     // reviews rejected — the same containment measure B7-2 uses
-    // (|target ∩ rejected| / |rejected| >= 0.5 over content terms) —
+    // (the overlap coefficient over content terms, >= 0.5 since
+    // batch 10's B10-3) —
     // AND the link's support pool includes a source whose spans
     // failed the rejected claim, the spans that failed the cited
     // version are the evidence on offer for the restatement, and they
@@ -2043,7 +2120,7 @@ export function attachScaffoldingToPart(part,links,{citedIds=null,rejectedClaims
          !(rejected.sourceIds||[]).some(id=>poolSources.has(String(id))))continue;
       let shared=0;
       for(const term of targetTerms)if(rejectedTerms.has(term))shared++;
-      const containment=shared/rejectedTerms.size;
+      const containment=shared/Math.min(rejectedTerms.size,targetTerms.size);
       if(containment>=0.5&&(!archiveHit||containment>archiveHit.containment))
         archiveHit={matchedRejectedClaimId:rejected.claimId,containment};
     }
@@ -2085,6 +2162,90 @@ export function findUntracedCitedClaims(shippedParts,mechanisms={}){
     }
   }
   return untraced;
+}
+
+// Batch 10 (B10-1): demote untraced cited claims to the context
+// shape — the exact shape normalizeReview builds for retained
+// context claims (sourceIds emptied, renderedText = the bare prose).
+// The prose is the composer's and stays; what review never validated
+// is the bracket asserting a source stands behind it, and that is
+// the only thing removed. Mutates the given parts' answers in place
+// and returns what was stripped. Pure and exported, like the
+// invariant it serves, so the fixpoint's second pass is
+// unit-testable without a build.
+export function stripUntracedCitedClaims(shippedParts,untraced){
+  const byPart=new Map();
+  for(const entry of untraced||[]){
+    const list=byPart.get(entry.partId)||[];
+    list.push(entry.claimId);
+    byPart.set(entry.partId,list);
+  }
+  const claimIds=[],partIds=[];
+  for(const part of shippedParts||[]){
+    const ids=byPart.get(part.partId);
+    if(!ids)continue;
+    const idSet=new Set(ids);
+    let touched=false;
+    for(const answer of part.answers||[]){
+      if(!idSet.has(answer.claimId))continue;
+      answer.sourceIds=[];
+      answer.renderedText=answer.text;
+      claimIds.push(answer.claimId);
+      touched=true;
+    }
+    if(touched)partIds.push(part.partId);
+  }
+  return {claimIds,partIds};
+}
+
+// Batch 10 (B10-1): the strip, run to a bounded fixpoint. Stripping
+// can cascade within a part: the evidence map admits a claim's
+// entries only when its source is among the part's cited sources, so
+// removing one claim's marker can orphan a sibling whose entries all
+// rode on that source. After each pass, eligibility is re-derived —
+// a still-cited claim that HAS evidence entries, at least one of
+// which was map-eligible at the start of the pass and none of which
+// are eligible now, is stripped in the next pass. Bounded at
+// maxPasses (2): anything still untraced afterwards keeps the
+// caller's traced + downgraded treatment. Takes {partId, answers,
+// evidence} views; the answers arrays are mutated in place.
+export function stripUntracedCitedClaimsToFixpoint(shippedParts,untraced,
+ {maxPasses=2}={}){
+  const eligibleClaimKeys=()=>{
+    const keys=new Set();
+    for(const part of shippedParts||[]){
+      const cited=new Set(citationIds(renderAnswerParagraphs(part.answers||[])));
+      for(const entry of part.evidence||[])
+        if(cited.has(entry.sourceId))keys.add(part.partId+'|'+entry.claimId);
+    }
+    return keys;
+  };
+  let eligibleBefore=eligibleClaimKeys();
+  let toStrip=untraced||[],passes=0;
+  const claimIds=[],partIds=[];
+  while(toStrip.length&&passes<maxPasses){
+    passes++;
+    const stripped=stripUntracedCitedClaims(shippedParts,toStrip);
+    claimIds.push(...stripped.claimIds);
+    for(const partId of stripped.partIds)
+      if(!partIds.includes(partId))partIds.push(partId);
+    toStrip=[];
+    if(passes<maxPasses){
+      const eligibleAfter=eligibleClaimKeys();
+      for(const part of shippedParts||[]){
+        for(const answer of part.answers||[]){
+          if(!(answer.sourceIds||[]).length)continue;
+          if(!(part.evidence||[])
+            .some(entry=>entry.claimId===answer.claimId))continue;
+          const key=part.partId+'|'+answer.claimId;
+          if(eligibleBefore.has(key)&&!eligibleAfter.has(key))
+            toStrip.push({partId:part.partId,claimId:answer.claimId});
+        }
+      }
+      eligibleBefore=eligibleAfter;
+    }
+  }
+  return {claimIds,partIds,passes};
 }
 
 // Batch 8 (B8-6a): a list lead-in is a claim whose text ends with a
@@ -2637,8 +2798,23 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           .filter(issue=>issue.reason==='missing-claim-source-decision')
           .map(issue=>[issue.claimId+'|'+issue.sourceId,issue])).values()];
         let repairTrace=null;
-        if(!review.issues.length&&missingDecisions.length&&missingDecisions.length<=6){
-          const requested=missingDecisions.map(issue=>{
+        // Batch 10 (B10-2): the repair used to be all-or-nothing — more
+        // than six missing decisions meant NO repair, and missing
+        // decisions alongside other review issues left no trace at all
+        // (batch 9's Kierkegaard case: 8 missing decisions, zero
+        // record). The limit now degrades: up to six decisions are
+        // attempted, chosen round-robin across parts, and every
+        // non-attempt is traced. Decisions the subset leaves out keep
+        // the recovered decision's fail-closed treatment (partial, no
+        // spans) in the re-normalized review.
+        if(missingDecisions.length&&review.issues.length){
+          repairTrace={attempted:false,requestedCount:missingDecisions.length,
+            applied:false,reason:'repair-blocked-by-review-issues'};
+        }else if(missingDecisions.length){
+          const subset=missingDecisions.length<=6?missingDecisions:
+            roundRobinMissingDecisions(missingDecisions,6);
+          const subsetTaken=subset.length<missingDecisions.length;
+          const requested=subset.map(issue=>{
             const claim=reviewClaims.find(item=>item.claimId===issue.claimId);
             const partEvidence=reviewParts.find(item=>item.partId===issue.partId);
             const sourceEvidence=partEvidence?.evidence.find(item=>item.id===issue.sourceId);
@@ -2654,7 +2830,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               spans:spans.map(({spanId,text})=>({spanId,text})),
               spanIds:spans.map(span=>span.spanId)};
           }).filter(item=>item.claimText&&item.spans.length);
-          if(requested.length===missingDecisions.length){
+          if(requested.length===subset.length){
             try{
               const repair=await run('review-repair',REVIEW_REPAIR_PROMPT,
                 {question,decisions:requested},parseReviewJson);
@@ -2664,7 +2840,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               const combinedRawReview={claims:[...rawReviewByPart.values()]
                 .flatMap(raw=>Array.isArray(raw?.claims)?raw.claims:[])};
               const merged=mergeReviewRepairs(combinedRawReview,requested,repair);
-              repairTrace={attempted:true,requestedCount:requested.length,
+              repairTrace={attempted:true,requestedCount:missingDecisions.length,
+                ...(subsetTaken?{attemptedCount:requested.length}:{}),
                 applied:merged.ok,reason:merged.ok?'complete':merged.reason};
               if(merged.ok){
                 const repairedClaims=new Map(merged.review.claims
@@ -2676,14 +2853,13 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 review=normalizeAllParts();
               }
             }catch(error){
-              repairTrace={attempted:true,requestedCount:requested.length,applied:false,
-                reason:error.code||'repair-call-failed'};
+              repairTrace={attempted:true,requestedCount:missingDecisions.length,
+                ...(subsetTaken?{attemptedCount:requested.length}:{}),
+                applied:false,reason:error.code||'repair-call-failed'};
             }
           }else repairTrace={attempted:false,requestedCount:missingDecisions.length,
+            ...(subsetTaken?{attemptedCount:requested.length}:{}),
             applied:false,reason:'repair-evidence-unavailable'};
-        }else if(missingDecisions.length>6){
-          repairTrace={attempted:false,requestedCount:missingDecisions.length,
-            applied:false,reason:'repair-limit-exceeded'};
         }
         if(repairTrace)trace.reviewRepair=repairTrace;
         const acceptedClaimIdsByPart=new Map(review.parts.map(part=>[
@@ -3787,6 +3963,112 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     }
     trace.assemblyAudit=auditRecord;
   }
+  // Batch 10 (B10-4): depth repair, ported into the v2 pipeline.
+  // Batch 9's per-part depth assessment and repair (B9-1c) was built
+  // only into the legacy gateway pipeline (composeVerifiedAnswer);
+  // the v2 pipeline that serves all live and evaluation traffic never
+  // had it — batch 9's depth gains were its planner/composer
+  // additions alone, and every batch-9 evaluation record carried
+  // depthRepair:null. The trigger mirrors the legacy
+  // assessDevelopment per-part condition, evaluated on v2's part and
+  // claim structures: when the answer's total word count meets the
+  // development floor (180 words standard, 120 for comparisons) and
+  // the answer has multiple parts (or is a comparison), a part is
+  // thin when it is supported, or partial with at least one shipped
+  // cited claim, and its cited claims are a single claim or total
+  // under 45 cited words. Each thin part (at most two, in plan order)
+  // gets one targeted repair cycle through the same machinery as the
+  // other gates — so the L3 one-cycle rule applies and containment,
+  // which runs after this block, sees the final adopted text.
+  // Adoption goes through adoptRepairedPart, so the re-review's
+  // decisions are recorded, and additionally requires the re-reviewed
+  // part to carry MORE cited words than the original: a repair that
+  // does not develop is not adopted.
+  const depthRepair={triggered:false,reasons:[],applied:false,partIds:[]};
+  if(review&&!reviewFailure){
+    const countWords=text=>String(text||'').trim().split(/\s+/u)
+      .filter(Boolean).length;
+    const citedClaimsOf=item=>item.answers
+      .filter(answer=>(answer.sourceIds||[]).length);
+    const citedWordsOf=item=>citedClaimsOf(item)
+      .reduce((sum,answer)=>sum+countWords(answer.text),0);
+    const shippedParts=parts.filter(item=>
+      item.answerStatus!=='unanswered'&&item.answers.length);
+    const totalWords=shippedParts.reduce((sum,item)=>sum+
+      item.answers.reduce((partSum,answer)=>partSum+countWords(answer.text),0),0);
+    const wordFloor=plan?.intent==='compare'?120:180;
+    const thinParts=[];
+    if(totalWords>=wordFloor&&(shippedParts.length>=2||plan?.intent==='compare')){
+      for(const item of shippedParts){
+        const cited=citedClaimsOf(item);
+        const eligible=item.status==='answered'||
+          (item.status==='partial'&&cited.length>=1);
+        if(!eligible)continue;
+        if(cited.length===1||citedWordsOf(item)<45)thinParts.push(item);
+      }
+    }
+    if(thinParts.length){
+      depthRepair.triggered=true;
+      depthRepair.reasons=thinParts.map(item=>'thin-part:'+item.part.id);
+      const adoptedPartIds=[];
+      const applyDepthRepair=async(item)=>{
+        const planPart=item.part;
+        gateRepairCycles.push({partId:planPart.id,gate:'depth-repair'});
+        gateRepairConsumed.add(planPart.id);
+        const targets=citedClaimsOf(item).map(answer=>answer.claimId);
+        const originalCitedWords=citedWordsOf(item);
+        let candidate=null;
+        try{
+          candidate=await repairPartCandidate(item,{
+            targets,
+            addCoverage:true,
+            allowAdditions:true,
+            requireAllTargets:true,
+            supportIssues:[{partId:planPart.id,reason:'depth-repair-thin-part',
+              instruction:'This part is underdeveloped: it is carried by a single cited sentence or only a few cited words. Develop this part from the evidence supplied for it — explain the mechanism or reasoning behind its position, give the decisive example or image the passages offer for it, and contrast it with the neighbouring position where the supplied evidence supports the contrast. Add sentences only where they develop the same position from the same evidence, cite only the sources supplied for this part, and keep every added claim beside its citation. Do not merely restate the position, do not invent support, and do not pad.'}],
+            applyPatches:({replacements,additions})=>{
+              const answers=item.answers.map(answer=>{
+                const replacement=replacements.get(answer.claimId);
+                return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
+              });
+              const nextParagraph=Math.max(-1,...answers.map(answer=>
+                answer.paragraphIndex||0))+1;
+              for(const text of additions)
+                answers.push({text,renderedText:text,sourceIds:[],
+                  paragraphIndex:nextParagraph});
+              return answers;
+            },
+            validateCandidate:candidate=>
+              candidate.answers.filter(answer=>(answer.sourceIds||[]).length)
+                .reduce((sum,answer)=>sum+countWords(answer.text),0)>originalCitedWords});
+        }catch(error){
+          candidate=null;
+        }
+        if(!candidate)return;
+        try{
+          const {reReview,rePart}=await reReviewPartCandidate(item,candidate);
+          if(reReview.issues.length||!rePart||!rePart.answers.length||
+             rePart.answerStatus==='unanswered')return;
+          const reCitedWords=rePart.answers
+            .filter(answer=>(answer.sourceIds||[]).length)
+            .reduce((sum,answer)=>sum+countWords(answer.text),0);
+          if(reCitedWords<=originalCitedWords)return;
+          adoptRepairedPart(item,rePart,reReview);
+          adoptedPartIds.push(planPart.id);
+        }catch(error){
+          // The developed text could not be independently
+          // re-reviewed; the original part ships unchanged.
+        }
+      };
+      const repairableThinParts=thinParts
+        .filter(item=>!gateRepairConsumed.has(item.part.id)).slice(0,2);
+      await Promise.allSettled(repairableThinParts.map(applyDepthRepair));
+      const planOrder=new Map(plan.parts.map((part,index)=>[part.id,index]));
+      adoptedPartIds.sort((a,b)=>planOrder.get(a)-planOrder.get(b));
+      depthRepair.applied=adoptedPartIds.length>0;
+      depthRepair.partIds=adoptedPartIds;
+    }
+  }
   if(gateRepairCycles.length)trace.gateRepairCycles=gateRepairCycles;
   // Batch 7 (B7-2/B7-3): two deterministic passes over the shipped parts
   // run here, after every gate and before the context-claim second look.
@@ -3798,13 +4080,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   // and its sharpest sub-class was the post-rejection rewrite: a part
   // whose citations review rejected shipped anyway as uncited prose,
   // including softened rewrites of the very claims review had refused.
-  // A shipped uncited claim that covers at least half of a rejected
-  // claim's content terms — and is not better explained as a restatement
-  // of an accepted sibling — is a rewrite of refused material and is
-  // removed. The dominance comparison against accepted siblings is what
-  // keeps legitimate restatements safe: a thesis that restates the
-  // part's accepted claims overlaps them at least as strongly as it
-  // overlaps any rejected claim, so it is never dropped here.
+  // A shipped uncited claim whose overlap coefficient against a rejected
+  // claim (shared content terms over the smaller term set; batch 10,
+  // B10-3) reaches at least half — and is not better explained as a
+  // restatement of an accepted sibling — is a rewrite of refused
+  // material and is removed. The dominance comparison against accepted
+  // siblings is what keeps legitimate restatements safe: a thesis that
+  // restates the part's accepted claims overlaps them at least as
+  // strongly as it overlaps any rejected claim, so it is never dropped
+  // here.
   //
   // B7-3, claim-to-claim inheritance. The uncited scaffolding that
   // remains — a part thesis or closing sentence restating the part's own
@@ -3890,10 +4174,22 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           if((answer.sourceIds||[]).length)continue;
           const answerTerms=fallbackEvidenceTerms(answer.text);
           if(!answerTerms.size)continue;
+          // Batch 10 (B10-3): the overlap coefficient — shared terms
+          // over the SMALLER of the two term sets — replaces the
+          // one-sided ratio shared/|candidate|. A softened rewrite
+          // drops terms from the rejected proposition, which
+          // mechanically lowered the one-sided ratio below the bar
+          // while the rewrite's own terms still lived inside the
+          // rejected claim (batch 9's Plato escape). Against the
+          // smaller set a softened rewrite still measures high, while
+          // a genuinely different claim sharing only topic vocabulary
+          // measures low against both sets. The sibling-dominance
+          // comparison below uses the same coefficient, so a
+          // restatement of an accepted sibling stays protected.
           const overlapRatio=candidateTerms=>{
             let shared=0;
             for(const term of answerTerms)if(candidateTerms.has(term))shared++;
-            return shared/candidateTerms.size;
+            return shared/Math.min(candidateTerms.size,answerTerms.size);
           };
           let matched=null;
           for(const candidate of rejected){
@@ -4185,6 +4481,47 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         const item=parts.find(part=>part.part.id===entry.partId);
         if(item&&item.answerStatus==='answered')item.answerStatus='partial';
       }
+      // Batch 10 (B10-1): detection alone left the marker in the
+      // shipped answer — batch 9 shipped 14 cited claims with no
+      // mechanism behind them, visibly cited to readers, under an
+      // honest label only a trace-reader could see. Strip the marker
+      // instead: the claim is demoted to the context shape, its prose
+      // unchanged, to a bounded fixpoint (a strip can orphan a
+      // sibling whose evidence entries rode on the stripped claim's
+      // source). The downgrade above is computed from this PRE-strip
+      // result and stands.
+      const stripped=stripUntracedCitedClaimsToFixpoint(
+        parts.map(item=>({partId:item.part.id,answers:item.answers,
+          evidence:item.evidence})),untraced);
+      if(stripped.claimIds.length)trace.strippedCitations={
+        count:stripped.claimIds.length,claimIds:stripped.claimIds,
+        partIds:stripped.partIds,passes:stripped.passes};
+    }
+  }else if(reviewFailure){
+    // Batch 10 (B10-1): a whole-review failure never reaches the
+    // invariant above — there are no review decisions — but its parts
+    // ship under the same contract, with deterministic fallback as the
+    // only mechanism that can stand behind a citation. A draft claim
+    // the fallback withheld from (the B7-5b shape: review failed, the
+    // weak link refused) is untraced here and is stripped the same
+    // way; fallback-covered claims keep their markers. (The
+    // options.review===false mode never sets reviewFailure, so its
+    // intentional unverified-draft contract is untouched.)
+    const fallbackKeys=new Set([...fallbackEvidenceByPart.entries()]
+      .flatMap(([partId,entries])=>entries
+        .map(entry=>partId+'|'+entry.claimId)));
+    const untraced=findUntracedCitedClaims(
+      parts.map(item=>({partId:item.part.id,answers:item.answers})),
+      {fallback:fallbackKeys});
+    if(untraced.length){
+      hasUntracedCitedClaims=true;
+      trace.untracedCitedClaims=untraced;
+      const stripped=stripUntracedCitedClaimsToFixpoint(
+        parts.map(item=>({partId:item.part.id,answers:item.answers,
+          evidence:item.evidence})),untraced);
+      if(stripped.claimIds.length)trace.strippedCitations={
+        count:stripped.claimIds.length,claimIds:stripped.claimIds,
+        partIds:stripped.partIds,passes:stripped.passes};
     }
   }
   const included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
@@ -4299,6 +4636,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       used.size||reviewedLibraryClaims?'claim-review':'general-context-review',
     ...(failure?{failureCode:failure.code,failureStage:failure.stage}:{}),
     ...(reviewFailure?{failureCode:reviewFailure.code,failureStage:reviewFailure.stage}:{}),
+    // Batch 10 (B10-4): always present in v2 build results — the
+    // batch-9 lesson was a depthRepair field that existed at both
+    // ends (gateway spread, harness normalization) but was never
+    // produced here, so every record carried null.
+    depthRepair,
     followUpQuestions:[],usage,model:READER_MODEL,pipeline:CONTRACT_VERSION,
     notice:used.size?
       'Citations link to fingerprint-verified pages; uncited context and synthesis use the model’s broader knowledge. AI review can still be mistaken.':

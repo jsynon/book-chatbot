@@ -2073,3 +2073,132 @@ test('verification diet: a candidate discarded by selection is never fingerprint
   packetsFetched:1,packetCacheHits:0});
  assert.equal(data.verifiedPages,1);
 });
+
+// ---------------------------------------------------------------------------
+// Batch 10 (B10-4): depth repair in the v2 pipeline, exercised through
+// the pilot route — the batch-9 lesson was a mechanism verified only
+// in the legacy pipeline it never served, so these tests cross the
+// route into evidence-v2 and read depthRepair from the response.
+// ---------------------------------------------------------------------------
+const depthThickPart=[
+ 'Thucydides argues that the deepest cause of the war was the growth of Athenian power and the fear that this growth inspired in Sparta and its allies across Greece. [S1]',
+ 'He distinguishes that underlying cause from the immediate disputes and complaints that the two sides exchanged in the years before the fighting finally began in earnest. [S1]',
+ 'The fear operated quietly for years, shaping alliances and embassies long before any army marched, because each city interpreted the other side’s defensive measures as preparation for domination. [S1]',
+ 'Athens kept adding to its empire and its revenues, and every addition made the Spartan fear more reasonable in Spartan eyes, even when Athens described its own actions as defensive. [S1]',
+ 'The allies of Sparta pressed for a confrontation while they still believed the balance could be corrected, arguing that delay would only leave Athens stronger and their own position weaker. [S1]',
+ 'In this account the war became inevitable not because either side wanted destruction for its own sake, but because fear made compromise look like surrender to both camps. [S1]'].join(' ');
+const depthThinSentence='The war lasted so long because fear kept both alliances committed long after the original disputes had faded from memory. [S1]';
+function depthReview(payload,{fail=false}={}){
+ if(fail)return {choices:[{finish_reason:'stop',message:{content:'not a review'}}]};
+ return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+  parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'answered',
+   directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
+    .slice(0,1).map(claim=>claim.claimId),
+   retainedContextClaimIds:[]})),
+  claims:payload.claims.map(claim=>{
+   const sources=claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+    spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1),
+    attributionStatus:'supported',attributedSpeaker:'Thucydides'}));
+   return {claimId:claim.claimId,status:'answered',sources,
+    clauses:[{text:claim.text,status:'answered',issueCode:'none',
+     sources:sources.map(({sourceId,spanIds})=>({sourceId,status:'answered',spanIds}))}]};
+  })
+ })}}]};
+}
+function depthScenarioModel({p2Text,developed=true,failReReview=false}={}){
+ const state={repairCalls:0,repairSeen:false};
+ const model=async(_model,input)=>{
+  const system=input.messages?.[0]?.content||'';
+  const payload=JSON.parse(input.messages[1].content);
+  if(system.startsWith('Review the complete answer parts and claims'))
+   return depthReview(payload,{fail:failReReview&&state.repairSeen});
+  if(system.startsWith('Patch only the requested claims')){
+   state.repairCalls++;state.repairSeen=true;
+   const part=payload.parts[0];
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[{
+    partId:part.partId,
+    replacements:part.repair.replaceClaimIds.map(claimId=>({claimId,
+     text:'The war lasted for decades because the fear that had caused it did not end with the first campaigns: each side’s allies dragged their patrons back into fighting whenever a local quarrel reopened the larger question of Athenian power. [S1]'})),
+    additions:developed?[
+     'Thucydides stresses that the length of the war multiplied its suffering, as plague, civil conflict, and repeated invasions turned a dispute between two cities into a calamity for the whole Greek world. [S1]',
+     'Because neither Athens nor Sparta could accept a settlement that left the other’s power intact, every truce became only an interval in which both sides rebuilt their strength for the next round. [S1]']:[]}]})}}]};
+  }
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {choices:[{finish_reason:'stop',message:{content:
+    'PART P1\n'+depthThickPart+'\n\nPART P2\n'+p2Text}}]};
+  }
+  return {choices:[{finish_reason:'stop',message:{content:'{}'}}]};
+ };
+ return {model,state};
+}
+async function depthPost(pilot,token){
+ const page38=pilot.fixture.body.sources[0];
+ // The resolved question is explicitly two-part (", and why…"), which
+ // is what keeps normalizePlan from collapsing the plan to one part.
+ return pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War, and why did it last so long?',
+  answerVariant:'with-review',
+  sources:[{...page38}],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']},
+    {id:'P2',question:'Why did the war last so long?',sourceBookIds:['152']}]}
+ }});
+}
+
+test('evidence-v2 route: a thin part inside an adequate answer is depth-repaired and adopted (batch 10 B10-4)',async()=>{
+ const token='depth-repair-adopted-route-test-token';
+ const {model,state}=depthScenarioModel({p2Text:depthThinSentence});
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await depthPost(pilot,token);
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.deepEqual(result.depthRepair,
+  {triggered:true,reasons:['thin-part:P2'],applied:true,partIds:['P2']},
+  'depthRepair is produced by the v2 build and crosses the route');
+ assert.equal(state.repairCalls,1,'exactly one targeted repair cycle runs');
+ assert.ok((result.trace.reReviewDecisions||[]).some(decision=>decision.partId==='P2'),
+  'the adoption records the re-review’s decisions for the developed part');
+ assert.deepEqual(result.trace.gateRepairCycles,
+  [{partId:'P2',gate:'depth-repair'}]);
+ assert.match(result.answer,/multiplied its suffering/,
+  'the developed text ships in the answer');
+ assert.doesNotMatch(result.answer,/faded from memory/,
+  'the thin original sentence is replaced');
+});
+
+test('evidence-v2 route: a part thick by the floor never triggers depth repair (batch 10 B10-4)',async()=>{
+ const token='depth-repair-thick-route-test-token';
+ const thickP2=[
+  'The war lasted for decades because the fear that caused it did not end with the first campaigns or the first settlements between the two alliances. [S1]',
+  'Plague, civil conflict, and repeated invasions multiplied the suffering of the Greek world far beyond what either side had expected when the fighting began. [S1]',
+  'Neither Athens nor Sparta could accept a settlement that left the other’s power intact, so every truce became an interval for rebuilding strength. [S1]'].join(' ');
+ const {model,state}=depthScenarioModel({p2Text:thickP2});
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await depthPost(pilot,token);
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.deepEqual(result.depthRepair,
+  {triggered:false,reasons:[],applied:false,partIds:[]},
+  'depthRepair is present and quiet when nothing is thin');
+ assert.equal(state.repairCalls,0,'no repair call is made');
+});
+
+test('evidence-v2 route: a failed depth re-review keeps the original thin part (batch 10 B10-4)',async()=>{
+ const token='depth-repair-failed-rereview-route-token';
+ const {model,state}=depthScenarioModel({p2Text:depthThinSentence,failReReview:true});
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await depthPost(pilot,token);
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(state.repairCalls,1,'the repair was attempted');
+ assert.deepEqual(result.depthRepair,
+  {triggered:true,reasons:['thin-part:P2'],applied:false,partIds:[]},
+  'the trigger is recorded but nothing is adopted');
+ assert.match(result.answer,/faded from memory/,
+  'the original thin sentence still ships');
+ assert.doesNotMatch(result.answer,/multiplied its suffering/,
+  'the unreviewed developed text does not');
+});
