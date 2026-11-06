@@ -85,7 +85,7 @@ const HEADING_FUNCTION_WORDS=new Set(('a an the of to in on for and or but by wi
  * lowercase verb-bearing sentence never classifies: any lowercase content
  * word (a verb, a common noun, an adjective) marks sentence flow.
  */
-export function isHeadingOnlySpan(text){
+export function isHeadingLine(text){
   const value=String(text||'').trim();
   if(!value||/[\r\n]/u.test(value))return false;
   const wordsOf=s=>s.split(/\s+/u).filter(Boolean);
@@ -93,6 +93,10 @@ export function isHeadingOnlySpan(text){
   // Chapter opener glued to its title by a dash ("Chap. XXVII.—How
   // little the precepts…"): body prose does not open this way.
   if(/^(?:chapter|chap\.?)\s+(?:[IVXLCDM]+|\d+)\.?\s*[—–]/iu.test(value))return true;
+  // Batch 9 (B9-7b): a bare structural marker line ("CHAPTER VII.") is
+  // a heading by itself — the prefix rule below consumes the whole
+  // line and leaves nothing to test, so it never classified before.
+  if(/^(?:chapter|chap\.?|book|part|section|appendix)\s+(?:[IVXLCDM]+|\d+)[.:]?$/iu.test(value))return true;
   let rest=value;
   const prefix=value.match(/^(?:(?:chapter|chap\.?|book|part|section|appendix)\s+(?:[IVXLCDM]+|\d+)[.:]?\s+|\d+(?:\.\d+)+\.?\s+|\d+\.\s+)/iu);
   if(prefix)rest=value.slice(prefix[0].length).trim();
@@ -103,6 +107,25 @@ export function isHeadingOnlySpan(text){
     .filter(word=>/\p{L}/u.test(word)&&!HEADING_FUNCTION_WORDS.has(word.toLocaleLowerCase()));
   if(!content.length)return false;
   return content.every(word=>/^\p{Lu}/u.test(word));
+}
+
+export function isHeadingOnlySpan(text){
+  const value=String(text||'').trim();
+  if(!value)return false;
+  if(!/[\r\n]/u.test(value))return isHeadingLine(value);
+  // Batch 9 (B9-7b): multi-line heading blocks. Page text in older
+  // scans keeps a heading's lines together in one span ("THE
+  // VENERABLE, 27 / CHAPTER VII. / THE VENERABLE (ARHAT)."), and the
+  // single-line predicate rejected every multi-line span outright, so
+  // these blocks stayed selectable as claim evidence. A multi-line
+  // span is heading-only when EVERY non-empty line is a heading line
+  // and the block stays short; one substantive line — lowercase
+  // content words, a verb, ordinary sentence flow — keeps the whole
+  // span body text.
+  const lines=value.split(/\r?\n/u).map(line=>line.trim()).filter(Boolean);
+  if(lines.length<2)return lines.length===1&&isHeadingLine(lines[0]);
+  const totalWords=lines.reduce((sum,line)=>sum+line.split(/\s+/u).filter(Boolean).length,0);
+  return totalWords<=28&&lines.every(line=>isHeadingLine(line));
 }
 
 const REVIEW_STOP_WORDS=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
