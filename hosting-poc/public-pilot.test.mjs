@@ -1937,6 +1937,32 @@ test('public pilot labels unexpected answer-pipeline failures without exposing m
  assert.equal(pilot.stats().calls,2);
 });
 
+test('public pilot labels a v2-coded pipeline failure with its true code (batch 11 B11-2)',async()=>{
+ const pilot=await pilotScenario({model:async(_model,input)=>{
+   if(input.max_completion_tokens===520)return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     coverage:'partial',missing:'The excerpt supports only part of the question.',
+     evidence:[{id:'S1',point:'The source contains a relevant point.'}]
+   })}}],usage:{neurons:1}};
+   const result={choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+     answer:'The passage makes a limited claim [S1].',partChecks:[]
+   })}}]};
+   // The v2 build's errors carry the code on .code, not .failureCode;
+   // before B11-2 this throw collapsed to the catch-all label.
+   Object.defineProperty(result,'usage',{get(){
+     throw Object.assign(new Error('private provider response body'),
+       {code:'inference-deadline-exceeded'});
+   }});
+   return result;
+ }});
+ const response=await pilot.post({body:{question:'What does this passage say?'}});
+ assert.equal(response.status,502);
+ const failure=await response.json();
+ assert.equal(failure.failureCode,'inference-deadline-exceeded',
+  'a throw carrying a v2 code labels with that code, not the catch-all');
+ assert.equal(JSON.stringify(failure).includes('private provider response body'),false,
+  'the label changes; the raw message still never surfaces');
+});
+
 test('public pilot retries a malformed relation audit response once',async()=>{
  let calls=0;
  const pilot=await pilotScenario({model:async(_model,input)=>{
@@ -2183,6 +2209,78 @@ test('evidence-v2 route: a part thick by the floor never triggers depth repair (
   {triggered:false,reasons:[],applied:false,partIds:[]},
   'depthRepair is present and quiet when nothing is thin');
  assert.equal(state.repairCalls,0,'no repair call is made');
+});
+
+test('evidence-v2 route: a depth repair that duplicates a paragraph is refused (batch 11 B11-8)',async()=>{
+ const token='depth-repair-duplication-route-token';
+ // The narrators shape from batch 10: the repair develops the thin
+ // part by shipping the same developed paragraph twice — once as the
+ // replacement, once as an addition — so the cited-words adoption
+ // test passes while the reader would see the prose twice.
+ const developedText='The war lasted for decades because the fear that had caused it did not end with the first campaigns: each side’s allies dragged their patrons back into fighting whenever a local quarrel reopened the larger question of Athenian power. [S1]';
+ let repairCalls=0;
+ const model=async(_model,input)=>{
+  const system=input.messages?.[0]?.content||'';
+  const payload=JSON.parse(input.messages[1].content);
+  if(system.startsWith('Review the complete answer parts and claims'))
+   return depthReview(payload);
+  if(system.startsWith('Patch only the requested claims')){
+   repairCalls++;
+   const part=payload.parts[0];
+   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[{
+    partId:part.partId,
+    replacements:part.repair.replaceClaimIds.map(claimId=>({claimId,text:developedText})),
+    additions:[developedText]}]})}}]};
+  }
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {choices:[{finish_reason:'stop',message:{content:
+    'PART P1\n'+depthThickPart+'\n\nPART P2\n'+depthThinSentence}}]};
+  }
+  return {choices:[{finish_reason:'stop',message:{content:'{}'}}]};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await depthPost(pilot,token);
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(repairCalls,1,'the repair was attempted');
+ assert.deepEqual(result.depthRepair,
+  {triggered:true,reasons:['thin-part:P2'],applied:false,partIds:[],
+   refusals:[{partId:'P2',reason:'duplicate-paragraph'}]},
+  'the duplication guard refuses the adoption and records why');
+ assert.match(result.answer,/faded from memory/,
+  'the original thin sentence still ships');
+ assert.doesNotMatch(result.answer,/dragged their patrons/,
+  'the duplicated developed text does not ship');
+});
+
+test('evidence-v2 route: a build that returns a coded generation failure surfaces as 200 with the real code (batch 11 B11-1)',async()=>{
+ // The route-level half of the salvage contract: when the build
+ // RETURNS a failure (its normal path after B11-1), the gateway
+ // answers 200 with the build's true failure code — the 502
+ // catch-all is reserved for errors that still escape.
+ const token='salvage-route-failure-token';
+ const model=async(_model,input)=>{
+  const system=input.messages?.[0]?.content||'';
+  if(system.startsWith('Answer the reader\'s exact question')){
+   const error=new Error('Inference deadline exceeded');
+   error.code='inference-deadline-exceeded';error.stage='compose';
+   throw error;
+  }
+  return {choices:[{finish_reason:'stop',message:{content:'{}'}}]};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await depthPost(pilot,token);
+ assert.equal(response.status,200,
+  'a returned build failure is answered, not a 502');
+ const result=await response.json();
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureCode,'inference-deadline-exceeded',
+  'the body carries the true provider code');
+ assert.doesNotMatch(JSON.stringify(result),
+  /answer-generation-or-citation-failed/,
+  'and never the gateway catch-all');
 });
 
 test('evidence-v2 route: a failed depth re-review keeps the original thin part (batch 10 B10-4)',async()=>{

@@ -4707,8 +4707,19 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'relation-claim-audit-invalid','relation-claim-audit-too-long',
         'relation-claim-audit-incomplete','relation-claim-audit-retry-request-failed',
         'relation-claim-audit-retry-truncated','relation-claim-audit-retry-invalid',
-        'relation-claim-audit-retry-incomplete']);
+        'relation-claim-audit-retry-incomplete',
+        // Batch 11 (B11-2): the v2 evidence pipeline's failure codes.
+        'inference-deadline-exceeded','answer-request-failed',
+        'review-request-failed','answer-pipeline-failed',
+        'answer-citation-validation-failed','model-output-invalid-format',
+        'answer-output-truncated','answer-repair-invalid']);
+      // Batch 11 (B11-2): v2 build errors carry their code on .code,
+      // not .failureCode (the legacy pipeline's property). Fall back
+      // to it so a v2 failure labels with its true code instead of
+      // collapsing to the catch-all. Raw error messages still never
+      // surface — only the label changes.
       const failureCode=known.has(error?.failureCode)?error.failureCode:
+        known.has(error?.code)?error.code:
         'answer-generation-or-citation-failed';
       const diagnostics=answerPipelineFailureDiagnostics(error);
       const publicFailureCode=publicAiFailureCode(diagnostics.providerClass);
