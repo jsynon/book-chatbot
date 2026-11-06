@@ -86,8 +86,6 @@ export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each pa
 
 Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context. If a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim, it needs a source ID and exact span support. Merely mentioning a work or person in independent background does not require a citation. Mark uncited source-derived claims partial or unanswered; independent background and synthesis may remain uncited. Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness; the supplied passages cannot establish its truth, so do not treat their silence as disproof.
 
-Some parts are marked synthesisCoverage: their evidence spans two or more source groups, and the requested answer compares or synthesizes them. Evidence entries in such a part may be marked linkedEvidence: those sources are linked to the part even though the draft did not cite them, and their spans are available for source decisions like any other supplied span. For a synthesisCoverage part, judge comparison coverage by whether each side's position is supported by its own exact spans and a claim stating the contrast or combined conclusion cites the sources on both sides; do not mark such a contrast claim partial merely because no single span states the whole contrast. In a synthesisCoverage part, an uncited claim that tightly paraphrases a supplied span — the same proposition, scope, and qualification in different words — is source-derived, not general context: link it by returning a contextClaimLinks entry on that part's decision with the claimId, the sourceId, and the exact spanIds that support it as written, plus attributionStatus and attributedSpeaker when the claim names a speaker. Link a claim only when a supplied span genuinely supports it as written; a claim that fails that test stays context and is judged as context under the rules above. When several spans could support a claim, prefer the span that states the claim's proposition over a span that merely mentions its terms. contextClaimLinks is an optional array on the part decision; omit it when no uncited claim is source-linked. These synthesis rules change nothing for parts that are not marked synthesisCoverage.
-
 Judge each part against the exact question and the kind of response it requests, not just shared words or a related topic. When the reader asks how, why, or for reasons, check that the answer explains the requested reasoning or mechanism rather than merely stating a related rule or conclusion. For a comparison, check that it explains the requested relationship. Check every explicit demand within the part; if any substantive demand is missing, mark answerStatus partial. A blank heading, transition, or corpus-gap statement alone is not an answer. An analogy or adjacent theory may add context, but cannot substitute for a direct answer; the answer must explain the connection. A statement that the library or supplied passages do not answer the question describes the collection, not the answer to the reader; use it only as a brief caveat, and do not treat it as a direct answer unless the reader asked what the collection contains. For open questions, a clear and appropriately qualified explanation of what is known, unknown, and why may directly answer the reader.
 
 Use the supplied requiredAnswerClaimId as a candidate when reviewing directness, not as the only possible answer. It may be an uncited synthesis in the assistant's own voice; judge it as context rather than requiring a passage to state the synthesis verbatim. When a source-derived claim summarizes or combines positions, assess the cited spans together: complementary passages may support different components of a concise synthesis, but each cited source must support the component attributed to it, and the combined evidence must support the claim as a whole. Identify the claim or claims that directly answer the part in directAnswerClaimIds, whether they occur in the opening or later in the response. Mark answerStatus answered only when the direct-answer claims survive review and the remaining answer is coherent and complete. Do not mark a corpus-gap statement or merely adjacent source discussion as an answer to a different question.
@@ -492,21 +490,7 @@ function authorSourceGroupsForPart(part,plan){
   return (plan.sources||[]).filter(group=>['primary','subject'].includes(group.role)&&
     Array.isArray(group.bookIds)&&group.bookIds.some(id=>partBooks.has(String(id))));
 }
-// Batch 5 (R1): a part is a synthesis/comparison part when its linked
-// sources span two or more distinct source groups (falling back to
-// distinct books when the plan declares no group for a source). Only
-// flagged parts get the extended review packet and the synthesis
-// coverage standard; single-source expository parts are untouched.
-function partSourceGroupKey(source,plan){
-  const group=sourceGroupFor(source,plan);
-  return group?`group:${group.role}:${group.label}`:`book:${String(source?.bookId||'')}`;
-}
-function isMultiSourcePart(part,plan,sources){
-  const byId=new Map((sources||[]).map(source=>[source.id,source]));
-  const groups=new Set((part?.candidateSourceIds||[])
-    .filter(id=>byId.has(id)).map(id=>partSourceGroupKey(byId.get(id),plan)));
-  return groups.size>=2;
-}
+
 function asksForHypotheticalAuthorResponse(question){
   return /\b(?:what|how)\s+(?:would|might|could)\b.{0,180}\b(?:think|say|view|regard|respond|react)\b/i
     .test(String(question||''));
@@ -1030,54 +1014,6 @@ export function speakerIsWorkAuthor(speaker,source){
   return (catalogIdentity(source?.title||'').authors||[])
     .some(author=>personNamesMatch(speaker,author));
 }
-// Batch 5 (R1): validate a reviewer's proposed source link for an uncited
-// claim in a flagged synthesis/comparison part. The link is held to the
-// same gates as a draft citation — exact spans from the part's packet,
-// attribution status, claim/reviewer speaker consistency, the scoped
-// speaker cue, polarity, and negation scope. Any failure returns null and
-// the claim falls back to ordinary context handling: a rejected link is
-// never an error and never costs the claim its context retention.
-function validateContextClaimLink({link,answer,partId,part,sources,partSpanMaps,sourceById}){
-  const sourceId=String(link?.sourceId||'');
-  const source=sourceById.get(sourceId);
-  if(!source||!(part?.candidateSourceIds||[]).includes(sourceId))return null;
-  if(!Array.isArray(link?.spanIds)||!link.spanIds.length)return null;
-  const selectedBySource=selectReviewSpansBySource(
-    new Map([[sourceId,link.spanIds]]),new Set([sourceId]),sources,partSpanMaps||new Map());
-  const selected=selectedBySource.get(sourceId)||[];
-  if(!selected.length)return null;
-  const attributionStatus=['supported','conflict','unclear','not_applicable']
-    .includes(link?.attributionStatus)?link.attributionStatus:'missing';
-  const claimedSpeaker=typeof link?.attributedSpeaker==='string'?
-    link.attributedSpeaker.trim().slice(0,120):'';
-  const namedAttribution=hasNamedSpeakerAttribution(answer.text);
-  if(namedAttribution&&['conflict','unclear','not_applicable'].includes(attributionStatus))
-    return null;
-  const claimSpeaker=namedAttribution?specificClaimSpeaker(answer.text):'';
-  if(claimSpeaker&&claimedSpeaker&&!personNamesMatch(claimSpeaker,claimedSpeaker))
-    return null;
-  if(namedAttribution&&attributionStatus==='supported'&&claimedSpeaker&&
-     !speakerIsWorkAuthor(claimedSpeaker,source)&&
-     !hasExplicitSpeakerCue(speakerCueContext(
-       String(source.scopeText||source.text||source.preview||''),selected),claimedSpeaker))
-    return null;
-  const selectedQuote=selected.map(item=>item.quote).join(' ');
-  if(hasDirectPolarityContradiction(answer.text,selectedQuote))return null;
-  if(hasNegationScopeMismatch(answer.text,selectedQuote))return null;
-  for(const selection of selected){selection.claimId=answer.claimId;selection.point=answer.text;}
-  const retainedAnswer={...answer,sourceIds:[sourceId],
-    renderedText:String(answer.text||'').trim()+' ['+sourceId+']'};
-  return {retainedAnswer,evidence:selected,
-    decision:{partId,claimId:answer.claimId,sourceId,
-      claimText:String(answer.text||'').slice(0,320),claimStatus:'answered',sourceStatus:'answered',
-      attributionStatus,attributedSpeaker:claimedSpeaker,
-      candidateSpanIds:[],reviewerSpanIds:link.spanIds.slice(0,6),
-      acceptedSpanIds:selected.map(item=>item.spanId),
-      acceptedQuote:selected[0]?.quote?String(selected[0].quote).slice(0,280):'',
-      acceptedQuotes:selected.map(item=>String(item.quote||'').slice(0,280)),
-      accepted:true,validationReason:null,contextClaimLink:true}};
-}
-
 function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question,reviewClaims=[],initialAnswerContext=[]){
   const suppliedParts=new Map(),suppliedClaims=new Map(),issues=[],warnings=[],recovered=[];
   const expectedClaims=new Map(answerParts.flatMap(part=>(part.answers||[])
@@ -1157,7 +1093,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       ...(requirementIds.size?{requirementCoverage}:{}),
       directAnswerClaimIds:normalizedDirectAnswerClaimIds,
       retainedContextClaimIds,
-      contextClaimLinks:Array.isArray(item?.contextClaimLinks)?item.contextClaimLinks:[],
       invalidDirectAnswerClaimIds:[...new Set(invalidDirectAnswerClaimIds)]});
   }
   if(!Array.isArray(review?.claims))issues.push('missing-claims');
@@ -1195,15 +1130,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     const answerPart=answerParts.find(item=>item.partId===part.id);
     const reviewerPart=suppliedParts.get(part.id);
     if(!reviewerPart)issues.push('missing-part-decision');
-    // Batch 5 (R1): reviewer-proposed source links for uncited claims are
-    // honoured only in flagged synthesis/comparison parts; everywhere else
-    // classification is exactly as before.
-    const linkByClaimId=new Map();
-    if(reviewerPart&&isMultiSourcePart(part,plan,sources))
-      for(const link of reviewerPart.contextClaimLinks||[]){
-        const claimId=String(link?.claimId||'');
-        if(claimId&&!linkByClaimId.has(claimId))linkByClaimId.set(claimId,link);
-      }
     const acceptedAnswers=[],evidence=[],precedingAnswers=[...answerContext];
     for(const answer of answerPart?.answers||[]){
       const decision=suppliedClaims.get(answer.claimId);
@@ -1217,26 +1143,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           supportIssues.push({partId:part.id,claimId:answer.claimId,
             reason:'context-claim-has-source-decisions'});
           continue;
-        }
-        // Batch 5 (R1): a validated contextClaimLinks entry promotes this
-        // uncited claim to a cited claim with the linked source's spans.
-        // An invalid link only costs the link — the claim continues to
-        // ordinary context handling below.
-        const contextLink=linkByClaimId.get(answer.claimId);
-        if(contextLink){
-          const linked=validateContextClaimLink({link:contextLink,answer,
-            partId:part.id,part,sources,
-            partSpanMaps:reviewSpanMaps.get(part.id)||new Map(),
-            sourceById:new Map(sources.map(source=>[source.id,source]))});
-          if(linked){
-            acceptedAnswers.push(linked.retainedAnswer);
-            evidence.push(...linked.evidence);
-            precedingAnswers.push(linked.retainedAnswer);
-            reviewDecisions.push(linked.decision);
-            continue;
-          }
-          warnings.push({partId:part.id,claimId:answer.claimId,
-            code:'context-claim-link-not-validated'});
         }
         const partLevelStatus=reviewerPart?.status||'unanswered';
         // A direct answer is tracked separately from the retained context
@@ -1683,15 +1589,10 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question,
   const reviewSpanMaps=new Map(),reviewSpanMapsByPart=new Map();
   const reviewParts=answerParts.map(part=>{
     const citedIds=new Set(part.answers.flatMap(answer=>answer.sourceIds));
-    const planPart=plan.parts.find(item=>item.id===part.partId);
-    // Batch 5 (R1): for a flagged synthesis/comparison part the packet
-    // also carries the part's linked-but-uncited sources (marked
-    // linkedEvidence), so the reviewer can give a tight paraphrase of
-    // those spans a source decision instead of a context classification.
-    // Unflagged parts keep exactly the draft-cited packet.
-    const multiSource=isMultiSourcePart(planPart||{candidateSourceIds:[]},plan,sources);
-    const packetIds=multiSource?new Set([...citedIds,
-      ...(planPart?.candidateSourceIds||[]).filter(id=>pageById.has(id))]):citedIds;
+    // The packet carries exactly the sources the draft cited. (Batch 5's
+    // R1 extension to linked-but-uncited sources was removed in batch 6:
+    // the reviewer never used it — see B6-3.)
+    const packetIds=citedIds;
     const partSpanMaps=new Map();
     const evidence=[...pageById.values()].filter(page=>packetIds.has(page.id)).map(page=>{
       const source=sources.find(item=>item.id===page.id);
@@ -1709,7 +1610,6 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question,
         .map(item=>({relation:item.support,...(item.excerpt?{excerpt:item.excerpt}:{})}));
       const provenance=sourceProvenance(source,plan,spanText);
       return {id:page.id,title:page.title,page:page.page,provenance,
-        ...(citedIds.has(page.id)?{}:{linkedEvidence:true}),
         ...(sourceVoiceGuidance(provenance)?{attributionRequirement:sourceVoiceGuidance(provenance)}:{}),
         spans:orderedSpans.map(({spanId,text})=>({spanId,text})),
         ...(selectionSupport.length?{selectionSupport}:{}),
@@ -1719,10 +1619,8 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question,
     const contextClaims=part.answers.filter(answer=>!answer.sourceIds.length)
       .map(({claimId,text})=>({claimId,text}));
     return {partId:part.partId,question:part.question,requirements:plan.parts.find(item=>item.id===part.partId)?.requirements||[],
-      // answerMode keeps its existing meaning — it reflects evidence the
-      // draft actually cited, not the R1 linked-source extension.
+      // answerMode reflects evidence the draft actually cited.
       answerMode:evidence.some(entry=>citedIds.has(entry.id))?'source-and-context':'general-context',
-      ...(multiSource?{synthesisCoverage:true}:{}),
       ...(part.requiredAnswerClaimId?{requiredAnswerClaimId:part.requiredAnswerClaimId}:{}),
       ...(contextClaims.length?{contextClaims}:{}),evidence};
   });
@@ -1772,6 +1670,51 @@ function fallbackSpanVerifiablyOverlaps(claimText,spanText){
   for(const phrase of fallbackEvidencePhrases(claimText))
     if(spanPhrases.has(phrase))return true;
   return false;
+}
+// Batch 6 (B6-1): the context-claim second look (below) holds its
+// attachments to a stricter standard than the fallback builder above.
+// Phase 2 showed the fallback bar — ≥2 shared terms with one span —
+// attaching citations whose spans stated only one leg of a multi-element
+// claim (25% fully supported, vs 86% for reviewer-native citations).
+// The second look therefore measures coverage over the UNION of all
+// attached spans, across every linked source: a synthesis claim attaches
+// only when both of its sides are present in the evidence, and a simple
+// paraphrase of one passage is covered by that passage alone.
+function secondLookCoverage(claimText,spanTexts){
+  const claimTerms=fallbackEvidenceTerms(claimText);
+  if(!claimTerms.size)return {shared:0,claimTerms:0,ratio:0};
+  const union=new Set();
+  for(const spanText of spanTexts)
+    for(const term of fallbackEvidenceTerms(spanText))union.add(term);
+  let shared=0;
+  for(const term of claimTerms)if(union.has(term))shared++;
+  return {shared,claimTerms:claimTerms.size,
+    ratio:Math.round((shared/claimTerms.size)*1000)/1000};
+}
+function secondLookMeetsCoverage(coverage){
+  return coverage.claimTerms>0&&
+    coverage.shared>=Math.max(2,Math.ceil(coverage.claimTerms/2));
+}
+function normalizedRepetitionText(value){
+  return String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/gu,' ');
+}
+// Running headers and footers repeat verbatim across a book's pages;
+// genuine body sentences essentially never repeat three times within one
+// source. A span whose normalized text occurs 3+ times in its source —
+// or one shorter than 40 characters, too short to state a proposition —
+// is page furniture, not evidence, and is ineligible in the second look.
+function secondLookSpanEligible(span,normalizedSourceText){
+  if(!span||String(span.text||'').length<40)return false;
+  const needle=normalizedRepetitionText(span.text);
+  if(!needle)return false;
+  let occurrences=0,from=0;
+  while(occurrences<3){
+    const at=normalizedSourceText.indexOf(needle,from);
+    if(at<0)break;
+    occurrences++;from=at+needle.length;
+  }
+  return occurrences<3;
 }
 // Build deterministic citation->span links from the validated draft when the
 // model review failed outright. Entries mirror the shape normalizeReview
@@ -2074,8 +2017,45 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         provenance,
         ...(voiceGuidance?{attributionRequirement:voiceGuidance}:{})};
     })};
-    const composed=await run('compose',COMPOSER_PROMPT,composePayload,
-      response=>parsePartAnswers(response,plan));
+    // Batch 6 (B6-4): compose is a single whole-answer call and had no
+    // retry — one malformed, truncated, or deadline-cut response killed
+    // the whole request (four of the phase-2 run's nine failures died at
+    // or around compose). Mirror the review retry discipline below: one
+    // retry with the same payload when the call fails with a transient
+    // or format code, or when the parsed draft is structurally unusable
+    // (an invalid heading sequence, or every heading missing — the same
+    // model-output-invalid-format class the failure assignments below
+    // use). A second failure propagates exactly as the first would have
+    // today, with the original codes.
+    const retryableComposeCodes=['model-output-invalid-format','answer-output-truncated',
+      'inference-deadline-exceeded','answer-request-failed'];
+    // Match run()'s stage-trace normalization, as the review retry does:
+    // a provider failure with no machine-readable code is a request
+    // failure, not a reason to skip the retry.
+    const composeFailureCode=error=>
+      typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
+        error.code:'answer-request-failed';
+    let composeRetry=null;
+    const attemptCompose=async()=>{
+      try{
+        return await run('compose',COMPOSER_PROMPT,composePayload,
+          response=>parsePartAnswers(response,plan));
+      }catch(firstComposeError){
+        const failureCode=composeFailureCode(firstComposeError);
+        if(!retryableComposeCodes.includes(failureCode)||usage.calls>=callLimit)
+          throw firstComposeError;
+        composeRetry={attempted:true,reason:failureCode,applied:false};
+        // Record the attempt before retrying: if the retry also fails,
+        // the throw below skips every later trace assignment, and the
+        // record of the attempt must still reach the trace.
+        trace.composeRetry=composeRetry;
+        const retried=await run('compose',COMPOSER_PROMPT,composePayload,
+          response=>parsePartAnswers(response,plan));
+        composeRetry.applied=true;
+        return retried;
+      }
+    };
+    let composed=await attemptCompose();
     const recordHeadingRecovery=(parsed,stage)=>{
       if(Array.isArray(parsed?.recoveredPartHeadings)&&parsed.recoveredPartHeadings.length){
         trace.formatRecoveries ||= [];
@@ -2088,6 +2068,19 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           headings:parsed.rawPartHeadings||[]});
       }
     };
+    if(!composeRetry&&(composed.invalidPartHeadingSequence||composed.missingAllHeadings)&&
+       usage.calls<callLimit){
+      composeRetry={attempted:true,reason:'model-output-invalid-format',applied:false};
+      trace.composeRetry=composeRetry;
+      try{
+        const retried=await run('compose',COMPOSER_PROMPT,composePayload,
+          response=>parsePartAnswers(response,plan));
+        if(!retried.invalidPartHeadingSequence&&!retried.missingAllHeadings){
+          composed=retried;
+          composeRetry.applied=true;
+        }
+      }catch{/* a failed retry leaves the original draft and its failure path */}
+    }
     recordHeadingRecovery(composed,'compose');
     let draft=composed;
     if(composed.invalidPartHeadingSequence)failure={stage:'compose',code:'model-output-invalid-format',
@@ -2938,9 +2931,29 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     // (S1-Q3 shape) leaking into prose, and a heading line repeated
     // verbatim (a spliced duplicate). List lines are exempt from the
     // bold check, mirroring normalizeAnswerMarkdown's own list handling.
+    // Batch 6 (B6-5) adds the splice artifacts phase 2 shipped unflagged:
+    // list markers spliced into a paragraph line, a colon line that ends
+    // a part without the list it announced, and a part opening on a
+    // lowercase fragment.
+    // Batch 6 (B6-5): a list marker is legitimate only at the start of a
+    // list line. On a prose line, a marker that follows a completed
+    // sentence — or two markers in the one line — is a bullet spliced
+    // into a paragraph (the phase-2 Machiavelli shape). Emphasis and
+    // bold markers never have whitespace after the marker, so the
+    // marker-plus-space shape does not touch them.
+    const inlineListMarkerSplice=line=>{
+      const trimmed=String(line||'').trim();
+      if(!trimmed||/^(?:[-*•]|\d+[.)])\s+/.test(trimmed))return false;
+      const markers=[...trimmed.matchAll(/[*•](?=\s)/g)]
+        .filter(match=>match.index>0&&/\s/.test(trimmed[match.index-1]));
+      if(markers.length>=2)return true;
+      if(!markers.length)return false;
+      return /[.!?…]["'”’)]?\s$/.test(trimmed.slice(0,markers[0].index));
+    };
     const seamScan=segment=>{
       const found=[];
-      for(const line of String(segment||'').split('\n')){
+      const lines=String(segment||'').split('\n');
+      for(const line of lines){
         const trimmed=line.trim();
         if(!trimmed||/^(?:[-*•]|\d+[.)])\s+/.test(trimmed))continue;
         if(((trimmed.match(/\*\*/g)||[]).length)%2===1){
@@ -2948,6 +2961,23 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         }
       }
       if(/\bS[1-9]\d*-Q[1-9]\d*\b/.test(segment))found.push('raw-span-id-in-prose');
+      if(lines.some(line=>inlineListMarkerSplice(line)))
+        found.push('inline-list-marker-splice');
+      const contentLines=lines.map(line=>line.trim()).filter(Boolean);
+      // A part segment that ends on a colon line announced a list the
+      // assembly never delivered (the phase-2 progress shape). Heading
+      // and label lines are not introductions.
+      const lastLine=contentLines.at(-1);
+      if(lastLine&&lastLine.endsWith(':')&&!headingKeyOf(lastLine)&&
+         !/^(?:[-*•]|\d+[.)])\s+/.test(lastLine))
+        found.push('dangling-list-introduction');
+      // A verbatim source fragment spliced at a part's head opens
+      // mid-sentence: the first content line (headings and bold labels
+      // excluded) begins with a lowercase letter.
+      const firstContentLine=contentLines.find(line=>
+        !headingKeyOf(line)&&!line.startsWith('**'));
+      if(firstContentLine&&/^[a-z]/.test(firstContentLine))
+        found.push('lowercase-segment-opening');
       return found;
     };
     const headingKeyOf=line=>{
@@ -3048,7 +3078,9 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
         // heading sits) is targeted.
         const seamTypes=[...new Set(violations
           .filter(violation=>violation.partId===partId&&
-            ['unbalanced-bold','raw-span-id-in-prose','duplicated-heading']
+            ['unbalanced-bold','raw-span-id-in-prose','duplicated-heading',
+             'inline-list-marker-splice','dangling-list-introduction',
+             'lowercase-segment-opening']
               .includes(violation.type))
           .map(violation=>violation.type))];
         const duplicatedHeadings=violations
@@ -3064,10 +3096,20 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           }))return true;
           if(seamTypes.includes('raw-span-id-in-prose')&&
              /\bS[1-9]\d*-Q[1-9]\d*\b/.test(rendered))return true;
+          if(seamTypes.includes('inline-list-marker-splice')&&
+             rendered.split('\n').some(line=>inlineListMarkerSplice(line)))return true;
           return false;
         }).map(answer=>answer.claimId);
         if(seamTypes.includes('duplicated-heading')&&item.answers.length)
           seamTargets.push(item.answers.at(-1).claimId);
+        // Batch 6 (B6-5): the dangling introduction sits in the part's
+        // last claim (where the segment ends) and the lowercase opening
+        // in its first claim (where the segment begins); target those
+        // claims the same way a duplicated heading targets the last one.
+        if(seamTypes.includes('dangling-list-introduction')&&item.answers.length)
+          seamTargets.push(item.answers.at(-1).claimId);
+        if(seamTypes.includes('lowercase-segment-opening')&&item.answers.length)
+          seamTargets.push(item.answers[0].claimId);
         const targets=[...new Set([...endingTargets,...seamTargets])];
         const extraClaims=missing.map(claimId=>({
           claimId,text:claimTextFor(partId,claimId),
@@ -3186,19 +3228,31 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     trace.assemblyAudit=auditRecord;
   }
   if(gateRepairCycles.length)trace.gateRepairCycles=gateRepairCycles;
-  // Batch 5 (A1): deterministic context-claim second look. A claim the
-  // reviewer retained as uncited context in a source-and-context part may
-  // in fact paraphrase a passage from one of the part's linked sources —
-  // the reviewer never saw those uncited sources' spans for it. Test each
-  // such claim against each linked source's top-ranked span using the
-  // EXISTING batch-2 fallback standard (≥2 distinct content terms or one
-  // exact 3-word phrase — the same bar buildFallbackEvidenceByPart
-  // applies). A claim that passes gets the citation attached and joins
-  // the evidence map; a claim that fails stays uncited, so the
+  // Batch 5 (A1) + Batch 6 (B6-1): deterministic context-claim second
+  // look. A claim the reviewer retained as uncited context in a
+  // source-and-context part may in fact paraphrase a passage from one of
+  // the part's linked sources — the reviewer never saw those uncited
+  // sources' spans for it. Each linked source contributes its top-ranked
+  // eligible span as a candidate; the batch-2 fallback bar still gates
+  // each candidate span on its own. Batch 6 adds the claim-level bar the
+  // phase-2 audit demanded: the claim attaches only when the union of
+  // its candidate spans covers at least half of the claim's distinct
+  // content terms (secondLookCoverage above), and page-furniture spans
+  // are ineligible. A claim that passes gets the citation attached and
+  // joins the evidence map; a claim that fails stays uncited, so the
   // general-knowledge allowance is untouched. No model call, no prompt
-  // change: this generalizes an already-approved standard.
+  // change.
   if(review&&!reviewFailure){
     const secondLook=[];
+    const eligibleSpansBySource=new Map();
+    const eligibleSpans=(sourceId,text)=>{
+      if(!eligibleSpansBySource.has(sourceId)){
+        const normalizedSource=normalizedRepetitionText(text);
+        eligibleSpansBySource.set(sourceId,buildReviewSpans(sourceId,text)
+          .filter(span=>secondLookSpanEligible(span,normalizedSource)));
+      }
+      return eligibleSpansBySource.get(sourceId);
+    };
     for(const item of parts){
       if(item.answerStatus==='unanswered'||!item.answers.length)continue;
       if(failedReviewParts.some(failed=>failed.partId===item.part.id))continue;
@@ -3213,12 +3267,15 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
           const source=sources.find(entry=>entry.id===sourceId);
           const text=source?.scopeText||source?.text||source?.preview||'';
           if(!text)continue;
-          const top=rankReviewSpans(buildReviewSpans(sourceId,text),
+          const top=rankReviewSpans(eligibleSpans(sourceId,text),
             {question:item.part.question,answer:answer.text})[0];
           if(!top||!fallbackSpanVerifiablyOverlaps(answer.text,top.text))continue;
           attached.push({sourceId,span:top});
         }
         if(!attached.length)continue;
+        const coverage=secondLookCoverage(answer.text,
+          attached.map(entry=>entry.span.text));
+        if(!secondLookMeetsCoverage(coverage))continue;
         answer.sourceIds=attached.map(entry=>entry.sourceId);
         answer.renderedText=String(answer.text||'').trim()+
           ' ['+answer.sourceIds.join(', ')+']';
@@ -3227,7 +3284,8 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
             quote:span.text,anchorQuote:span.text,start:span.start,end:span.end,
             secondLook:true});
         secondLook.push({partId:item.part.id,claimId:answer.claimId,
-          sourceIds:answer.sourceIds,spanIds:attached.map(entry=>entry.span.spanId)});
+          sourceIds:answer.sourceIds,spanIds:attached.map(entry=>entry.span.spanId),
+          coverageRatio:coverage.ratio});
       }
     }
     if(secondLook.length)trace.contextSecondLook=secondLook;
