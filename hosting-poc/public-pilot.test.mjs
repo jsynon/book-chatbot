@@ -3,6 +3,39 @@ import assert from 'node:assert/strict';
 import * as support from './public-gateway.test-support.mjs';
 const {gzipSync,gateway,handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,prepareCandidatePages,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,planSearchGapQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights,HOST,PDF,manifest,pages,question,payload,fetcher,request,env,fingerprintTestFixture,pilotBaseEnv,pilotScenario}=support;
 
+test('batch 15 pilot route preserves subtitles and canonical quotation repair through scaffolding',async()=>{
+ const token='batch15-quotation-heading-route-fixture-token';let composeCalls=0,reviewCalls=0;
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   composeCalls++;
+   return {response:'PART P1\n**Growth vs. Fear:** The growth of Athenian power inspired fear in Sparta. [S1]\n\nThis explains "rising tension".'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   reviewCalls++;const payload=JSON.parse(input.messages[1].content);
+   const result=depthReview(payload);const body=JSON.parse(result.choices[0].message.content);
+   body.parts[0].scaffoldingLinks=[{claimId:'P1-C2',supportClaimIds:['P1-C1']}];
+   return {response:JSON.stringify(body)};
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
+  sources:[pilot.fixture.body.sources[0]],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ assert.match(result.answer,/\*\*Growth vs\. Fear:\*\*/);
+ assert.doesNotMatch(result.answer,/\*\*[^*]*\[S\d+\][^*]*\*\*/);
+ assert.match(result.answer,/This explains rising tension\. \[S1\]/);
+ assert.equal(composeCalls,1);assert.equal(reviewCalls,1);
+ const shipped=new Set(result.questionParts.flatMap(p=>p.claimIds));
+ assert.ok(result.evidenceMap.every(e=>shipped.has(e.claimId)));
+ assert.ok(result.trace.finalCoverageReconciliation.length);
+});
+
 test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every guard exists',async()=>{
  const off=await handleRequest(new Request(HOST+'/api/pilot-status',{
    headers:{Origin:'https://jsynon.github.io'}
