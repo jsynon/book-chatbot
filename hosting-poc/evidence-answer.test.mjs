@@ -3,6 +3,104 @@ import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
+import {splitCitedSentenceUnits,reconcileFinalPartCoverage} from './evidence-answer.mjs';
+
+test('batch 15 preserves quoted sentence punctuation and leading Markdown subtitles',()=>{
+ for(const text of [
+  'The notice says "Keep moving. Watch the ridge! Wait... then proceed?" [S1].',
+  'The notice says “Keep moving. Watch the ridge! Wait… then proceed?” [S1].',
+  '**Practice vs. Reason:** Custom guides expectation [S1].',
+  '* **Stability vs. Dissolution:** Luxury affects workers [S1].',
+  '__Practice vs. Reason:__ Custom guides expectation [S1].',
+  'Dr. Vale quotes "W.E.B. remains here. Wait!" [S1].',
+  'The notice says "Use ZXQREADERSTRUCTUREPUNCTUATION0ZXQ. Wait!" [S1].'
+ ])assert.deepEqual(splitCitedSentenceUnits(text),[text]);
+ assert.deepEqual(splitCitedSentenceUnits('One fact [S1]. Another fact [S1].'),
+  ['One fact [S1].','Another fact [S1].']);
+ const unmatched='The notice says "Keep moving. Watch the ridge [S1].';
+ assert.equal(splitCitedSentenceUnits(unmatched).join(' ').replace(/\s+/g,' '),unmatched);
+});
+
+test('batch 15 quote repair survives review scaffolding without restoring quotation marks',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n\nThe account explains "learned expectation".'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   assert.equal(payload.parts[0].contextClaims[0].text,'The account explains learned expectation.');
+   return answer(JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:['P1-C1'],scaffoldingLinks:[{claimId:'P1-C2',supportClaimIds:['P1-C1']}]}],
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',spanIds:[sourceId+'-Q1']}))}))}));
+  }]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.match(result.answer,/The account explains learned expectation\. \[S1\]/);
+ assert.doesNotMatch(result.answer,/"learned expectation"/);
+ assert.equal(auditFinalAnswer(result.answer,[hume]).ok,true);
+ assert.equal(result.trace.quoteRepairs[0].claimId,'P1-C2');
+ assert.equal(result.trace.quoteRepairs[0].canonicalTextUpdated,true);
+ assert.equal(ai.calls.length,2);
+});
+
+test('batch 15 full review path keeps a subtitle intact and its citation on the body',async()=>{
+ const ai=makeAI([answer('PART P1\n**Practice vs. Reason:** Hume links necessity to custom and regular conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.match(result.answer,/\*\*Practice vs\. Reason:\*\*/);
+ assert.doesNotMatch(result.answer,/\*\*[^*]*\[S\d+\][^*]*\*\*/);
+ assert.match(result.answer,/conjunction\. \[S1\]/);
+ assert.equal(result.trace.claimInheritance,undefined);
+ assert.equal(ai.calls.length,2);
+});
+
+test('batch 15 final coverage follows surviving claims without promoting partial judgments',()=>{
+ const item={part:{id:'P1'},status:'answered',answerStatus:'answered',
+  answers:[{claimId:'P1-C1',sourceIds:[]}],requirementsComplete:true,
+  requirementCoverage:[
+   {requirementId:'R1',status:'answered',answerClaimIds:['P1-C1']},
+   {requirementId:'R2',status:'answered',answerClaimIds:['P1-C1','P1-C2']},
+   {requirementId:'R3',status:'answered',answerClaimIds:['P1-C2']},
+   {requirementId:'R4',status:'partial',answerClaimIds:['P1-C1']} ]};
+ const trace=reconcileFinalPartCoverage([item],new Set(['P1']));
+ assert.deepEqual(item.requirementCoverage.map(x=>x.status),['answered','partial','unanswered','partial']);
+ assert.equal(item.answerStatus,'partial');assert.equal(item.requirementsComplete,false);
+ assert.deepEqual(trace[0].shippedClaimIds,['P1-C1'],'approved context survives without forced citations');
+ assert.equal(trace[0].requirements.length,2);
+ reconcileFinalPartCoverage([item],new Set(['P1']),{suppressed:true});
+ assert.ok(item.requirementCoverage.every(x=>x.status==='unanswered'&&!x.answerClaimIds.length));
+ assert.equal(item.answerStatus,'unanswered');
+});
+
+test('batch 15 refuses reviewer citation attachment to a subtitle',()=>{
+ const part={answers:[{claimId:'C1',text:'**Practice vs. Reason:**',sourceIds:[]},
+  {claimId:'C2',text:'Custom guides expectation.',sourceIds:['S1']}],
+  evidence:[{claimId:'C2',sourceId:'S1',quote:'Custom guides expectation.'}]};
+ const result=attachScaffoldingToPart(part,[{claimId:'C1',supportClaimIds:['C2']}]);
+ assert.equal(result.invalidLinks,1);
+ assert.equal(result.invalidLinkDetails[0].reason,'target-heading');
+ assert.deepEqual(part.answers[0].sourceIds,[]);
+});
+
+test('batch 15 final-audit salvage clears dropped requirement and evidence references',async()=>{
+ const plan={...twoSidePlan,parts:twoSidePlan.parts.map(p=>({...p,
+  requirements:[{id:p.id+'-R1',text:'Explain this position.'}]}))};
+ const draft='PART P1\nHume explains causal expectation through custom. [S1]\n'+
+  'PART P2\nKant treats causality as an a priori category. [S2]\n'+
+  'PART P3\nHume emphasizes custom while Kant emphasizes an a priori category. [S1, S2]';
+ const ai=makeAI([answer(draft),review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer(twoSidePlan.resolvedQuestion,[hume,kant],ai,[],
+  {plan,catalog,trace:true,postReviewAuditPartId:'P1'});
+ const dropped=result.questionParts.find(p=>p.partId==='P1');
+ assert.deepEqual(dropped.claimIds,[]);
+ assert.equal(dropped.requirementsComplete,false);
+ assert.equal(dropped.requirementCoverage[0].status,'unanswered');
+ assert.deepEqual(dropped.requirementCoverage[0].answerClaimIds,[]);
+ assert.ok(result.evidenceMap.every(e=>e.partId!=='P1'));
+ const original=result.trace.reviewContract.partDecisions.find(p=>p.partId==='P1');
+ assert.equal(original.requirementCoverage[0].status,'answered','original reviewer record retained');
+ assert.equal(original.outputRequirementCoverage[0].status,'unanswered');
+ assert.equal(result.answerCompleteness,'partial');
+});
 
 const catalog={35:'An Enquiry Concerning Human Understanding — David Hume',40:'Critique of Pure Reason — Immanuel Kant'};
 function parsePayload(messages){
@@ -1214,7 +1312,8 @@ test('a consequence-only sentence cannot pass a phrase-meaning part as a direct 
  assert.deepEqual(result.trace.reviewContract.partDecisions,[{
   partId:'P1',reviewerStatus:'partial',finalStatus:'partial',reviewerAnswerStatus:'partial',
   finalAnswerStatus:'partial',directAnswerClaimIds:[],acceptedDirectAnswerClaimIds:[],
-  directAnswerCovered:false,outputStatus:'partial',outputAnswerStatus:'partial'
+  directAnswerCovered:false,outputStatus:'partial',outputAnswerStatus:'partial',
+  outputAcceptedDirectAnswerClaimIds:[]
  }]);
  assert.equal(ai.calls.length,2,'the direct-answer check uses the existing compose and review calls');
 });
@@ -1230,7 +1329,7 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
   partId:'P1',reviewerStatus:'answered',finalStatus:'answered',reviewerAnswerStatus:'answered',
   finalAnswerStatus:'answered',directAnswerClaimIds:['P1-C1'],
   acceptedDirectAnswerClaimIds:['P1-C1'],directAnswerCovered:true,outputStatus:'supported',
-  outputAnswerStatus:'answered'
+  outputAnswerStatus:'answered',outputAcceptedDirectAnswerClaimIds:['P1-C1']
  }]);
 });
 
@@ -3212,8 +3311,8 @@ test('a non-exact quotation is converted to a paraphrase and reviewed with neigh
  assert.match(result.answer,/within double consciousness forces Black Americans/);
  assert.doesNotMatch(result.answer,/“double consciousness”/);
  assert.equal(result.trace.rejected.length,0);
- assert.deepEqual(result.trace.quoteRepairs,[{partId:'P1',sentenceIndex:2,
-  quote:'double consciousness',sourceIds:['S5'],action:'removed-nonexact-quotation-marks'}]);
+ assert.deepEqual(result.trace.quoteRepairs,[{partId:'P1',claimId:'P1-C2',sentenceIndex:2,
+  quote:'double consciousness',sourceIds:['S5'],action:'removed-nonexact-quotation-marks',canonicalTextUpdated:true}]);
  assert.deepEqual(result.citations.map(item=>item.id),['S5','S3']);
 });
 
@@ -6360,11 +6459,12 @@ test('attachScaffoldingToPart refuses a link onto the pool that failed the rejec
   'a target with no substantial text match to the rejection attaches normally');
 });
 
-test('attachScaffoldingToPart does not let the archive check refuse a heading target (batch 11 B11-6)',()=>{
+test('subtitle attachment is refused before the archive check while prose containment remains enforced (batch 15)',()=>{
  // The batch-10 Hobbes shape at the link site: the heading's whole
  // term set lives inside the rejected claim, so the archive check
  // measured containment 1.0 and refused the link. A heading is
- // furniture, not a restatement, so the check does not apply to it.
+ // furniture, not a restatement. Batch 15 refuses citation attachment
+ // to that furniture outright; the prose archive control stays intact.
  const part={answers:[
    {claimId:'P1-C1',text:'First established position.',sourceIds:['S1'],
     renderedText:'First established position. [S1]'},
@@ -6378,8 +6478,10 @@ test('attachScaffoldingToPart does not let the archive check refuse a heading ta
  const attached=attachScaffoldingToPart(part,
   [{claimId:'P1-C3',supportClaimIds:['P1-C1']}],
   {citedIds:new Set(['P1-C1']),rejectedClaims});
- assert.equal(attached.invalidLinks,0,'the archive check does not refuse the heading target');
- assert.equal(attached.attached.length,1,'the link attaches onto the heading');
+ assert.equal(attached.invalidLinks,1);
+ assert.equal(attached.invalidLinkDetails[0].reason,'target-heading');
+ assert.equal(attached.attached.length,0,'headings never acquire a scaffolding citation');
+ assert.deepEqual(part.answers[1].sourceIds,[]);
  // Control: a prose target restating the same rejection on the same
  // pool is still refused.
  const prose={answers:[

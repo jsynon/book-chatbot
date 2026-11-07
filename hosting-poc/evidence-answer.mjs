@@ -6,7 +6,7 @@
  * evaluation-only expansion paths. Deterministic source and citation checks
  * remain outside model judgment: a passing review is not a truth guarantee.
  */
-import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,sourceProvenance,catalogIdentity,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
+import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,quotations,sourceProvenance,catalogIdentity,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,isHeadingOnlySpan} from './review-spans.mjs';
 
 export const READER_MODEL='@cf/google/gemma-4-26b-a4b-it';
@@ -468,7 +468,14 @@ function citationGroups(text){
     isSourceIdCitation:/^\s*S\d+(?:\s*,\s*S\d+)*\s*$/i.test(match[1])
   }));
 }
-function splitCitedSentenceUnits(paragraph){
+function leadingAnswerHeading(text){
+  return String(text||'').match(/^\s*(?:(?:[-*•]|\d+[.)])\s+)?(?:\*\*[^*\n]{1,140}\*\*|__[^_\n]{1,140}__|#{1,3}\s+[^\n]{1,140})/u);
+}
+function isAnswerHeading(text){
+  const value=String(text||'').trim();
+  return leadingAnswerHeading(value)?.[0]===value||isHeadingOnlySpan(value);
+}
+export function splitCitedSentenceUnits(paragraph){
   const groups=citationGroups(paragraph);
   if(!groups.some(group=>group.looksLikeCitation)||typeof Intl.Segmenter!=='function')
     return [paragraph];
@@ -502,7 +509,21 @@ function splitCitedSentenceUnits(paragraph){
       abbreviationDots.push(marker);
       return marker;
     })());
-  const segments=[...new Intl.Segmenter('en',{granularity:'sentence'}).segment(protectedSegmentationText)]
+  // Sentence punctuation inside a complete quotation or leading Markdown
+  // subtitle belongs to that structure. Splitting it can create a heading
+  // fragment that inherits a citation, or put a citation inside a quotation.
+  const protectedRanges=quotations(protectedSegmentationText);
+  const heading=leadingAnswerHeading(protectedSegmentationText);
+  if(heading)protectedRanges.push({start:0,end:heading[0].length});
+  let punctuationPrefix='ZXQREADERSTRUCTUREPUNCTUATION';
+  while(protectedSegmentationText.includes(punctuationPrefix))punctuationPrefix+='X';
+  const protectedPunctuation=[];
+  const structureProtectedText=protectedSegmentationText.replace(/[.!?…]/gu,(value,offset)=>{
+    if(!protectedRanges.some(range=>offset>=range.start&&offset<range.end))return value;
+    const marker=punctuationPrefix+protectedPunctuation.length+'ZXQ';
+    protectedPunctuation.push({marker,value});return marker;
+  });
+  const segments=[...new Intl.Segmenter('en',{granularity:'sentence'}).segment(structureProtectedText)]
     .map(item=>item.segment);
   const units=[];
   for(const segment of segments){
@@ -519,7 +540,8 @@ function splitCitedSentenceUnits(paragraph){
     const withCitations=markers.reduce((text,item)=>
       text.replace(item.marker,item.raw),unit);
     const withInitialisms=initialismDots.reduce((text,marker)=>text.replace(marker,'.'),withCitations);
-    return abbreviationDots.reduce((text,marker)=>text.replace(marker,'.'),withInitialisms).trim();
+    const withAbbreviations=abbreviationDots.reduce((text,marker)=>text.replace(marker,'.'),withInitialisms);
+    return protectedPunctuation.reduce((text,item)=>text.replace(item.marker,item.value),withAbbreviations).trim();
   }).filter(Boolean);
   return restored.length>1?restored:[paragraph];
 }
@@ -663,8 +685,6 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
       if(reason){reject(reason);continue;}
       const quoteRepair=removeUnsupportedQuoteMarks(checkedUnit,sources);
       checkedUnit=quoteRepair.text;
-      for(const repair of quoteRepair.repairs)quoteRepairs.push({partId:part.id,
-        sentenceIndex:sentenceIndex+1,...repair});
       // Validate while citations are still beside the sentences they support.
       // Aggregating them at the paragraph end first can make an exact quote
       // look uncited when later sentences intervene.
@@ -672,6 +692,14 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
         reject('quotation-citation-mismatch');continue;
       }
       const claimId=part.id+'-C'+(answers.length+1);
+      // Store the same repaired prose that review/rendering will use. Later
+      // scaffolding and inheritance rebuild renderedText from this field.
+      prose=checkedUnit;
+      for(const group of citationGroups(checkedUnit).filter(group=>group.looksLikeCitation))
+        prose=prose.replace(group.raw,'');
+      prose=prose.replace(/\s+([,.;!?])/g,'$1').replace(/\s{2,}/g,' ').trim();
+      for(const repair of quoteRepair.repairs)quoteRepairs.push({partId:part.id,
+        claimId,sentenceIndex:sentenceIndex+1,...repair,canonicalTextUpdated:true});
       answers.push({claimId,text:prose,renderedText:checkedUnit,sourceIds:ids,paragraphIndex});
       if(isRequiredAnswer)requiredAnswerClaimId=claimId;
       const removedSourceIds=[...new Set(groupsWithIds.flatMap(group=>group.ids)
@@ -687,6 +715,33 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
       ...(requiresHypotheticalInference?{missingHypotheticalInference:!hasHypotheticalInference}:{})});
   }
   return {parts:output,rejected,citationRepairs,citationFormatRepairs,quoteRepairs};
+}
+
+export function reconcileFinalPartCoverage(parts,includedPartIds,{suppressed=false}={}){
+  return parts.map(item=>{
+    const shipped=includedPartIds.has(item.part.id)&&!suppressed;
+    const claimIds=new Set(shipped?item.answers.map(answer=>answer.claimId):[]);
+    const changes=[];
+    if(Array.isArray(item.requirementCoverage)){
+      item.requirementCoverage=item.requirementCoverage.map(requirement=>{
+        const originalIds=requirement.answerClaimIds||[];
+        const answerClaimIds=originalIds.filter(id=>claimIds.has(id));
+        const status=!answerClaimIds.length?'unanswered':
+          requirement.status==='answered'&&answerClaimIds.length!==originalIds.length?
+            'partial':requirement.status;
+        if(status!==requirement.status||answerClaimIds.length!==originalIds.length)
+          changes.push({requirementId:requirement.requirementId,
+            priorStatus:requirement.status,finalStatus:status,
+            removedClaimIds:originalIds.filter(id=>!claimIds.has(id))});
+        return {...requirement,status,answerClaimIds};
+      });
+      item.requirementsComplete=item.requirementCoverage.length>0&&
+        item.requirementCoverage.every(requirement=>requirement.status==='answered');
+      if(!item.requirementsComplete&&item.answerStatus==='answered')item.answerStatus='partial';
+    }
+    if(!claimIds.size){item.status='unanswered';item.answerStatus='unanswered';}
+    return {partId:item.part.id,shippedClaimIds:[...claimIds],requirements:changes};
+  });
 }
 
 function renderAnswerParagraphs(answers){
@@ -2099,6 +2154,13 @@ export function attachScaffoldingToPart(part,links,{citedIds=null,rejectedClaims
         reason:'target-already-cited'});
       continue;
     }
+    // Titles are structural labels, not source-derived claims. Even a
+    // reviewer-nominated link must not decorate a subtitle with a citation.
+    if(isAnswerHeading(target.text)){
+      invalidLinks++;
+      invalidLinkDetails.push({claimId:target.claimId,reason:'target-heading'});
+      continue;
+    }
     const supportIds=[...new Set(Array.isArray(link?.supportClaimIds)?
       link.supportClaimIds.filter(id=>typeof id==='string'):[])];
     let valid=supportIds.length>0;
@@ -2150,10 +2212,10 @@ export function attachScaffoldingToPart(part,links,{citedIds=null,rejectedClaims
       (support.sourceIds||[]).map(String)),
       ...entries.map(entry=>String(entry.sourceId))]);
     const targetTerms=fallbackEvidenceTerms(target.text);
-    // Batch 11 (B11-6): a heading-shaped target is furniture, not a
-    // restatement — the same exemption the containment drops loop
-    // applies — so the archive check does not refuse a link for it.
-    const targetIsFurniture=isHeadingOnlySpan(target.text)||
+    // List lead-ins are structural furniture, so the archive check
+    // does not mistake them for restatements. Heading targets have
+    // already been refused above.
+    const targetIsFurniture=isAnswerHeading(target.text)||
       isListLeadInAnswer(part.answers,target);
     const archiveCandidates=targetIsFurniture?[]:(rejectedClaims||[]);
     let archiveHit=null;
@@ -4411,7 +4473,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             // few terms all live inside a rejected claim is not a
             // rewrite of it (batch 10's Hobbes heading measured
             // containment 1.0 on exactly four terms).
-            if(isHeadingOnlySpan(answer.text)||
+            if(isAnswerHeading(answer.text)||
                isListLeadInAnswer(item.answers,answer))continue;
             const answerTerms=fallbackEvidenceTerms(answer.text);
             if(!answerTerms.size)continue;
@@ -4472,7 +4534,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // the sibling claims. Claims that gained citations through
           // review scaffolding (B8-1) are already excluded by the
           // cited-claim check above — inheritance never double-attaches.
-          if(isHeadingOnlySpan(answer.text)||
+          if(isAnswerHeading(answer.text)||
              isListLeadInAnswer(item.answers,answer))continue;
           const claimTerms=fallbackEvidenceTerms(answer.text);
           if(!claimTerms.size)continue;
@@ -4607,7 +4669,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // deterministic attachment pass cites them. Inheritance applies
           // the same exclusion above; a heading the reviewer retained
           // ships as context, never as a highlighted claim.
-          if(isHeadingOnlySpan(answer.text)||
+          if(isAnswerHeading(answer.text)||
              isListLeadInAnswer(item.answers,answer))continue;
           const attached=[];
           for(const sourceId of linkedIds){
@@ -4937,9 +4999,13 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         part.answerStatus='unanswered';part.answers=[];part.evidence=[];}
       assemblySuppressed=true;
     }
+    const includedPartIds=new Set(included.map(item=>item.part.id));
+    trace.finalCoverageReconciliation=reconcileFinalPartCoverage(parts,includedPartIds,
+      {suppressed:assemblySuppressed});
+    const finalClaimIdsByPart=new Map(trace.finalCoverageReconciliation.map(item=>
+      [item.partId,new Set(item.shippedClaimIds)]));
     const partCitationIds=new Map(parts.map(item=>[item.part.id,
       new Set(citationIds(renderAnswerParagraphs(item.answers)))]));
-    const includedPartIds=new Set(included.map(item=>item.part.id));
     const questionParts=parts.map(item=>({part:item.part.question,partId:item.part.id,
       // Batch 5 (Q1): the IDs of the claims that actually ship in this part.
       // The gateway builds evidence highlights from this set — a claim in it
@@ -4968,6 +5034,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         decision.outputStatus=!returned||returned.status==='unanswered'?'unsupported':
           returned.status==='answered'&&!unreviewed?'supported':'partial';
         decision.outputAnswerStatus=!returned||assemblySuppressed?'unanswered':returned.answerStatus||'unanswered';
+        decision.outputAcceptedDirectAnswerClaimIds=(decision.acceptedDirectAnswerClaimIds||[])
+          .filter(id=>finalClaimIdsByPart.get(decision.partId)?.has(id));
+        if(returned?.requirementCoverage)
+          decision.outputRequirementCoverage=returned.requirementCoverage;
       }
     }
     const coverage=questionParts.every(part=>part.status==='supported')?'full':
@@ -5007,6 +5077,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     for(const item of parts){
       if(item.status==='unanswered')continue;
       for(const support of item.evidence){
+        if(!finalClaimIdsByPart.get(item.part.id)?.has(support.claimId))continue;
         if(!partCitationIds.get(item.part.id)?.has(support.sourceId))continue;
         const source=sources.find(value=>value.id===support.sourceId);if(!source)continue;
         const sourceAnchor=support.anchorQuote||support.quote;
