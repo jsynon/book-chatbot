@@ -485,7 +485,7 @@ test('compact review decisions validate exact spans without rationale text or re
   if(messages[0].content.startsWith('Answer the reader'))return answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]');
   reviewPayload=parsePayload(messages);
   const claim=reviewPayload.claims[0],span=reviewPayload.parts[0].evidence[0].spans[0];
-  assert.equal(max_completion_tokens,messages[0].content.startsWith('Answer the reader')?1800:1370);
+  assert.equal(max_completion_tokens,messages[0].content.startsWith('Answer the reader')?1800:1420);
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
     spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}],
@@ -1337,8 +1337,10 @@ test('uncovered within-part requirements use the existing bounded answer repair 
  const question='How does Hume explain causal necessity, and what role does custom play?';
  const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,
   requirements:[
-   {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
-   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}
+   {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.',
+    questionAnchor:'How does Hume explain causal necessity'},
+   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.',
+    questionAnchor:'what role does custom play'}
   ]}]};
  let repairPayload;
  const reviewed=(payload,coverage)=>({response:JSON.stringify({
@@ -1347,7 +1349,9 @@ test('uncovered within-part requirements use the existing bounded answer repair 
    requirementCoverage:coverage(payload)}],
   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-    spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})});
+    spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
+    evidenceRole:'work-assertion',
+    supportBoundary:'The source explains its own account of necessity.'}))}))})});
  const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]'),
   (_model,{messages})=>{
    const payload=parsePayload(messages);
@@ -1360,8 +1364,13 @@ test('uncovered within-part requirements use the existing bounded answer repair 
   (_model,{messages})=>{
    repairPayload=JSON.parse(messages[1].content);
    assert.deepEqual(repairPayload.parts[0].repair.missingRequirements,[{
-    requirementId:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'
+    requirementId:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.',
+    questionAnchor:'what role does custom play'
    }]);
+   assert.equal(repairPayload.parts[0].requirements[1].questionAnchor,
+    'what role does custom play');
+   assert.equal(repairPayload.parts[0].claims[0].initialReview[0].evidenceRole,'work-assertion');
+   assert.match(repairPayload.parts[0].claims[0].initialReview[0].supportBoundary,/own account/);
    assert.equal(repairPayload.parts[0].repair.addCoverage,true);
    return {response:JSON.stringify({parts:[{partId:'P1',replacements:[],
     additions:['Custom trains the mind to infer one event after another from their repeated conjunction. [S1]']}]})};
@@ -1494,12 +1503,16 @@ test('review can select relevant exact evidence beyond the claim-ranked hint lis
  const plan={version:'reader-evidence-v2',intent:'explain',
   sources:[{label:'Boethius',role:'primary',bookIds:['21']}],
   parts:[{id:'P1',question:'How does Lady Philosophy explain the inherent instability of Fortune?',
+   requirements:[{id:'P1-R1',text:'Explain why Fortune is unstable.',
+    questionAnchor:'explain the instability of Fortune'}],
    sourceBookIds:['21'],candidateSourceIds:['S1']}]};
  const draft='PART P1\nLady Philosophy explains that Fortune is inherently unstable because her very nature is defined by inconstancy and changing lots. [S1]';
  const run=async(partStatus)=>{
   let reviewerPayload;
   const ai=makeAI([answer(draft),(_model,{messages})=>{
    reviewerPayload=parsePayload(messages);
+   assert.equal(reviewerPayload.parts[0].requirements[0].questionAnchor,
+    'explain the instability of Fortune');
    const claim=reviewerPayload.claims[0];
    const sourceEvidence=claim.sourceEvidence.find(item=>item.sourceId==='S1');
    const pageEvidence=reviewerPayload.parts[0].evidence.find(item=>item.id==='S1');
@@ -1508,9 +1521,12 @@ test('review can select relevant exact evidence beyond the claim-ranked hint lis
    assert.ok(!sourceEvidence.spanIds.includes(sourceReason.spanId),
     'this fixture reproduces the run 14 miss: the exact span is outside the ranked claim hints');
    return {response:JSON.stringify({
-    parts:[{partId:'P1',status:partStatus,directAnswerClaimIds:[claim.claimId]}],
+    parts:[{partId:'P1',status:partStatus,directAnswerClaimIds:[claim.claimId],
+     requirementCoverage:[{requirementId:'P1-R1',status:'answered',answerClaimIds:[claim.claimId]}]}],
     claims:[{claimId:claim.claimId,status:'answered',sources:[{
-     sourceId:'S1',status:'answered',spanIds:[sourceReason.spanId]}]}]
+     sourceId:'S1',status:'answered',spanIds:[sourceReason.spanId],
+     evidenceRole:'work-assertion',
+     supportBoundary:'Lady Philosophy says Fortune is unstable by nature; this supports her account of instability.'}]}]
    })};
   }],{decorateReview:false});
   const result=await composeEvidenceAnswer('How does Lady Philosophy explain the instability of Fortune?',
@@ -1527,6 +1543,8 @@ test('review can select relevant exact evidence beyond the claim-ranked hint lis
  assert.equal(decision.reviewerSpanIds[0],'S1-Q4');
  assert.equal(decision.acceptedSpanIds[0],'S1-Q4');
  assert.match(decision.acceptedQuote,/constancy which belongs not to my ways/i);
+ assert.equal(decision.evidenceRole,'work-assertion');
+ assert.match(decision.supportBoundary,/unstable by nature/);
  assert.equal(answered.ai.calls.length,2,'using the same-source fallback adds no model call');
 
  const reviewerPartial=await run('partial');
@@ -4339,8 +4357,8 @@ test('review output budget scales past the old cap for a many-claim review',asyn
  assert.ok(reviewCall,'the review call was made');
  assert.ok(reviewCall.request.max_completion_tokens>4200,
   'a 25-claim review is no longer truncated by the old 4,200-token cap');
- assert.equal(reviewCall.request.max_completion_tokens,5450,
-  'the budget is 1,200 plus 170 tokens per review record');
+ assert.equal(reviewCall.request.max_completion_tokens,6700,
+  'the budget is 1,200 plus 220 tokens per review record');
  assert.equal(result.trace.reviewRetry,undefined,'a completed review is not retried');
 });
 
@@ -6321,6 +6339,15 @@ test('bold unwrap strips a whole-paragraph wrap and spares labels, titles, and s
 test('composer prompt keeps titles on their own line and paragraphs out of bold (batch 9 B9-8)',()=>{
  assert.match(COMPOSER_PROMPT,/Keep each section title on its own line, and never wrap a paragraph in bold/);
  assert.match(COMPOSER_PROMPT,/bold is for a short label or lead-in phrase only/);
+});
+
+test('Batch 16 prompts preserve verbatim question anchors and explicit evidence scope',()=>{
+ assert.match(COMPOSER_PROMPT,/questionAnchor is a verbatim excerpt from the reader.s current question/i);
+ assert.match(COMPOSER_PROMPT,/treat the anchor as a guide, not a lexical completion test or evidence/i);
+ assert.match(COMPOSER_PROMPT,/work.s own position, a view it reports, narrative voice, and editorial context/i);
+ assert.match(REVIEW_PROMPT,/evidenceRole.*supportBoundary/);
+ assert.match(REVIEW_PROMPT,/work-assertion\|reported-position\|character-or-narrator\|editorial-context\|unclear/);
+ assert.match(REVIEW_PROMPT,/what the accepted span establishes and the relevant limit/i);
 });
 
 test('final assembly unwraps every part opener wrapped in bold (batch 9 B9-8)',async()=>{
