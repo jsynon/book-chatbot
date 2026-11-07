@@ -10,7 +10,7 @@
  * identity; they do not prove that a claim follows from the source.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {MAX_SELECTOR_CANDIDATES,orderFallbackCandidates,recoverUncoveredPartCandidates,
+import {MAX_SELECTOR_CANDIDATES,enforcePartPacketFloor,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,
   selectEvidenceCandidates} from './evidence-selector.mjs';
 import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {completeEvidenceAnchor,normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
@@ -4552,10 +4552,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           const decision=await selectEvidenceCandidates({question:data.question,parts:selectionParts,
             candidates:selectorCandidates,ai:env.AI});
           sourceSelectionUsage=decision.usage;
-          const selectionRecovery=decision.selectedCandidateIds.length?
-            recoverUncoveredPartCandidates(decision,selectorCandidates):{
-              selectedCandidateIds:decision.selectedCandidateIds,recoveredPartLinks:[],skippedPartRecoveries:[]
-            };
+          const floorDecision=enforcePartPacketFloor(decision,selectorCandidates);
+          const selectionRecovery=recoverUncoveredPartCandidates({...decision,
+            selectedCandidateIds:floorDecision.selectedCandidateIds},selectorCandidates);
           const selectedIds=selectionRecovery.selectedCandidateIds;
           if(!selectedIds.length){
             // Keep the selector's abstention: do not relabel retrieval-order
@@ -4566,20 +4565,24 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
               status:sourceSelectionStatus,candidateCount:candidatePool.length,
               selectionCandidateCount:selectionCandidates.length,
               suppressedCandidateDuplicates:candidateDeduplication.suppressed,
-              candidates:selectorCandidates,decision,selected:[]};
+              candidates:selectorCandidates,decision,selected:[],
+              packetFloor:floorDecision.packetFloor};
           }else{
           const byCandidateId=new Map(selectionCandidates.map((source,index)=>['C'+(index+1),source]));
           let totalBytes=0;
           const duplicateTrace=[];
           const recoveredPartLinks=[];
           const skippedPartRecoveries=[...selectionRecovery.skippedPartRecoveries];
-          for(const id of selectedIds){
+          const packingIds=orderPacketForPacking(selectedIds,decision.parts,
+            floorDecision.packetFloorLinks);
+          for(const id of packingIds){
             const source=byCandidateId.get(id);
             if(!source)continue;
             const recoveredForCandidate=selectionRecovery.recoveredPartLinks.filter(link=>link.candidateId===id);
             const candidatePartIds=[...new Set([
               ...decision.parts.filter(part=>part.candidateIds.includes(id)).map(part=>part.partId),
-              ...recoveredForCandidate.map(link=>link.partId)
+              ...recoveredForCandidate.map(link=>link.partId),
+              ...floorDecision.packetFloorLinks.filter(link=>link.candidateId===id).map(link=>link.partId)
             ])];
             const candidatePartSupport=decision.parts.flatMap(part=>part.evidence
               .filter(entry=>entry.candidateId===id).map(entry=>({partId:part.partId,
@@ -4587,6 +4590,15 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:id,
               candidatePartIds,candidatePartSupport,duplicateTrace,budget:35000,totalBytes,question:data.question});
             totalBytes=packed.totalBytes;
+            if(!packed.source&&floorDecision.packetFloorLinks.some(link=>link.candidateId===id)){
+              const failedLinks=floorDecision.packetFloorLinks.filter(link=>link.candidateId===id);
+              floorDecision.packetFloor.skipped.push(...failedLinks.map(link=>({partId:link.partId,
+                candidateId:id,reason:'answer-packet-budget'})));
+              floorDecision.packetFloor.added=floorDecision.packetFloor.added
+                .filter(link=>link.candidateId!==id);
+              floorDecision.packetFloorLinks=floorDecision.packetFloorLinks
+                .filter(link=>link.candidateId!==id);
+            }
             for(const link of recoveredForCandidate){
               if(packed.source)recoveredPartLinks.push({...link,candidateId:packed.source.candidateId,
                 retrievedCandidateId:id});
@@ -4608,6 +4620,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
               candidatePartIds:source.candidatePartIds,candidatePartSupport:source.candidatePartSupport})),
             ...(recoveredPartLinks.length?{recoveredPartLinks}:{}),
             ...(skippedPartRecoveries.length?{skippedPartRecoveries}:{}),
+            packetFloor:floorDecision.packetFloor,
             suppressedDuplicates:duplicateTrace};
           sourceSelectionStatus='selected';
           }

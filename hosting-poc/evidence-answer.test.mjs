@@ -2045,7 +2045,8 @@ test('a multi-part source-and-context answer keeps direct general knowledge for 
  assert.match(result.answer,/The Odyssey presents heroism/);
  assert.match(result.answer,/Hume links causal necessity.*\[S1\]/);
  assert.deepEqual(result.trace.citationGate,
-  [{partId:'P2',action:'repair-failed',preGateStatus:'partial'}],
+  [{partId:'P2',action:'repair-failed',preGateStatus:'partial',
+    refusal:{stage:'repair',code:'answer-repair-invalid',reason:'repair-threw'}}],
   'the widened gate attempts one repair for the packet-linked uncited part');
  assert.equal(ai.calls.length,4,
   'compose, the two per-part reviews, and the one widened-gate repair attempt');
@@ -2799,6 +2800,18 @@ test('a quote binds to the first following citation, not a later comparison cita
  assert.equal(auditFinalAnswer('The passage describes “double life” and painful self-consciousness. [S4]',[
   {...nietzsche,text:'The passage describes "double life" and painful self-consciousness.'}
  ]).ok,true,'a quote earlier in a sentence binds to its citation after the sentence-ending punctuation');
+});
+
+test('final audit of joined answer parts fails exactly when an individual part fails',()=>{
+ const validOne='Hume connects necessity with custom and repeated experience. [S1]';
+ const validTwo='The account distinguishes habit from demonstrative reasoning. [S1]';
+ const invalidQuote='The account says “a claim absent from the source.” [S1]';
+ for(const parts of [[validOne,validTwo],[invalidQuote,validTwo],
+  [validOne,'A claim with an unknown source ID [S99].']]){
+  const joined=auditFinalAnswer(parts.join('\n\n'),[hume]);
+  const individual=parts.map(part=>auditFinalAnswer(part,[hume]));
+  assert.equal(joined.ok,individual.every(result=>result.ok));
+ }
 });
 
 test('part linking preserves evidence discovered by each side for a synthesis part',()=>{
@@ -3836,6 +3849,50 @@ test('a throw at final assembly is salvaged into a downgraded answer (batch 11 B
     'every shipped cited claim carries evidence entries');
 });
 
+test('final audit failures record their predicate and restore state in normal and salvage assembly',async()=>{
+ for(const postReviewFault of [undefined,'containment']){
+  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+   review([['P1','answered']])]);
+  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+   plan:onePartPlan,catalog,trace:true,postReviewFault,postReviewAuditPartId:'P1'});
+  assert.equal(result.outcome,'generation-failed');
+  assert.deepEqual(result.trace.final.auditFailures.unknownIds,[]);
+  assert.equal(result.trace.final.auditFailures.quoteFailures[0].text,'deliberately unbound audit fixture');
+  assert.equal(result.trace.postReviewSalvage.restore.branch,'reviewed');
+  assert.equal(result.trace.postReviewSalvage.restore.verdict,'passed');
+  assert.deepEqual(result.trace.postReviewSalvage.restore.residualUntraced,[]);
+ }
+});
+
+test('final audit salvage drops one failing part from a three-part answer and names it missing',async()=>{
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant treats causality as an a priori category of relation. [S2]\n'+
+  'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]';
+ const ai=makeAI([answer(draft),review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer(twoSidePlan.resolvedQuestion,[hume,kant],ai,[],{
+  plan:twoSidePlan,catalog,trace:true,postReviewAuditPartId:'P1'});
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.match(result.answer,/Kant treats causality as an a priori category/);
+ assert.doesNotMatch(result.answer,/Hume explains causal expectation/);
+ assert.equal(result.questionParts.find(part=>part.partId==='P1').answerStatus,'unanswered');
+ assert.match(result.missing,/How does Hume explain causal necessity/);
+ assert.deepEqual(result.trace.final.auditSalvage.droppedPartIds,['P1']);
+ assert.equal(auditFinalAnswer(result.answer,[hume,kant]).ok,true);
+});
+
+test('final audit majority failure keeps whole-answer suppression',async()=>{
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant treats causality as an a priori category of relation. [S2]\n'+
+  'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]';
+ const ai=makeAI([answer(draft),review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer(twoSidePlan.resolvedQuestion,[hume,kant],ai,[],{
+  plan:twoSidePlan,catalog,trace:true,postReviewAuditPartId:['P1','P2']});
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.answer,'I could not complete a reliable answer this time. Please try again.');
+ assert.equal(result.trace.final.auditSalvage,undefined);
+ assert.ok(result.trace.final.auditFailures.quoteFailures.length>=2);
+});
+
 test('a throw during containment is salvaged the same way (batch 11 B11-1)',async()=>{
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
   review([['P1','answered']])]);
@@ -3877,6 +3934,10 @@ test('salvage applies the traceability strip before shipping (batch 11 B11-1)',a
   'the restore finds the same untraced claim the invariant block would');
  assert.deepEqual(result.trace.strippedCitations,
   {count:1,claimIds:['P2-C2'],partIds:['P2'],passes:1});
+ assert.deepEqual(result.trace.postReviewSalvage.restore.untracedFound,['P2|P2-C2']);
+ assert.deepEqual(result.trace.postReviewSalvage.restore.strippedClaimIds,['P2-C2']);
+ assert.deepEqual(result.trace.postReviewSalvage.restore.residualUntraced,[]);
+ assert.equal(result.trace.postReviewSalvage.restore.verdict,'passed');
  assert.doesNotMatch(result.answer,/altogether\. \[S2\]/,
   'the untraced claim ships without its marker');
  assert.match(result.answer,/category of relation and a pure conception of the understanding\. \[S2\]/,
@@ -3929,7 +3990,8 @@ test('citation gate downgrades a source-based part that ships without any citati
   plan:onePartPlan,catalog,trace:true});
  assert.equal(ai.calls.length,3,'compose, review, and exactly one targeted gate repair attempt');
  assert.deepEqual(result.trace.citationGate,
-  [{partId:'P1',action:'repair-failed',preGateStatus:'answered'}],
+  [{partId:'P1',action:'repair-failed',preGateStatus:'answered',
+    refusal:{stage:'repair',code:'answer-repair-invalid',reason:'repair-threw'}}],
   'a repair that still yields no citation is recorded and does not ship');
  assert.equal(result.questionParts[0].status,'partial',
   'the part is downgraded instead of shipping as fully supported');
@@ -4009,6 +4071,40 @@ test('citation gate reaches a partial part whose citations review dropped (batch
  assert.ok(result.evidenceMap.some(item=>item.partId==='P1'&&item.id==='S1'));
 });
 
+test('citation gate adopts a cited re-review part at partial status (batch 12 B12-4a)',async()=>{
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+  answerStatus:'partial',directAnswerClaimIds:['P1-C2'],retainedContextClaimIds:['P1-C2']}],
+  claims:[{claimId:'P1-C1',status:'partial',sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
+   clauses:[{text:'Hume links causal expectation to custom.',status:'partial',issueCode:'none',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
+ const citedRepair=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'Hume links causal expectation to custom formed through repeated conjunction. [S1]'})),
+   additions:[]}]})};
+ };
+ const partialAcceptingReReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const ai=makeAI([answer('PART P1\nHume links causal expectation to custom. [S1]\n'+
+  'Repeated experience shapes expectation in ordinary reasoning.'),
+  uncitedReview,citedRepair,partialAcceptingReReview],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.citationGate[0].action,'repair-applied');
+ assert.equal(result.trace.citationGate[0].refusal,undefined);
+ assert.equal(result.questionParts[0].answerStatus,'partial');
+ assert.equal(result.questionParts[0].status,'partial');
+ assert.match(result.answer,/causal expectation.*\[S1\]/);
+ assert.ok(result.evidenceMap.some(item=>item.partId==='P1'&&item.id==='S1'));
+});
+
 test('citation gate records a failed repair for a partial part and ships its prose at partial (batch 11 B11-4)',async()=>{
  const rejectingReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
   answerStatus:'partial',directAnswerClaimIds:['P1-C2'],retainedContextClaimIds:['P1-C2']}],
@@ -4031,7 +4127,8 @@ test('citation gate records a failed repair for a partial part and ships its pro
   plan:onePartPlan,catalog,trace:true});
  assert.equal(ai.calls.length,3,'compose, review, and the one gate repair attempt');
  assert.deepEqual(result.trace.citationGate,
-  [{partId:'P1',action:'repair-failed',preGateStatus:'partial'}]);
+  [{partId:'P1',action:'repair-failed',preGateStatus:'partial',
+    refusal:{stage:'repair',code:'answer-repair-invalid',reason:'repair-threw'}}]);
  assert.equal(result.questionParts[0].status,'partial',
   'the part stays partial; the widened trigger does not inflate its status');
  assert.match(result.answer,/great guide of human life/);

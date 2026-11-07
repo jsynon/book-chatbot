@@ -3381,6 +3381,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   let parts=null;
   let hasReviewCoverageGaps=false;
   let hasUntracedCitedClaims=false;
+  let postReviewAuditFaultInjected=false;
   let depthRepair={triggered:false,reasons:[],applied:false,partIds:[]};
   // Batch 11 (B11-5): parts that ship prose while carrying at least
   // one packet-linked source and no rendered citation at all. The
@@ -3415,8 +3416,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   // direction. In the intentional compose-only mode no invariant
   // applies and the state passes as-is.
   const restoreTraceabilityForSalvage=()=>{
-    if(options.review===false)return true;
+    const branch=options.review===false?'no-review':reviewFailure?'review-failure':'reviewed';
     const keyOf=(partId,claimId)=>partId+'|'+claimId;
+    const restoreRecord=(untracedFound=[],strippedClaimIds=[],residualUntraced=[],verdict='passed')=>{
+      trace.postReviewSalvage={...(trace.postReviewSalvage||{}),restore:{branch,
+        untracedFound:untracedFound.map(entry=>keyOf(entry.partId,entry.claimId)),
+        strippedClaimIds:[...strippedClaimIds],residualUntraced:[...residualUntraced],verdict}};
+      return verdict==='passed';
+    };
+    if(options.review===false)return restoreRecord([],[],[],'passed');
     const shipped=()=>parts.map(item=>({partId:item.part.id,answers:item.answers}));
     const shippedWithEvidence=()=>parts.map(item=>({partId:item.part.id,
       answers:item.answers,evidence:item.evidence}));
@@ -3445,10 +3453,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     }else if(reviewFailure){
       mechanisms={fallback:fallbackKeys()};
     }else{
-      return true;
+      return restoreRecord([],[],[],'passed');
     }
     const untraced=findUntracedCitedClaims(shipped(),mechanisms);
-    if(!untraced.length)return true;
+    if(!untraced.length)return restoreRecord([],[],[],'passed');
     hasUntracedCitedClaims=true;
     trace.untracedCitedClaims=untraced;
     for(const entry of untraced){
@@ -3460,7 +3468,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     if(stripped.claimIds.length)trace.strippedCitations={
       count:stripped.claimIds.length,claimIds:stripped.claimIds,
       partIds:stripped.partIds,passes:stripped.passes};
-    return findUntracedCitedClaims(shipped(),mechanisms).length===0;
+    const residual=findUntracedCitedClaims(shipped(),mechanisms);
+    return restoreRecord(untraced,stripped.claimIds,
+      residual.map(entry=>keyOf(entry.partId,entry.claimId)),residual.length?'failed':'passed');
   };
   // Batch 11 (B11-1) test hook: lets the suite force a throw at named
   // points of the deterministic post-review region so the salvage
@@ -3692,20 +3702,37 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             }});
         }catch(error){
           entry.action='repair-failed';
+          entry.refusal={stage:'repair',...(error?.failureCode||error?.code?
+            {code:String(error.failureCode||error.code).slice(0,80)}:{}),
+            reason:'repair-threw'};
         }
         if(repairedPart){
           try{
             const {reReview,rePart}=await reReviewPartCandidate(item,repairedPart);
             const reCitedIds=new Set(citationIds(renderAnswerParagraphs(rePart?.answers||[])));
-            if(!reReview.issues.length&&rePart?.status==='answered'&&
-               linkedIds.some(id=>reCitedIds.has(id))){
+            const linkedCitationPresent=linkedIds.some(id=>reCitedIds.has(id));
+            if(!reReview.issues.length&&rePart?.answers.length&&
+               rePart.answerStatus!=='unanswered'&&linkedCitationPresent){
               adoptRepairedPart(item,rePart,reReview);
               entry.action='repair-applied';
+            }else{
+              entry.refusal={stage:'re-review',issues:reReview.issues.map(issue=>({
+                code:String(issue?.code||'unknown').slice(0,100),
+                ...(issue?.partId?{partId:String(issue.partId).slice(0,20)}:{}),
+                ...(issue?.claimId?{claimId:String(issue.claimId).slice(0,40)}:{})})),
+                reReviewStatus:rePart?.status||'missing',
+                reReviewAnswerStatus:rePart?.answerStatus||'missing',linkedCitationPresent};
             }
           }catch(error){
             // The repair text exists but could not be independently
             // re-reviewed; it does not ship, and the part is downgraded.
+            entry.refusal={stage:'re-review',...(error?.failureCode||error?.code?
+              {code:String(error.failureCode||error.code).slice(0,80)}:{}),
+              issues:[],reReviewStatus:'failed',reReviewAnswerStatus:'unanswered',
+              linkedCitationPresent:false};
           }
+        }else if(!entry.refusal){
+          entry.refusal={stage:'repair',reason:'no-validated-candidate'};
         }
         if(entry.action!=='repair-applied')item.status='partial';
         gateRepairCycles.push({partId:planPart.id,gate:'citation-presence'});
@@ -4778,7 +4805,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               uncitedPartsWithPacket.map(entry=>entry.partId);
           const result=assembleFinalResult({salvage});
           salvage.salvaged=result.outcome==='unverified-source-draft';
-          trace.postReviewSalvage=salvage;
+          trace.postReviewSalvage={...(trace.postReviewSalvage||{}),...salvage};
           return result;
         }
       }catch{
@@ -4786,7 +4813,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         // honest failure below, keeping the original code.
       }
     }
-    trace.postReviewSalvage=salvage;
+    trace.postReviewSalvage={...(trace.postReviewSalvage||{}),...salvage};
     if(!failure)failure={stage:'post-review',code:salvageCode,
       message:'The answer build failed during post-review assembly.'};
     if(!parts){
@@ -4808,7 +4835,17 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   // salvage mode the outcome is capped at unverified-source-draft
   // and a final-audit failure wipes the text instead of throwing.
   function assembleFinalResult({salvage=null}={}){
-    const included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
+    if(options.postReviewAuditPartId&&!postReviewAuditFaultInjected){
+      const targetIds=new Set(Array.isArray(options.postReviewAuditPartId)?
+        options.postReviewAuditPartId:[options.postReviewAuditPartId]);
+      for(const target of parts.filter(item=>targetIds.has(item.part.id))){
+        if(!target.answers[0])continue;
+        target.answers[0].text+=' “deliberately unbound audit fixture”';
+        target.answers[0].renderedText=target.answers[0].text;
+      }
+      postReviewAuditFaultInjected=true;
+    }
+    let included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
     let answer=normalizeAnswerMarkdown(included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n'));
     const incompleteAnswer=Boolean(answer&&hasUnfinishedAnswerEnding(answer));
     if(incompleteAnswer){
@@ -4844,7 +4881,41 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     }
     trace.formattingNormalizations={boldParagraphsUnwrapped,
       partIds:boldUnwrapPartIds};
-    const final=auditFinalAnswer(answer,sources);
+    let final=auditFinalAnswer(answer,sources);
+    if(!final.ok){
+      const auditFailures={unknownIds:[...final.unknownIds],quoteFailures:final.quoteFailures.map(q=>({
+        text:String(q.text||'').slice(0,120),sourceIds:[...q.sourceIds],start:q.start,end:q.end}))};
+      trace.final={...(trace.final||{}),auditFailures};
+      const perPart=included.map(item=>{
+        const rendered=unwrapBoldWrappedParagraphs(renderAnswerParagraphs(item.answers)).text;
+        const text=normalizeAnswerMarkdown(rendered);
+        const audit=auditFinalAnswer(text,sources);
+        return {item,text,audit};
+      });
+      const failing=perPart.filter(value=>!value.audit.ok);
+      // A localized minority failure can be removed safely; a majority
+      // failure remains a whole-answer failure and follows the existing path.
+      if(failing.length>0&&failing.length*2<included.length){
+        const droppedIds=new Set(failing.map(value=>value.item.part.id));
+        const survivors=perPart.filter(value=>!droppedIds.has(value.item.part.id));
+        const candidateAnswer=normalizeAnswerMarkdown(survivors.map(value=>value.text).join('\n\n'));
+        const guard=auditFinalAnswer(candidateAnswer,sources);
+        if(survivors.length&&guard.ok){
+          const perPartFailures=failing.map(value=>({partId:value.item.part.id,
+            unknownIds:[...value.audit.unknownIds],quoteFailures:value.audit.quoteFailures.map(q=>({
+              text:String(q.text||'').slice(0,120),sourceIds:[...q.sourceIds],start:q.start,end:q.end}))}));
+          for(const value of failing){
+            value.item.status='unanswered';value.item.answerStatus='unanswered';
+            value.item.answers=[];value.item.evidence=[];
+          }
+          included=survivors.map(value=>value.item);
+          answer=candidateAnswer;
+          final=guard;
+          salvage=salvage||{salvaged:true,code:'answer-final-audit-partial-salvage',stage:'final-audit'};
+          trace.final={...(trace.final||{}),auditSalvage:{droppedPartIds:[...droppedIds],perPartFailures}};
+        }
+      }
+    }
     if(!final.ok&&!salvage)throw Error('Final answer integrity failed');
     if(!final.ok){
       // Batch 11 (B11-1): a salvaged assembly whose text fails the
@@ -4942,7 +5013,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         evidenceHighlights.push({source_id:source.id,page:source.page,quote:sourceAnchor});
       }
     }
-    trace.final={answer,questionParts,coverage,answerCompleteness,
+    trace.final={...(trace.final||{}),answer,questionParts,coverage,answerCompleteness,
       failure:failure?.code==='answer-citation-validation-failed'?
         {...failure,validationReasons:validationReasonCodes(trace.rejected)}:
         failure?{stage:failure.stage,code:failure.code}:null,
