@@ -135,7 +135,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
           typeof id==='string'&&/^P[1-9]\d*-R[1-9]\d*$/.test(id)&&
           (!item.partId||id.startsWith(String(item.partId)+'-R'))))].slice(0,4):[],
         requirementTexts:Array.isArray(item.requirementIds)?[...new Set(item.requirementIds
-          .filter(id=>typeof id==='string'&&/^P[1-9]\\d*-R[1-9]\\d*$/.test(id)&&
+          .filter(id=>typeof id==='string'&&/^P[1-9]\d*-R[1-9]\d*$/.test(id)&&
             (!item.partId||id.startsWith(String(item.partId)+'-R')))
           .map(id=>String(requirementTextById?.[id]||'').trim())
           .filter(Boolean))].slice(0,4):[],
