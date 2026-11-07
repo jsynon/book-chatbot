@@ -298,6 +298,72 @@ export function recoverUncoveredPartCandidates(decision,candidates){
   return {selectedCandidateIds,recoveredPartLinks,skippedPartRecoveries};
 }
 
+/* Keep a small, retrieval-linked packet for every planned part even when the
+ * selector omits that part. Hints are only admission cues: downstream review
+ * still decides whether a selected page supports any claim. */
+export function enforcePartPacketFloor(decision,candidates){
+  const parts=Array.isArray(decision?.parts)?decision.parts:[];
+  const rows=Array.isArray(candidates)?candidates:[];
+  const selected=[...new Set(Array.isArray(decision?.selectedCandidateIds)?
+    decision.selectedCandidateIds.filter(id=>typeof id==='string'):[])];
+  const byId=new Map(rows.map(row=>[row.id,row]));
+  const partCount=parts.length;
+  const floor=Math.min(2,Math.max(1,Math.floor(MAX_SELECTOR_SOURCES/Math.max(1,partCount))));
+  const reserved=new Set(parts.map(part=>part?.candidateIds?.[0]).filter(Boolean));
+  const direct=new Set(parts.flatMap(part=>(part?.evidence||[])
+    .filter(entry=>entry?.support==='direct').map(entry=>entry.candidateId)));
+  const floorLinks=[],packetFloorLinks=[];
+  const skipped=[];
+  const countFor=partId=>selected.filter(id=>
+    byId.get(id)?.retrievedPartHints?.includes(partId)).length;
+  for(const part of parts){
+    const partId=String(part?.partId||'');
+    if(!partId)continue;
+    for(const id of selected.filter(candidateId=>byId.get(candidateId)?.retrievedPartHints?.includes(partId))
+      .slice(0,floor))packetFloorLinks.push({partId,candidateId:id});
+    while(countFor(partId)<floor){
+      const candidate=rows.find(row=>typeof row?.id==='string'&&
+        row.retrievedPartHints?.includes(partId)&&!selected.includes(row.id));
+      if(!candidate){
+        if(countFor(partId)<floor)skipped.push({partId,reason:'no-part-linked-candidate'});
+        break;
+      }
+      let displaced=null;
+      if(selected.length>=MAX_SELECTOR_SOURCES){
+        const fill=selected.find(id=>{
+          if(reserved.has(id)||direct.has(id))return false;
+          const linkedParts=parts.filter(value=>byId.get(id)?.retrievedPartHints?.includes(value.partId));
+          return linkedParts.every(value=>countFor(value.partId)-1>=floor);
+        });
+        if(!fill){skipped.push({partId,candidateId:candidate.id,reason:'no-displaceable-fill'});break;}
+        displaced=fill;
+        selected.splice(selected.indexOf(fill),1);
+      }
+      selected.push(candidate.id);
+      const link={partId,candidateId:candidate.id};
+      packetFloorLinks.push(link);
+      floorLinks.push({...link,...(displaced?{displacedCandidateId:displaced}:{})});
+    }
+  }
+  return {selectedCandidateIds:selected,packetFloor:{added:floorLinks,skipped},floor,
+    packetFloorLinks};
+}
+
+export function orderPacketForPacking(selectedCandidateIds,parts,packetFloorLinks=[]){
+  const selected=[...new Set(Array.isArray(selectedCandidateIds)?selectedCandidateIds:[])];
+  const planParts=Array.isArray(parts)?parts:[];
+  const protectedIds=new Set([
+    ...planParts.map(part=>part?.candidateIds?.[0]).filter(Boolean),
+    ...planParts.flatMap(part=>(part?.evidence||[]).filter(entry=>entry?.support==='direct')
+      .map(entry=>entry.candidateId))
+  ]);
+  const flooredIds=new Set((Array.isArray(packetFloorLinks)?packetFloorLinks:[])
+    .map(link=>link?.candidateId).filter(Boolean));
+  return [...selected.filter(id=>protectedIds.has(id)),
+    ...selected.filter(id=>flooredIds.has(id)&&!protectedIds.has(id)),
+    ...selected.filter(id=>!protectedIds.has(id)&&!flooredIds.has(id))];
+}
+
 /* A selector outage still needs a bounded packet. Round-robin across works
  * preserves source breadth from the retrieval ranking without claiming that
  * those fallback pages passed semantic selection. */

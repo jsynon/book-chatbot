@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {orderFallbackCandidates,recoverUncoveredPartCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
+import {enforcePartPacketFloor,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
 
 test('selector fallback gives distinct works a page before taking second pages',()=>{
  const candidates=[
@@ -255,6 +255,66 @@ test('valid partial selection recovers only retrieved candidates linked to uncov
   {partId:'P3',candidateId:'C3',reason:'retrieved-part-hint'}
  ]);
  assert.deepEqual(result.skippedPartRecoveries,[]);
+});
+
+test('packet floor admits hinted candidates for abstaining parts, including total selector abstention',()=>{
+ const parts=[{partId:'P1',candidateIds:[],evidence:[]},
+  {partId:'P2',candidateIds:[],evidence:[]},{partId:'P3',candidateIds:[],evidence:[]}];
+ const candidates=parts.flatMap(part=>[1,2].map(index=>({
+  id:`${part.partId}-C${index}`,retrievedPartHints:[part.partId]})));
+ const result=enforcePartPacketFloor({selectedCandidateIds:[],parts},candidates);
+ assert.deepEqual(result.selectedCandidateIds,candidates.map(item=>item.id));
+ assert.equal(result.floor,2);
+ assert.equal(result.packetFloor.added.length,6);
+ assert.deepEqual(result.packetFloor.skipped,[]);
+});
+
+test('packet floor shrinks to one page per part when four to six parts share the cap',()=>{
+ for(const partCount of [4,5,6]){
+  const parts=Array.from({length:partCount},(_,index)=>({partId:`P${index+1}`,candidateIds:[],evidence:[]}));
+  const candidates=parts.map(part=>({id:`${part.partId}-C1`,retrievedPartHints:[part.partId]}));
+  const result=enforcePartPacketFloor({selectedCandidateIds:[],parts},candidates);
+  assert.equal(result.floor,1);
+  assert.equal(result.selectedCandidateIds.length,partCount);
+  assert.equal(result.packetFloor.added.length,partCount);
+ }
+});
+
+test('packet floor preserves reserved and direct pages and displaces only fill additions',()=>{
+ const selected=['C1','C2','C3','C4','C5','C6'];
+ const result=enforcePartPacketFloor({selectedCandidateIds:selected,parts:[
+  {partId:'P1',candidateIds:['C1'],evidence:[{candidateId:'C1',support:'direct'}]},
+  {partId:'P2',candidateIds:[],evidence:[]}
+ ]},[
+  {id:'C1',retrievedPartHints:['P1']},
+  ...selected.slice(1).map(id=>({id,retrievedPartHints:[]})),
+  {id:'C7',retrievedPartHints:['P2']},{id:'C8',retrievedPartHints:['P2']}
+ ]);
+ assert.equal(result.floor,2);
+ assert.equal(result.selectedCandidateIds.length,6);
+ assert.ok(result.selectedCandidateIds.includes('C1'));
+ assert.ok(result.selectedCandidateIds.includes('C7'));
+ assert.ok(result.selectedCandidateIds.includes('C8'));
+ assert.deepEqual(result.packetFloor.added.map(item=>item.displacedCandidateId),['C2','C3']);
+});
+
+test('packet floor records a skip when the cap has no displaceable fill page',()=>{
+ const selected=['C1','C2','C3','C4','C5','C6'];
+ const result=enforcePartPacketFloor({selectedCandidateIds:selected,parts:[
+  {partId:'P1',candidateIds:['C1'],evidence:[{candidateId:'C1',support:'direct'}]},
+  {partId:'P2',candidateIds:selected.slice(1),evidence:selected.slice(1).map(candidateId=>({candidateId,support:'direct'}))}
+ ]},[...selected.map(id=>({id,retrievedPartHints:[id==='C1'?'P1':'P2']})),
+  {id:'C7',retrievedPartHints:['P1']},{id:'C8',retrievedPartHints:['P1']}]);
+ assert.equal(result.selectedCandidateIds.length,6);
+ assert.ok(result.packetFloor.skipped.every(item=>item.reason==='no-displaceable-fill'));
+});
+
+test('floored pages pack after reserved and direct evidence but before fill candidates',()=>{
+ const order=orderPacketForPacking(['C1','C2','C3','C4'],[
+  {candidateIds:['C1'],evidence:[{candidateId:'C3',support:'direct'}]},
+  {candidateIds:['C5'],evidence:[]}
+ ],[{candidateId:'C4',partId:'P2'}]);
+ assert.deepEqual(order,['C1','C3','C4','C2']);
 });
 
 test('partial-selection recovery reuses selected candidates and does not exceed six pages',()=>{
