@@ -210,15 +210,30 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   if(selectedBookId)sources.splice(0,sources.length,{label:catalog[selectedBookId],role:'primary',bookIds:[selectedBookId]});
   const intent=['explain','compare','interpret','locate'].includes(planInput.intent)?planInput.intent:'explain';
   const queries=Array.isArray(planInput.queries)?planInput.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[];
+  const exactQuestionAnchor=(candidate,partQuestion)=>{
+    const anchor=typeof candidate==='string'?candidate.trim():'';
+    // Anchors are literal excerpts from the current reader turn. Resolved
+    // follow-up wording and planner paraphrases are useful context, but are
+    // not substitutes for the words the reader actually supplied.
+    if(anchor.length>=3&&anchor.length<=400&&question.includes(anchor))return anchor;
+    if(typeof partQuestion==='string'&&partQuestion.length>=3&&partQuestion.length<=400&&
+       question.includes(partQuestion))return partQuestion;
+    return question.slice(0,400);
+  };
   const parts=(Array.isArray(planInput.parts)?planInput.parts:[]).slice(0,6).map((p,i)=>({
     id:'P'+(i+1),question:bounded(typeof p==='string'?p:p?.question,240),
-    requirementTexts:Array.isArray(p?.requirements)?[...new Set(p.requirements
-      .slice(0,4).map(requirement=>bounded(typeof requirement==='string'?requirement:requirement?.text,200))
-      .filter(Boolean))]:[],
+    requirements:Array.isArray(p?.requirements)?p.requirements.slice(0,4).flatMap(requirement=>{
+      const text=bounded(typeof requirement==='string'?requirement:requirement?.text,200);
+      if(!text)return [];
+      return [{text,questionAnchor:exactQuestionAnchor(
+        typeof requirement==='object'?requirement?.questionAnchor??requirement?.anchor:'',
+        bounded(typeof p==='string'?p:p?.question,240))}];
+    }).filter((requirement,index,all)=>all.findIndex(item=>
+      item.text.toLocaleLowerCase()===requirement.text.toLocaleLowerCase())===index):[],
     plannedSearchQueries:Array.isArray(p?.searchQueries)?[...new Set(p.searchQueries
       .slice(0,5).map(query=>bounded(query,400)).filter(Boolean))]:[]
   })).filter(p=>p.question);
-  let normalizedParts=parts.length?parts:[{id:'P1',question,requirementTexts:[]}];
+  let normalizedParts=parts.length?parts:[{id:'P1',question,requirements:[]}];
   const identityText=value=>String(value||'').normalize('NFKC').toLocaleLowerCase()
     .replace(/[’‘]/g,"'").replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
   const plannerQueryStopWords=new Set(['a','an','and','are','as','at','be','by','do','does','for','from','how',
@@ -264,8 +279,9 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   // context instead of turning inferred themes into new answer requirements.
   if(!explicitMultiPartRequest&&!hypotheticalAuthorResponse){
     const plannedSearchQueries=[...new Set(normalizedParts.flatMap(part=>part.plannedSearchQueries||[]))];
-    const requirementTexts=[...new Set(normalizedParts.flatMap(part=>part.requirementTexts||[]))];
-    normalizedParts=[{id:'P1',question:resolvedQuestion,plannedSearchQueries,requirementTexts}];
+    const requirements=[...new Map(normalizedParts.flatMap(part=>part.requirements||[])
+      .map(requirement=>[requirement.text.toLocaleLowerCase(),requirement])).values()];
+    normalizedParts=[{id:'P1',question:resolvedQuestion,plannedSearchQueries,requirements}];
   }
   const sourcePhrases=source=>{
     const phrases=[source.label];
@@ -390,11 +406,13 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     seenParts.push(part);retainedPartSourceGroups.push(partSourceGroups[originalIndex]||null);return true;
   }).map((part,index)=>{
     const id='P'+(index+1);
-    const requirementTexts=[...new Set((part.requirementTexts||[]).map(value=>String(value||'').trim())
-      .filter(Boolean))];
-    const requirements=requirementTexts.slice(0,4)
-      .map((text,requirementIndex)=>({id:id+'-R'+(requirementIndex+1),text}));
-    const {requirementTexts:_,...normalizedPart}=part;
+    const requirements=[...new Map((part.requirements||[]).map(requirement=>[
+      String(requirement?.text||'').trim().toLocaleLowerCase(),{
+        text:String(requirement?.text||'').trim(),
+        questionAnchor:exactQuestionAnchor(requirement?.questionAnchor,part.question)
+      }])).values()].filter(requirement=>requirement.text).slice(0,4)
+      .map((requirement,requirementIndex)=>({id:id+'-R'+(requirementIndex+1),...requirement}));
+    const {requirements:_,...normalizedPart}=part;
     return {...normalizedPart,id,...(requirements.length?{requirements}:{})};
   });
   partSourceGroups.splice(0,partSourceGroups.length,...retainedPartSourceGroups);

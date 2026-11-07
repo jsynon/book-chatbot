@@ -61,19 +61,33 @@ test('planner requirements retain explicit within-part demands without changing 
  const question='How does Hume explain causal necessity, and what role does custom play?';
  const planned={resolvedQuestion:question,intent:'explain',sources:[],
   parts:[{question,requirements:[
-   'Explain how repeated conjunction gives rise to the idea of necessity.',
-   'Explain how custom leads the mind to infer one event from another.'
+   {text:'Explain how repeated conjunction gives rise to the idea of necessity.',
+    questionAnchor:'How does Hume explain causal necessity'},
+   {text:'Explain how custom leads the mind to infer one event from another.',
+    questionAnchor:'what role does custom play'}
   ]}],scope:'',queries:['Hume causal necessity custom','repeated conjunction and inference']};
  const result=await planSearchQueries(question,'',{
   run:async(_model,options)=>{
    assert.match(options.messages[0].content,/within that part/i);
+   assert.match(options.messages[0].content,/questionAnchor must be a short exact, contiguous excerpt/i);
    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(planned)}}]};
   }});
  assert.equal(result.plan.parts.length,1,'requirements do not become retrieval or answer parts');
  assert.deepEqual(result.plan.parts[0].requirements,[
-  {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
-  {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}
+  {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.',
+   questionAnchor:'How does Hume explain causal necessity'},
+  {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.',
+   questionAnchor:'what role does custom play'}
  ]);
+});
+
+test('normalization replaces nonverbatim planner anchors with original question text',()=>{
+ const question='How does Hume explain causal necessity, and what role does custom play?';
+ const plan=normalizePlan({intent:'explain',parts:[{question,requirements:[
+  {text:'Explain the role of custom in inference.',questionAnchor:'custom makes the mind expect effects'}
+ ]}],queries:[]},question,{});
+ assert.equal(plan.parts[0].requirements[0].questionAnchor,question,
+  'an invented or paraphrased anchor cannot replace the reader’s exact wording');
 });
 
 test('legacy planner parts without requirements remain unchanged',async()=>{

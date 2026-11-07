@@ -70,6 +70,25 @@ test('selector receives bounded part search facets without treating them as evid
   error=>error.failureCode==='selector-invalid-request');
 });
 
+test('selector receives verbatim question anchors as cues, not proof of passage support',async()=>{
+ let payload,prompt='';
+ const parts=[{partId:'P1',question:'How does faith relate to Abraham?',requirements:[
+  {requirementId:'P1-R1',text:'Explain Abraham’s example of faith.',
+   questionAnchor:'How does faith relate to Abraham?'}]}];
+ const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'context'}]}],{parts});
+ request.ai.run=async(_model,{messages})=>{
+  prompt=messages[0].content;payload=JSON.parse(messages[1].content);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[
+   {partId:'P1',evidence:[{candidateId:'C1',support:'context'}]}
+  ]})}}]};
+ };
+ const result=await selectEvidenceCandidates(request);
+ assert.deepEqual(payload.parts[0].requirements,parts[0].requirements);
+ assert.match(prompt,/anchor.*cue, not proof/i);
+ assert.equal(result.parts[0].coverage,'partial',
+  'the exact requested phrase does not convert a contextual passage into direct evidence');
+});
+
 test('a part with only contextual evidence stays partial even if its retrieval hint was linked',async()=>{
  const request=requestWith([{partId:'P1',evidence:[{candidateId:'C1',support:'context',
   excerpt:'doubt itself proves the thinker exists'}]}]);
