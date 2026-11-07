@@ -3864,33 +3864,52 @@ test('final audit failures record their predicate and restore state in normal an
  }
 });
 
-test('final audit salvage drops one failing part from a three-part answer and names it missing',async()=>{
+test('final audit salvage drops one failing part from a two-part answer and names it missing',async()=>{
  const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
-  'PART P2\nKant treats causality as an a priori category of relation. [S2]\n'+
-  'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]';
- const ai=makeAI([answer(draft),review([['P1','answered'],['P2','answered'],['P3','answered']])]);
- const result=await composeEvidenceAnswer(twoSidePlan.resolvedQuestion,[hume,kant],ai,[],{
-  plan:twoSidePlan,catalog,trace:true,postReviewAuditPartId:'P1'});
+  'PART P2\nKant treats causality as an a priori category of relation. [S2]';
+ const plan={...twoSidePlan,parts:twoSidePlan.parts.slice(0,2)};
+ const ai=makeAI([answer(draft),review([['P1','answered'],['P2','answered']])]);
+ const result=await composeEvidenceAnswer(plan.resolvedQuestion,[hume,kant],ai,[],{
+  plan,catalog,trace:true,postReviewAuditPartId:'P1'});
  assert.equal(result.outcome,'unverified-source-draft');
  assert.match(result.answer,/Kant treats causality as an a priori category/);
  assert.doesNotMatch(result.answer,/Hume explains causal expectation/);
  assert.equal(result.questionParts.find(part=>part.partId==='P1').answerStatus,'unanswered');
  assert.match(result.missing,/How does Hume explain causal necessity/);
  assert.deepEqual(result.trace.final.auditSalvage.droppedPartIds,['P1']);
+ assert.deepEqual(result.trace.final.auditPartition.failingPartIds,['P1']);
+ assert.deepEqual(result.trace.final.auditPartition.survivingPartIds,['P2']);
+ assert.equal(result.trace.final.auditPartition.wholeAnswerGuardPassed,true);
  assert.equal(auditFinalAnswer(result.answer,[hume,kant]).ok,true);
 });
 
-test('final audit majority failure keeps whole-answer suppression',async()=>{
+test('final audit salvage still drops a localized failure from a larger answer',async()=>{
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant treats causality as an a priori category of relation. [S2]\n'+
+  'PART P3\nThe accounts differ in the role they assign to experience. [S1, S2]';
+ const ai=makeAI([answer(draft),review([['P1','answered'],['P2','answered'],['P3','answered']])]);
+ const result=await composeEvidenceAnswer(twoSidePlan.resolvedQuestion,[hume,kant],ai,[],{
+  plan:twoSidePlan,catalog,trace:true,postReviewAuditPartId:'P1'});
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.deepEqual(result.trace.final.auditSalvage.droppedPartIds,['P1']);
+ assert.deepEqual(result.trace.final.auditPartition.survivingPartIds,['P2','P3']);
+ assert.equal(auditFinalAnswer(result.answer,[hume,kant]).ok,true);
+});
+
+test('final audit suppression remains when every included part fails',async()=>{
  const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
   'PART P2\nKant treats causality as an a priori category of relation. [S2]\n'+
   'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]';
  const ai=makeAI([answer(draft),review([['P1','answered'],['P2','answered'],['P3','answered']])]);
  const result=await composeEvidenceAnswer(twoSidePlan.resolvedQuestion,[hume,kant],ai,[],{
-  plan:twoSidePlan,catalog,trace:true,postReviewAuditPartId:['P1','P2']});
+  plan:twoSidePlan,catalog,trace:true,postReviewAuditPartId:['P1','P2','P3']});
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.answer,'I could not complete a reliable answer this time. Please try again.');
  assert.equal(result.trace.final.auditSalvage,undefined);
- assert.ok(result.trace.final.auditFailures.quoteFailures.length>=2);
+ assert.deepEqual(result.trace.final.auditPartition.failingPartIds,['P1','P2','P3']);
+ assert.deepEqual(result.trace.final.auditPartition.survivingPartIds,[]);
+ assert.equal(result.trace.final.auditPartition.disposition,'suppressed');
+ assert.ok(result.trace.final.auditFailures.quoteFailures.length>=3);
 });
 
 test('a throw during containment is salvaged the same way (batch 11 B11-1)',async()=>{
@@ -4272,6 +4291,7 @@ test('flat reviewer decisions retain exact provenance and source-encoded spans',
  assert.deepEqual(reviewPayload.parts[0].evidence[0].provenance,composePayload.evidence[0].provenance);
  assert.deepEqual(result.trace.reviewContract.recovered,[]);
  assert.match(REVIEW_PROMPT,/A source citation is not proof by itself/i);
+ assert.match(REVIEW_PROMPT,/do not transfer a statement or action from another or unidentified person/i);
  assert.match(REVIEW_PROMPT,/attributionStatus/);
  assert.match(REVIEW_PROMPT,/Check attribution/);
 });
