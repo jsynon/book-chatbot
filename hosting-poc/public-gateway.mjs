@@ -33,7 +33,7 @@ const FRONTEND_ORIGIN = 'https://jsynon.github.io';
 const EXPECTED_TURNSTILE_HOST = 'jsynon.github.io';
 const TURNSTILE_ACTION = 'companion_ask';
 
-export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=6,question='',sourceTexts={},shippedClaimIds=null){
+export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[],limit=6,question='',sourceTexts={},shippedClaimIds=null,requirementTextById={}){
   const byId=new Map(citations.map(source=>[String(source?.id||''),source]));
   // Only expose evidence from pages actually cited in the final answer.
   const citationOrder=[...new Set(citationIds(answer))]
@@ -134,6 +134,11 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
         requirementIds:Array.isArray(item.requirementIds)?[...new Set(item.requirementIds.filter(id=>
           typeof id==='string'&&/^P[1-9]\d*-R[1-9]\d*$/.test(id)&&
           (!item.partId||id.startsWith(String(item.partId)+'-R'))))].slice(0,4):[],
+        requirementTexts:Array.isArray(item.requirementIds)?[...new Set(item.requirementIds
+          .filter(id=>typeof id==='string'&&/^P[1-9]\d*-R[1-9]\d*$/.test(id)&&
+            (!item.partId||id.startsWith(String(item.partId)+'-R')))
+          .map(id=>String(requirementTextById?.[id]||'').trim())
+          .filter(Boolean))].slice(0,4):[],
         start:Number.isInteger(item.start)?item.start:null,end:Number.isInteger(item.end)?item.end:null,index}))
       // The evidence-v2 map carries the accepted answer claim text in `point`.
       // Require that claim to survive in the final answer before displaying
@@ -184,7 +189,7 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       };
       return {pointScore:similarity(pointTerms),questionScore:similarity(questionTerms)};
     };
-    displayCandidates.sort((left,right)=>{
+    const compareCandidates=(left,right)=>{
       // Furniture demotion is the primary ordering key (B7-5a); the
       // relevance ordering below decides among genuine candidates.
       const furnitureDifference=(left.furniture?1:0)-(right.furniture?1:0);
@@ -217,7 +222,37 @@ export function selectPublicEvidenceHighlights(answer,citations=[],evidenceMap=[
       return Math.abs(questionDifference)>=0.15?questionDifference:
         rightScore.pointScore-leftScore.pointScore||questionDifference||
         readableQuote(right.quote)-readableQuote(left.quote)||left.index-right.index;
-    });
+    };
+    displayCandidates.sort(compareCandidates);
+    // Batch 14: a claim can have several exact, reviewer-approved spans, but
+    // the answer point and reader question do not always identify which span
+    // best fulfills the specific requirement that claim was reviewed against.
+    // Re-rank only within each claim's existing slots, so this signal cannot
+    // displace another claim or change acceptance, citation, or display caps.
+    const requirementSimilarity=item=>{
+      const quoteTerms=terms(item.quote);
+      if(!quoteTerms.size||!item.requirementTexts.length)return 0;
+      return Math.max(...item.requirementTexts.map(requirement=>{
+        const referenceTerms=terms(requirement);
+        if(!referenceTerms.size)return 0;
+        let overlap=0;for(const term of referenceTerms)if(quoteTerms.has(term))overlap++;
+        return overlap/Math.sqrt(referenceTerms.size*quoteTerms.size);
+      }));
+    };
+    const candidateSlotsByClaim=new Map();
+    for(let index=0;index<displayCandidates.length;index++){
+      const key=claimKey(displayCandidates[index]);
+      const slots=candidateSlotsByClaim.get(key)||[];slots.push(index);
+      candidateSlotsByClaim.set(key,slots);
+    }
+    for(const slots of candidateSlotsByClaim.values()){
+      if(slots.length<2)continue;
+      const ranked=slots.map(index=>displayCandidates[index]).sort((left,right)=>{
+        const difference=requirementSimilarity(right)-requirementSimilarity(left);
+        return Math.abs(difference)>=0.15?difference:compareCandidates(left,right);
+      });
+      slots.forEach((index,rank)=>{displayCandidates[index]=ranked[rank];});
+    }
     // Keep the strongest excerpt for each distinct answer claim. Additional
     // excerpts from that same claim are shown only when they are adjacent and
     // can be joined into one continuous, source-exact passage. A merely related
@@ -4759,9 +4794,13 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     const shippedClaimIds=Array.isArray(output.questionParts)&&
       output.questionParts.some(part=>Array.isArray(part?.claimIds))?
       new Set(output.questionParts.flatMap(part=>part.claimIds||[])):null;
+    const requirementTextById=Object.fromEntries((output.questionParts||[])
+      .flatMap(part=>(Array.isArray(part?.requirements)?part.requirements:[])
+        .filter(requirement=>typeof requirement?.id==='string'&&typeof requirement?.text==='string')
+        .map(requirement=>[requirement.id,requirement.text])));
     const evidenceHighlights=selectPublicEvidenceHighlights(output.answer,
       output.citations||[],output.evidenceMap||[],10,data.question,sourceTexts,
-      shippedClaimIds);
+      shippedClaimIds,requirementTextById);
     // Suggestions only populate the next question; they are not model claims
     // or an implicit extra billable AI call. Fresh retrieval occurs each turn.
     const followUpQuestions=output.outcome==='verified-source-draft'?

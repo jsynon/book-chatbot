@@ -2224,6 +2224,28 @@ test('public highlights retain sanitized requirement links on accepted claims',(
  assert.deepEqual(highlights[0].requirement_ids,['P1-R2']);
  assert.deepEqual(highlights[0].quotes[0].requirement_ids,['P1-R2']);
 });
+test('public highlights prefer the accepted span that matches its requirement',()=>{
+ const source={id:'S1',title:'An Enquiry Concerning Human Understanding — David Hume',page:42};
+ const point='Hume says causal necessity is an idea formed by custom.';
+ const generic='Necessity is an idea formed in the mind, not an observable quality of objects.';
+ const mechanism='Repeated experience makes the mind expect one event to follow another.';
+ const evidence=[
+  {id:'S1',claimId:'P1-C1',partId:'P1',point,quote:generic,quoteVerified:true,
+   requirementIds:['P1-R1']},
+  {id:'S1',claimId:'P1-C1',partId:'P1',point,quote:mechanism,quoteVerified:true,
+   requirementIds:['P1-R1']}
+ ];
+ const requirementTextById={'P1-R1':'Explain how repeated experience creates an expectation that one event follows another.'};
+ const answer=point+' [S1].';
+ const highlights=selectPublicEvidenceHighlights(answer,[source],evidence,6,
+  'What does Hume say about causal necessity?',{},null,requirementTextById);
+ assert.equal(highlights[0].quote,mechanism,
+  'the requirement-matched reviewed span wins within the same claim');
+ const legacy=selectPublicEvidenceHighlights(answer,[source],evidence,6,
+  'What does Hume say about causal necessity?',{});
+ assert.equal(legacy[0].quote,generic,
+  'without requirement text, the existing question and claim ranking remains in force');
+});
 test('public highlights keep fallback evidence whose point is the answer claim',()=>{
  const source={id:'S1',title:'An Enquiry Concerning Human Understanding — David Hume',page:42};
  const point='Hume links necessity to custom and regular conjunction.';
