@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,normalizeClaimClauseDecisions} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimPersonSubject,claimPersonSubjects,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,normalizeClaimClauseDecisions} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 import {splitCitedSentenceUnits,reconcileFinalPartCoverage} from './evidence-answer.mjs';
@@ -32,6 +32,25 @@ test('Batch 21 requirement passages cannot consume the whole composer span allow
   'broad relevance ranking must retain at least some composer slots');
 });
 
+test('Batch 21 preserves the named paraphrased support span alongside requirement reservations',()=>{
+ const supportingSpan='Repeated encounters condition expectation; observing events recur teaches the mind to anticipate what comes next, although no necessary connection is directly observed.';
+ const passages=[
+  ...Array.from({length:8},(_,index)=>`Requirement anchor ${index+1} discusses a distinct requested topic and its surrounding context in detail.`),
+  supportingSpan,
+  ...Array.from({length:8},(_,index)=>`Background passage ${index+1} concerns unrelated historical details and offers no explanation of experience or expectation.`)
+ ].join(' ');
+ const result=composerPassageWindows('S1',passages,
+  'How does repeated experience produce expectation and inference?', [{id:'P1',
+   question:'How does repeated experience produce expectation and inference?',
+   searchQueries:['repeated experience expectation inference mind events custom'],
+   requirements:Array.from({length:8},(_,index)=>({id:`P1-R${index+1}`,
+    text:`Requirement anchor ${index+1}`}))}]);
+ assert.ok(result.passages.some(passage=>passage.spanIds.includes('S1-Q9')),
+  'the paraphrased supporting span S1-Q9 must survive in this part’s composed window');
+ assert.ok(result.selection.some(item=>item.reservedForRequirement),
+  'requirement-matching passages remain available alongside the supporting span');
+});
+
 test('Batch 21 clause offsets that split words remain unresolved and partial',()=>{
  const claim='Hume explains that custom shapes expectation.';
  const splitAt=claim.indexOf('custom')+2;
@@ -42,6 +61,23 @@ test('Batch 21 clause offsets that split words remain unresolved and partial',()
  assert.equal(result.decisions[0].status,'partial');
  assert.equal(result.decisions[0].unresolved,true);
  assert.ok(result.warnings.includes('clause-range-not-word-boundary'));
+});
+
+test('Batch 21 invalid clause offsets produce an unresolved partial decision',()=>{
+ const claim='Hume explains that custom shapes expectation.';
+ const result=normalizeClaimClauseDecisions([{start:0,end:claim.length+20,text:claim,
+  status:'answered',issueCode:'none',sources:[{sourceId:'S1',spanIds:['S1-Q1']}]}],
+  claim,new Set(['S1']),new Map([['S1',new Map([['S1-Q1',{spanId:'S1-Q1'}]])]]));
+ assert.equal(result.decisions.length,1);
+ assert.equal(result.decisions[0].status,'partial');
+ assert.equal(result.decisions[0].unresolved,true);
+ assert.ok(result.warnings.includes('clause-range-invalid'));
+});
+
+test('Batch 21 person-subject extraction covers subordinate actions and possessive states',()=>{
+ assert.deepEqual(claimPersonSubjects('Although Marlow hesitated, Kurtz’s conviction shaped his command.'),
+  ['Marlow','Kurtz']);
+ assert.deepEqual(claimPersonSubjects('Custom shapes expectation, while reason explains causal inference.'),[]);
 });
 
 test('batch 15 quote repair survives review scaffolding without restoring quotation marks',async()=>{
@@ -168,7 +204,23 @@ function review(statuses,{evidenceByPart={},includeEvidence=true,directAnswerCla
   return {response:JSON.stringify({parts,claims})};
  };
 }
-function makeAI(responses,{decorateReview=true,decorateClauses=true}={}){
+function reviewWithSubjects(statuses,options={}){
+ const base=review(statuses,options);
+ return (_model,request)=>{
+  const payload=parsePayload(request.messages),parsed=JSON.parse(base(_model,request).response);
+  parsed.claims=parsed.claims.map(claim=>{
+   const answerClaim=payload.claims.find(item=>item.claimId===claim.claimId);
+   const subjects=claimPersonSubjects(answerClaim?.text||'');
+   if(!subjects.length)return claim;
+   return {...claim,sources:answerClaim.sourceIds.map((sourceId,index)=>({sourceId,
+    status:claim.status,spanIds:(claim.spanIds||[]).filter(id=>String(id).startsWith(sourceId+'-')),
+    subjectAttributionStatus:'supported',
+    attributedSubject:subjects[Math.min(index,subjects.length-1)]}))};
+  });
+  return {response:JSON.stringify(parsed)};
+ };
+}
+function makeAI(responses,{decorateReview=true,decorateClauses=true,decorateSubject=true}={}){
  const calls=[];
  return {calls,run:async(model,request)=>{calls.push({model,request});const next=responses.shift();
    if(next instanceof Error)throw next;
@@ -176,7 +228,7 @@ function makeAI(responses,{decorateReview=true,decorateClauses=true}={}){
    // Most fixtures predate the explicit answer/context decisions. Give legacy
    // fixtures realistic reviewer selections; focused contract tests opt out.
    const systemText=String(request?.messages?.[0]?.content||'');
-   if((decorateReview||decorateClauses)&&systemText.includes('directAnswerClaimIds')&&
+   if((decorateReview||decorateClauses||decorateSubject)&&systemText.includes('directAnswerClaimIds')&&
       typeof result?.response==='string'){
     try{
      const reviewObject=JSON.parse(result.response);
@@ -196,6 +248,22 @@ function makeAI(responses,{decorateReview=true,decorateClauses=true}={}){
          status:part.answerStatus||part.status,
          answerClaimIds:(part.directAnswerClaimIds.length?part.directAnswerClaimIds:partClaims
           .slice(0,1).map(claim=>claim.claimId))}));
+      }
+      if(decorateSubject)for(const claim of reviewObject.claims){
+       const answerClaim=payload.claims.find(item=>item.claimId===claim.claimId);
+       const text=String(answerClaim?.text||'');
+       const people=claimPersonSubjects(text);
+       if(!people.length)continue;
+       const sourceIds=answerClaim?.sourceIds||[];
+       if(!Array.isArray(claim.sources)&&sourceIds.length&&Array.isArray(claim.spanIds))
+        claim.sources=sourceIds.map(sourceId=>({sourceId,
+         status:claim.status||'answered',spanIds:claim.spanIds.filter(id=>String(id).startsWith(sourceId+'-'))}));
+       for(const [index,source] of (Array.isArray(claim.sources)?claim.sources:[]).entries()){
+        if(source.subjectAttributionStatus===undefined){
+         source.subjectAttributionStatus='supported';
+         source.attributedSubject=people[Math.min(index,people.length-1)];
+        }
+       }
       }
       if(decorateClauses)for(const claim of reviewObject.claims){
        if(Array.isArray(claim.clauses))continue;
@@ -558,6 +626,7 @@ test('compact review decisions validate exact spans without rationale text or re
   assert.equal(max_completion_tokens,messages[0].content.startsWith('Answer the reader')?1800:1420);
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+    subjectAttributionStatus:'supported',attributedSubject:'Hume',
     spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}],
     clauses:[{text:claim.text,status:'answered',issueCode:'none',sources:[{sourceId:'S1',
      status:'answered',spanIds:[span.spanId]}]}]}]})};
@@ -931,6 +1000,28 @@ test('an unsupported clause cannot pass on an answered claim-level verdict',asyn
  assert.doesNotMatch(result.answer,/Custom leads us to infer|reason alone establishes/);
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.reason==='claim-clause-not-supported'&&issue.issueCode==='scope'));
+});
+
+test('an unresolved invalid clause range demotes its source decision through full review',async()=>{
+ const claim='Custom shapes the mind’s inference from one event to another, and reason alone establishes necessary connection.';
+ const ai=makeAI([answer(`PART P1\n${claim} [S1]`),(_model,{messages})=>{
+  const payload=parsePayload(messages),current=payload.claims[0];
+  const spanId=current.sourceEvidence[0].spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+   directAnswerClaimIds:[current.claimId]}],claims:[{claimId:current.claimId,status:'answered',sources:[{
+    sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
+   }],clauses:[{start:0,end:claim.length+12,status:'answered',issueCode:'none',
+    sources:[{sourceId:'S1',spanIds:[spanId]}]}]}]})};
+ }]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  catalog,plan:onePartPlan,trace:true
+ });
+ const decision=result.trace.reviewContract.reviewDecisions.find(item=>item.sourceId==='S1');
+ assert.ok(decision);
+ assert.equal(decision.accepted,false);
+ assert.equal(decision.sourceStatus,'partial');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='claim-clause-not-supported'));
 });
 
 test('claim-level source review does not require optional clause segmentation',async()=>{
@@ -2635,6 +2726,54 @@ test('quoted-speaker conflicts are preserved as a source-attribution rejection',
  assert.equal(result.trace.reviewContract.reviewDecisions[0].attributedSpeaker,'Y. Chambers');
 });
 
+test('named-person action attribution rejects transfer, omission, and accepts the matching subject',async()=>{
+ const question='What happened to the round table?';
+ const run=async({claim,sourceText,subjectFields})=>{
+  const source={...hume,id:'S1',bookId:'80',title:'Heart of Darkness — Joseph Conrad',
+   text:sourceText,preview:sourceText};
+  const plan={...onePartPlan,sources:[{label:'Joseph Conrad',role:'primary',bookIds:['80']}],
+   parts:[{...onePartPlan.parts[0],question,sourceBookIds:['80'],candidateSourceIds:['S1']}]};
+  const ai=makeAI([answer(`PART P1\n${claim} [S1]`),(_model,{messages})=>{
+   const payload=parsePayload(messages),current=payload.claims[0];
+   const spanId=current.sourceEvidence[0].spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[current.claimId]}],claims:[{claimId:current.claimId,status:'answered',sources:[{
+     sourceId:'S1',status:'answered',spanIds:[spanId],...subjectFields
+    }]}]})};
+  }],{decorateReview:false,decorateClauses:false,decorateSubject:false});
+  return composeEvidenceAnswer(question,[source],ai,[],{
+   catalog:{80:source.title},plan,trace:true
+  });
+ };
+ const transferred=await run({claim:'Kurtz ordered the immense round table into the station.',
+  sourceText:'Marlow ordered the men to carry the immense round table into the station.',
+  subjectFields:{subjectAttributionStatus:'conflict',attributedSubject:'Marlow'}});
+ const transferredDecision=transferred.trace.reviewContract.reviewDecisions[0];
+ assert.equal(transferredDecision.accepted,false);
+ assert.equal(transferredDecision.subjectAttributionStatus,'conflict');
+ assert.equal(transferredDecision.attributedSubject,'Marlow');
+ assert.ok(transferred.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='source-subject-attribution-conflict'));
+ assert.equal(transferred.coverage,'none');
+
+ const omitted=await run({claim:'Kurtz’s unalterable conviction shaped his command.',
+  sourceText:'Marlow’s conviction shaped his command.',subjectFields:{}});
+ const omittedDecision=omitted.trace.reviewContract.reviewDecisions[0];
+ assert.equal(omittedDecision.accepted,false);
+ assert.equal(omittedDecision.subjectAttributionStatus,'missing');
+ assert.equal(omittedDecision.attributedSubject,'');
+ assert.ok(omitted.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='source-subject-attribution-missing'));
+
+ const matched=await run({claim:'Kurtz ordered the immense round table into the station.',
+  sourceText:'Kurtz ordered the immense round table into the station.',
+  subjectFields:{subjectAttributionStatus:'supported',attributedSubject:'Kurtz'}});
+ const matchedDecision=matched.trace.reviewContract.reviewDecisions[0];
+ assert.equal(matchedDecision.accepted,true);
+ assert.equal(matchedDecision.subjectAttributionStatus,'supported');
+ assert.equal(matched.coverage,'full');
+});
+
 test('a positive reviewer speaker label must be anchored in the supplied source',async()=>{
  const source={id:'S1',bookId:'81',title:'The Brothers Karamazov — Fyodor Dostoevsky',page:311,
   text:'Ivan wonders whether the suffering of innocent children can be justified. The problem remains unresolved.',
@@ -3478,6 +3617,7 @@ test('a reviewer cannot mark an answer supported without selecting a span from i
  assert.deepEqual(result.trace.reviewContract.reviewDecisions,[{
   partId:'P1',claimId:'P1-C1',sourceId:'S2',claimText:'Kant lists causality among the categories of relation.',
   claimStatus:'answered',sourceStatus:'partial',attributionStatus:'missing',attributedSpeaker:'',
+  subjectAttributionStatus:'supported',attributedSubject:'Kant',
   candidateSpanIds:['S2-Q1'],reviewerSpanIds:[],acceptedSpanIds:[],acceptedQuote:'',acceptedQuotes:[],accepted:false,
   recoveredMissingDecision:false,
   validationReason:'missing-claim-source-span'
@@ -3519,6 +3659,7 @@ test('the active reviewer resolves a selected span to exact bounded source text'
  assert.deepEqual(result.trace.reviewContract.reviewDecisions,[{
   partId:'P1',claimId:'P1-C1',sourceId:'S1',claimText:'Aristotle treats soul as the actuality of a living body.',
   claimStatus:'answered',sourceStatus:'answered',attributionStatus:'missing',attributedSpeaker:'',
+  subjectAttributionStatus:'supported',attributedSubject:'Aristotle',
   candidateSpanIds:result.trace.reviewContract.reviewDecisions[0].candidateSpanIds,
   reviewerSpanIds:[spans[0].spanId],acceptedSpanIds:[spans[0].spanId],
   acceptedQuote:spans[0].text.slice(0,280),acceptedQuotes:[spans[0].text.slice(0,280)],
@@ -3770,7 +3911,8 @@ test('the exact run 9 Wollstonecraft reviewer response parses after repeated unm
 });
 
 test('run 9 repeated-unmatched-closer recovery still validates the full review and makes no extra call',async()=>{
- const sourceDecision={sourceId:'S1',status:'answered',spanIds:['S1-Q1']};
+ const sourceDecision={sourceId:'S1',status:'answered',subjectAttributionStatus:'supported',
+  attributedSubject:'Hume',spanIds:['S1-Q1']};
  const valid=JSON.stringify({claims:[
   {claimId:'P1-C1',status:'answered',sources:[sourceDecision],clauses:[{
    text:'Hume links necessity to custom and regular conjunction.',status:'answered',issueCode:'none',
@@ -4439,9 +4581,12 @@ test('flat reviewer decisions retain exact provenance and source-encoded spans',
   reviewPayload=parsePayload(messages);
   const claim=reviewPayload.claims[0];
   return {response:'```json\n'+JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
-   claims:[{claimId:claim.claimId,status:'answered',spanIds:['S1-Q1'],clauses:[{
+   claims:[{claimId:claim.claimId,status:'answered',spanIds:['S1-Q1'],sources:[{
+    sourceId:'S1',status:'answered',spanIds:['S1-Q1'],subjectAttributionStatus:'supported',
+    attributedSubject:'Hume'}],clauses:[{
     text:claim.text,status:'answered',issueCode:'none',sources:[{sourceId:'S1',
-     status:'answered',spanIds:['S1-Q1']}]}]}]})+'\n```'};
+     status:'answered',spanIds:['S1-Q1'],subjectAttributionStatus:'supported',
+     attributedSubject:'Hume'}]}]}]})+'\n```'};
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[source],ai,[],{
   plan:{...onePartPlan,sources:[{label:'Hume commentary',role:'commentary',bookIds:['35']}]},catalog,trace:true});
@@ -6103,7 +6248,8 @@ test('more than six missing source decisions degrade to a round-robin repair sub
      retainedContextClaimIds:[]})),
    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
     sources:[{sourceId:'S1',status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0]]}]}))})};
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0]],
+     subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}))})};
  };
  const repairCall={captured:null};
  const repairDecisions=(_model,{messages})=>{
@@ -6112,7 +6258,8 @@ test('more than six missing source decisions degrade to a round-robin repair sub
   return {response:JSON.stringify({decisions:payload.decisions.map(decision=>({
    claimId:decision.claimId,sourceId:decision.sourceId,status:'answered',
    spanIds:decision.spanIds.slice(0,1),attributionStatus:'not_applicable',
-   attributedSpeaker:''}))})};
+   attributedSpeaker:'',subjectAttributionStatus:'supported',
+   attributedSubject:decision.sourceId==='S1'?'Hume':'Kant'}))})};
  };
  const dualPlan={version:'reader-evidence-v2',intent:'compare',
   sources:[{label:'David Hume',role:'primary',bookIds:['35']},
@@ -6323,16 +6470,30 @@ test('transport diagnostics retain both whole-build attempts after a transient r
   'legacy stageTimings continues to describe the returned attempt; answerRetry holds both attempts');
 });
 
-test('stream deadline is not retried because provider cancellation is unconfirmed (B18)',async()=>{
+test('streaming whole-build deadline failure gets the registered one retry (Batch 21 F2)',async()=>{
  const timeout=Object.assign(new Error('Inference deadline exceeded'),{
   code:'inference-deadline-exceeded',stage:'compose'});
- const ai=makeAI([timeout]);
+ const answerText='PART P1\nHume links necessity to custom and regular conjunction. [S1]';
+ const reviewCall=reviewWithSubjects([['P1','answered']]);
+ const wire=value=>'data: '+JSON.stringify({response:value})+'\n\ndata: [DONE]\n\n';
+ const asStream=value=>new ReadableStream({start(controller){
+  controller.enqueue(new TextEncoder().encode(wire(value)));controller.close();
+ }});
+ let calls=0;
+ const ai={run:async(_model,request)=>{
+  calls++;
+  if(calls===1)throw timeout;
+  if(calls===2)return asStream(answerText);
+  const reviewed=reviewCall(_model,{messages:request.messages});
+  return asStream(reviewed.response);
+ }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true,inferenceTransport:'streaming',transportDiagnostics:true});
- assert.equal(result.outcome,'generation-failed');
- assert.equal(result.failureCode,'inference-deadline-exceeded');
- assert.equal(result.trace.answerRetry,undefined);
- assert.equal(ai.calls.length,1,'a possibly active provider inference is not duplicated');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.trace.answerRetry.code,'inference-deadline-exceeded');
+ assert.equal(result.trace.answerRetry.outcome,'recovered');
+ assert.equal(result.trace.answerRetry.attemptCount,2);
+ assert.equal(calls,3,'the first deadline failure is followed by one whole build: compose plus review');
 });
 
 test('a complete buffered review survives a missing stream terminal event after contract validation',async()=>{
@@ -6341,7 +6502,8 @@ test('a complete buffered review survives a missing stream terminal event after 
   partialResponse:JSON.stringify({parts:[{partId:'P1',status:'answered',
    answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[]}],
    claims:[{claimId:'P1-C1',status:'answered',sources:[{sourceId:'S1',
-    status:'answered',spanIds:['S1-Q1'],attributionStatus:'not_applicable',
+   status:'answered',spanIds:['S1-Q1'],attributionStatus:'not_applicable',
+    subjectAttributionStatus:'supported',attributedSubject:'Hume',
     evidenceRole:'work-assertion',supportBoundary:'The span supports the claim.'}]}]})
  });
  const ai={calls:[],run:async(model,request)=>{
