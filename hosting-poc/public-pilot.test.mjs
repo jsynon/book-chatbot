@@ -2252,19 +2252,56 @@ function depthScenarioModel({p2Text,developed=true,failReReview=false}={}){
  };
  return {model,state};
 }
-async function depthPost(pilot,token){
+async function depthPost(pilot,token,{trace=false}={}){
  const page38=pilot.fixture.body.sources[0];
  // The resolved question is explicitly two-part (", and why…"), which
  // is what keeps normalizePlan from collapsing the plan to one part.
  return pilot.post({headers:{Authorization:'Bearer '+token},body:{
   question:'What caused the Peloponnesian War, and why did it last so long?',
   answerVariant:'with-review',
+  ...(trace?{trace:true}:{}),
   sources:[{...page38}],
   plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
    parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']},
     {id:'P2',question:'Why did the war last so long?',sourceBookIds:['152']}]}
  }});
 }
+
+test('evidence-v2 diagnostics separate provider wait, parsing, composition and concurrent review wall time',async()=>{
+ const token='batch17-stage-timing-profile-test-token';
+ const base=depthScenarioModel({p2Text:depthThinSentence});
+ let activeReviews=0,maxConcurrentReviews=0;
+ const model=async(modelName,input)=>{
+  const system=input.messages?.[0]?.content||'';
+  if(system.startsWith('Review the complete answer parts and claims')){
+   activeReviews++;
+   maxConcurrentReviews=Math.max(maxConcurrentReviews,activeReviews);
+   await new Promise(resolve=>setTimeout(resolve,45));
+   try{return await base.model(modelName,input);}finally{activeReviews--;}
+  }
+  return base.model(modelName,input);
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await depthPost(pilot,token,{trace:true});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ const timings=result.trace.stageTimings;
+ assert.ok(Array.isArray(timings)&&timings.length>0);
+ assert.ok(timings.every(item=>Number.isFinite(item.startOffsetMs)&&
+  Number.isFinite(item.endOffsetMs)&&Number.isFinite(item.providerWaitMs)&&
+  Number.isFinite(item.parseMs)&&item.stageWallMs>=item.providerWaitMs));
+ const review=timings.filter(item=>item.stage==='review');
+ assert.equal(review.length,2,'each planned part receives its existing review call');
+ assert.equal(maxConcurrentReviews,2,'the test confirms the review calls overlap');
+ const summedReviewWall=review.reduce((sum,item)=>sum+item.stageWallMs,0);
+ assert.ok(result.trace.timingSummary.reviewWallMs<=summedReviewWall,
+  'review wall time never exceeds the sum of its individual intervals');
+ assert.equal(result.trace.timingSummary.providerWaitByPhaseMs.review,
+  timings.filter(item=>item.stage.startsWith('review')||item.stage==='answer-re-review')
+   .reduce((sum,item)=>sum+item.providerWaitMs,0));
+ assert.ok(result.trace.timingSummary.buildWallMs>=result.trace.timingSummary.reviewWallMs);
+});
 
 test('evidence-v2 route: a thin part inside an adequate answer is depth-repaired and adopted (batch 10 B10-4)',async()=>{
  const token='depth-repair-adopted-route-test-token';

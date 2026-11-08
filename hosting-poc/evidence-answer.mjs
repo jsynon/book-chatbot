@@ -2466,6 +2466,42 @@ export function hasAssemblyEndingViolation(text){
   return false;
 }
 
+function timingUnionMs(events){
+  const intervals=events.filter(event=>Number.isFinite(event.startOffsetMs)&&
+    Number.isFinite(event.endOffsetMs)).map(event=>[
+      Math.max(0,event.startOffsetMs),Math.max(event.startOffsetMs,event.endOffsetMs)
+    ]).sort((left,right)=>left[0]-right[0]);
+  let total=0,start=null,end=null;
+  for(const [nextStart,nextEnd] of intervals){
+    if(start===null){start=nextStart;end=nextEnd;continue;}
+    if(nextStart<=end){end=Math.max(end,nextEnd);continue;}
+    total+=end-start;start=nextStart;end=nextEnd;
+  }
+  return Math.round(total+(start===null?0:end-start));
+}
+
+function buildTimingSummary(stageTimings,buildWallMs){
+  const composition=stageTimings.filter(item=>
+    ['compose','expand','answer-repair','scaffolding-repair'].includes(item.stage));
+  const review=stageTimings.filter(item=>
+    item.stage.startsWith('review')||item.stage==='answer-re-review');
+  const sumProviderWait=items=>Math.round(items.reduce((sum,item)=>sum+
+    (Number.isFinite(item.providerWaitMs)?item.providerWaitMs:0),0));
+  return {
+    buildWallMs:Math.max(0,Math.round(buildWallMs)),
+    compositionWallMs:timingUnionMs(composition),
+    reviewWallMs:timingUnionMs(review),
+    providerWaitSumMs:sumProviderWait(stageTimings),
+    providerWaitByPhaseMs:{
+      composition:sumProviderWait(composition),
+      review:sumProviderWait(review),
+      other:sumProviderWait(stageTimings.filter(item=>!composition.includes(item)&&!review.includes(item)))
+    },
+    stageCallCount:stageTimings.length,
+    reviewStageCallCount:review.length
+  };
+}
+
 // Batch 8 (B8-7): the build itself lives in composeEvidenceAnswerBuild;
 // the exported composeEvidenceAnswer below wraps it with one whole-build
 // retry on provider-transient failure.
@@ -2474,13 +2510,14 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   const normalized=normalizePlan(rawPlan,question,options.catalog||{},options.selectedBookId||'');
   const plan=linkEvidenceToParts(normalized,sources);
   const trace={version:CONTRACT_VERSION,model:READER_MODEL,plan,stages:[],rejected:[],
-    ...(options.transportDiagnostics===true?{inferenceCalls:[]}: {})};
+    ...(options.transportDiagnostics===true?{inferenceCalls:[],stageTimings:[]}: {})};
   // Keep the retrieval-to-selection handoff beside composition and review in
   // authenticated traces; this is the point where candidate recall becomes
   // the evidence budget available to the answer model.
   if(options.trace&&options.selectionTrace)trace.stages.push(options.selectionTrace);
   const usage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
   const started=Date.now();
+  const timingStarted=performance.now();
   // The call budget scales with the plan now that review and re-review run
   // as one call per part. Per part the worst case is nine calls: the review,
   // its compact retry, the re-review after the shared answer repair, the
@@ -2515,6 +2552,23 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     const serializedPayload=JSON.stringify(payload);
     const messages=[{role:'system',content:system},{role:'user',content:serializedPayload}];
     const start=Date.now();usage.calls++;
+    const stageStartedAt=performance.now();
+    const timing=options.transportDiagnostics===true?{
+      stage,...(partId?{partId}:{}),
+      startOffsetMs:Math.max(0,Math.round(stageStartedAt-timingStarted))
+    }:null;
+    if(timing)trace.stageTimings.push(timing);
+    let timingFinished=false;
+    const finishTiming=(parseStartedAt,status='completed',failureCode)=>{
+      if(!timing||timingFinished)return;
+      const endedAt=performance.now();
+      timing.parseMs=parseStartedAt===null?0:Math.max(0,Math.round(endedAt-parseStartedAt));
+      timing.endOffsetMs=Math.max(timing.startOffsetMs,Math.round(endedAt-timingStarted));
+      timing.stageWallMs=Math.max(0,timing.endOffsetMs-timing.startOffsetMs);
+      timing.status=status;
+      if(failureCode)timing.failureCode=failureCode;
+      timingFinished=true;
+    };
     let response,timer;
     const payloadMetrics=stage.startsWith('review')||stage==='answer-re-review'?
       reviewPayloadMetrics(payload,serializedPayload,system):null;
@@ -2558,6 +2612,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       ...(temperature!==undefined?{temperature}:{}),max_completion_tokens:outputTokenBudget};
     const transport=options.inferenceTransport==='streaming'?'streaming':'default';
     let transportCall=null;
+    const providerStartedAt=performance.now();
     try{
       if(transport==='streaming'){
         const result=await runWorkersAiStream(ai,READER_MODEL,modelRequest,{timeoutMs,stage});
@@ -2596,8 +2651,13 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),timeoutMs);})]);
       }
       if(transportCall&&Array.isArray(trace.inferenceCalls))trace.inferenceCalls.push(transportCall);
+      if(timing)timing.providerWaitMs=Math.max(0,Math.round(performance.now()-providerStartedAt));
     }
     catch(error){
+      if(timing){
+        timing.providerWaitMs=Math.max(0,Math.round(performance.now()-providerStartedAt));
+        finishTiming(null,'failed',typeof error?.code==='string'?error.code:'provider-request-failed');
+      }
       transportCall=error?.streamDiagnostics||transportCall;
       if(transportCall&&Array.isArray(trace.inferenceCalls))trace.inferenceCalls.push(transportCall);
       if(transportCall&&error&&typeof error==='object')
@@ -2623,21 +2683,35 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       ...(partId?{partId}:{}),
       ...(payloadMetrics?{payloadMetrics}:{})};
     trace.stages.push(stageTrace);
-    if(stage==='compose'&&['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
+    if(stage==='compose'&&['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason)){
+      finishTiming(null,'failed','answer-output-truncated');
       throw new ModelFormatError(stage,'The answer draft was truncated before it was complete.','answer-output-truncated');
+    }
     if(stage.startsWith('review')||stage==='answer-re-review'||stage==='answer-repair'){
+      const parseStartedAt=performance.now();
       try{
         if(['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
           throw new ModelFormatError(stage,'Reviewer output was truncated before a complete decision object was returned.','review-output-truncated');
-        return parser(response,stage);
+        const parsed=parser(response,stage);
+        finishTiming(parseStartedAt,'completed');
+        return parsed;
       }catch(error){
         stageTrace.status='failed';
         stageTrace.failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
           error.code:stage==='answer-repair'?'answer-repair-response-invalid':'review-response-invalid';
+        finishTiming(parseStartedAt,'failed',stageTrace.failureCode);
         throw error;
       }
     }
-    return parser(response,stage);
+    const parseStartedAt=performance.now();
+    try{
+      const parsed=parser(response,stage);
+      finishTiming(parseStartedAt,'completed');
+      return parsed;
+    }catch(error){
+      finishTiming(parseStartedAt,'failed',typeof error?.code==='string'?error.code:'response-parse-failed');
+      throw error;
+    }
   }
   const pageById=new Map(sources.map(source=>[source.id,{id:source.id,bookId:source.bookId,
     title:source.title,page:source.page,sha256:source.sha256,text:source.text??source.preview,
@@ -5155,6 +5229,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             {start:support.start,end:support.end}:{}),reason:item.reviewReason});
         evidenceHighlights.push({source_id:source.id,page:source.page,quote:sourceAnchor});
       }
+    }
+    if(options.transportDiagnostics===true){
+      trace.timingSummary=buildTimingSummary(trace.stageTimings||[],performance.now()-timingStarted);
     }
     trace.final={...(trace.final||{}),answer,questionParts,coverage,answerCompleteness,
       failure:failure?.code==='answer-citation-validation-failed'?
