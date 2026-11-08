@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
-import {buildReviewSpans,rankReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
+import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 import {splitCitedSentenceUnits,reconcileFinalPartCoverage} from './evidence-answer.mjs';
 
 test('batch 15 preserves quoted sentence punctuation and leading Markdown subtitles',()=>{
@@ -376,6 +376,52 @@ test('review spans put direct paraphrase evidence first without discarding other
  assert.match(ranked[0].text,/^No immediate transition from a proof of probability to faith is possible\./);
  assert.deepEqual(new Set(ranked.map(span=>span.spanId)),new Set(spans.map(span=>span.spanId)));
  assert.ok(ranked.every(span=>text.includes(span.text)));
+});
+test('requirement span ranking reserves an exact topical match and skips zero-match spans',()=>{
+ const spans=[
+  {spanId:'S1-Q1',text:'The custom of repeated conjunction trains the mind to expect one event after another.'},
+  {spanId:'S1-Q2',text:'The author discusses a broad history of books, editors, and philosophical schools.'}
+ ];
+ assert.deepEqual(selectRequirementReviewSpans(spans,{
+  requirement:'Habitual expectation follows repeated conjunction.',
+  questionAnchor:'what role does custom play?'
+ }).map(span=>span.spanId),['S1-Q1']);
+ assert.deepEqual(selectRequirementReviewSpans(spans,{
+  requirement:'zqvblorp flibbertigibbet',
+  questionAnchor:'xyzzynotfound'
+ }),[],'an empty lexical match leaves the existing broad fallback in control');
+});
+test('composer windows use requirement text within the same per-source span cap and trace the selection',async()=>{
+ const question='How does Hume explain causal necessity, and what role does custom play?';
+ const distractors=Array.from({length:18},(_,index)=>
+  `Hume discusses custom and causal necessity in this broad introductory passage ${index+1}.`);
+ const target='Repeated conjunction creates habitual expectation, training the mind to infer one event from another.';
+ const text=[...distractors,target,'A final passage summarizes the surrounding discussion without adding a mechanism.'].join('\n\n');
+ const source={...hume,text,preview:text,candidatePartIds:['P1']};
+ const spans=buildReviewSpans('S1',text);
+ const plan={...onePartPlan,resolvedQuestion:question,parts:[{
+  id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
+  searchQueries:['Hume custom causal necessity'],candidateSourceIds:['S1'],
+  requirements:[{id:'P1-R1',text:'Repeated conjunction forms habitual expectation.',
+   questionAnchor:'what role does custom play?'}]
+ }]};
+ const baseline=selectReviewPacketSpans(spans,{question,
+  answer:'How does Hume explain causal necessity? Hume custom causal necessity',limit:8});
+ const targetSpan=spans.find(span=>span.text.includes(target));
+ assert.ok(targetSpan);
+ assert.ok(!baseline.some(span=>span.spanId===targetSpan.spanId),
+  'the baseline question/query-only rank misses the requirement-specific passage');
+ const ai=makeAI([answer('PART P1\nHume explains that repeated conjunction trains expectation.'),
+  review([['P1','answered']],{includeEvidence:false})]);
+ const result=await composeEvidenceAnswer(question,[source],ai,[],{plan,catalog,trace:true});
+ const selected=result.trace.composerWindowSelection.find(item=>item.sourceId==='S1').selectedSpans;
+ assert.ok(selected.some(item=>item.spanId===targetSpan.spanId&&item.requirementIds.includes('P1-R1')));
+ assert.ok(selected.length<=8,'selected spans remain within the existing per-source cap');
+ const payload=parsePayload(ai.calls[0].request.messages);
+ assert.ok(payload.evidence[0].passages.some(window=>window.spanIds.includes(targetSpan.spanId)),
+  'the composer receives the requirement-selected exact span');
+ assert.ok(payload.evidence[0].passages.every(window=>!Object.hasOwn(window,'requirementIds')),
+  'selection metadata is recorded in the trace and does not enlarge the model payload');
 });
 test('review hint ranking promotes the run-17 Boethius wealth and completeness passage',()=>{
  const spans=[
