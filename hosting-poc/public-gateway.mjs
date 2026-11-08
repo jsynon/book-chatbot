@@ -4545,6 +4545,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     const evaluationAuthorized=authorizedPilotEvaluation(request,env);
     const answerVariant=evaluationAuthorized&&['compose-only','with-expansion'].includes(data.answerVariant)?
       data.answerVariant:'with-review';
+    const inferenceTransport=evaluationAuthorized&&data.inferenceTransport==='streaming'?
+      'streaming':'default';
     try{
       // The public pilot uses the evidence pipeline by default. An explicit
       // legacy setting is a rollback switch; authenticated evaluations always
@@ -4586,7 +4588,45 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         });
         let selectionTrace;
         const started=performance.now();
-        try{
+        if(evaluationAuthorized&&Array.isArray(data.selectionSnapshot)){
+          if(data.selectionSnapshot.length>6)throw Object.assign(new Error('Evaluation selection snapshot exceeds the six-page limit.'),
+            {failureCode:'invalid-selection-snapshot'});
+          const candidateByLocator=new Map(candidatePool.map(source=>[String(source.bookId)+':'+source.page,source]));
+          const partById=new Map(plan.parts.map(part=>[part.id,part]));
+          const seen=new Set();
+          let totalBytes=0;
+          for(const snapshot of data.selectionSnapshot){
+            const locator=String(snapshot?.bookId||'')+':'+String(snapshot?.page||'');
+            const source=candidateByLocator.get(locator);
+            if(!source||seen.has(locator)||!Number.isInteger(snapshot?.page))
+              throw Object.assign(new Error('Evaluation selection snapshot contains an unknown or duplicate page.'),
+                {failureCode:'invalid-selection-snapshot'});
+            seen.add(locator);
+            const candidatePartIds=Array.isArray(snapshot.candidatePartIds)?[...new Set(snapshot.candidatePartIds.filter(id=>{
+              const part=partById.get(id);
+              return Boolean(part)&&(!Array.isArray(part.sourceBookIds)||!part.sourceBookIds.length||
+                part.sourceBookIds.map(String).includes(String(source.bookId)));
+            }))]:[];
+            const candidatePartSupport=Array.isArray(snapshot.candidatePartSupport)?snapshot.candidatePartSupport
+              .filter(entry=>entry&&candidatePartIds.includes(entry.partId)&&['direct','context'].includes(entry.support)&&
+                entry.support.length<=100&&(!entry.excerpt||typeof entry.excerpt==='string'&&entry.excerpt.length<=500&&
+                  source.text.toLocaleLowerCase().includes(entry.excerpt.toLocaleLowerCase())))
+              .map(entry=>({partId:entry.partId,support:entry.support,...(entry.excerpt?{excerpt:entry.excerpt}:{})})):[];
+            const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:
+              typeof snapshot.candidateId==='string'&&/^C\d{1,3}$/.test(snapshot.candidateId)?snapshot.candidateId:'C'+(answerSources.length+1),
+              candidatePartIds,candidatePartSupport,duplicateTrace:[],budget:35000,totalBytes,question:data.question});
+            totalBytes=packed.totalBytes;
+            if(!packed.source)throw Object.assign(new Error('Evaluation selection snapshot exceeds the answer packet budget.'),
+              {failureCode:'invalid-selection-snapshot'});
+          }
+          sourceSelectionStatus='paired-snapshot';
+          sourceSelectionUsage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
+          selectionTrace={stage:'evidence-selection',elapsedMs:0,status:sourceSelectionStatus,
+            candidateCount:candidatePool.length,selectionCandidateCount:selectionCandidates.length,
+            selected:answerSources.map(source=>({id:source.id,candidateId:source.candidateId,
+              bookId:source.bookId,page:source.page,candidatePartIds:source.candidatePartIds,
+              candidatePartSupport:source.candidatePartSupport})),pairedSnapshot:true};
+        }else try{
           const decision=await selectEvidenceCandidates({question:data.question,parts:selectionParts,
             candidates:selectorCandidates,ai:env.AI});
           sourceSelectionUsage=decision.usage;
@@ -4700,10 +4740,22 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         catch(error){return verificationFailure(error);}
         sourceSelectionPages=answerSources.map(source=>({id:source.id,bookId:source.bookId,
           title:source.title,page:source.page,candidatePartIds:source.candidatePartIds||[]}));
+        if(evaluationAuthorized&&data.selectionOnly===true){
+          return reply({selectionOnly:true,sourceSelectionStatus,
+            sourceSelection:{status:sourceSelectionStatus,candidateCount:sourceSelectionCandidateCount,
+              pages:sourceSelectionPages,usage:sourceSelectionUsage},
+            selectionSnapshot:answerSources.map(source=>({bookId:source.bookId,page:source.page,
+              candidateId:source.candidateId,candidatePartIds:source.candidatePartIds||[],
+              candidatePartSupport:source.candidatePartSupport||[]})),
+            ...(output?.workerVersionId?{workerVersionId:output.workerVersionId}:{}),
+            ...(output?.workerSourceBuild?{workerSourceBuild:output.workerSourceBuild}:{}),
+            ...(output?.workerSourceRevision?{workerSourceRevision:output.workerSourceRevision}:{})},200,origin);
+        }
         output=await composeEvidenceAnswer(data.question,answerSources,env.AI,data.history||[],{
           plan,catalog:PILOT_BOOKS,selectedBookId,
           review:answerVariant!=='compose-only',
           expand:answerVariant==='with-expansion',
+          ...(evaluationAuthorized?{inferenceTransport,transportDiagnostics:true}:{}),
           selectionTrace,
           // Full prompts and source text are returned only to the dedicated
           // authenticated evaluation workflow, never to ordinary visitors.
@@ -4734,6 +4786,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         output=await composeVerifiedAnswer(data.question,legacySources,env.AI,data.history||[]);
       }
       if(output.pipeline==='reader-evidence-v2')output.answerVariant=answerVariant;
+      if(evaluationAuthorized)output.inferenceTransport=inferenceTransport;
     }
     catch(error){
       const known=new Set(['evidence-review-request-failed','evidence-review-truncated',
@@ -4760,7 +4813,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         'relation-claim-audit-retry-truncated','relation-claim-audit-retry-invalid',
         'relation-claim-audit-retry-incomplete',
         // Batch 11 (B11-2): the v2 evidence pipeline's failure codes.
-        'inference-deadline-exceeded','answer-request-failed',
+        'inference-deadline-exceeded','inference-cancel-unconfirmed','answer-request-failed',
         'review-request-failed','answer-pipeline-failed',
         'answer-citation-validation-failed','model-output-invalid-format',
         'answer-output-truncated','answer-repair-invalid']);
@@ -4773,6 +4826,28 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         known.has(error?.code)?error.code:
         'answer-generation-or-citation-failed';
       const diagnostics=answerPipelineFailureDiagnostics(error);
+      const rawTransportDiagnostic=diagnosticPath(error,'inferenceTransportDiagnostic')||
+        diagnosticPath(error,'cause.inferenceTransportDiagnostic');
+      const safeTransportDiagnostic=rawTransportDiagnostic&&typeof rawTransportDiagnostic==='object'?{
+        ...(typeof rawTransportDiagnostic.transport==='string'?{transport:rawTransportDiagnostic.transport}:{}),
+        ...(typeof rawTransportDiagnostic.stage==='string'?{stage:rawTransportDiagnostic.stage}:{}),
+        ...(Number.isSafeInteger(rawTransportDiagnostic.timeoutMs)?{timeoutMs:rawTransportDiagnostic.timeoutMs}:{}),
+        ...(Number.isSafeInteger(rawTransportDiagnostic.elapsedMs)?{elapsedMs:rawTransportDiagnostic.elapsedMs}:{}),
+        ...(Number.isSafeInteger(rawTransportDiagnostic.timeoutAtMs)?{timeoutAtMs:rawTransportDiagnostic.timeoutAtMs}:{}),
+        ...(Number.isSafeInteger(rawTransportDiagnostic.firstChunkMs)?{firstChunkMs:rawTransportDiagnostic.firstChunkMs}:{}),
+        ...(Number.isSafeInteger(rawTransportDiagnostic.cancelElapsedMs)?{cancelElapsedMs:rawTransportDiagnostic.cancelElapsedMs}:{}),
+        ...(typeof rawTransportDiagnostic.timeoutClassification==='string'?{timeoutClassification:rawTransportDiagnostic.timeoutClassification}:{}),
+        ...(typeof rawTransportDiagnostic.timeoutFired==='boolean'?{timeoutFired:rawTransportDiagnostic.timeoutFired}:{}),
+        ...(typeof rawTransportDiagnostic.cancelRequested==='boolean'?{cancelRequested:rawTransportDiagnostic.cancelRequested}:{}),
+        ...(typeof rawTransportDiagnostic.cancelSettled==='boolean'?{cancelSettled:rawTransportDiagnostic.cancelSettled}:{}),
+        ...(typeof rawTransportDiagnostic.cancelOutcome==='string'?{cancelOutcome:rawTransportDiagnostic.cancelOutcome}:{}),
+        ...(typeof rawTransportDiagnostic.retrySafe==='boolean'?{retrySafe:rawTransportDiagnostic.retrySafe}:{}),
+        ...(typeof rawTransportDiagnostic.providerInferenceCancellation==='string'?
+          {providerInferenceCancellation:rawTransportDiagnostic.providerInferenceCancellation}:{}),
+        ...(typeof rawTransportDiagnostic.providerSettled==='boolean'?{providerSettled:rawTransportDiagnostic.providerSettled}:{}),
+        ...(typeof rawTransportDiagnostic.settledAfterDeadline==='boolean'?
+          {settledAfterDeadline:rawTransportDiagnostic.settledAfterDeadline}:{}),
+      }:null;
       const publicFailureCode=publicAiFailureCode(diagnostics.providerClass);
       console.error('Reader pilot answer failed',{failureCode,...diagnostics});
       return reply({error:'AI answer or citations unavailable; please try again later',
@@ -4785,7 +4860,11 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         ...(Number.isSafeInteger(diagnostics.answerCharacters)?
           {failureAnswerCharacters:diagnostics.answerCharacters}:{}),
         ...(typeof diagnostics.reviewFailureReason==='string'?
-          {failureDetail:diagnostics.reviewFailureReason}:{})},502,origin);
+          {failureDetail:diagnostics.reviewFailureReason}:{}),
+        ...(evaluationAuthorized&&safeTransportDiagnostic?{inferenceTransportDiagnostics:[safeTransportDiagnostic]}:{}),
+        ...(evaluationAuthorized?{selectionSnapshot:answerSources.map(source=>({bookId:source.bookId,page:source.page,
+          candidateId:source.candidateId,candidatePartIds:source.candidatePartIds||[],
+          candidatePartSupport:source.candidatePartSupport||[]}))}:{})},502,origin);
     }
     // Highlights stay bound to answer-used citations and reviewed, exact spans
     // from fingerprint-verified source pages. Missing anchors stay missing;
@@ -4812,6 +4891,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       sourceSelectionStatus,
       sourceSelection:{status:sourceSelectionStatus,candidateCount:sourceSelectionCandidateCount,
         pages:sourceSelectionPages,usage:sourceSelectionUsage},
+      ...(evaluationAuthorized?{selectionSnapshot:answerSources.map(source=>({bookId:source.bookId,page:source.page,
+        candidateId:source.candidateId,candidatePartIds:source.candidatePartIds||[],
+        candidatePartSupport:source.candidatePartSupport||[]}))}:{}),
       // Batch 5 (verification diet): how much verification work this
       // request actually did — pages verified (selected only), packet
       // network fetches, and packet cache hits.

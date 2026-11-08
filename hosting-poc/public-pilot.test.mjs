@@ -477,6 +477,68 @@ test('opt-in evaluation bearer reaches real pilot endpoints without bypassing ra
  assert.equal((await pilot.post({headers})).status,429);
  assert.equal(pilot.stats().verifyCalls,0);
 });
+test('stream transport is evaluation-authorized and records transport diagnostics',async()=>{
+ const token='batch17-streaming-evaluation-secret-'.repeat(2);
+ const seen=[];
+ const model=async(_model,input)=>{
+  seen.push(input.stream===true);
+  const response='PART P1\nThucydides distinguishes an immediate dispute from fear of growing power. [S1]';
+  if(input.stream){
+   const bytes=new TextEncoder().encode('data: '+JSON.stringify({response})+'\n\ndata: [DONE]\n\n');
+   return new ReadableStream({start(controller){controller.enqueue(bytes);controller.close();}});
+  }
+  return {response,usage:{neurons:1,prompt_tokens:2,completion_tokens:3}};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War?',answerVariant:'compose-only',
+  inferenceTransport:'streaming',trace:true
+ }});
+ assert.equal(response.status,200);
+ const data=await response.json();
+ assert.equal(data.inferenceTransport,'streaming');
+ assert.ok(data.trace.inferenceCalls.length>0);
+ assert.ok(data.trace.inferenceCalls.every(call=>call.transport==='streaming-buffered'));
+ assert.ok(seen.some(value=>value),'evaluation transport must request streamed model output');
+
+ const publicOnly=await pilotScenario({config:{READER_PIPELINE:'evidence-v2'},model});
+ const ordinary=await publicOnly.post({body:{inferenceTransport:'streaming',selectionOnly:true}});
+ assert.equal(ordinary.status,200);
+ const ordinaryData=await ordinary.json();
+ assert.equal(ordinaryData.inferenceTransport,undefined);
+ assert.equal(ordinaryData.selectionOnly,undefined);
+ assert.equal(ordinaryData.trace,undefined);
+ assert.equal(seen.filter(value=>value).length,1,
+  'an unauthenticated client cannot enable the streaming evaluation transport');
+});
+test('evaluation-only selection preparation returns a verified reusable snapshot without composing an answer',async()=>{
+ const token='batch17-shared-selection-secret-'.repeat(2);
+ const model=async(_model,input)=>{
+  const system=input.messages?.[0]?.content||'';
+  if(!system.startsWith('Choose pages that can help answer'))
+   throw new Error('selection-only request unexpectedly called the answer composer');
+  const payload=JSON.parse(input.messages[1].content);
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:payload.parts.map(part=>({
+   partId:part.partId,evidence:[{candidateId:payload.candidates[0].id,support:'direct'}]}))})}}],
+   usage:{neurons:1,prompt_tokens:2,completion_tokens:3}};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const source=pilot.fixture.body.sources[0];
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What does this verified passage say?',selectionOnly:true,
+  plan:{intent:'explain',sources:[],parts:[{question:'What does this verified passage say?'}]},sources:[source]
+ }});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(result.selectionOnly,true);
+ assert.equal(result.selectionSnapshot.length,1);
+ assert.equal(result.selectionSnapshot[0].bookId,source.bookId);
+ assert.equal(result.selectionSnapshot[0].page,source.page);
+ assert.equal(result.sourceSelection.pages.length,1);
+ assert.equal(pilot.stats().calls,1,'only the shared evidence-selection call runs');
+});
 test('evidence-v2 public route returns six reviewed highlights for six cited pages',async()=>{
  const token='six-reviewed-highlight-test-token';
  const model=async(_model,input)=>{
