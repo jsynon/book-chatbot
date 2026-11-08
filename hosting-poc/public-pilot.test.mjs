@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import * as support from './public-gateway.test-support.mjs';
+import {claimPersonSubjects} from './evidence-answer.mjs';
 const {gzipSync,gateway,handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,prepareCandidatePages,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,planSearchGapQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights,HOST,PDF,manifest,pages,question,payload,fetcher,request,env,fingerprintTestFixture,pilotBaseEnv,pilotScenario}=support;
 
 test('batch 15 pilot route preserves subtitles and canonical quotation repair through scaffolding',async()=>{
@@ -602,7 +603,8 @@ test('malformed selector JSON uses bounded deterministic fallback without retryi
     claims:payload.claims.map(claim=>{
      const sources=claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
       spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1),
-      attributionStatus:'supported',attributedSpeaker:'Thucydides'}));
+      attributionStatus:'supported',attributedSpeaker:'Thucydides',
+      subjectAttributionStatus:'supported',attributedSubject:'Thucydides'}));
      return {claimId:claim.claimId,status:'answered',sources,
       clauses:[{text:claim.text,status:'answered',issueCode:'none',
        sources:sources.map(({sourceId,spanIds})=>({sourceId,status:'answered',spanIds}))}]};
@@ -2229,9 +2231,13 @@ function depthReview(payload,{fail=false}={}){
     .slice(0,1).map(claim=>claim.claimId),
    retainedContextClaimIds:[]})),
   claims:payload.claims.map(claim=>{
+   const personSubjects=claimPersonSubjects(claim.text);
+   const subjectIsThucydides=personSubjects.some(name=>/^Thucydides$/iu.test(name));
    const sources=claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1),
-    attributionStatus:'supported',attributedSpeaker:'Thucydides'}));
+    attributionStatus:'supported',attributedSpeaker:'Thucydides',
+    ...(personSubjects.length?{subjectAttributionStatus:subjectIsThucydides?'supported':'not_applicable',
+     attributedSubject:subjectIsThucydides?'Thucydides':''}:{})}));
    return {claimId:claim.claimId,status:'answered',sources,
     clauses:[{text:claim.text,status:'answered',issueCode:'none',
      sources:sources.map(({sourceId,spanIds})=>({sourceId,status:'answered',spanIds}))}]};
@@ -2313,6 +2319,47 @@ test('evidence-v2 diagnostics separate provider wait, parsing, composition and c
   timings.filter(item=>item.stage.startsWith('review')||item.stage==='answer-re-review')
    .reduce((sum,item)=>sum+item.providerWaitMs,0));
  assert.ok(result.trace.timingSummary.buildWallMs>=result.trace.timingSummary.reviewWallMs);
+});
+
+test('evidence-v2 route fails closed on transferred person-action attribution (Batch 21 F3)',async()=>{
+ const token='batch21-person-subject-route-test-token';
+ const claim='Thucydides identifies fear about rival power as the deeper cause of the war.';
+ const model=async(_model,input)=>{
+  const system=input.messages?.[0]?.content||'';
+  if(system.startsWith('Answer the reader\'s exact question'))
+   return {response:`PART P1\n${claim} [S1]`};
+  if(system.startsWith('Review the complete answer parts and claims')){
+   const payload=JSON.parse(input.messages[1].content);
+   return {response:JSON.stringify({parts:payload.parts.map(part=>({
+    partId:part.partId,status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.filter(item=>item.partId===part.partId)
+     .map(item=>item.claimId)})),claims:payload.claims.map(item=>({
+    claimId:item.claimId,status:'answered',sources:item.sourceIds.map(sourceId=>({
+     sourceId,status:'answered',
+     spanIds:item.sourceEvidence.find(entry=>entry.sourceId===sourceId)?.spanIds.slice(0,1)||[],
+     subjectAttributionStatus:'conflict',attributedSubject:'Marlow'
+    }))}))})};
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2',
+  READER_INFERENCE_TRANSPORT:'default'},model});
+ const source=pilot.fixture.body.sources[0];
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
+  sources:[source],plan:{intent:'explain',
+   sources:[{label:'Thucydides',role:'primary',bookIds:[source.bookId]}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',
+    sourceBookIds:[source.bookId],candidateSourceIds:['S1']}]}
+ }});
+ assert.equal(response.status,200);
+ const data=await response.json();
+ assert.doesNotMatch(data.answer,/Thucydides identifies fear/);
+ assert.equal(data.evidenceMap.length,0);
+ assert.ok(data.trace.reviewContract.reviewDecisions.some(item=>
+  item.sourceId==='S1'&&item.subjectAttributionStatus==='conflict'&&
+  item.attributedSubject==='Marlow'&&item.accepted===false));
 });
 
 test('evidence-v2 route: a thin part inside an adequate answer is depth-repaired and adopted (batch 10 B10-4)',async()=>{
