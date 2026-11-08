@@ -891,9 +891,9 @@ test('reviewed clauses need not mechanically partition every connective in a cit
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
     attributionStatus:'not_applicable',attributedSpeaker:''}],clauses:[
-     {text:'Similar objects are constantly conjoined',status:'answered',issueCode:'none',
+     {start:broad.indexOf('Similar'),end:broad.indexOf('conjoined')+'conjoined'.length,status:'answered',issueCode:'none',
       sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]},
-     {text:'the mind is determined by custom to infer one from the other.',status:'answered',issueCode:'none',
+     {start:broad.indexOf('the mind'),end:broad.length,status:'answered',issueCode:'none',
       sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}
    ]}]})};
  }]);
@@ -2070,6 +2070,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(REVIEW_PROMPT,/logical relations.*neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/When a claim says how one thing affects or relates to another, the span must support that connection/);
  assert.match(REVIEW_PROMPT,/For a cited claim with multiple independently checkable source-derived clauses, also return clauses/);
+ assert.match(REVIEW_PROMPT,/Offsets are 0-based UTF-16 code units/);
  assert.match(REVIEW_PROMPT,/Uncited general-context claims are assessed at the part level and do not need clause spans or citations/);
  assert.match(REVIEW_PROMPT,/A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means/);
  assert.match(COMPOSER_PROMPT,/Keep the opening focused on the reader rather than a preview of themes/);
