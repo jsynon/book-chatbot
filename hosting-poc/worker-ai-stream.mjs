@@ -27,7 +27,7 @@ function updateUsage(previous,next){
   return found?usage:previous;
 }
 
-async function consumeSse(reader,diagnostics){
+async function consumeSse(reader,diagnostics,onText){
   const decoder=new TextDecoder();
   let buffer='',eventData=[],response='',finishReason=null,usage=null,doneMarker=false;
   const consumeEvent=raw=>{
@@ -41,6 +41,7 @@ async function consumeSse(reader,diagnostics){
     }
     const text=eventText(event);
     response+=text;
+    if(text)onText?.(response);
     if(text){diagnostics.textEvents++;diagnostics.responseCharacters+=text.length;}
     const choice=event?.choices?.[0];
     if(typeof choice?.finish_reason==='string')finishReason=choice.finish_reason;
@@ -93,6 +94,7 @@ async function consumeSse(reader,diagnostics){
 export async function runWorkersAiStream(ai,model,request,{timeoutMs,stage}={}){
   const startedAt=Date.now();
   let timer,reader,stream,timedOut=false,finished=false,cancelTask=Promise.resolve();
+  let partialResponse='';
   const diagnostics={transport:'streaming-buffered',stage,timeoutMs,
     startedAt,firstChunkMs:null,textEvents:0,responseCharacters:0,
     completionSignal:null,finishReason:null,usageAvailable:false,
@@ -118,7 +120,7 @@ export async function runWorkersAiStream(ai,model,request,{timeoutMs,stage}={}){
       throw adapterError('Workers AI streaming did not return a readable stream.','stream-output-invalid',stage);
     reader=stream.getReader();
     try{
-      const response=await consumeSse(reader,diagnostics);
+      const response=await consumeSse(reader,diagnostics,value=>{partialResponse=value;});
       if(timedOut){await cancelTask;throw timeoutError;}
       finished=true;
       diagnostics.elapsedMs=Date.now()-startedAt;
@@ -141,6 +143,7 @@ export async function runWorkersAiStream(ai,model,request,{timeoutMs,stage}={}){
       diagnostics.timeoutAtMs=Date.now()-startedAt;
       diagnostics.cancelRequested=true;
       diagnostics.cancelRequestedAtMs=Date.now()-startedAt;
+      if(partialResponse)timeoutError.partialResponse=partialResponse;
       try{
         const cancel=reader?reader.cancel(timeoutError):stream?
           stream.cancel(timeoutError):sourcePromise?.then(value=>value.cancel(timeoutError));
@@ -164,6 +167,7 @@ export async function runWorkersAiStream(ai,model,request,{timeoutMs,stage}={}){
           const error=adapterError('Inference timed out and stream cancellation was not confirmed.',
             'inference-cancel-unconfirmed',stage);
           error.timeoutMs=timeoutMs;
+          if(partialResponse)error.partialResponse=partialResponse;
           error.streamDiagnostics=diagnostics;
           reject(error);
         }
@@ -174,6 +178,7 @@ export async function runWorkersAiStream(ai,model,request,{timeoutMs,stage}={}){
         const error=adapterError('Inference timed out and stream cancellation was not confirmed.',
           'inference-cancel-unconfirmed',stage);
         error.timeoutMs=timeoutMs;
+        if(partialResponse)error.partialResponse=partialResponse;
         error.streamDiagnostics=diagnostics;
         reject(error);
       }
