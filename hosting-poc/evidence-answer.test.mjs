@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,normalizeClaimClauseDecisions} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 import {splitCitedSentenceUnits,reconcileFinalPartCoverage} from './evidence-answer.mjs';
@@ -19,6 +19,29 @@ test('batch 15 preserves quoted sentence punctuation and leading Markdown subtit
   ['One fact [S1].','Another fact [S1].']);
  const unmatched='The notice says "Keep moving. Watch the ridge [S1].';
  assert.equal(splitCitedSentenceUnits(unmatched).join(' ').replace(/\s+/g,' '),unmatched);
+});
+
+test('Batch 21 requirement passages cannot consume the whole composer span allowance',()=>{
+ const text=Array.from({length:24},(_,index)=>`Passage ${index+1} discusses the shared question and a distinct idea.`).join(' ');
+ const requirements=Array.from({length:8},(_,index)=>({id:`P1-R${index+1}`,text:`Requirement idea ${index+1}`}));
+ const result=composerPassageWindows('S1',text,'shared question',[{id:'P1',question:'shared question',
+  requirements,searchQueries:['shared question']}]);
+ const reserved=result.selection.filter(item=>item.reservedForRequirement);
+ assert.ok(reserved.length<=4);
+ assert.ok(result.selection.some(item=>!item.reservedForRequirement),
+  'broad relevance ranking must retain at least some composer slots');
+});
+
+test('Batch 21 clause offsets that split words remain unresolved and partial',()=>{
+ const claim='Hume explains that custom shapes expectation.';
+ const splitAt=claim.indexOf('custom')+2;
+ const result=normalizeClaimClauseDecisions([{start:splitAt,end:claim.indexOf(' expectation')+5,
+  text:claim.slice(splitAt,claim.indexOf(' expectation')+5),status:'answered',issueCode:'none',sources:[]}],
+  claim,new Set(['S1']),new Map());
+ assert.equal(result.decisions.length,1);
+ assert.equal(result.decisions[0].status,'partial');
+ assert.equal(result.decisions[0].unresolved,true);
+ assert.ok(result.warnings.includes('clause-range-not-word-boundary'));
 });
 
 test('batch 15 quote repair survives review scaffolding without restoring quotation marks',async()=>{

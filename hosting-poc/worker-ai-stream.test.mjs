@@ -74,8 +74,8 @@ test('deadline asks the source stream to cancel and waits for its acknowledgemen
     {timeoutMs:20,stage:'review'}),error=>{
       assert.equal(error.code,'inference-deadline-exceeded');
       assert.equal(error.streamDiagnostics.cancelOutcome,'acknowledged');
-      assert.equal(error.streamDiagnostics.retrySafe,true);
-      assert.equal(error.streamDiagnostics.timeoutClassification,'stream-cancel-acknowledged');
+      assert.equal(error.streamDiagnostics.retrySafe,false);
+      assert.equal(error.streamDiagnostics.timeoutClassification,'local-cancel-ack-provider-unconfirmed');
       assert.equal(error.streamDiagnostics.providerInferenceCancellation,'unconfirmed');
       return true;
     });
@@ -110,4 +110,15 @@ test('unconfirmed cancellation is non-retryable',async()=>{
       return true;
     });
   assert.equal(calls,1);
+});
+
+test('provider terminal rejection before timeout is explicitly retry-safe',async()=>{
+ const error=Object.assign(new Error('provider rejected request'),{code:'answer-request-failed'});
+ await assert.rejects(runWorkersAiStream({run:async()=>{throw error;}},'same-model',{messages:[]},
+  {timeoutMs:1000,stage:'compose'}),caught=>{
+   assert.equal(caught.streamDiagnostics.retrySafe,true);
+   assert.equal(caught.streamDiagnostics.timeoutClassification,'provider-terminal-failure');
+   assert.equal(caught.streamDiagnostics.providerInferenceCancellation,'provider-rejected');
+   return true;
+  });
 });
