@@ -39,7 +39,7 @@ export const EXPANSION_PROMPT=`Expand the draft where useful to answer the quest
 // The composer receives focused page windows with one neighboring span on each
 // side. Full fingerprint-verified text remains in the private trace and is used
 // by review; lexical ranking only prioritizes context and never grants support.
-function composerPassageWindows(sourceId,text,question,parts){
+export function composerPassageWindows(sourceId,text,question,parts){
   const sourceText=String(text||'');
   const spans=buildReviewSpans(sourceId,sourceText);
   if(!spans.length)return {passages:sourceText.trim()?[{
@@ -55,22 +55,26 @@ function composerPassageWindows(sourceId,text,question,parts){
       requirement&&typeof requirement==='object'&&typeof requirement.text==='string'&&
       requirement.text.trim()):[];
     const partSelection=new Map();
-    const addSpan=(span,requirementId='')=>{
-      const item=partSelection.get(span.spanId)||{span,requirementIds:[]};
+    const requirementReservationLimit=Math.floor(limit/2);
+    const addSpan=(span,requirementId='',reserved=false)=>{
+      const item=partSelection.get(span.spanId)||{span,requirementIds:[],reservedRequirementIds:[]};
       if(requirementId&&!item.requirementIds.includes(requirementId))item.requirementIds.push(requirementId);
+      if(reserved&&requirementId&&!item.reservedRequirementIds.includes(requirementId))
+        item.reservedRequirementIds.push(requirementId);
       partSelection.set(span.spanId,item);
     };
     // Reserve from the existing per-part span allowance for requirement-linked
     // passages. Exact anchor terms are ranking cues only; the reviewer still
     // decides whether a selected span supports an answer claim.
     for(const requirement of requirements){
+      if(partSelection.size>=requirementReservationLimit)break;
       const match=selectRequirementReviewSpans(spans,{
         requirement:requirement.text,
         questionAnchor:requirement.questionAnchor,
         limit:1
       })[0];
       if(match&&partSelection.size>=limit&&!partSelection.has(match.spanId))continue;
-      if(match)addSpan(match,typeof requirement.id==='string'?requirement.id:'');
+      if(match)addSpan(match,typeof requirement.id==='string'?requirement.id:'',true);
     }
     const targetText=[part.question,queries,...requirements.flatMap(requirement=>
       [requirement.text,requirement.questionAnchor])]
@@ -86,11 +90,13 @@ function composerPassageWindows(sourceId,text,question,parts){
           addSpan(span,typeof requirement.id==='string'?requirement.id:'');
       }else addSpan(span);
     }
-    for(const {span,requirementIds} of partSelection.values()){
-      const item=selected.get(span.spanId)||{span,partIds:[],requirementIds:[]};
+    for(const {span,requirementIds,reservedRequirementIds} of partSelection.values()){
+      const item=selected.get(span.spanId)||{span,partIds:[],requirementIds:[],reservedRequirementIds:[]};
       if(typeof part.id==='string'&&!item.partIds.includes(part.id))item.partIds.push(part.id);
       for(const requirementId of requirementIds)
         if(requirementId&&!item.requirementIds.includes(requirementId))item.requirementIds.push(requirementId);
+      for(const requirementId of reservedRequirementIds)
+        if(requirementId&&!item.reservedRequirementIds.includes(requirementId))item.reservedRequirementIds.push(requirementId);
       selected.set(span.spanId,item);
     }
   }
@@ -121,7 +127,8 @@ function composerPassageWindows(sourceId,text,question,parts){
     };
   }).filter(window=>window.text.trim());
   const selection=[...selected.values()].map(item=>({spanId:item.span.spanId,
-    partIds:[...item.partIds],requirementIds:[...item.requirementIds]}));
+    partIds:[...item.partIds],requirementIds:[...item.requirementIds],
+    reservedForRequirement:item.reservedRequirementIds.length>0}));
   return {passages,selection};
 }
 
@@ -147,7 +154,7 @@ For each part, return requirementCoverage with one decision per supplied require
 
 If a cited claim combines supported and unsupported material, you may optionally return supportedText: one narrower standalone sentence that preserves only what the supplied exact spans support. Keep the original claim status partial; judge the source decisions against supportedText when provided. Do not add facts, implications, or source attributions absent from those spans. Omit supportedText when no useful narrower claim is directly supported. This is only for cited claims, never uncited general context. The system retains it only if every originally cited source has an accepted exact span and the ordinary attribution, polarity, and citation checks pass. supportedText must be one sentence, contain no line breaks, and contain no citation labels. For a cited claim with multiple independently checkable source-derived clauses, also return clauses for those clauses. To keep the response compact, identify each clause with start and end offsets instead of copying its text. Offsets are 0-based UTF-16 code units into the exact supplied claim text, start inclusive and end exclusive; the selected substring must be verbatim and contain the whole clause. Omit clauses for a simple single-proposition claim. Each clause must include a status (answered|partial|unanswered), an issueCode (scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other, or none), and source decisions containing only cited source IDs and exact supporting span IDs. Split propositions joined by causal or contrastive language when each could be true or false independently; do not split one idea into fragments. Mark a clause partial if the passage supports its topic but not its full scope or relation. The selected offset range must identify a verbatim substring of the supplied claim. If supportedText is returned, clause decisions describe the original claim and source decisions describe the narrowed supportedText. Uncited general-context claims are assessed at the part level and do not need clause spans or citations. For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
 
-Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}],"clauses":[{"start":0,"end":24,"status":"answered|partial|unanswered","issueCode":"scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other|none","sources":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"],"scaffoldingLinks":[{"claimId":"P1-C3","supportClaimIds":["P1-C1"]}],"requirementCoverage":[{"requirementId":"P1-R1","status":"answered|partial|unanswered","answerClaimIds":["P1-C1"]}]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. The scaffoldingLinks list likewise names only that part's supplied contextClaims as its claimId, and only cited claims of that same part as supportClaimIds; a part's scaffoldingLinks may be omitted when no uncited claim in it restates an established position. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-speaker claims, provide attributionStatus. Do not include answer text, page text, rationales, or extra fields.`;
+Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty","subjectAttributionStatus":"supported|conflict|unclear|not_applicable","attributedSubject":"name or empty","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}],"clauses":[{"start":0,"end":24,"status":"answered|partial|unanswered","issueCode":"scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other|none","sources":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"],"scaffoldingLinks":[{"claimId":"P1-C3","supportClaimIds":["P1-C1"]}],"requirementCoverage":[{"requirementId":"P1-R1","status":"answered|partial|unanswered","answerClaimIds":["P1-C1"]}]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. The scaffoldingLinks list likewise names only that part's supplied contextClaims as its claimId, and only cited claims of the same part as supportClaimIds; a part's scaffoldingLinks may be omitted when no uncited claim in it restates an established position. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-person claims, provide subjectAttributionStatus and attributedSubject; identify the actual subject supported by the cited span, and mark conflict or unclear when the named person is not established. Do not include answer text, page text, rationales, or extra fields.`;
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -264,7 +271,7 @@ function parseJson(raw,stage){
 export function parseReviewJson(raw){return parseJson(raw,'review');}
 export function parseAnswerRepairJson(raw){return parseJson(raw,'answer-repair');}
 
-const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Distinguish a work's own position from a reported view, narrative voice, or editorial context. Return evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary stating what the accepted span establishes and its limit. Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
+const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Distinguish a work's own position from a reported view, narrative voice, or editorial context. Return evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary stating what the accepted span establishes and its limit. For a named-person claim, return subjectAttributionStatus (supported|conflict|unclear|not_applicable) and attributedSubject (the actual named subject or empty). Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"","subjectAttributionStatus":"supported|conflict|unclear|not_applicable","attributedSubject":"","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
 // Batch 8 (B8-1): decision-completeness repair for review scaffolding.
 // A frame claim the reviewer retained without a scaffolding decision —
 // link, context, or omit — gets exactly one compact round that must
@@ -291,6 +298,8 @@ function mergeReviewRepairs(rawReview,requested,repair){
     received.set(key,{claimId:request.claimId,sourceId:request.sourceId,status:normalizeStatus(item.status),
       spanIds:[...new Set(item.spanIds)],attributionStatus:item.attributionStatus,
       attributedSpeaker:item.attributedSpeaker.trim().slice(0,120),
+      ...(typeof item.subjectAttributionStatus==='string'?{subjectAttributionStatus:item.subjectAttributionStatus}:{}),
+      ...(typeof item.attributedSubject==='string'?{attributedSubject:item.attributedSubject.trim().slice(0,120)}:{}),
       ...(REVIEW_EVIDENCE_ROLES.has(item.evidenceRole)?{evidenceRole:item.evidenceRole}:{}),
       ...(typeof item.supportBoundary==='string'&&item.supportBoundary.trim()?
         {supportBoundary:item.supportBoundary.trim().slice(0,180)}:{})});
@@ -904,18 +913,36 @@ const REVIEW_CLAUSE_ISSUES=new Set([
 function normalizedClauseSurface(value){
   return String(value||'').normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu,' ').trim();
 }
-function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMaps){
+export function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMaps){
   if(!Array.isArray(raw)||!raw.length)return {decisions:[],warnings:[]};
   const warnings=[],decisions=[];
   const normalizedClaim=normalizedClauseSurface(claimText);
   for(const item of raw.slice(0,6)){
     let text=typeof item?.text==='string'?item.text.trim():'';
-    if(!text&&Number.isInteger(item?.start)&&Number.isInteger(item?.end)){
-      if(item.start<0||item.end<=item.start||item.end>String(claimText||'').length){
+    const hasOffsets=Object.hasOwn(item||{},'start')||Object.hasOwn(item||{},'end');
+    if(hasOffsets){
+      const claim=String(claimText||'');
+      const offsetsValid=Number.isInteger(item?.start)&&Number.isInteger(item?.end);
+      const rangeValid=offsetsValid&&item.start>=0&&item.end>item.start&&item.end<=claim.length&&
+        !(item.start>0&&/[\uDC00-\uDFFF]/u.test(claim[item.start])&&/[\uD800-\uDBFF]/u.test(claim[item.start-1]))&&
+        !(item.end>0&&item.end<claim.length&&/[\uDC00-\uDFFF]/u.test(claim[item.end])&&/[\uD800-\uDBFF]/u.test(claim[item.end-1]));
+      if(!rangeValid){
         warnings.push('clause-range-invalid');
+        decisions.push({text:'',status:'partial',issueCode:'other',sources:[],unresolved:true});
         continue;
       }
-      text=String(claimText||'').slice(item.start,item.end).trim();
+      const exactSlice=claim.slice(item.start,item.end).trim();
+      if(!text)text=exactSlice;
+      const boundaryValid=(!/[\p{L}\p{N}\p{M}_]/u.test(claim[item.start-1]||'')||
+        !/[\p{L}\p{N}\p{M}_]/u.test(claim[item.start]||''))&&
+        (!/[\p{L}\p{N}\p{M}_]/u.test(claim[item.end-1]||'')||
+        !/[\p{L}\p{N}\p{M}_]/u.test(claim[item.end]||''));
+      const textMatches=!item.text||normalizedClauseSurface(item.text)===normalizedClauseSurface(exactSlice);
+      if(!boundaryValid||!textMatches){
+        warnings.push(!boundaryValid?'clause-range-not-word-boundary':'clause-offset-text-mismatch');
+        decisions.push({text:'',status:'partial',issueCode:'other',sources:[],unresolved:true});
+        continue;
+      }
     }
     const normalizedText=normalizedClauseSurface(text);
     if(!text||text.length>600||!normalizedText||!normalizedClaim.includes(normalizedText)){
@@ -1458,6 +1485,8 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         sourceDecisions.set(sourceId,{status:sourceStatus,spanIds:sourceDecision.spanIds,
           attributionStatus:['supported','conflict','unclear','not_applicable'].includes(sourceDecision.attributionStatus)?sourceDecision.attributionStatus:'missing',
           attributedSpeaker:typeof sourceDecision.attributedSpeaker==='string'?sourceDecision.attributedSpeaker.trim().slice(0,120):'',
+          subjectAttributionStatus:['supported','conflict','unclear','not_applicable'].includes(sourceDecision.subjectAttributionStatus)?sourceDecision.subjectAttributionStatus:'missing',
+          attributedSubject:typeof sourceDecision.attributedSubject==='string'?sourceDecision.attributedSubject.trim().slice(0,120):'',
           ...(REVIEW_EVIDENCE_ROLES.has(sourceDecision.evidenceRole)?
             {evidenceRole:sourceDecision.evidenceRole}:{}),
           ...(typeof sourceDecision.supportBoundary==='string'&&sourceDecision.supportBoundary.trim()?
@@ -1504,6 +1533,14 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const speakerMismatchIssue=claimSpeaker&&claimedSpeaker&&
           !personNamesMatch(claimSpeaker,claimedSpeaker)?
           'source-attribution-speaker-mismatch':'';
+        const attributedSubject=String(sourceDecision?.attributedSubject||'').trim();
+        const subjectStatus=sourceDecision?.subjectAttributionStatus||'missing';
+        const subjectAttributionIssue=claimSpeaker&&subjectStatus!=='missing'&&
+          (subjectStatus!=='supported'||!attributedSubject||
+           !personNamesMatch(claimSpeaker,attributedSubject))?
+          (subjectStatus==='conflict'?'source-subject-attribution-conflict':
+           subjectStatus==='unclear'?'source-subject-attribution-unclear':
+           'source-subject-attribution-mismatch'):'';
         // A speaker who is the author of this source's own work is anchored
         // by the byline itself (author narration), so no speech cue is
         // required for that source; every other speaker still needs one.
@@ -1520,7 +1557,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const provenanceAttributionIssue=sourceDecision?.status==='answered'?
           sourceVoiceAttributionIssue(candidateText,sourceById.get(sourceId),plan,
             precedingAnswers,sourceById):'';
-        const attributionIssue=modelAttributionIssue||speakerMismatchIssue||
+        const attributionIssue=modelAttributionIssue||speakerMismatchIssue||subjectAttributionIssue||
           unanchoredSpeakerIssue||provenanceAttributionIssue;
         const selectedQuote=selected.map(item=>item.quote).join(' ');
         const polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
@@ -3656,6 +3693,26 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     message:String(error.message||error).slice(0,240)};}
 
   const unreviewed=options.review===false||Boolean(reviewFailure);
+  const unvalidatedReviewPartIds=new Set();
+  let unvalidatedPartsDropped=false;
+  let suppressForReviewCompletion=false;
+  if(options.review!==false&&validatedAnswers.some(part=>part.answers?.length)){
+    const reviewedPartIds=new Set((review?.parts||[]).map(item=>item.partId));
+    for(const part of plan.parts){
+      if(reviewFailure||failedReviewParts.some(item=>item.partId===part.id)||!reviewedPartIds.has(part.id))
+        unvalidatedReviewPartIds.add(part.id);
+    }
+    if(unvalidatedReviewPartIds.size){
+      const strictMinority=unvalidatedReviewPartIds.size*2<plan.parts.length;
+      unvalidatedPartsDropped=strictMinority;
+      suppressForReviewCompletion=!strictMinority;
+      trace.reviewCompletion={totalParts:plan.parts.length,
+        unvalidatedPartIds:[...unvalidatedReviewPartIds],
+        disposition:strictMinority?'dropped-strict-minority':'suppressed-not-strict-minority'};
+      if(!strictMinority&&!failure)failure={stage:'review',code:'review-contract-incomplete',
+        message:'Too many answer parts lack a complete valid review decision.'};
+    }
+  }
   // Batch 11 (B11-1): the deterministic post-review region — parts
   // assembly, the gates, containment / inheritance / second look,
   // the coverage and traceability blocks, and final assembly — runs
@@ -3775,7 +3832,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // A part whose own review failed keeps its validated draft, like the
       // globally unreviewed path; reviewed parts use their reviewed answers.
       const partReviewFailed=failedReviewParts.some(item=>item.partId===part.id);
-      const answers=unreviewed||partReviewFailed?(answerPart?.answers||[]):(reviewed?.answers||[]);
+      const unvalidated=unvalidatedReviewPartIds.has(part.id);
+      const answers=[...(unreviewed||partReviewFailed?(answerPart?.answers||[]):(reviewed?.answers||[]))];
+      if(unvalidated||suppressForReviewCompletion)answers.length=0;
       let status=reviewed?.status||
         (answers.length?'partial':'unanswered');
       let answerStatus=reviewed?.answerStatus||reviewed?.status||
@@ -3787,7 +3846,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       if(status==='answered'&&answerPart?.missingHypotheticalInference)status='partial';
       if(answerStatus==='answered'&&hasUnfinishedListIntroduction(renderAnswerParagraphs(answers)))
         answerStatus='partial';
-      return {part,answers,status,answerStatus,evidence:reviewed?.evidence||fallbackEvidenceByPart.get(part.id)||[],reviewReason:reviewed?.reason||'',
+      return {part,answers,status,answerStatus,evidence:unvalidated||suppressForReviewCompletion?[]:reviewed?.evidence||fallbackEvidenceByPart.get(part.id)||[],reviewReason:reviewed?.reason||'',
         reviewScaffolding:reviewed?.reviewScaffolding||[],
         scaffoldingInvalidLinks:reviewed?.scaffoldingInvalidLinks||0,
         ...(reviewed?.scaffoldingInvalidLinkDetails?.length?
@@ -5200,8 +5259,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           failingPartIds:[...droppedIds],
           survivingPartIds:survivors.map(value=>value.item.part.id),
           perPartFailures,wholeAnswerGuardPassed:guard.ok,
-          disposition:survivors.length&&guard.ok?'salvaged':'suppressed'}};
-        if(survivors.length&&guard.ok){
+          disposition:survivors.length&&guard.ok&&failing.length*2<perPart.length?'salvaged':'suppressed'}};
+        if(survivors.length&&guard.ok&&failing.length*2<perPart.length){
           for(const value of failing){
             value.item.status='unanswered';value.item.answerStatus='unanswered';
             value.item.answers=[];value.item.evidence=[];
@@ -5245,7 +5304,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         item.answers.map(value=>value.claimId):[],
       status:assemblySuppressed?'unsupported':item.status==='answered'&&!unreviewed?'supported':item.status==='unanswered'?'unsupported':'partial',
       answerStatus:assemblySuppressed?'unanswered':item.answerStatus||'unanswered',
-      ...((item.part.requirements||[]).length?{
+      ...((item.part.requirements||[]).length&&!unvalidatedReviewPartIds.has(item.part.id)&&!suppressForReviewCompletion?{
         requirements:item.part.requirements,
         requirementCoverage:item.requirementCoverage||[],
         requirementsComplete:item.requirementsComplete===true,
@@ -5329,7 +5388,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         failure?{stage:failure.stage,code:failure.code}:null,
       reviewFailure,elapsedMs:Date.now()-started};
     const noText=!answer;
-    return {outcome:answer?((salvage||unreviewed||hasReviewCoverageGaps||hasUntracedCitedClaims)?'unverified-source-draft':used.size?'verified-source-draft':'general-context-answer'):
+    return {outcome:answer?((salvage||unreviewed||unvalidatedPartsDropped||hasReviewCoverageGaps||hasUntracedCitedClaims)?'unverified-source-draft':used.size?'verified-source-draft':'general-context-answer'):
         failure?'generation-failed':'insufficient-evidence',
       answer:noText?(failure?'I could not complete a reliable answer this time. Please try again.':
         'The retrieved passages did not support a reliable answer to this question. Try a more specific passage or work.'):answer,

@@ -105,7 +105,14 @@ export async function runWorkersAiStream(ai,model,request,{timeoutMs,stage}={}){
   timeoutError.timeoutMs=timeoutMs;
   let sourcePromise;
   const work=Promise.resolve().then(()=>{
-    sourcePromise=Promise.resolve(ai.run(model,{...request,stream:true}));
+    sourcePromise=Promise.resolve(ai.run(model,{...request,stream:true})).catch(error=>{
+      if(!timedOut){
+        diagnostics.retrySafe=true;
+        diagnostics.timeoutClassification='provider-terminal-failure';
+        diagnostics.providerInferenceCancellation='provider-rejected';
+      }
+      throw error;
+    });
     return sourcePromise;
   }).then(async result=>{
     stream=result;
@@ -158,8 +165,10 @@ export async function runWorkersAiStream(ai,model,request,{timeoutMs,stage}={}){
         const confirmed=await Promise.race([cancelTask.then(()=>diagnostics.cancelSettled),
           new Promise(resolve=>setTimeout(()=>resolve(false),500))]);
         if(confirmed){
-          diagnostics.retrySafe=true;
-          diagnostics.timeoutClassification='stream-cancel-acknowledged';
+          // The reader acknowledged only local cancellation. The provider
+          // may still be computing, so replay could duplicate billable work.
+          diagnostics.retrySafe=false;
+          diagnostics.timeoutClassification='local-cancel-ack-provider-unconfirmed';
           reject(timeoutError);
         }else{
           diagnostics.retrySafe=false;
