@@ -6276,6 +6276,28 @@ test('a transient answer-stage failure is retried once and recovers (B8-7)',asyn
   'two failed compose attempts in the first build, compose + review in the retry');
 });
 
+test('transport diagnostics retain both whole-build attempts after a transient retry',async()=>{
+ const ai=makeAI([new Error('Provider unavailable'),new Error('Provider unavailable'),
+  new Error('Provider unavailable'),new Error('Provider unavailable')]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true,transportDiagnostics:true});
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.trace.answerRetry.outcome,'failed-again');
+ assert.equal(result.trace.answerRetry.attemptCount,2);
+ const attempts=result.trace.answerRetry.attempts;
+ assert.deepEqual(attempts.map(item=>item.attempt),[1,2]);
+ assert.deepEqual(attempts.map(item=>item.stageTimings.map(stage=>stage.stage)),
+  [['compose','compose'],['compose','compose']]);
+ assert.ok(attempts.every(item=>Number.isFinite(item.timingSummary?.buildWallMs)));
+ assert.equal(result.trace.timingSummary.totalBuildWallMs,
+  attempts.reduce((sum,item)=>sum+item.timingSummary.buildWallMs,0));
+ assert.equal(result.trace.timingSummary.totalReviewWallMs,
+  attempts.reduce((sum,item)=>sum+item.timingSummary.reviewWallMs,0));
+ assert.ok(result.trace.timingSummary.totalElapsedMs>=result.trace.timingSummary.totalBuildWallMs-2);
+ assert.equal(result.trace.stageTimings.length,2,
+  'legacy stageTimings continues to describe the returned attempt; answerRetry holds both attempts');
+});
+
 test('a citation-validation failure is never retried (B8-7)',async()=>{
  const ai=makeAI([
   answer('PART P1\nHume links necessity to custom. [S99]\n\nPART P2\nKant describes causality as a priori. [S1]'),
