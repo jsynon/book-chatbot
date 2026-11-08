@@ -154,7 +154,7 @@ For each part, return requirementCoverage with one decision per supplied require
 
 If a cited claim combines supported and unsupported material, you may optionally return supportedText: one narrower standalone sentence that preserves only what the supplied exact spans support. Keep the original claim status partial; judge the source decisions against supportedText when provided. Do not add facts, implications, or source attributions absent from those spans. Omit supportedText when no useful narrower claim is directly supported. This is only for cited claims, never uncited general context. The system retains it only if every originally cited source has an accepted exact span and the ordinary attribution, polarity, and citation checks pass. supportedText must be one sentence, contain no line breaks, and contain no citation labels. For a cited claim with multiple independently checkable source-derived clauses, also return clauses for those clauses. To keep the response compact, identify each clause with start and end offsets instead of copying its text. Offsets are 0-based UTF-16 code units into the exact supplied claim text, start inclusive and end exclusive; the selected substring must be verbatim and contain the whole clause. Omit clauses for a simple single-proposition claim. Each clause must include a status (answered|partial|unanswered), an issueCode (scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other, or none), and source decisions containing only cited source IDs and exact supporting span IDs. Split propositions joined by causal or contrastive language when each could be true or false independently; do not split one idea into fragments. Mark a clause partial if the passage supports its topic but not its full scope or relation. The selected offset range must identify a verbatim substring of the supplied claim. If supportedText is returned, clause decisions describe the original claim and source decisions describe the narrowed supportedText. Uncited general-context claims are assessed at the part level and do not need clause spans or citations. For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
 
-Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty","subjectAttributionStatus":"supported|conflict|unclear|not_applicable","attributedSubject":"name or empty","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}],"clauses":[{"start":0,"end":24,"status":"answered|partial|unanswered","issueCode":"scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other|none","sources":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"],"scaffoldingLinks":[{"claimId":"P1-C3","supportClaimIds":["P1-C1"]}],"requirementCoverage":[{"requirementId":"P1-R1","status":"answered|partial|unanswered","answerClaimIds":["P1-C1"]}]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. The scaffoldingLinks list likewise names only that part's supplied contextClaims as its claimId, and only cited claims of the same part as supportClaimIds; a part's scaffoldingLinks may be omitted when no uncited claim in it restates an established position. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For named-person claims, provide subjectAttributionStatus and attributedSubject; identify the actual subject supported by the cited span, and mark conflict or unclear when the named person is not established. Do not include answer text, page text, rationales, or extra fields.`;
+Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty","subjectAttributionStatus":"supported|conflict|unclear|not_applicable","attributedSubject":"name or empty","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}],"clauses":[{"start":0,"end":24,"status":"answered|partial|unanswered","issueCode":"scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other|none","sources":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"],"scaffoldingLinks":[{"claimId":"P1-C3","supportClaimIds":["P1-C1"]}],"requirementCoverage":[{"requirementId":"P1-R1","status":"answered|partial|unanswered","answerClaimIds":["P1-C1"]}]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. The scaffoldingLinks list likewise names only that part's supplied contextClaims as its claimId, and only cited claims of the same part as supportClaimIds; a part's scaffoldingLinks may be omitted when no uncited claim in it restates an established position. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For every claim assigning an action, belief, motive, state, or trait to a named person, include subjectAttributionStatus and attributedSubject, including possessive constructions such as “Kurtz’s conviction” and names appearing after a subordinate clause. Identify the actual person supported by the cited span. Use not_applicable only when the grammatical subject is a non-person; when personhood or attribution is uncertain, use unclear rather than omitting the verdict. Do not include answer text, page text, rationales, or extra fields.`;
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -271,7 +271,7 @@ function parseJson(raw,stage){
 export function parseReviewJson(raw){return parseJson(raw,'review');}
 export function parseAnswerRepairJson(raw){return parseJson(raw,'answer-repair');}
 
-const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Distinguish a work's own position from a reported view, narrative voice, or editorial context. Return evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary stating what the accepted span establishes and its limit. For a named-person claim, return subjectAttributionStatus (supported|conflict|unclear|not_applicable) and attributedSubject (the actual named subject or empty). Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"","subjectAttributionStatus":"supported|conflict|unclear|not_applicable","attributedSubject":"","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
+const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Distinguish a work's own position from a reported view, narrative voice, or editorial context. Return evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary stating what the accepted span establishes and its limit. For every claim assigning an action, belief, motive, state, or trait to a named person, including possessive constructions and names following a subordinate clause, return subjectAttributionStatus (supported|conflict|unclear|not_applicable) and attributedSubject (the actual named subject or empty). Use not_applicable only when the grammatical subject is a non-person; when personhood or attribution is uncertain, use unclear rather than omitting the fields. Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"","subjectAttributionStatus":"supported|conflict|unclear|not_applicable","attributedSubject":"","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
 // Batch 8 (B8-1): decision-completeness repair for review scaffolding.
 // A frame claim the reviewer retained without a scaffolding decision —
 // link, context, or omit — gets exactly one compact round that must
@@ -1166,8 +1166,12 @@ export function namedSpeakerAttribution(value){
 function hasNamedSpeakerAttribution(value){
   return Boolean(namedSpeakerAttribution(value));
 }
-const NON_SPECIFIC_SPEAKERS=new Set(['the','author','narrator','text','book',
-  'work','passage','he','she','it','they','we','one']);
+const NON_SPECIFIC_SPEAKERS=new Set(['the','a','an','author','narrator','text','book',
+  'work','passage','he','she','it','they','we','one','custom','reason','faith','belief',
+  'experience','idea','notion','claim','question','answer','source','argument','theory',
+  'power','mind','truth','knowledge','philosophy','religion','science','history','cause',
+  'causality','necessity','justice','good','evil','state','society','world','life','love',
+  'fear','hope','conclusion','comparison','this','that','these']);
 // The extracted name is usable for a consistency comparison only when it
 // is an actual person reference, not a generic opener ("The author argues…"
 // captures "The", which names nobody in particular).
@@ -1177,6 +1181,27 @@ function specificClaimSpeaker(value){
   const parts=normalizedPersonName(name).split(' ').filter(Boolean);
   if(parts.length===1&&NON_SPECIFIC_SPEAKERS.has(parts[0]))return '';
   return name;
+}
+const PERSON_ATTRIBUTION_VERBS='acts?|acted|orders?|ordered|commands?|commanded|leads?|led|kills?|killed|takes?|took|makes?|made|gives?|gave|brings?|brought|keeps?|kept|holds?|held|believes?|believed|thinks?|thought|feels?|felt|knows?|knew|wants?|wanted|fears?|feared|hopes?|hoped|intends?|intended|seeks?|sought|chooses?|chose|refuses?|refused|decides?|decided|remembers?|remembered|recognizes?|recognized|understands?|understood|sees?|saw|hears?|heard|loves?|loved|hates?|hated|desires?|desired|suspects?|suspected|concludes?|concluded|prefers?|preferred|expects?|expected|worries?|worried|carries?|carried|moves?|moved|identif(?:y|ies|ied)|explains?|explained|grounds?|grounded|treats?|treated|defines?|defined|proposes?|proposed|asserts?|asserted|maintains?|maintained|calls?|called|considers?|considered|regards?|regarded|reports?|reported|speaks?|spoke|says?|said|teaches?|taught|argues?|argued|writes?|wrote|claims?|claimed|describes?|described';
+const PERSON_STATE_NOUNS='conviction|belief|view|motive|intention|desire|fear|hope|memory|anger|resolve|judgment|plan|purpose|suspicion|expectation|ambition|attitude|disposition|character|decision|loyalty|grief|pride|shame|knowledge|understanding';
+export function claimPersonSubjects(value){
+  const text=String(value||'').replace(/^\s*(?:[-*]|\d+[.)])\s*/u,'');
+  const name='((?!(?:The|A|An|Because|Although|While|When|If|That|As|And|But|Whereas|Who)\\b)[\\p{Lu}][\\p{L}\\p{M}\\u0027\\u2019.-]*(?:\\s+[\\p{Lu}][\\p{L}\\p{M}\\u0027\\u2019.-]*){0,2})';
+  const lead='(?:^|[,:;!?—–()]\\s*|\\b(?:[Bb]ecause|[Aa]lthough|[Ww]hile|[Ww]hen|[Ii]f|[Tt]hat|[Aa]s|[Aa]nd|[Bb]ut|[Ww]hereas|[Ww]ho)\\s+)';
+  const predicate=`(?:${PERSON_ATTRIBUTION_VERBS}|(?:is|are|was|were|has|had|does|did|can|could|may|might|must|will|would|should)|[\\p{Ll}]{3,}(?:s|ed|ing))`;
+  const patterns=[new RegExp(`${lead}${name}(?:['’]s)?\\s+${predicate}\\b`,'gu'),
+    new RegExp(`${lead}${name}['’]s\\s+(?:(?:unalterable|unyielding|firm|strong|deep|growing|private|personal|moral|religious|political)\\s+)?(?:${PERSON_STATE_NOUNS})\\b`,'gu')];
+  const subjects=[];
+  for(const pattern of patterns)for(const match of text.matchAll(pattern)){
+    const candidate=match[1].trim();
+    const parts=normalizedPersonName(candidate).split(' ').filter(Boolean);
+    if(NON_SPECIFIC_SPEAKERS.has(parts[0]))continue;
+    if(!subjects.some(name=>personNamesMatch(name,candidate)))subjects.push(candidate);
+  }
+  return subjects;
+}
+export function claimPersonSubject(value){
+  return claimPersonSubjects(value)[0]||'';
 }
 function hasExplicitSpeakerCue(sourceText,speaker){
   const name=String(speaker||'').trim();
@@ -1513,7 +1538,8 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // claim/source decisions in the same review can still be used.
         if(!sourceDecision){
           sourceDecision={status:'partial',spanIds:[],attributionStatus:'missing',
-            attributedSpeaker:'',recoveredMissingDecision:true};
+            attributedSpeaker:'',subjectAttributionStatus:'missing',attributedSubject:'',
+            recoveredMissingDecision:true};
           sourceDecisions.set(sourceId,sourceDecision);
           recovered.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:'missing-claim-source-decision',action:'fail-closed-source-decision'});
@@ -1535,12 +1561,22 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           'source-attribution-speaker-mismatch':'';
         const attributedSubject=String(sourceDecision?.attributedSubject||'').trim();
         const subjectStatus=sourceDecision?.subjectAttributionStatus||'missing';
-        const subjectAttributionIssue=claimSpeaker&&subjectStatus!=='missing'&&
+        const personSubjects=claimPersonSubjects(candidateText);
+        const subjectTargets=personSubjects.length?personSubjects:claimSpeaker?[claimSpeaker]:[];
+        const subjectAttributionIssue=subjectTargets.length&&subjectStatus==='missing'?
+          'source-subject-attribution-missing':
+          subjectTargets.length&&subjectStatus!=='not_applicable'&&
           (subjectStatus!=='supported'||!attributedSubject||
-           !personNamesMatch(claimSpeaker,attributedSubject))?
+           !subjectTargets.some(name=>personNamesMatch(name,attributedSubject)))?
           (subjectStatus==='conflict'?'source-subject-attribution-conflict':
            subjectStatus==='unclear'?'source-subject-attribution-unclear':
-           'source-subject-attribution-mismatch'):'';
+           'source-subject-attribution-mismatch'):
+          claimSpeaker&&subjectStatus!=='missing'&&
+           (subjectStatus!=='supported'||!attributedSubject||
+            !personNamesMatch(claimSpeaker,attributedSubject))?
+            (subjectStatus==='conflict'?'source-subject-attribution-conflict':
+             subjectStatus==='unclear'?'source-subject-attribution-unclear':
+             'source-subject-attribution-mismatch'):'';
         // A speaker who is the author of this source's own work is anchored
         // by the byline itself (author narration), so no speech cue is
         // required for that source; every other speaker still needs one.
@@ -1593,20 +1629,21 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             reason:'claim-clause-not-supported',issueCode:unsupportedClause.issueCode,
             clauseText:unsupportedClause.text.slice(0,320)});
         }
+        const answeredWithoutSelectedSpan=sourceDecision.status==='answered'&&!selected.length;
         if(sourceDecision.recoveredMissingDecision||sourceDecision.status!=='answered'||!selected.length){
+          if(answeredWithoutSelectedSpan)sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
-              sourceDecision.legacyMissingSpan?'missing-claim-source-span':
+              sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan?'missing-claim-source-span':
               sourceDecision.status!=='answered'?'claim-source-not-supported':'missing-claim-source-span'});
-          if(!sourceDecision||sourceDecision.legacyMissingSpan||
-            (sourceDecision.status==='answered'&&!selected.length))
+          if(sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan)
             hasUnreviewedOrSpanlessSource=true;
         }else{
           supportedSourceIds.add(sourceId);
         }
         const validationReason=attributionIssue||polarityIssue||negationScopeIssue||
           (sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
-          sourceDecision.legacyMissingSpan?'missing-claim-source-span':
+          sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan?'missing-claim-source-span':
           sourceDecision.status!=='answered'?'claim-source-not-supported':
           !selected.length?'missing-claim-source-span':'');
         reviewDecisions.push({partId:part.id,claimId:answer.claimId,sourceId,
@@ -1615,6 +1652,9 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           sourceStatus:sourceDecision?.status||null,
           attributionStatus:sourceDecision?.attributionStatus||'missing',
           attributedSpeaker:sourceDecision?.attributedSpeaker||'',
+          ...(subjectTargets.length?{
+            subjectAttributionStatus:sourceDecision?.subjectAttributionStatus||'missing',
+            attributedSubject:sourceDecision?.attributedSubject||''}:{}),
           ...(sourceDecision?.evidenceRole?{evidenceRole:sourceDecision.evidenceRole}:{}),
           ...(sourceDecision?.supportBoundary?{supportBoundary:sourceDecision.supportBoundary}:{}),
           candidateSpanIds:(claimEvidenceById.get(answer.claimId)?.get(sourceId)||[])
@@ -5449,18 +5489,12 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     // outside this branch, and are never retried.
     const pipelineTransient=result.failureCode==='answer-pipeline-failed'&&
       result.failureStage==='compose';
-    // Local reader cancellation does not prove provider-side inference ended.
-    // Never replay a streaming timeout as a whole-build retry.
-    const streamTimeoutUnsafe=options.inferenceTransport==='streaming'&&
-      result.failureCode==='inference-deadline-exceeded';
-    if(streamTimeoutUnsafe||(!ANSWER_RETRY_TRANSIENT_CODES.has(result.failureCode)&&!pipelineTransient))
+    if(!ANSWER_RETRY_TRANSIENT_CODES.has(result.failureCode)&&!pipelineTransient)
       return result;
     firstCode=pipelineTransient?'answer-request-failed':result.failureCode;
     firstAttemptTrace=result.trace||null;
   }catch(error){
-    const streamTimeoutUnsafe=options.inferenceTransport==='streaming'&&
-      error?.code==='inference-deadline-exceeded';
-    if(streamTimeoutUnsafe||!ANSWER_RETRY_TRANSIENT_CODES.has(error?.code))throw error;
+    if(!ANSWER_RETRY_TRANSIENT_CODES.has(error?.code))throw error;
     firstCode=error.code;
     firstAttemptTrace=error.trace||null;
   }
