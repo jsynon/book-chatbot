@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 import {splitCitedSentenceUnits,reconcileFinalPartCoverage} from './evidence-answer.mjs';
@@ -6310,6 +6310,53 @@ test('stream deadline is not retried because provider cancellation is unconfirme
  assert.equal(ai.calls.length,1,'a possibly active provider inference is not duplicated');
 });
 
+test('a complete buffered review survives a missing stream terminal event after contract validation',async()=>{
+ const timeout=Object.assign(new Error('Inference deadline exceeded'),{
+  code:'inference-deadline-exceeded',stage:'review',
+  partialResponse:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[]}],
+   claims:[{claimId:'P1-C1',status:'answered',sources:[{sourceId:'S1',
+    status:'answered',spanIds:['S1-Q1'],attributionStatus:'not_applicable',
+    evidenceRole:'work-assertion',supportBoundary:'The span supports the claim.'}]}]})
+ });
+ const ai={calls:[],run:async(model,request)=>{
+  ai.calls.push({model,request});
+  if(ai.calls.length===1){
+   const response='PART P1\nHume links necessity to custom and regular conjunction. [S1]';
+   const wire='data: '+JSON.stringify({response})+'\n\ndata: [DONE]\n\n';
+   const bytes=new TextEncoder().encode(wire);
+   return new ReadableStream({start(controller){controller.enqueue(bytes);controller.close();}});
+  }
+  throw timeout;
+ }};
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true,inferenceTransport:'streaming'});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.questionParts[0].answerStatus,'answered');
+ assert.deepEqual(result.trace.partialReviewResponseRecovery,{
+  recoveredPartIds:['P1'],contractValidated:true,providerInferenceCancellation:'unconfirmed'});
+ assert.equal(result.trace.reviewRetry,undefined,'the timed-out request is never replayed');
+ assert.equal(ai.calls.length,2);
+});
+
+test('a timed-out part keeps its answer prose when unreviewed citations are demoted',async()=>{
+ const draft='PART P1\nHume explains causal expectation through custom. [S1]\n'+
+  'PART P2\nKant says “a priori” knowledge guarantees both certainty and moral liberty. [S2]';
+ const timeout=Object.assign(new Error('review did not complete'),{code:'review-request-failed'});
+ const ai=makeAI([answer(draft),review([['P1','answered']]),timeout,timeout]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant explain causality?',
+  [hume,kant],ai,[],{plan:twoSidePlan,catalog,trace:true});
+ const second=result.questionParts.find(part=>part.partId==='P2');
+ assert.match(result.answer,/Kant says a priori knowledge guarantees both certainty and moral liberty\./);
+ assert.ok(second.answerText,'the reviewed P1 does not erase the failed P2');
+ assert.equal(second.answerStatus,'partial');
+ assert.equal(second.status,'partial');
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.ok(result.trace.reviewCoverageGaps.some(gap=>gap.partId==='P2'));
+ assert.equal(auditFinalAnswer(result.answer,[hume,kant]).ok,true,
+  'prose survives with unsupported quotation marks and citations removed');
+});
+
 test('a citation-validation failure is never retried (B8-7)',async()=>{
  const ai=makeAI([
   answer('PART P1\nHume links necessity to custom. [S99]\n\nPART P2\nKant describes causality as a priori. [S1]'),
@@ -6744,6 +6791,27 @@ test('stripUntracedCitedClaims demotes claims to the context shape, prose intact
  assert.equal(parts[0].answers[1].text,'An untraced claim.','the prose itself is unchanged');
  assert.deepEqual(parts[0].answers[0].sourceIds,['S1'],'siblings are untouched');
  assert.deepEqual(parts[1].answers[0].sourceIds,['S2'],'other parts are untouched');
+});
+
+test('untraced quoted claims keep their prose without leaking unverifiable quote marks',()=>{
+ const source={id:'S1',text:'The passage describes an unsettling arrival at the station.'};
+ const parts=[{partId:'P2',answers:[{claimId:'P2-C1',
+  text:'Marlow calls the encounter “moral shock”.',sourceIds:['S1'],
+  renderedText:'Marlow calls the encounter “moral shock” [S1].'}],evidence:[]}];
+ const stripped=stripUntracedCitedClaimsToFixpoint(parts,
+  [{partId:'P2',claimId:'P2-C1'}],{sources:[source]});
+ assert.deepEqual(stripped,{claimIds:['P2-C1'],partIds:['P2'],passes:1});
+ assert.deepEqual(parts[0].answers[0].sourceIds,[]);
+ assert.equal(parts[0].answers[0].text,'Marlow calls the encounter moral shock.');
+ assert.equal(parts[0].answers[0].renderedText,parts[0].answers[0].text);
+});
+
+test('reader-facing answer cleanup removes internal IDs and keeps source citation IDs',()=>{
+ assert.equal(sanitizeInternalAnswerIds(
+  'A claim (P1-C4). Another point (P1-C18, P1-C20) [S1].'),
+  'A claim. Another point [S1].');
+ assert.equal(sanitizeInternalAnswerIds('Requirement P2-R1 is covered [S2].'),
+  'Requirement is covered [S2].');
 });
 
 test('the strip runs to a fixpoint: a sibling whose entries rode on the stripped source is stripped in pass 2 (batch 10 B10-1)',()=>{

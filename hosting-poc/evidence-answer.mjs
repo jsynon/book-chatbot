@@ -777,6 +777,17 @@ export function normalizeAnswerMarkdown(value){
     .replace(/(\*\*[^*\n]{2,100}:\*\*)[ \t]+(?=\S)/gu,'$1\n\n');
 }
 
+// Internal claim and requirement keys belong in the diagnostic trace, never
+// in reader-facing prose. Keep source citation IDs (S1, S2, ...) untouched.
+export function sanitizeInternalAnswerIds(value){
+  return String(value||'')
+    .replace(/(?:\(\s*|\[\s*)?(?:P\d+-C\d+|P\d+-R\d+)(?:\s*,\s*(?:P\d+-C\d+|P\d+-R\d+))*(?:\s*\)|\s*\])?/giu,' ')
+    .replace(/\(\s*\)|\[\s*\]/gu,' ')
+    .replace(/[ \t]+([,.;:!?])/gu,'$1')
+    .replace(/[ \t]{2,}/gu,' ')
+    .replace(/\s+\n/gu,'\n').trim();
+}
+
 // Batch 9 (B9-8): unwrap whole-paragraph bold. A composer failure mode
 // wraps a part's entire opening paragraph in one bold pair, with the
 // section title as its first words and no boundary between title and
@@ -2298,15 +2309,11 @@ export function findUntracedCitedClaims(shippedParts,mechanisms={}){
 }
 
 // Batch 10 (B10-1): demote untraced cited claims to the context
-// shape — the exact shape normalizeReview builds for retained
-// context claims (sourceIds emptied, renderedText = the bare prose).
-// The prose is the composer's and stays; what review never validated
-// is the bracket asserting a source stands behind it, and that is
-// the only thing removed. Mutates the given parts' answers in place
-// and returns what was stripped. Pure and exported, like the
-// invariant it serves, so the fixpoint's second pass is
-// unit-testable without a build.
-export function stripUntracedCitedClaims(shippedParts,untraced){
+// shape — the shape normalizeReview builds for retained context claims.
+// Keep the proposition but remove unverifiable quotation marks along with
+// the unsupported source marker. Mutates answers in place and returns the
+// claims whose citations were removed.
+export function stripUntracedCitedClaims(shippedParts,untraced,sources=[]){
   const byPart=new Map();
   for(const entry of untraced||[]){
     const list=byPart.get(entry.partId)||[];
@@ -2322,6 +2329,12 @@ export function stripUntracedCitedClaims(shippedParts,untraced){
     for(const answer of part.answers||[]){
       if(!idSet.has(answer.claimId))continue;
       answer.sourceIds=[];
+      // Once a claim is demoted to unverified context, its quotation marks
+      // cannot be audited against a citation that no longer exists. Remove
+      // only the marks around non-citation-verified quotations; preserve the
+      // prose and let the overall result remain explicitly unverified.
+      const quoteRepair=removeUnsupportedQuoteMarks(answer.text,sources);
+      answer.text=quoteRepair.text;
       answer.renderedText=answer.text;
       claimIds.push(answer.claimId);
       touched=true;
@@ -2341,9 +2354,9 @@ export function stripUntracedCitedClaims(shippedParts,untraced){
 // are eligible now, is stripped in the next pass. Bounded at
 // maxPasses (2): anything still untraced afterwards keeps the
 // caller's traced + downgraded treatment. Takes {partId, answers,
-// evidence} views; the answers arrays are mutated in place.
+// evidence} views and may receive the source pages for quote cleanup.
 export function stripUntracedCitedClaimsToFixpoint(shippedParts,untraced,
- {maxPasses=2}={}){
+ {maxPasses=2,sources=[]}={}){
   const eligibleClaimKeys=()=>{
     const keys=new Set();
     for(const part of shippedParts||[]){
@@ -2358,7 +2371,7 @@ export function stripUntracedCitedClaimsToFixpoint(shippedParts,untraced,
   const claimIds=[],partIds=[];
   while(toStrip.length&&passes<maxPasses){
     passes++;
-    const stripped=stripUntracedCitedClaims(shippedParts,toStrip);
+    const stripped=stripUntracedCitedClaims(shippedParts,toStrip,sources);
     claimIds.push(...stripped.claimIds);
     for(const partId of stripped.partIds)
       if(!partIds.includes(partId))partIds.push(partId);
@@ -2969,6 +2982,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
           error.code:'review-request-failed';
       const packetsByPart=new Map(),rawReviewByPart=new Map(),reviewRetryParts=[];
+      const partialReviewResponseParts=new Set(),completedPartialReviewParts=new Set();
       const attemptPartReview=async(checkedPart)=>{
         const partId=checkedPart.partId;
         let packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question});
@@ -2977,6 +2991,19 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             parseReviewJson,{partId});
           return {packet,rawReview};
         }catch(firstReviewError){
+          // A streamed provider can emit a complete JSON review before the
+          // stream's terminal event arrives. Preserve that buffered text and
+          // accept it only if the ordinary parser and full review-contract
+          // validation both pass. This never replays a timed-out request and
+          // never treats a partial or malformed contract as complete.
+          if(options.inferenceTransport==='streaming'&&
+             typeof firstReviewError?.partialResponse==='string'){
+            try{
+              const rawReview=parseReviewJson({response:firstReviewError.partialResponse});
+              partialReviewResponseParts.add(partId);
+              return {packet,rawReview};
+            }catch{/* incomplete buffered JSON remains a failed review */}
+          }
           // A truncated, malformed, or deadline-cut review discards that
           // part's decisions. Retry the part once with a compact span
           // packet when the failure is a review-output problem and the
@@ -3055,6 +3082,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             merged.recovered.push(...single.recovered);
             continue;
           }
+          if(partialReviewResponseParts.has(part.id))
+            completedPartialReviewParts.add(part.id);
           merged.parts.push(...single.parts);
           merged.warnings.push(...single.warnings);
           merged.supportIssues.push(...single.supportIssues);
@@ -3068,6 +3097,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       try{
         if(!rawReviewByPart.size)throw failedReviewParts[0].error;
         review=normalizeAllParts();
+        if(completedPartialReviewParts.size)
+          trace.partialReviewResponseRecovery={
+            recoveredPartIds:plan.parts.map(part=>part.id)
+              .filter(partId=>completedPartialReviewParts.has(partId)),
+            contractValidated:true,
+            providerInferenceCancellation:'unconfirmed'};
         const missingDecisions=[...new Map(review.supportIssues
           .filter(issue=>issue.reason==='missing-claim-source-decision')
           .map(issue=>[issue.claimId+'|'+issue.sourceId,issue])).values()];
@@ -3665,7 +3700,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       if(item&&item.answerStatus==='answered')item.answerStatus='partial';
     }
     const stripped=stripUntracedCitedClaimsToFixpoint(
-      shippedWithEvidence(),untraced);
+      shippedWithEvidence(),untraced,{sources});
     if(stripped.claimIds.length)trace.strippedCitations={
       count:stripped.claimIds.length,claimIds:stripped.claimIds,
       partIds:stripped.partIds,passes:stripped.passes};
@@ -4935,7 +4970,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         // result and stands.
         const stripped=stripUntracedCitedClaimsToFixpoint(
           parts.map(item=>({partId:item.part.id,answers:item.answers,
-            evidence:item.evidence})),untraced);
+            evidence:item.evidence})),untraced,{sources});
         if(stripped.claimIds.length)trace.strippedCitations={
           count:stripped.claimIds.length,claimIds:stripped.claimIds,
           partIds:stripped.partIds,passes:stripped.passes};
@@ -4961,7 +4996,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         trace.untracedCitedClaims=untraced;
         const stripped=stripUntracedCitedClaimsToFixpoint(
           parts.map(item=>({partId:item.part.id,answers:item.answers,
-            evidence:item.evidence})),untraced);
+            evidence:item.evidence})),untraced,{sources});
         if(stripped.claimIds.length)trace.strippedCitations={
           count:stripped.claimIds.length,claimIds:stripped.claimIds,
           partIds:stripped.partIds,passes:stripped.passes};
@@ -5050,7 +5085,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       postReviewAuditFaultInjected=true;
     }
     let included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
-    let answer=normalizeAnswerMarkdown(included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n'));
+    let answer=sanitizeInternalAnswerIds(normalizeAnswerMarkdown(
+      included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n')));
     const incompleteAnswer=Boolean(answer&&hasUnfinishedAnswerEnding(answer));
     if(incompleteAnswer){
       answer='';
@@ -5074,14 +5110,14 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // audit instead would feed altered segments into repair targeting.)
     let boldParagraphsUnwrapped=0;const boldUnwrapPartIds=[];
     if(answer){
-      answer=normalizeAnswerMarkdown(included.map(item=>{
+      answer=sanitizeInternalAnswerIds(normalizeAnswerMarkdown(included.map(item=>{
         const unwrapped=unwrapBoldWrappedParagraphs(renderAnswerParagraphs(item.answers));
         if(unwrapped.count){
           boldParagraphsUnwrapped+=unwrapped.count;
           boldUnwrapPartIds.push(item.part.id);
         }
         return unwrapped.text;
-      }).join('\n\n'));
+      }).join('\n\n')));
     }
     trace.formattingNormalizations={boldParagraphsUnwrapped,
       partIds:boldUnwrapPartIds};
@@ -5164,7 +5200,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         requirementCoverage:item.requirementCoverage||[],
         requirementsComplete:item.requirementsComplete===true,
       }:{}),
-      answerText:item.answers.map(value=>value.text).join(' '),
+      answerText:sanitizeInternalAnswerIds(item.answers.map(value=>value.text).join(' ')),
       evidenceIds:[...new Set(item.answers.flatMap(value=>value.sourceIds))]
         .filter(sourceId=>partCitationIds.get(item.part.id)?.has(sourceId))}));
     // Preserve the review-stage outcome while recording the status returned

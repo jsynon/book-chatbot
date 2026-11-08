@@ -82,6 +82,23 @@ test('deadline asks the source stream to cancel and waits for its acknowledgemen
   assert.deepEqual(order,['cancel-start','cancel-settled']);
 });
 
+test('deadline exposes buffered review text for full-contract validation without replay',async()=>{
+  const expected=JSON.stringify({claims:[],parts:[]});
+  const wire='data: '+JSON.stringify({response:expected})+'\n\n';
+  const ai={run:async()=>new ReadableStream({
+    start(controller){controller.enqueue(new TextEncoder().encode(wire));},
+    cancel(){}
+  })};
+  await assert.rejects(runWorkersAiStream(ai,'same-model',{messages:[]},
+    {timeoutMs:15,stage:'review'}),error=>{
+      assert.equal(error.code,'inference-deadline-exceeded');
+      assert.equal(error.partialResponse,expected);
+      assert.equal(error.streamDiagnostics.cancelOutcome,'acknowledged');
+      assert.equal(error.streamDiagnostics.providerInferenceCancellation,'unconfirmed');
+      return true;
+    });
+});
+
 test('unconfirmed cancellation is non-retryable',async()=>{
   let calls=0;
   const ai={run:async()=>{calls++;return new ReadableStream({cancel(){return new Promise(()=>{});}});}};
