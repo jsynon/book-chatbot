@@ -7,7 +7,7 @@
  * remain outside model judgment: a passing review is not a truth guarantee.
  */
 import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,quotations,sourceProvenance,catalogIdentity,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
-import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,isHeadingOnlySpan} from './review-spans.mjs';
+import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 import {runWorkersAiStream} from './worker-ai-stream.mjs';
 
 export const READER_MODEL='@cf/google/gemma-4-26b-a4b-it';
@@ -42,22 +42,59 @@ export const EXPANSION_PROMPT=`Expand the draft where useful to answer the quest
 function composerPassageWindows(sourceId,text,question,parts){
   const sourceText=String(text||'');
   const spans=buildReviewSpans(sourceId,sourceText);
-  if(!spans.length)return sourceText.trim()?[{
+  if(!spans.length)return {passages:sourceText.trim()?[{
     spanIds:[],contextSpanIds:[],partIds:[],text:sourceText.trim()
-  }]:[];
+  }]:[],selection:[]};
   const targets=Array.isArray(parts)&&parts.length?parts:[{id:'P1',question,searchQueries:[]}];
   const limit=Math.max(1,Math.floor(MAX_COMPOSER_PASSAGE_SPANS_PER_SOURCE/targets.length));
   const selected=new Map();
   for(const part of targets){
-    const targetText=[part.question,...(Array.isArray(part.searchQueries)?part.searchQueries:[])]
+    const queries=(Array.isArray(part.searchQueries)?part.searchQueries:[])
+      .filter(value=>typeof value==='string'&&value.trim()).join(' ');
+    const requirements=Array.isArray(part.requirements)?part.requirements.filter(requirement=>
+      requirement&&typeof requirement==='object'&&typeof requirement.text==='string'&&
+      requirement.text.trim()):[];
+    const partSelection=new Map();
+    const addSpan=(span,requirementId='')=>{
+      const item=partSelection.get(span.spanId)||{span,requirementIds:[]};
+      if(requirementId&&!item.requirementIds.includes(requirementId))item.requirementIds.push(requirementId);
+      partSelection.set(span.spanId,item);
+    };
+    // Reserve from the existing per-part span allowance for requirement-linked
+    // passages. Exact anchor terms are ranking cues only; the reviewer still
+    // decides whether a selected span supports an answer claim.
+    for(const requirement of requirements){
+      const match=selectRequirementReviewSpans(spans,{
+        requirement:requirement.text,
+        questionAnchor:requirement.questionAnchor,
+        limit:1
+      })[0];
+      if(match&&partSelection.size>=limit&&!partSelection.has(match.spanId))continue;
+      if(match)addSpan(match,typeof requirement.id==='string'?requirement.id:'');
+    }
+    const targetText=[part.question,queries,...requirements.flatMap(requirement=>
+      [requirement.text,requirement.questionAnchor])]
       .filter(value=>typeof value==='string'&&value.trim()).join(' ');
     for(const span of selectReviewPacketSpans(spans,{question,answer:targetText,limit})){
-      const item=selected.get(span.spanId)||{span,partIds:[]};
+      if(partSelection.size>=limit&&!partSelection.has(span.spanId))continue;
+      const matchedRequirements=requirements.filter(requirement=>
+        selectRequirementReviewSpans([span],{requirement:requirement.text,
+          questionAnchor:requirement.questionAnchor,limit:1})
+          .length>0);
+      if(matchedRequirements.length){
+        for(const requirement of matchedRequirements)
+          addSpan(span,typeof requirement.id==='string'?requirement.id:'');
+      }else addSpan(span);
+    }
+    for(const {span,requirementIds} of partSelection.values()){
+      const item=selected.get(span.spanId)||{span,partIds:[],requirementIds:[]};
       if(typeof part.id==='string'&&!item.partIds.includes(part.id))item.partIds.push(part.id);
+      for(const requirementId of requirementIds)
+        if(requirementId&&!item.requirementIds.includes(requirementId))item.requirementIds.push(requirementId);
       selected.set(span.spanId,item);
     }
   }
-  if(!selected.size)return [{spanIds:[],contextSpanIds:[],partIds:[],text:sourceText.trim()}];
+  if(!selected.size)return {passages:[{spanIds:[],contextSpanIds:[],partIds:[],text:sourceText.trim()}],selection:[]};
   const indexById=new Map(spans.map((span,index)=>[span.spanId,index]));
   const selectedIndexes=new Set([...selected.keys()].map(id=>indexById.get(id)).filter(Number.isInteger));
   const visibleIndexes=new Set();
@@ -73,7 +110,7 @@ function composerPassageWindows(sourceId,text,question,parts){
     if(last&&index===last.at(-1)+1)last.push(index);
     else groups.push([index]);
   }
-  return groups.map(indexes=>{
+  const passages=groups.map(indexes=>{
     const windowSpans=indexes.map(index=>spans[index]);
     const selectedSpans=windowSpans.filter(span=>selected.has(span.spanId));
     return {
@@ -83,6 +120,9 @@ function composerPassageWindows(sourceId,text,question,parts){
       text:sourceText.slice(windowSpans[0].start,windowSpans.at(-1).end)
     };
   }).filter(window=>window.text.trim());
+  const selection=[...selected.values()].map(item=>({spanId:item.span.spanId,
+    partIds:[...item.partIds],requirementIds:[...item.requirementIds]}));
+  return {passages,selection};
 }
 
 // The composer can explain beyond the library while keeping attribution clear.
@@ -2812,6 +2852,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     return byPart;
   };
   try{
+    trace.composerWindowSelection=[];
     const composePayload={question,plan,history,
       parts:plan.parts.map(part=>({partId:part.id,question:part.question,requirements:part.requirements||[],
         answerMode:(part.candidateSourceIds||[]).some(sourceId=>pageById.has(sourceId))?
@@ -2831,12 +2872,14 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         Array.isArray(part.candidateSourceIds)&&part.candidateSourceIds.includes(page.id));
       const provenance=sourceProvenance(source,plan,evidenceText);
       const voiceGuidance=sourceVoiceGuidance(provenance);
+      const passageWindows=composerPassageWindows(page.id,evidenceText,question,linkedParts);
+      trace.composerWindowSelection.push({sourceId:page.id,selectedSpans:passageWindows.selection});
       return {...pageMetadata,
         selectionSupport:(source?.candidatePartSupport||[]).filter(item=>
           linkedParts.some(part=>part.id===item.partId)),
         ...(source?.scopeText||pageScopeText?
           {text:source?.scopeText||pageScopeText,contextText:pageText}:{}),
-        passages:composerPassageWindows(page.id,evidenceText,question,linkedParts),
+        passages:passageWindows.passages,
         provenance,
         ...(voiceGuidance?{attributionRequirement:voiceGuidance}:{})};
     })};
