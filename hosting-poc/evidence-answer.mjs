@@ -5285,7 +5285,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
 const ANSWER_RETRY_TRANSIENT_CODES=new Set([
   'answer-request-failed','inference-deadline-exceeded','review-request-failed']);
 export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
-  let firstCode=null;
+  let firstCode=null,firstAttemptTrace=null;
+  const retryStartedAt=performance.now();
   try{
     const result=await composeEvidenceAnswerBuild(question,sources,ai,history,options);
     if(result?.outcome!=='generation-failed')return result;
@@ -5302,12 +5303,37 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     if(!ANSWER_RETRY_TRANSIENT_CODES.has(result.failureCode)&&!pipelineTransient)
       return result;
     firstCode=pipelineTransient?'answer-request-failed':result.failureCode;
+    firstAttemptTrace=result.trace||null;
   }catch(error){
     if(!ANSWER_RETRY_TRANSIENT_CODES.has(error?.code))throw error;
     firstCode=error.code;
+    firstAttemptTrace=error.trace||null;
   }
   const retried=await composeEvidenceAnswerBuild(question,sources,ai,history,options);
-  if(retried?.trace)retried.trace.answerRetry={code:firstCode,
-    outcome:retried.outcome==='generation-failed'?'failed-again':'recovered'};
+  if(retried?.trace){
+    const answerRetry={code:firstCode,
+      outcome:retried.outcome==='generation-failed'?'failed-again':'recovered'};
+    if(options.transportDiagnostics===true){
+      const attemptSnapshot=(attempt,trace)=>({attempt,
+        stageTimings:Array.isArray(trace?.stageTimings)?trace.stageTimings.map(item=>({...item})):[],
+        inferenceCalls:Array.isArray(trace?.inferenceCalls)?trace.inferenceCalls.map(item=>({...item})):[],
+        timingSummary:trace?.timingSummary||null});
+      const attempts=[attemptSnapshot(1,firstAttemptTrace),attemptSnapshot(2,retried.trace)];
+      const summaries=attempts.map(item=>item.timingSummary).filter(Boolean);
+      const totalBuildWallMs=summaries.reduce((sum,item)=>sum+(Number(item.buildWallMs)||0),0);
+      const totalCompositionWallMs=summaries.reduce((sum,item)=>sum+(Number(item.compositionWallMs)||0),0);
+      const totalReviewWallMs=summaries.reduce((sum,item)=>sum+(Number(item.reviewWallMs)||0),0);
+      const totalProviderWaitSumMs=summaries.reduce((sum,item)=>sum+(Number(item.providerWaitSumMs)||0),0);
+      const totalElapsedMs=Math.max(0,Math.round(performance.now()-retryStartedAt));
+      answerRetry.attemptCount=2;
+      answerRetry.attempts=attempts;
+      answerRetry.totalBuildWallMs=totalBuildWallMs;
+      answerRetry.totalElapsedMs=totalElapsedMs;
+      retried.trace.timingSummary={...(retried.trace.timingSummary||{}),
+        attemptCount:2,totalBuildWallMs,totalCompositionWallMs,totalReviewWallMs,
+        totalProviderWaitSumMs,totalElapsedMs};
+    }
+    retried.trace.answerRetry=answerRetry;
+  }
   return retried;
 }
