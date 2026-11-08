@@ -2845,7 +2845,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           response=>parsePartAnswers(response,plan));
       }catch(firstComposeError){
         const failureCode=composeFailureCode(firstComposeError);
-        if(!retryableComposeCodes.includes(failureCode)||usage.calls>=callLimit)
+        const streamDeadlineUnsafe=options.inferenceTransport==='streaming'&&
+          failureCode==='inference-deadline-exceeded';
+        if(streamDeadlineUnsafe||!retryableComposeCodes.includes(failureCode)||usage.calls>=callLimit)
           throw firstComposeError;
         composeRetry={attempted:true,reason:failureCode,applied:false};
         // Record the attempt before retrying: if the retry also fails,
@@ -2981,7 +2983,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // call budget still has room; any other failure, and a failed
           // retry, fails that part alone.
           const failureCode=reviewFailureCode(firstReviewError);
-          if(!retryableReviewCodes.includes(failureCode)||
+          const streamDeadlineUnsafe=options.inferenceTransport==='streaming'&&
+            failureCode==='inference-deadline-exceeded';
+          if(streamDeadlineUnsafe||!retryableReviewCodes.includes(failureCode)||
              usage.calls>=callLimit)throw firstReviewError;
           const retryEntry={partId,reason:failureCode,applied:false};
           reviewRetryParts.push(retryEntry);
@@ -5300,12 +5304,18 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     // outside this branch, and are never retried.
     const pipelineTransient=result.failureCode==='answer-pipeline-failed'&&
       result.failureStage==='compose';
-    if(!ANSWER_RETRY_TRANSIENT_CODES.has(result.failureCode)&&!pipelineTransient)
+    // Local reader cancellation does not prove provider-side inference ended.
+    // Never replay a streaming timeout as a whole-build retry.
+    const streamTimeoutUnsafe=options.inferenceTransport==='streaming'&&
+      result.failureCode==='inference-deadline-exceeded';
+    if(streamTimeoutUnsafe||(!ANSWER_RETRY_TRANSIENT_CODES.has(result.failureCode)&&!pipelineTransient))
       return result;
     firstCode=pipelineTransient?'answer-request-failed':result.failureCode;
     firstAttemptTrace=result.trace||null;
   }catch(error){
-    if(!ANSWER_RETRY_TRANSIENT_CODES.has(error?.code))throw error;
+    const streamTimeoutUnsafe=options.inferenceTransport==='streaming'&&
+      error?.code==='inference-deadline-exceeded';
+    if(streamTimeoutUnsafe||!ANSWER_RETRY_TRANSIENT_CODES.has(error?.code))throw error;
     firstCode=error.code;
     firstAttemptTrace=error.trace||null;
   }

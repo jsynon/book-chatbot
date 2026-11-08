@@ -11,6 +11,9 @@
   "vars": {
     "PUBLIC_ENABLED": "false",
     "PUBLIC_PILOT_ENABLED": "false",
+    // Streaming is the default. Set this to "default" to roll back to the
+    // buffered Workers AI request path without changing prompts or code.
+    "READER_INFERENCE_TRANSPORT": "streaming",
     // Enable only when running the protected, manually dispatched evaluation.
     "PILOT_EVALUATION_ENABLED": "false"
   },

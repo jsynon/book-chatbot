@@ -98,6 +98,9 @@ export const pilotBaseEnv={
  // Keep legacy-route regression fixtures explicit; v2-by-default behavior is
  // exercised in evidence-answer.test.mjs without this setting.
  READER_PIPELINE:'legacy',
+ // Existing route fixtures assert the buffered rollback path; the streaming
+ // default is covered explicitly with this variable unset.
+ READER_INFERENCE_TRANSPORT:'default',
  TURNSTILE_SITE_KEY:'0x4AAAAAA-test-public-pilot',
  TURNSTILE_SECRET:'a-long-private-turnstile-test-secret',
  AI_RATE_LIMITER:{limit:async()=>({success:true})},

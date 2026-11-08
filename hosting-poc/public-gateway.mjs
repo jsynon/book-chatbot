@@ -4545,8 +4545,14 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     const evaluationAuthorized=authorizedPilotEvaluation(request,env);
     const answerVariant=evaluationAuthorized&&['compose-only','with-expansion'].includes(data.answerVariant)?
       data.answerVariant:'with-review';
-    const inferenceTransport=evaluationAuthorized&&data.inferenceTransport==='streaming'?
-      'streaming':'default';
+    // Buffered SSE is the public default. Operators can roll back immediately
+    // by setting READER_INFERENCE_TRANSPORT=default. Authenticated evaluation
+    // requests may still select either transport for controlled comparisons.
+    const configuredInferenceTransport=env.READER_INFERENCE_TRANSPORT==='default'?
+      'default':'streaming';
+    const inferenceTransport=evaluationAuthorized&&
+      ['default','streaming'].includes(data.inferenceTransport)?
+      data.inferenceTransport:configuredInferenceTransport;
     try{
       // The public pilot uses the evidence pipeline by default. An explicit
       // legacy setting is a rollback switch; authenticated evaluations always
@@ -4755,7 +4761,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           plan,catalog:PILOT_BOOKS,selectedBookId,
           review:answerVariant!=='compose-only',
           expand:answerVariant==='with-expansion',
-          ...(evaluationAuthorized?{inferenceTransport,transportDiagnostics:true}:{}),
+          inferenceTransport,
+          ...(evaluationAuthorized?{transportDiagnostics:true}:{}),
           selectionTrace,
           // Full prompts and source text are returned only to the dedicated
           // authenticated evaluation workflow, never to ordinary visitors.

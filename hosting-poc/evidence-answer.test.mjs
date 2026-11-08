@@ -6298,6 +6298,18 @@ test('transport diagnostics retain both whole-build attempts after a transient r
   'legacy stageTimings continues to describe the returned attempt; answerRetry holds both attempts');
 });
 
+test('stream deadline is not retried because provider cancellation is unconfirmed (B18)',async()=>{
+ const timeout=Object.assign(new Error('Inference deadline exceeded'),{
+  code:'inference-deadline-exceeded',stage:'compose'});
+ const ai=makeAI([timeout]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true,inferenceTransport:'streaming',transportDiagnostics:true});
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureCode,'inference-deadline-exceeded');
+ assert.equal(result.trace.answerRetry,undefined);
+ assert.equal(ai.calls.length,1,'a possibly active provider inference is not duplicated');
+});
+
 test('a citation-validation failure is never retried (B8-7)',async()=>{
  const ai=makeAI([
   answer('PART P1\nHume links necessity to custom. [S99]\n\nPART P2\nKant describes causality as a priori. [S1]'),
