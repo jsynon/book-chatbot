@@ -202,3 +202,21 @@ export function selectReviewPacketSpans(spans,{question='',answer='',requiredAns
   if(!requiredCandidate)return packet;
   return [...packet.slice(0,-1),requiredCandidate];
 }
+
+/**
+ * Rank spans for one explicit answer requirement. Only reserve a span when
+ * it shares at least one normalized content term with that requirement or its
+ * verbatim question anchor; a zero-match span is left to the broad fallback
+ * ranking. This is a lexical routing hint, never a support decision.
+ */
+export function selectRequirementReviewSpans(spans,{requirement='',questionAnchor='',limit=1}={}){
+  if(!Number.isInteger(limit)||limit<0||!limit)return [];
+  const query=[requirement,questionAnchor].filter(value=>
+    typeof value==='string'&&value.trim()).join(' ');
+  const terms=reviewTerms(query);
+  if(!terms.size)return [];
+  return rankReviewSpans(spans,{answer:query}).filter(span=>{
+    const spanTerms=reviewTerms(span.text);
+    return [...terms].some(term=>spanTerms.has(term));
+  }).slice(0,limit);
+}
