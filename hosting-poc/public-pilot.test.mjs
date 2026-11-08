@@ -490,17 +490,28 @@ test('stream transport is evaluation-authorized and records transport diagnostic
   return {response,usage:{neurons:1,prompt_tokens:2,completion_tokens:3}};
  };
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2',
+  READER_INFERENCE_TRANSPORT:undefined},model});
  const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
   question:'What caused the Peloponnesian War?',answerVariant:'compose-only',
-  inferenceTransport:'streaming',trace:true
+  trace:true
  }});
  assert.equal(response.status,200);
  const data=await response.json();
  assert.equal(data.inferenceTransport,'streaming');
  assert.ok(data.trace.inferenceCalls.length>0);
  assert.ok(data.trace.inferenceCalls.every(call=>call.transport==='streaming-buffered'));
- assert.ok(seen.some(value=>value),'evaluation transport must request streamed model output');
+ assert.ok(seen.some(value=>value),'streaming is the default when no rollback value is configured');
+
+ const rollbackPilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2',
+  READER_INFERENCE_TRANSPORT:'default'},model});
+ const rollbackResponse=await rollbackPilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War?',answerVariant:'compose-only',trace:true
+ }});
+ assert.equal(rollbackResponse.status,200);
+ assert.equal((await rollbackResponse.json()).inferenceTransport,'default');
+ assert.equal(seen.at(-1),false,'rollback must omit stream:true from provider requests');
 
  const publicOnly=await pilotScenario({config:{READER_PIPELINE:'evidence-v2'},model});
  const ordinary=await publicOnly.post({body:{inferenceTransport:'streaming',selectionOnly:true}});
@@ -2175,7 +2186,8 @@ test('verification diet: a candidate discarded by selection is never fingerprint
  }};
  const environment=env({PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
   TURNSTILE_SITE_KEY:'0x4AAAAAA-test-public-pilot',
-  TURNSTILE_SECRET:'a-long-private-turnstile-test-secret',AI:ai});
+  TURNSTILE_SECRET:'a-long-private-turnstile-test-secret',
+  READER_INFERENCE_TRANSPORT:'default',AI:ai});
  const request=new Request(HOST+'/api/pilot-answer',{method:'POST',
   headers:{Origin:'https://jsynon.github.io','Content-Type':'application/json',
    'CF-Connecting-IP':'198.51.100.42'},
