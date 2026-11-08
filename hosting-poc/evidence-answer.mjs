@@ -8,6 +8,7 @@
  */
 import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,quotations,sourceProvenance,catalogIdentity,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,isHeadingOnlySpan} from './review-spans.mjs';
+import {runWorkersAiStream} from './worker-ai-stream.mjs';
 
 export const READER_MODEL='@cf/google/gemma-4-26b-a4b-it';
 // Batch 11 (B11-3): soft wall-clock budget for OPTIONAL model calls
@@ -2472,7 +2473,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   const rawPlan=options.plan||inferSelectedHypotheticalPlan(question,sources);
   const normalized=normalizePlan(rawPlan,question,options.catalog||{},options.selectedBookId||'');
   const plan=linkEvidenceToParts(normalized,sources);
-  const trace={version:CONTRACT_VERSION,model:READER_MODEL,plan,stages:[],rejected:[]};
+  const trace={version:CONTRACT_VERSION,model:READER_MODEL,plan,stages:[],rejected:[],
+    ...(options.transportDiagnostics===true?{inferenceCalls:[]}: {})};
   // Keep the retrieval-to-selection handoff beside composition and review in
   // authenticated traces; this is the point where candidate recall becomes
   // the evidence budget available to the answer model.
@@ -2552,12 +2554,54 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       stage==='review-repair'?Math.min(3000,900+reviewRecordCount*160):
       stage==='answer-repair'?2600:
       stage==='compose'?Math.min(3600,Math.max(1800,900+600*composePartCount)):1800;
-    try{response=await Promise.race([ai.run(READER_MODEL,{messages,
-      chat_template_kwargs:{enable_thinking:false},
-      ...(temperature!==undefined?{temperature}:{}),
-      max_completion_tokens:outputTokenBudget}),
-      new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),timeoutMs);})]);}
+    const modelRequest={messages,chat_template_kwargs:{enable_thinking:false},
+      ...(temperature!==undefined?{temperature}:{}),max_completion_tokens:outputTokenBudget};
+    const transport=options.inferenceTransport==='streaming'?'streaming':'default';
+    let transportCall=null;
+    try{
+      if(transport==='streaming'){
+        const result=await runWorkersAiStream(ai,READER_MODEL,modelRequest,{timeoutMs,stage});
+        response=result.response;
+        transportCall=result.diagnostics;
+      }else if(options.transportDiagnostics===true){
+        const callStarted=Date.now();
+        transportCall={transport:'default-buffered',stage,timeoutMs,startedAt:callStarted,
+          timeoutFired:false,cancelRequested:false,cancelOutcome:'not-supported',
+          providerInferenceCancellation:'not-requested',providerSettled:false};
+        const providerPromise=Promise.resolve().then(()=>ai.run(READER_MODEL,modelRequest));
+        providerPromise.then(()=>{
+          transportCall.providerSettled=true;
+          transportCall.providerSettledAtMs=Date.now()-callStarted;
+          transportCall.settledAfterDeadline=transportCall.timeoutFired;
+        },()=>{
+          transportCall.providerSettled=true;
+          transportCall.providerSettledAtMs=Date.now()-callStarted;
+          transportCall.settledAfterDeadline=transportCall.timeoutFired;
+        });
+        try{response=await Promise.race([providerPromise,
+          new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),timeoutMs);})]);}
+        catch(error){
+          if(error===timeoutError){
+            transportCall.timeoutFired=true;
+            transportCall.timeoutAtMs=Date.now()-callStarted;
+            transportCall.timeoutClassification='timer-race-no-cancel';
+          }
+          throw error;
+        }finally{clearTimeout(timer);timer=undefined;}
+        transportCall.elapsedMs=Date.now()-callStarted;
+        transportCall.usageAvailable=Boolean(response?.usage&&
+          ['neurons','prompt_tokens','completion_tokens'].some(key=>Number.isFinite(response.usage[key])));
+      }else{
+        response=await Promise.race([ai.run(READER_MODEL,modelRequest),
+          new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),timeoutMs);})]);
+      }
+      if(transportCall&&Array.isArray(trace.inferenceCalls))trace.inferenceCalls.push(transportCall);
+    }
     catch(error){
+      transportCall=error?.streamDiagnostics||transportCall;
+      if(transportCall&&Array.isArray(trace.inferenceCalls))trace.inferenceCalls.push(transportCall);
+      if(transportCall&&error&&typeof error==='object')
+        error.inferenceTransportDiagnostic=transportCall;
       if(payloadMetrics||stage==='answer-repair'){
         const failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
           error.code:'review-request-failed';
