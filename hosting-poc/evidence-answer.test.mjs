@@ -2325,17 +2325,16 @@ test('a multi-part source-and-context answer keeps direct general knowledge for 
   gapReviewer,gapReviewer,uncitedGateRepair]);
  const result=await composeEvidenceAnswer(question,[hume],ai,[],{plan,catalog,trace:true});
  const composePayload=JSON.parse(ai.calls[0].request.messages[1].content);
- assert.equal(composePayload.parts.find(part=>part.partId==='P2').answerMode,'source-and-context');
+ assert.equal(composePayload.parts.find(part=>part.partId==='P2').answerMode,'general-context');
  assert.equal(result.questionParts[1].answerStatus,'answered');
  assert.equal(result.answerCompleteness,'full');
  assert.match(result.answer,/The Odyssey presents heroism/);
  assert.match(result.answer,/Hume links causal necessity.*\[S1\]/);
- assert.deepEqual(result.trace.citationGate,
-  [{partId:'P2',action:'repair-failed',preGateStatus:'partial',
-    refusal:{stage:'repair',code:'answer-repair-invalid',reason:'repair-threw'}}],
-  'the widened gate attempts one repair for the packet-linked uncited part');
- assert.equal(ai.calls.length,4,
-  'compose, the two per-part reviews, and the one widened-gate repair attempt');
+ assert.equal(result.questionParts[1].sourceRequired,false,
+  'an all-books candidate from an unrelated source group is not a source requirement for this part');
+ assert.equal(result.trace.citationGate,undefined,
+  'general-context answer parts retain the uncited allowance');
+ assert.equal(ai.calls.length,3,'compose and one review per planned part; no citation repair is needed');
 });
 
 test('a reviewed direct general-context claim is retained without duplicating it in context IDs',async()=>{
@@ -2629,21 +2628,22 @@ test('review sees a bounded per-source packet and cannot select an unsent full-s
  assert.equal(omitted.ai.calls.length,2,'a missing evidence packet cannot trigger repair');
 });
 
-test('review deadline failure stays fail-closed and records the failed stage after one compact retry',async()=>{
+test('review deadline failure gets one in-place retry and stays fail-closed after both attempts',async()=>{
  const timeout=()=>Object.assign(new Error('Inference deadline exceeded'),{
   stage:'review',code:'inference-deadline-exceeded',startedAt:Date.now()-45000
  });
- const ai=makeAI([answer('PART P1\nHume links causal expectation to custom and regular conjunction. [S1]'),timeout(),timeout(),
-  answer('PART P1\nHume links causal expectation to custom and regular conjunction. [S1]'),timeout(),timeout()]);
+ const ai=makeAI([answer('PART P1\nHume links causal expectation to custom and regular conjunction. [S1]'),timeout(),timeout()]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
- assert.equal(ai.calls.length,6,'the compact review retry is followed by the established transient whole-build retry');
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'inference-deadline-exceeded',applied:false,
-  parts:[{partId:'P1',reason:'inference-deadline-exceeded',applied:false}]});
+ assert.equal(ai.calls.length,3,'composition runs once; only the review call is retried');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,mode:'review-only',
+  reason:'inference-deadline-exceeded',applied:false,outcome:'failed-again',
+  parts:[{partId:'P1',reason:'inference-deadline-exceeded',applied:false,
+   mode:'review-only',samePacket:true,outcome:'failed-again',retryFailureCode:'inference-deadline-exceeded'}]});
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.coverage,'none');
- assert.equal(result.trace.answerRetry.outcome,'failed-again');
+ assert.equal(result.trace.answerRetry,undefined,'review timeout does not trigger a whole-build retry');
  assert.equal(result.trace.final.reviewFailure.stage,'review');
  assert.equal(result.trace.final.reviewFailure.code,'inference-deadline-exceeded');
  assert.ok(result.trace.final.reviewFailure.elapsedMs>=45000);
@@ -4305,7 +4305,7 @@ test('a review request failure is retried once per part like other review-output
  assert.equal(result.questionParts[0].status,'supported');
 });
 
-test('citation gate downgrades a source-based part that ships without any citation',async()=>{
+test('citation gate refusal contains a single uncited source-required part',async()=>{
  const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
   answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
  const uncitedRepair={response:JSON.stringify({parts:[{partId:'P1',
@@ -4316,15 +4316,12 @@ test('citation gate downgrades a source-based part that ships without any citati
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
  assert.equal(ai.calls.length,3,'compose, review, and exactly one targeted gate repair attempt');
- assert.deepEqual(result.trace.citationGate,
-  [{partId:'P1',action:'repair-failed',preGateStatus:'answered',
-    refusal:{stage:'repair',code:'answer-repair-invalid',reason:'repair-threw'}}],
-  'a repair that still yields no citation is recorded and does not ship');
- assert.equal(result.questionParts[0].status,'partial',
-  'the part is downgraded instead of shipping as fully supported');
- assert.equal(result.coverage,'partial');
- assert.match(result.answer,/custom and regular conjunction/);
- assert.doesNotMatch(result.answer,/\[S1\]/);
+ assert.equal(result.trace.citationGate[0].action,'repair-refused');
+ assert.equal(result.trace.citationGate[0].repairFailure.failureStep,'citation-candidate-check');
+ assert.equal(result.outcome,'generation-failed',
+  'one source-required part is not a strict minority and cannot ship uncited');
+ assert.equal(result.trace.sourceRequiredContainment.disposition,'suppressed-not-strict-minority');
+ assert.doesNotMatch(result.answer,/custom and regular conjunction/);
 });
 
 test('citation gate keeps a source-based part supported when repair restores its citation',async()=>{
@@ -4426,13 +4423,15 @@ test('citation gate adopts a cited re-review part at partial status (batch 12 B1
   plan:onePartPlan,catalog,trace:true});
  assert.equal(result.trace.citationGate[0].action,'repair-applied');
  assert.equal(result.trace.citationGate[0].refusal,undefined);
+ assert.deepEqual(result.trace.citationGateSummary,{firings:1,adoptions:1,
+  outcomes:{adopted:1,repairRefused:0,repairThrew:0,reReviewRefused:0}});
  assert.equal(result.questionParts[0].answerStatus,'partial');
  assert.equal(result.questionParts[0].status,'partial');
  assert.match(result.answer,/causal expectation.*\[S1\]/);
  assert.ok(result.evidenceMap.some(item=>item.partId==='P1'&&item.id==='S1'));
 });
 
-test('citation gate records a failed repair for a partial part and ships its prose at partial (batch 11 B11-4)',async()=>{
+test('citation gate records a failed repair for a partial part and containment suppresses the uncited draft (batch 22)',async()=>{
  const rejectingReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
   answerStatus:'partial',directAnswerClaimIds:['P1-C2'],retainedContextClaimIds:['P1-C2']}],
   claims:[{claimId:'P1-C1',status:'partial',
@@ -4453,16 +4452,128 @@ test('citation gate records a failed repair for a partial part and ships its pro
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
  assert.equal(ai.calls.length,3,'compose, review, and the one gate repair attempt');
- assert.deepEqual(result.trace.citationGate,
-  [{partId:'P1',action:'repair-failed',preGateStatus:'partial',
-    refusal:{stage:'repair',code:'answer-repair-invalid',reason:'repair-threw'}}]);
- assert.equal(result.questionParts[0].status,'partial',
-  'the part stays partial; the widened trigger does not inflate its status');
- assert.match(result.answer,/great guide of human life/);
- assert.doesNotMatch(result.answer,/\[S1\]/,'no citation is fabricated by the failed repair');
+ assert.equal(result.trace.citationGate[0].action,'repair-refused');
+ assert.equal(result.trace.citationGate[0].preGateStatus,'partial');
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.trace.sourceRequiredContainment.uncitedPartIds[0],'P1');
+ assert.doesNotMatch(result.answer,/great guide of human life/);
 });
 
-test('a part still uncited after the gate is named in missing and traced (batch 11 B11-5)',async()=>{
+test('citation gate traces duplicate-key patch failure and containment prevents uncited shipment (batch 22)',async()=>{
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
+ const duplicateKeyRepair={response:'{"parts":[{"partId":"P1","replacements":['+
+  '{"claimId":"P1-C1","claimId":"P1-C9","text":"A repaired claim without source support."}],"additions":[]}]}'};
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom.'),uncitedReview,duplicateKeyRepair],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'generation-failed',
+  'one uncited source-required part cannot ship when it is not a strict minority');
+ assert.equal(result.trace.citationGate[0].action,'repair-refused');
+ assert.equal(result.trace.citationGate[0].repairFailure.failureStep,'patch-schema-validation');
+ assert.equal(result.trace.citationGate[0].repairFailure.code,'answer-repair-invalid');
+ assert.equal(result.trace.citationGate[0].repairFailure.responseShape.duplicateClaimIdKeyCount,1);
+ assert.equal(result.trace.citationGate[0].repairFailure.responseShape.replacementCount,1);
+ assert.deepEqual(result.trace.citationGateSummary.outcomes,
+  {adopted:0,repairRefused:1,repairThrew:0,reReviewRefused:0});
+ assert.deepEqual(result.trace.sourceRequiredContainment,
+  {totalParts:1,sourceRequiredPartIds:['P1'],uncitedPartIds:['P1'],
+   droppedPartIds:[],disposition:'suppressed-not-strict-minority'});
+});
+
+test('citation gate records a forbidden repair field as schema refusal rather than a blind throw (batch 22)',async()=>{
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
+ const invalidField={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:[{claimId:'P1-C1',text:'Hume explains necessity through custom. [S1]'}],
+  additions:[],citedSourceIds:['S1']}]})};
+ const ai=makeAI([answer('PART P1\nHume explains necessity through custom.'),uncitedReview,invalidField],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.citationGate[0].action,'repair-refused');
+ assert.equal(result.trace.citationGate[0].repairFailure.failureStep,'patch-schema-validation');
+ assert.equal(result.trace.citationGate[0].repairFailure.code,'answer-repair-invalid');
+ assert.deepEqual(result.trace.citationGate[0].repairFailure.responseShape.unexpectedPartFields,
+  ['citedSourceIds']);
+ assert.equal(result.trace.citationGateSummary.outcomes.repairThrew,0);
+ assert.equal(result.outcome,'generation-failed');
+});
+
+test('source-required containment drops one peripheral uncited part but suppresses an uncited majority (batch 22)',async()=>{
+ const runFixture=async(uncitedPartIds)=>{
+  const plan={...twoSidePlan};
+  const parts=plan.parts;
+  const prose={P1:'Hume connects necessity to custom through repeated experience. [S1]',
+   P2:'Kant treats causality as an a priori category of relation. [S2]',
+   P3:'Hume links necessity to custom, whereas Kant treats causality as an a priori category. [S1, S2]'};
+  for(const partId of uncitedPartIds)prose[partId]=partId==='P2'?
+   'Kant presents causal order through the structure of human understanding.':
+   'Hume explains causal necessity through custom and repeated experience.';
+  const draft=parts.map(part=>`PART ${part.id}\n${prose[part.id]}`).join('\n\n');
+  const reviewAll=(_model,{messages})=>{
+   const payload=parsePayload(messages);
+   const reviewParts=payload.parts.map(part=>{
+    const contextIds=(part.contextClaims||[]).map(claim=>claim.claimId);
+    const claimIds=payload.claims.filter(claim=>claim.partId===part.partId).map(claim=>claim.claimId);
+    return {partId:part.partId,status:'answered',answerStatus:'answered',
+     directAnswerClaimIds:[...claimIds,...contextIds],retainedContextClaimIds:contextIds};
+   });
+   return {response:JSON.stringify({parts:reviewParts,claims:payload.claims.map(claim=>({
+    claimId:claim.claimId,status:'answered',sources:claim.sourceIds.map(sourceId=>({
+     sourceId,status:'answered',spanIds:[sourceId+'-Q1']}))}))})};
+  };
+  const refuseRepair=(_model,{messages})=>{
+   const payload=parsePayload(messages);
+   return {response:JSON.stringify({parts:[{partId:payload.parts[0].partId,
+    replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+     text:'A changed but still uncited statement about Hume and custom.'})),additions:[]}]})};
+  };
+  const ai=makeAI([answer(draft),reviewAll,reviewAll,reviewAll,
+   ...uncitedPartIds.map(()=>refuseRepair)],{decorateReview:false});
+  return composeEvidenceAnswer('How do Hume and Kant differ about causal necessity?',
+   [hume,kant],ai,[],{plan,catalog,trace:true});
+ };
+ const peripheral=await runFixture(['P2']);
+ assert.equal(peripheral.outcome,'verified-source-draft');
+ assert.deepEqual(peripheral.trace.sourceRequiredContainment.droppedPartIds,['P2']);
+ assert.equal(peripheral.questionParts.find(part=>part.partId==='P2').answerStatus,'unanswered');
+ assert.match(peripheral.missing,/How does Kant explain causal necessity/);
+ assert.match(peripheral.answer,/Hume connects necessity to custom/);
+ assert.match(peripheral.answer,/whereas Kant treats causality/);
+ assert.doesNotMatch(peripheral.answer,/Kant treats causality as an a priori category of relation/);
+ const majority=await runFixture(['P1','P2']);
+ assert.equal(majority.outcome,'generation-failed');
+ assert.equal(majority.trace.sourceRequiredContainment.disposition,'suppressed-not-strict-minority');
+ assert.deepEqual(majority.trace.sourceRequiredContainment.uncitedPartIds,['P1','P2']);
+ assert.doesNotMatch(majority.answer,/whereas Kant treats causality/,
+  'a cited sibling does not make the uncited majority safe to ship');
+});
+
+test('review-only retry reuses composition and succeeds after a review deadline (batch 22)',async()=>{
+ let reviews=0;
+ const deadline=Object.assign(new Error('deadline'),{code:'inference-deadline-exceeded',stage:'review'});
+ const retryReview=(_model,{messages})=>{
+  reviews++;
+  if(reviews===1)throw deadline;
+  return review([['P1','answered']])(_model,{messages});
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  retryReview,retryReview]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(ai.calls.length,3,'one composition, first review, and one review-only retry');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,mode:'review-only',
+  reason:'inference-deadline-exceeded',applied:true,outcome:'recovered',
+  parts:[{partId:'P1',reason:'inference-deadline-exceeded',applied:true,
+   mode:'review-only',samePacket:true,outcome:'recovered'}]});
+ assert.equal(result.trace.answerRetry,undefined,
+  'a successful review-only retry does not rerun the whole build');
+});
+
+test('a part still uncited after the gate is dropped and named in the containment trace (batch 22)',async()=>{
  // Same batch-10 shape as the B11-4 non-adoption test: the gate's
  // repair restores no citation, so the part ships its retained
  // context prose uncited while S1 sits in its packet. Before B11-5
@@ -4488,12 +4599,10 @@ test('a part still uncited after the gate is named in missing and traced (batch 
   plan:onePartPlan,catalog,trace:true});
  assert.deepEqual(result.trace.uncitedPartsWithPacket,['P1'],
   'the still-uncited part is recorded in the trace');
- assert.equal(result.missing,
-  'Retrieved passages could not be verified as supporting this part of the question: '+
-  'How does Hume explain causal necessity?',
-  'the missing notice names the part with citation-specific wording');
- assert.doesNotMatch(result.missing,/Not fully established/,
-  'the part is not double-listed under the generic entry');
+ assert.equal(result.outcome,'generation-failed');
+ assert.deepEqual(result.trace.sourceRequiredContainment.uncitedPartIds,['P1']);
+ assert.deepEqual(result.trace.sourceRequiredContainment.droppedPartIds,[]);
+ assert.match(result.missing,/How does Hume explain causal necessity/);
 });
 
 test('citation gate leaves general-context parts untouched',async()=>{
@@ -4521,11 +4630,12 @@ test('build-time budget refuses optional gate calls and traces the skip (batch 1
  assert.deepEqual(result.trace.buildTimeBudget,
   {budgetMs:-1,skips:[{stage:'answer-repair',partId:'P1'}]},
   'the refusal is recorded in the trace, distinct from a provider failure');
- assert.equal(result.trace.citationGate?.[0]?.action,'repair-failed',
+ assert.equal(result.trace.citationGate?.[0]?.action,'repair-refused',
   'the gate treats the refusal as a failed repair and downgrades as usual');
- assert.equal(result.questionParts[0].status,'partial');
- assert.match(result.answer,/custom and regular conjunction/,
-  'the build still completes and ships the reviewed prose');
+ assert.equal(result.questionParts[0].status,'unsupported');
+ assert.equal(result.outcome,'generation-failed',
+  'the optional citation repair was refused and the uncited source-required part is contained');
+ assert.doesNotMatch(result.answer,/custom and regular conjunction/);
 });
 
 test('no build-time budget trace appears when optional calls run within budget (batch 11 B11-3)',async()=>{

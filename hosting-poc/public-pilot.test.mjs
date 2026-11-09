@@ -37,6 +37,50 @@ test('batch 15 pilot route preserves subtitles and canonical quotation repair th
  assert.ok(result.trace.finalCoverageReconciliation.length);
 });
 
+test('batch 22 citation gate repairs a realistic uncited source-required part through evidence-v2 pilot',async()=>{
+ const token='batch22-citation-adoption-pilot-fixture-token';
+ let composeCalls=0,reviewCalls=0,repairCalls=0;
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  const payload=JSON.parse(input.messages[1].content);
+  if(system.startsWith('Answer the reader\'s exact question')){
+   composeCalls++;
+   return {response:'PART P1\nThucydides identifies fear of Athens’ growing power as a cause of the war.'};
+  }
+  if(system.startsWith('Patch only the requested claims')){
+   repairCalls++;
+   return {response:JSON.stringify({parts:[{partId:'P1',
+    replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+     text:'Thucydides identifies the growth of Athenian power and the fear it caused in Sparta as the underlying cause of the war. [S1]'})),
+    additions:[]}]})};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   reviewCalls++;
+   if(!payload.claims.length){
+    const contextId=payload.parts[0].contextClaims[0].claimId;
+    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+     directAnswerClaimIds:[contextId],retainedContextClaimIds:[contextId]}],claims:[]})};
+   }
+   return depthReview(payload);
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What underlying cause of war does Thucydides identify?',answerVariant:'with-review',trace:true,
+  sources:[pilot.fixture.body.sources[0]],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What underlying cause of war does Thucydides identify?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ assert.match(result.answer,/fear it caused in Sparta.*\[S1\]/);
+ assert.equal(result.questionParts[0].sourceRequired,true);
+ assert.ok(result.questionParts[0].evidenceIds.includes('S1'));
+ assert.equal(result.trace.citationGateSummary.firings,1);
+ assert.equal(result.trace.citationGateSummary.adoptions,1);
+ assert.equal(composeCalls,1);assert.equal(repairCalls,1);assert.equal(reviewCalls,2);
+});
+
 test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every guard exists',async()=>{
  const off=await handleRequest(new Request(HOST+'/api/pilot-status',{
    headers:{Origin:'https://jsynon.github.io'}
@@ -2308,7 +2352,8 @@ test('evidence-v2 diagnostics separate provider wait, parsing, composition and c
  assert.ok(Array.isArray(timings)&&timings.length>0);
  assert.ok(timings.every(item=>Number.isFinite(item.startOffsetMs)&&
   Number.isFinite(item.endOffsetMs)&&Number.isFinite(item.providerWaitMs)&&
-  Number.isFinite(item.parseMs)&&item.stageWallMs>=item.providerWaitMs));
+  Number.isFinite(item.parseMs)&&item.stageWallMs>=item.providerWaitMs),
+  JSON.stringify(timings));
  const review=timings.filter(item=>item.stage==='review');
  assert.equal(review.length,2,'each planned part receives its existing review call');
  assert.equal(maxConcurrentReviews,2,'the test confirms the review calls overlap');
