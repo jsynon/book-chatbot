@@ -71,6 +71,8 @@ test('Batch 21 invalid clause offsets produce an unresolved partial decision',()
  assert.equal(result.decisions.length,1);
  assert.equal(result.decisions[0].status,'partial');
  assert.equal(result.decisions[0].unresolved,true);
+ assert.equal(result.decisions[0].text,claim,
+  'unique verbatim text remains available for diagnosis while the decision stays unresolved');
  assert.ok(result.warnings.includes('clause-range-invalid'));
 });
 
@@ -1010,7 +1012,7 @@ test('an unresolved invalid clause range demotes its source decision through ful
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
    directAnswerClaimIds:[current.claimId]}],claims:[{claimId:current.claimId,status:'answered',sources:[{
     sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
-   }],clauses:[{start:0,end:claim.length+12,status:'answered',issueCode:'none',
+   }],clauses:[{start:0,end:claim.length+12,text:claim,status:'answered',issueCode:'none',
     sources:[{sourceId:'S1',spanIds:[spanId]}]}]}]})};
  }]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
@@ -1022,6 +1024,10 @@ test('an unresolved invalid clause range demotes its source decision through ful
  assert.equal(decision.sourceStatus,'partial');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.reason==='claim-clause-not-supported'));
+ const fit=result.trace.claimSpanFit.clauses.find(issue=>issue.claimId===decision.claimId);
+ assert.equal(fit.coverage.measurement,'measured');
+ assert.ok(fit.coverage.requiredTerms.length>0);
+ assert.ok(result.trace.claimSpanFit.measurableClauseCount>=1);
 });
 
 test('claim-level source review does not require optional clause segmentation',async()=>{
@@ -4318,6 +4324,8 @@ test('citation gate refusal contains a single uncited source-required part',asyn
  assert.equal(ai.calls.length,3,'compose, review, and exactly one targeted gate repair attempt');
  assert.equal(result.trace.citationGate[0].action,'repair-refused');
  assert.equal(result.trace.citationGate[0].repairFailure.failureStep,'citation-candidate-check');
+ assert.deepEqual(result.trace.citationGate[0].repairFailure.candidateCheck,
+  {linkedSourceCount:1,candidateCitationCount:0,missingLinkedSourceIds:['S1']});
  assert.equal(result.outcome,'generation-failed',
   'one source-required part is not a strict minority and cannot ship uncited');
  assert.equal(result.trace.sourceRequiredContainment.disposition,'suppressed-not-strict-minority');
