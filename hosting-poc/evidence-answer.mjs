@@ -935,6 +935,10 @@ const REVIEW_CLAUSE_ISSUES=new Set([
 function normalizedClauseSurface(value){
   return String(value||'').normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu,' ').trim();
 }
+function traceableVerbatimClauseText(normalizedClaim,text){
+  const normalized=normalizedClauseSurface(text);
+  return normalized&&normalizedClaim.split(normalized).length-1===1?String(text).trim().slice(0,600):'';
+}
 export function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMaps){
   if(!Array.isArray(raw)||!raw.length)return {decisions:[],warnings:[]};
   const warnings=[],decisions=[];
@@ -950,7 +954,11 @@ export function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMap
         !(item.end>0&&item.end<claim.length&&/[\uDC00-\uDFFF]/u.test(claim[item.end])&&/[\uD800-\uDBFF]/u.test(claim[item.end-1]));
       if(!rangeValid){
         warnings.push('clause-range-invalid');
-        decisions.push({text:'',status:'partial',issueCode:'other',sources:[],unresolved:true});
+        // Keep a unique verbatim clause for observational coverage analysis,
+        // while the unresolved flag continues to force the same partial
+        // disposition. Never trust text that is absent or ambiguous in claim.
+        const traceableText=traceableVerbatimClauseText(normalizedClaim,text);
+        decisions.push({text:traceableText,status:'partial',issueCode:'other',sources:[],unresolved:true});
         continue;
       }
       const exactSlice=claim.slice(item.start,item.end).trim();
@@ -962,7 +970,8 @@ export function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMap
       const textMatches=!item.text||normalizedClauseSurface(item.text)===normalizedClauseSurface(exactSlice);
       if(!boundaryValid||!textMatches){
         warnings.push(!boundaryValid?'clause-range-not-word-boundary':'clause-offset-text-mismatch');
-        decisions.push({text:'',status:'partial',issueCode:'other',sources:[],unresolved:true});
+        decisions.push({text:traceableVerbatimClauseText(normalizedClaim,text),status:'partial',
+          issueCode:'other',sources:[],unresolved:true});
         continue;
       }
     }
@@ -1327,9 +1336,11 @@ function clauseContentCoverage(clauseText,spans,boundSpanIds=[]){
       matchedTerms:matched,requiredTerms:[...required],missingCriticalTerms:missingCritical,
       lexicalCoverage:required.size>0&&ratio>=0.65&&missingCritical.length===0};
   }).sort((a,b)=>b.coverageRatio-a.coverageRatio||a.spanId.localeCompare(b.spanId));
-  return {method:'normalized-content-term-coverage-v1',threshold:0.65,
+  return {method:'normalized-content-term-coverage-v1',measurement:'measured',threshold:0.65,
     requiredTerms:[...required],criticalTerms:[...critical],
     boundSpanIds:[...bound],boundSpanCovered:ranked.some(span=>span.bound&&span.lexicalCoverage),
+    composerPacketSpanIds:ranked.filter(span=>span.packet==='composer'&&String(span.spanId||'')).map(span=>span.spanId),
+    reviewPacketSpanIds:ranked.filter(span=>span.packet==='review'&&String(span.spanId||'')).map(span=>span.spanId),
     composerSpanIds:ranked.filter(span=>span.packet==='composer'&&span.lexicalCoverage)
       .map(span=>span.spanId),reviewSpanIds:ranked.filter(span=>span.packet==='review'&&span.lexicalCoverage)
       .map(span=>span.spanId),
@@ -1684,8 +1695,13 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             .filter(span=>span.sourceId===sourceId);
           const reviewSpans=[...(reviewSpanMaps.get(part.id)?.get(sourceId)?.values?.()||[])]
             .map(span=>({...span,sourceId,packet:'review'}));
-          const packetCoverage=clauseContentCoverage(unsupportedClause.text,
-            [...composerSpans,...reviewSpans],boundSpanIds);
+          const packetCoverage=unsupportedClause.text?
+            clauseContentCoverage(unsupportedClause.text,[...composerSpans,...reviewSpans],boundSpanIds):
+            {method:'normalized-content-term-coverage-v1',measurement:'unavailable-clause-text',
+              reason:unsupportedClause.unresolved?'unresolved-clause-offsets':'clause-text-missing',
+              composerPacketSpanIds:composerSpans.map(span=>span.spanId),
+              reviewPacketSpanIds:reviewSpans.map(span=>span.spanId),
+              boundSpanIds};
           sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:'claim-clause-not-supported',issueCode:unsupportedClause.issueCode,
@@ -3803,13 +3819,19 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         const clauseCoverage=rejectedClauses.map(issue=>({partId:issue.partId,
           claimId:issue.claimId,sourceId:issue.sourceId,
           coverage:issue.packetCoverage||null}));
+        const measurableClauses=rejectedClauses.filter(issue=>
+          issue.packetCoverage?.measurement==='measured');
         trace.claimSpanFit={method:'normalized-content-term-coverage-v1',threshold:0.65,
           rejectedClauseCount:rejectedClauses.length,
-          composerPacketCovered:rejectedClauses.filter(issue=>(issue.packetCoverage?.composerSpanIds||[]).length).length,
-          reviewPacketOnlyCovered:rejectedClauses.filter(issue=>
+          measurableClauseCount:measurableClauses.length,
+          unmeasurableClauseCount:rejectedClauses.length-measurableClauses.length,
+          composerPacketVisible:rejectedClauses.filter(issue=>(issue.packetCoverage?.composerPacketSpanIds||[]).length).length,
+          reviewPacketVisible:rejectedClauses.filter(issue=>(issue.packetCoverage?.reviewPacketSpanIds||[]).length).length,
+          composerPacketCovered:measurableClauses.filter(issue=>(issue.packetCoverage?.composerSpanIds||[]).length).length,
+          reviewPacketOnlyCovered:measurableClauses.filter(issue=>
             !(issue.packetCoverage?.composerSpanIds||[]).length&&
             (issue.packetCoverage?.reviewSpanIds||[]).length).length,
-          neitherPacketCovered:rejectedClauses.filter(issue=>
+          neitherPacketCovered:measurableClauses.filter(issue=>
             !(issue.packetCoverage?.composerSpanIds||[]).length&&
             !(issue.packetCoverage?.reviewSpanIds||[]).length).length,
           clauses:clauseCoverage};
@@ -3837,7 +3859,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     }
     trace.claimSpanFit||={method:'normalized-content-term-coverage-v1',threshold:0.65,
       rejectedClauseCount:0,composerPacketCovered:0,reviewPacketOnlyCovered:0,
-      neitherPacketCovered:0,clauses:[]};
+      neitherPacketCovered:0,measurableClauseCount:0,unmeasurableClauseCount:0,
+      composerPacketVisible:0,reviewPacketVisible:0,clauses:[]};
     // Graceful degradation when review fails: the validated draft still
     // carries citations, so link its claims to exact source spans
     // deterministically where the overlap is verifiable. The answer keeps
@@ -4149,8 +4172,16 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
            !repairAnswerChanged([{partId:planPart.id,answers:item.answers}],repairedChecked.parts))
           throw new ModelFormatError('answer-repair','Gate repair produced no usable changed answer.','answer-repair-invalid');
         repairStep='citation-candidate-check';
-        if(validateCandidate&&!validateCandidate(candidate))
-          throw new ModelFormatError('answer-repair','Gate repair did not resolve the targeted violation.','answer-repair-invalid');
+        if(validateCandidate){
+          const candidateCheck=validateCandidate(candidate);
+          if(candidateCheck===false||candidateCheck?.valid===false){
+            const error=new ModelFormatError('answer-repair',
+              'Gate repair did not resolve the targeted violation.','answer-repair-invalid');
+            if(candidateCheck&&typeof candidateCheck==='object'&&candidateCheck.diagnostics)
+              error.citationGateCandidateCheck=candidateCheck.diagnostics;
+            throw error;
+          }
+        }
         return candidate;
       }catch(error){
         if(error&&typeof error==='object'){
@@ -4264,7 +4295,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             }),
             validateCandidate:candidate=>{
               const repairedCitedIds=new Set(citationIds(renderAnswerParagraphs(candidate.answers)));
-              return linkedIds.some(id=>repairedCitedIds.has(id));
+              const missingLinkedSourceIds=linkedIds.filter(id=>!repairedCitedIds.has(id));
+              return {valid:missingLinkedSourceIds.length===0,diagnostics:{
+                linkedSourceCount:linkedIds.length,candidateCitationCount:repairedCitedIds.size,
+                missingLinkedSourceIds}};
             }});
         }catch(error){
           const expectedRefusal=error instanceof ModelFormatError||error?.code==='build-time-budget';
@@ -4277,7 +4311,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               {code:String(error.failureCode||error.code).slice(0,80)}:{}),
             failureStep:String(error?.citationGateFailureStep||'unknown').slice(0,80),
             message,inputShape:error?.citationGateInputShape||{partId:planPart.id},
-            ...(error?.citationGateResponseShape?{responseShape:error.citationGateResponseShape}:{})};
+            ...(error?.citationGateResponseShape?{responseShape:error.citationGateResponseShape}:{}),
+            ...(error?.citationGateCandidateCheck?
+              {candidateCheck:error.citationGateCandidateCheck}:{})};
           entry.refusal={stage:'repair',...(error?.failureCode||error?.code?
             {code:String(error.failureCode||error.code).slice(0,80)}:{}),
             reason:expectedRefusal?'invalid-repair-candidate':'repair-threw'};
