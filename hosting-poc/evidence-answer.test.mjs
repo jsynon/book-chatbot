@@ -63,16 +63,28 @@ test('Batch 21 clause offsets that split words remain unresolved and partial',()
  assert.ok(result.warnings.includes('clause-range-not-word-boundary'));
 });
 
-test('Batch 21 invalid clause offsets produce an unresolved partial decision',()=>{
+test('Batch 23 recovers invalid clause offsets only from a unique word-bounded verbatim clause',()=>{
  const claim='Hume explains that custom shapes expectation.';
  const result=normalizeClaimClauseDecisions([{start:0,end:claim.length+20,text:claim,
   status:'answered',issueCode:'none',sources:[{sourceId:'S1',spanIds:['S1-Q1']}]}],
   claim,new Set(['S1']),new Map([['S1',new Map([['S1-Q1',{spanId:'S1-Q1'}]])]]));
  assert.equal(result.decisions.length,1);
+ assert.equal(result.decisions[0].status,'answered');
+ assert.equal(result.decisions[0].unresolved,undefined);
+ assert.equal(result.decisions[0].text,claim);
+ assert.deepEqual({start:result.decisions[0].start,end:result.decisions[0].end},
+  {start:0,end:claim.length});
+ assert.equal(result.decisions[0].offsetRecovery,'unique-verbatim-text');
+ assert.ok(result.warnings.includes('clause-range-recovered-from-unique-text'));
+});
+
+test('Batch 23 leaves ambiguous invalid clause offsets unresolved',()=>{
+ const claim='custom shapes expectation, while custom guides inference.';
+ const result=normalizeClaimClauseDecisions([{start:0,end:claim.length+3,text:'custom',
+  status:'answered',issueCode:'none',sources:[{sourceId:'S1',spanIds:['S1-Q1']}]}],
+  claim,new Set(['S1']),new Map([['S1',new Map([['S1-Q1',{spanId:'S1-Q1'}]])]]));
  assert.equal(result.decisions[0].status,'partial');
  assert.equal(result.decisions[0].unresolved,true);
- assert.equal(result.decisions[0].text,claim,
-  'unique verbatim text remains available for diagnosis while the decision stays unresolved');
  assert.ok(result.warnings.includes('clause-range-invalid'));
 });
 
@@ -978,6 +990,132 @@ test('clause review narrows a partially supported causal claim and records each 
   item.claimId==='P1-C1'&&item.supportedTextApplied===true));
 });
 
+test('deterministic clause salvage retains only an independently reviewed supported clause',async()=>{
+ const broad='Custom shapes expectation through repeated experience, and reason alone establishes necessary connection.';
+ const supported='Custom shapes expectation through repeated experience';
+ const rejected='reason alone establishes necessary connection.';
+ const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0];
+  const spanId=claim.sourceEvidence[0].spanIds[0];
+  const rejectedStart=claim.text.indexOf(rejected);
+  return {response:JSON.stringify({
+   parts:[{partId:'P1',status:'answered',answerStatus:'answered',repairable:false,
+    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'partial',sources:[{sourceId:'S1',status:'answered',
+    spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''}],clauses:[
+     {start:0,end:supported.length,text:supported,status:'answered',issueCode:'none',
+      sources:[{sourceId:'S1',spanIds:[spanId]}]},
+     {start:rejectedStart,end:claim.text.length,text:rejected,status:'partial',issueCode:'scope',
+      sources:[{sourceId:'S1',spanIds:[]}]}
+    ]}]
+  })};
+ }]);
+ const result=await composeEvidenceAnswer('How does custom shape expectation?',[hume],ai,[],{
+  catalog,plan:onePartPlan,trace:true
+ });
+ assert.equal(ai.calls.length,2,'salvage reuses the existing answer and review calls');
+ assert.match(result.answer,/Custom shapes expectation through repeated experience\. \[S1\]/);
+ assert.doesNotMatch(result.answer,/reason alone establishes necessary connection/);
+ assert.equal(result.evidenceMap.length,1);
+ assert.equal(result.evidenceMap[0].point,'Custom shapes expectation through repeated experience.');
+ const salvage=result.trace.reviewContract.reviewDecisions.find(item=>
+  item.claimId==='P1-C1'&&item.supportedTextMethod==='reviewed-clause-extraction');
+ assert.equal(salvage.supportedTextApplied,true);
+ assert.equal(salvage.salvagedClauseText,'Custom shapes expectation through repeated experience.');
+ assert.deepEqual(salvage.salvagedSpanIds,[result.evidenceMap[0].id+'-Q1']);
+ assert.deepEqual(result.trace.clauseSalvage,{method:'reviewed-clause-extraction',adoptions:1,
+  adoptedClaims:[{partId:'P1',claimId:'P1-C1',sourceId:'S1',spanIds:salvage.salvagedSpanIds}]});
+ const rejectedIssue=result.trace.reviewContract.supportIssues.find(issue=>
+  issue.reason==='claim-clause-not-supported');
+ assert.equal(rejectedIssue.disposition,'narrowed-claim-retained');
+ assert.equal(result.trace.claimSpanFit.rejectedClauseCount,1,
+  'salvage keeps the rejected clause visible to the claim-span diagnostic');
+});
+
+test('deterministic clause salvage refuses contrastive or dependent clause boundaries',async()=>{
+ const broad='Custom shapes expectation through repeated experience, because reason alone establishes necessary connection.';
+ const supported='Custom shapes expectation through repeated experience';
+ const rejected='reason alone establishes necessary connection.';
+ const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0],spanId=claim.sourceEvidence[0].spanIds[0];
+  const rejectedStart=claim.text.indexOf(rejected);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+   directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',sources:[{
+    sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable'
+   }],clauses:[
+    {start:0,end:supported.length,text:supported,status:'answered',issueCode:'none',
+     sources:[{sourceId:'S1',spanIds:[spanId]}]},
+    {start:rejectedStart,end:claim.text.length,text:rejected,status:'partial',issueCode:'relation',
+     sources:[{sourceId:'S1',spanIds:[]}]}
+   ]}]})};
+ }]);
+ const result=await composeEvidenceAnswer('How does custom shape expectation?',[hume],ai,[],{
+  catalog,plan:onePartPlan,trace:true
+ });
+ assert.doesNotMatch(result.answer,/Custom shapes expectation through repeated experience/,
+  'a dependent “because” construction is not rewritten as an independent statement');
+ assert.equal(result.trace.clauseSalvage.adoptions,0);
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='claim-clause-not-supported'));
+});
+
+test('clause salvage stays fail-closed for multiple sources, attribution conflict, and no supported clause',async()=>{
+ const supported='Custom shapes expectation through repeated experience';
+ const rejected='reason alone establishes necessary connection.';
+ const run=async({claim,sources,clauseStatuses=['answered','partial'],sourceOverrides={},
+  clauseSpanOverrides={}})=>{
+  const sourceIds=sources.map(source=>source.id);
+  const ai=makeAI([answer(`PART P1\n${claim} [${sourceIds.join(', ')}]`),(_model,{messages})=>{
+   const payload=parsePayload(messages),answerClaim=payload.claims[0];
+   const spanFor=sourceId=>answerClaim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+   const rejectedStart=answerClaim.text.indexOf(rejected);
+   const decisions=sourceIds.map(sourceId=>({sourceId,status:'answered',spanIds:[spanFor(sourceId)],
+    attributionStatus:sourceOverrides[sourceId]?.attributionStatus||'not_applicable',
+    ...(sourceOverrides[sourceId]?.attributedSpeaker?
+     {attributedSpeaker:sourceOverrides[sourceId].attributedSpeaker}:{}),
+    ...(sourceOverrides[sourceId]?.subjectAttributionStatus?
+     {subjectAttributionStatus:sourceOverrides[sourceId].subjectAttributionStatus,
+      attributedSubject:sourceOverrides[sourceId].attributedSubject}: {})}));
+   const clauseSources=status=>sourceIds.map(sourceId=>({sourceId,status,
+    spanIds:status==='answered'?[clauseSpanOverrides[sourceId]||spanFor(sourceId)]:[]}));
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[answerClaim.claimId]}],claims:[{claimId:answerClaim.claimId,
+    status:'partial',sources:decisions,clauses:[
+     {start:0,end:supported.length,text:supported,status:clauseStatuses[0],issueCode:
+      clauseStatuses[0]==='answered'?'none':'scope',sources:clauseSources(clauseStatuses[0])},
+     {start:rejectedStart,end:answerClaim.text.length,text:rejected,status:clauseStatuses[1],
+      issueCode:clauseStatuses[1]==='answered'?'none':'scope',sources:clauseSources(clauseStatuses[1])}
+    ]}]})};
+  }]);
+  const plan=sources.length===1?onePartPlan:{version:'reader-evidence-v2',intent:'compare',
+   sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+    {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+   parts:[{id:'P1',question:'How do these sources differ?',sourceBookIds:['35','40'],
+    candidateSourceIds:sourceIds}]};
+  return composeEvidenceAnswer('How do these sources differ?',sources,ai,[],{catalog,plan,trace:true});
+ };
+ const multipleSources=await run({claim:`${supported}, and ${rejected}`,
+  sources:[hume,kant]});
+ assert.doesNotMatch(multipleSources.answer,/Custom shapes expectation through repeated experience/);
+ assert.equal(multipleSources.trace.clauseSalvage.adoptions,0);
+
+ const attributionConflict=await run({claim:`Hume argues that custom shapes expectation through repeated experience, and ${rejected}`,
+  sources:[hume],sourceOverrides:{S1:{attributionStatus:'conflict',attributedSpeaker:'Kant',
+   subjectAttributionStatus:'supported',attributedSubject:'Hume'}}});
+ assert.doesNotMatch(attributionConflict.answer,/Hume argues that custom shapes expectation/);
+ assert.equal(attributionConflict.trace.clauseSalvage.adoptions,0);
+
+ const foreignSpan=await run({claim:`${supported}, and ${rejected}`,sources:[hume],
+  clauseSpanOverrides:{S1:'S2-Q1'}});
+ assert.doesNotMatch(foreignSpan.answer,/Custom shapes expectation through repeated experience/);
+ assert.equal(foreignSpan.trace.clauseSalvage.adoptions,0);
+
+ const noSupportedClause=await run({claim:`${supported}, and ${rejected}`,sources:[hume],
+  clauseStatuses:['partial','partial']});
+ assert.doesNotMatch(noSupportedClause.answer,/Custom shapes expectation through repeated experience/);
+ assert.equal(noSupportedClause.trace.clauseSalvage.adoptions,0);
+});
+
 test('an unsupported clause cannot pass on an answered claim-level verdict',async()=>{
  const broad='Custom leads us to infer one event from another, and reason alone establishes necessary connection.';
  const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
@@ -1006,13 +1144,16 @@ test('an unsupported clause cannot pass on an answered claim-level verdict',asyn
 
 test('an unresolved invalid clause range demotes its source decision through full review',async()=>{
  const claim='Custom shapes the mind’s inference from one event to another, and reason alone establishes necessary connection.';
+ const splitAt=claim.indexOf('Custom')+2;
+ const malformedClause=claim.slice(splitAt,claim.indexOf(' inference')+5);
  const ai=makeAI([answer(`PART P1\n${claim} [S1]`),(_model,{messages})=>{
   const payload=parsePayload(messages),current=payload.claims[0];
   const spanId=current.sourceEvidence[0].spanIds[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
    directAnswerClaimIds:[current.claimId]}],claims:[{claimId:current.claimId,status:'answered',sources:[{
     sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
-   }],clauses:[{start:0,end:claim.length+12,text:claim,status:'answered',issueCode:'none',
+   }],clauses:[{start:splitAt,end:claim.indexOf(' inference')+5,text:malformedClause,
+    status:'answered',issueCode:'none',
     sources:[{sourceId:'S1',spanIds:[spanId]}]}]}]})};
  }]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
