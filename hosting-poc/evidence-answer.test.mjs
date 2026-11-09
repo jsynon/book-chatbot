@@ -753,6 +753,29 @@ test('source-grouped review makes each cited source decision explicit and keeps 
  assert.equal(result.evidenceMap.length,0);
  assert.equal(ai.calls.length,2,'missing repairability keeps the unsupported source side fail-closed without a repair round trip');
 });
+test('compatible duplicate same-source review entries merge spans while conflicting entries fail closed',async()=>{
+ const run=async(second)=>{
+  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+   (_model,{messages})=>{
+    const payload=parsePayload(messages),claim=payload.claims[0],spanId=claim.sourceEvidence[0].spanIds[0];
+    const first={sourceId:'S1',status:'answered',spanIds:[spanId],supportBoundary:'custom grounds expectation'};
+    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+     claimId:claim.claimId,status:'answered',sources:[first,second(spanId)]}]})};
+   }]);
+  const result=await composeEvidenceAnswer('How does Hume explain necessity?',[{...hume,candidatePartIds:['P1']}],
+   ai,[],{plan:onePartPlan,catalog,trace:true});
+  return result;
+ };
+ const compatible=await run(spanId=>({sourceId:'S1',status:'answered',spanIds:[spanId],
+  supportBoundary:'repeated conjunction guides inference'}));
+ assert.equal(compatible.coverage,'full');
+ assert.ok(compatible.trace.reviewContract.warnings.some(item=>
+  item.code==='duplicate-claim-source-merged'&&item.sourceId==='S1'));
+ assert.ok(!compatible.trace.reviewContract.issues.includes('duplicate-claim-source'));
+ const conflicting=await run(spanId=>({sourceId:'S1',status:'partial',spanIds:[]}));
+ assert.notEqual(conflicting.coverage,'full');
+ assert.ok(conflicting.trace.reviewContract.issues.includes('duplicate-claim-source'));
+});
 test('a supported source in the same planned group keeps a claim when an alternate citation is weak',async()=>{
  const title='The Consolation of Philosophy — Boethius';
  const sources=[
