@@ -1626,14 +1626,13 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       for(const sourceDecision of decision.sources){
         const sourceId=String(sourceDecision?.sourceId||'');
         if(!citedIds.has(sourceId)){issues.push('unknown-claim-source');continue;}
-        if(sourceDecisions.has(sourceId)){issues.push('duplicate-claim-source');continue;}
         if((sourceDecision?.status!==undefined&&!hasRecognizedStatus(sourceDecision.status))||
           !Array.isArray(sourceDecision?.spanIds)){
           issues.push('invalid-claim-source-decision');continue;
         }
         const sourceStatus=sourceDecision.status===undefined?
           (sourceDecision.spanIds.length?'answered':'partial'):normalizeStatus(sourceDecision.status);
-        sourceDecisions.set(sourceId,{status:sourceStatus,spanIds:sourceDecision.spanIds,
+        const normalizedDecision={status:sourceStatus,spanIds:[...new Set(sourceDecision.spanIds)],
           attributionStatus:['supported','conflict','unclear','not_applicable'].includes(sourceDecision.attributionStatus)?sourceDecision.attributionStatus:'missing',
           attributedSpeaker:typeof sourceDecision.attributedSpeaker==='string'?sourceDecision.attributedSpeaker.trim().slice(0,120):'',
           subjectAttributionStatus:['supported','conflict','unclear','not_applicable'].includes(sourceDecision.subjectAttributionStatus)?sourceDecision.subjectAttributionStatus:'missing',
@@ -1642,7 +1641,23 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             {evidenceRole:sourceDecision.evidenceRole}:{}),
           ...(typeof sourceDecision.supportBoundary==='string'&&sourceDecision.supportBoundary.trim()?
             {supportBoundary:sourceDecision.supportBoundary.trim().slice(0,180)}:{}),
-          legacyMissingSpan:sourceDecision.legacyMissingSpan===true});
+          legacyMissingSpan:sourceDecision.legacyMissingSpan===true};
+        const existing=sourceDecisions.get(sourceId);
+        if(!existing){sourceDecisions.set(sourceId,normalizedDecision);continue;}
+        const sameDecision=['status','attributionStatus','attributedSpeaker',
+          'subjectAttributionStatus','attributedSubject','evidenceRole','legacyMissingSpan']
+          .every(key=>(existing[key]??'')===(normalizedDecision[key]??''));
+        if(!sameDecision){issues.push('duplicate-claim-source');continue;}
+        const spanIdsAdded=normalizedDecision.spanIds.filter(id=>!existing.spanIds.includes(id)).length;
+        existing.spanIds=[...new Set([...existing.spanIds,...normalizedDecision.spanIds])];
+        const boundaries=[...new Set([existing.supportBoundary,normalizedDecision.supportBoundary]
+          .filter(Boolean))];
+        if(boundaries.length){
+          const mergedBoundary=boundaries.join(' | ').slice(0,180);
+          if(mergedBoundary)existing.supportBoundary=mergedBoundary;
+        }
+        warnings.push({partId:part.id,claimId:answer.claimId,code:'duplicate-claim-source-merged',
+          sourceId,spanIdsAdded});
       }
       const spanIdsBySource=new Map([...sourceDecisions].map(([sourceId,sourceDecision])=>
         [sourceId,sourceDecision.spanIds]));
