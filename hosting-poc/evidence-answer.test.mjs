@@ -299,6 +299,21 @@ function makeAI(responses,{decorateReview=true,decorateClauses=true,decorateSubj
    return result;}};
 }
 
+// Batch 24 (B24-1): the zero-accept rescue re-review adds one call
+// for a source-required part whose review accepted nothing. Fixtures
+// written before batch 24 that queue a downstream response (answer
+// repair, gate repair, re-review) insert this stub after the review
+// response so the rescue rejects every requested pair and the rest of
+// the sequence runs exactly as before.
+function rescueRejection(){
+ return (_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:(payload.decisions||[]).map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
+   fragment:item.spans?.[0]?.text||'no support'}))})};
+ };
+}
+
 test('selected-books hypothetical answers recover author groups from verified source titles when planning was skipped',async()=>{
  const question='What would Nietzsche think about Kierkegaard’s account of faith?';
  const sources=[
@@ -1159,7 +1174,10 @@ test('an unsupported clause cannot pass on an answered claim-level verdict',asyn
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   catalog,plan:onePartPlan,trace:true
  });
- assert.equal(ai.calls.length,2);
+ // Batch 24 (B24-1): the clause demotion leaves the part at zero
+ // accepted claims, so the rescue re-review adds one call (its
+ // verdicts cannot revive the claim: the clause gate still applies).
+ assert.equal(ai.calls.length,3);
  assert.doesNotMatch(result.answer,/Custom leads us to infer|reason alone establishes/);
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.reason==='claim-clause-not-supported'&&issue.issueCode==='scope'));
@@ -1527,7 +1545,7 @@ test('claim review rejects a compound sentence when its quote supports only one 
    parts:[{id:'P1',question:'What did Nietzsche say about the church?',sourceBookIds:['239']}],
    queries:['Nietzsche church criticism']},trace:true
  });
- assert.equal(ai.calls.length,2,'a compound claim rejection without repairability does not add a call');
+ assert.equal(ai.calls.length,3,'a compound claim rejection without repairability adds no repair call (the third call is the batch 24 rescue re-review, which cannot revive a clause-demoted claim)');
  assert.equal(result.coverage,'none');
  assert.equal(result.outcome,'insufficient-evidence');
  assert.equal(result.evidenceMap.length,0);
@@ -1980,6 +1998,9 @@ test('an unsupported nominated answer is repaired once and independently re-revi
     repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
   },
+  // Batch 24 (B24-1): the zero-accept rescue runs before the answer
+  // repair and rejects every pair, leaving the repair flow untouched.
+  rescueRejection(),
   (_model,{messages})=>{
    const payload=parsePayload(messages),part=payload.parts[0];
    assert.deepEqual(part.repair.replaceClaimIds,['P1-C1']);
@@ -2005,7 +2026,7 @@ test('an unsupported nominated answer is repaired once and independently re-revi
  assert.equal(result.trace.answerRepair.applied,true);
  assert.deepEqual(result.trace.answerRepair.partIds,['P1']);
  assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
- assert.equal(result.usage.calls,4,'repair adds one answer rewrite and one independent review');
+ assert.equal(result.usage.calls,5,'repair adds one answer rewrite and one independent review, plus the batch 24 rescue call');
 });
 
 test('claim-scoped repair replaces only rejected claims and preserves accepted neighboring claims verbatim',async()=>{
@@ -2100,7 +2121,7 @@ test('an unsupported direct claim without an explicit repairable finding skips a
   }],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,2,'a repairability-negative review ends after compose and review');
+ assert.equal(ai.calls.length,3,'a repairability-negative review ends after compose, review, and the batch 24 rescue re-review');
  assert.equal(result.trace.answerRepair.attempted,false);
  assert.equal(result.trace.answerRepair.reason,'reviewer-did-not-mark-repairable');
  assert.equal(result.questionParts[0].status,'unsupported');
@@ -2115,6 +2136,7 @@ test('an answer repair that leaves text and citations unchanged skips independen
     repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
   },
+  rescueRejection(),
   (_model,{messages})=>{
    const payload=parsePayload(messages);
    return {response:JSON.stringify({parts:[{partId:'P1',replacements:[{
@@ -2122,7 +2144,7 @@ test('an answer repair that leaves text and citations unchanged skips independen
   }],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,3,'an unchanged patch avoids the second review inference');
+ assert.equal(ai.calls.length,4,'an unchanged patch avoids the second review inference (compose, review, rescue, repair)');
  assert.equal(result.trace.answerRepair.reason,'answer-repair-no-material-change');
  assert.equal(result.trace.stages.some(stage=>stage.stage==='answer-re-review'),false);
  assert.equal(result.questionParts[0].status,'unsupported');
@@ -2176,7 +2198,7 @@ test('malformed answer repair falls back to the original fail-closed review resu
    return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
     repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
-  },answer('{not-json}')],{decorateReview:false});
+  },rescueRejection(),answer('{not-json}')],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.questionParts[0].status,'unsupported');
@@ -2184,7 +2206,7 @@ test('malformed answer repair falls back to the original fail-closed review resu
  assert.doesNotMatch(result.answer,/directly observed power/);
  assert.equal(result.trace.answerRepair.applied,false);
  assert.equal(result.trace.answerRepair.reason,'model-output-invalid-format');
- assert.equal(result.usage.calls,3,'invalid repair does not proceed to re-review');
+ assert.equal(result.usage.calls,4,'invalid repair does not proceed to re-review (the extra call is the batch 24 rescue)');
 });
 
 test('answer repair recovers unescaped quotation marks before the existing validation and re-review',async()=>{
@@ -2195,6 +2217,7 @@ test('answer repair recovers unescaped quotation marks before the existing valid
     repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
     sources:[{sourceId:'S1',status:'partial',spanIds:[] }]}]})};
   },
+  rescueRejection(),
   (_model,{messages})=>{
    const payload=JSON.parse(messages[1].content),claimId=payload.parts[0].repair.replaceClaimIds[0];
    return {response:`{"parts":[{"partId":"P1","replacements":[{"claimId":"${claimId}","text":"Hume links the idea of "necessity" to repeated conjunction and custom. [S1]"}],"additions":[]}]}`};
@@ -2217,7 +2240,7 @@ test('answer repair recovers unescaped quotation marks before the existing valid
  assert.equal(result.trace.answerRepair.applied,true);
  assert.equal(result.trace.answerRepair.responseRecovery.code,'unescaped-inner-quotes');
  assert.match(result.answer,/idea of "necessity" to repeated conjunction and custom/);
- assert.equal(result.usage.calls,4,'syntax recovery uses the existing repair and re-review calls');
+ assert.equal(result.usage.calls,5,'syntax recovery uses the existing repair and re-review calls, plus the batch 24 rescue call');
  assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
 });
 
@@ -2234,6 +2257,7 @@ test('an answer repair that patches an unrequested claim fails closed without re
     repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
   },
+  rescueRejection(),
   ()=>({response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C99',
    text:'An unrequested claim is rewritten. [S1]'}],additions:[]}]})})],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
@@ -2241,7 +2265,7 @@ test('an answer repair that patches an unrequested claim fails closed without re
  assert.equal(result.trace.answerRepair.applied,false);
  assert.equal(result.trace.answerRepair.reason,'answer-repair-invalid');
  assert.equal(result.questionParts[0].status,'unsupported');
- assert.equal(result.usage.calls,3);
+ assert.equal(result.usage.calls,4);
  assert.equal(result.trace.stages.some(stage=>stage.stage==='answer-re-review'),false);
 });
 
@@ -2714,7 +2738,7 @@ test('a broad hypothetical conclusion stays partial even when both premise sourc
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,4,'broad unsupported synthesis remains partial without a repairability signal');
+ assert.equal(ai.calls.length,5,'broad unsupported synthesis remains partial without a repairability signal (the fifth call is the batch 24 rescue for the zero-accept synthesis part)');
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.questionParts[1].status,'supported');
@@ -2795,7 +2819,7 @@ test('review sees a bounded per-source packet and cannot select an unsent full-s
   issue.partId==='P1'&&issue.reason==='missing-claim-source-span'));
  assert.equal(omitted.result.coverage,'none',
   'a valid full-source span cannot be selected when it was not sent to this part review');
- assert.equal(omitted.ai.calls.length,2,'a missing evidence packet cannot trigger repair');
+ assert.equal(omitted.ai.calls.length,3,'a missing evidence packet cannot trigger repair (the third call is the batch 24 rescue, which has no valid span to flip)');
 });
 
 test('review deadline failure gets one in-place retry and stays fail-closed after both attempts',async()=>{
@@ -2889,7 +2913,7 @@ test('quoted-speaker conflicts are preserved as a source-attribution rejection',
  const result=await composeEvidenceAnswer(question,[source],ai,[],{
   plan,catalog:{80:'Buddha’s Teachings'},trace:true
  });
- assert.equal(ai.calls.length,2,'source-attribution conflicts are not repaired without an explicit repairability decision');
+ assert.equal(ai.calls.length,3,'source-attribution conflicts are not repaired without an explicit repairability decision (the third call is the batch 24 rescue, which keeps the conflict demotion)');
  assert.equal(result.coverage,'none','the misattributed claim cannot survive review');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.sourceId==='S1'&&issue.reason==='source-attribution-conflict'));
@@ -3764,7 +3788,7 @@ test('an unclear reviewer claim is normalized to partial and remains fail-closed
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
- assert.equal(ai.calls.length,2,'an unclear claim decision remains fail-closed without an explicit repairability decision');
+ assert.equal(ai.calls.length,3,'an unclear claim decision remains fail-closed without an explicit repairability decision (the third call is the batch 24 rescue)');
  assert.deepEqual(result.trace.reviewContract.issues,[],
   'a valid uncertainty label must not invalidate the review contract');
  assert.equal(result.trace.reviewContract.reviewDecisions[0].claimStatus,'partial');
@@ -3809,7 +3833,7 @@ test('invented and cross-source span IDs cannot enter the reviewed evidence map'
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
   {partId:'P1',claimId:'P1-C1',sourceId:'S1',reason:'missing-claim-source-span'}]);
  assert.equal(result.evidenceMap.length,0);
- assert.equal(ai.calls.length,2,'invented span IDs do not trigger an unmarked repair');
+ assert.equal(ai.calls.length,3,'invented span IDs do not trigger an unmarked repair (the third call is the batch 24 rescue, which has no valid span to flip)');
 });
 
 test('the active reviewer resolves a selected span to exact bounded source text',async()=>{
@@ -4554,10 +4578,10 @@ test('citation gate reaches a partial part whose citations review dropped (batch
  };
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n'+
    'Custom, for Hume, is the great guide of human life and the foundation of all reasoning about matters of fact.'),
-  rejectingReview,citedRepair,acceptingReReview],{decorateReview:false});
+  rejectingReview,rescueRejection(),citedRepair,acceptingReReview],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'compose, review, the gate repair, and its independent re-review');
+ assert.equal(ai.calls.length,5,'compose, review, the batch 24 rescue, the gate repair, and its independent re-review');
  assert.deepEqual(result.trace.citationGate,
   [{partId:'P1',action:'repair-applied',preGateStatus:'partial'}],
   'the widened trigger fires for the partial part and records its pre-gate status');
@@ -4590,7 +4614,7 @@ test('citation gate adopts a cited re-review part at partial status (batch 12 B1
  };
  const ai=makeAI([answer('PART P1\nHume links causal expectation to custom. [S1]\n'+
   'Repeated experience shapes expectation in ordinary reasoning.'),
-  uncitedReview,citedRepair,partialAcceptingReReview],{decorateReview:false});
+  uncitedReview,rescueRejection(),citedRepair,partialAcceptingReReview],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
  assert.equal(result.trace.citationGate[0].action,'repair-applied');
@@ -4620,10 +4644,10 @@ test('citation gate records a failed repair for a partial part and containment s
  };
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n'+
    'Custom, for Hume, is the great guide of human life and the foundation of all reasoning about matters of fact.'),
-  rejectingReview,uncitedRepair],{decorateReview:false});
+  rejectingReview,rescueRejection(),uncitedRepair],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and the one gate repair attempt');
+ assert.equal(ai.calls.length,4,'compose, review, the batch 24 rescue, and the one gate repair attempt');
  assert.equal(result.trace.citationGate[0].action,'repair-refused');
  assert.equal(result.trace.citationGate[0].preGateStatus,'partial');
  assert.equal(result.outcome,'generation-failed');
@@ -4846,16 +4870,18 @@ test('no build-time budget trace appears when optional calls run within budget (
 test('review output budget scales past the old cap for a many-claim review',async()=>{
  const sentences=Array.from({length:25},(_,index)=>
   `Hume observation ${index+1} links necessity to custom and regular conjunction in experience. [S1]`);
- const ai=makeAI([answer('PART P1\n'+sentences.join(' ')),review([['P1','answered']])]);
+ // Batch 24 (B24-3): a 25-claim part exceeds the split threshold, so
+ // its review runs as two concurrent calls over claim halves. The
+ // per-record budget formula is unchanged; it now applies per half.
+ const reviewHandler=review([['P1','answered']]);
+ const ai=makeAI([answer('PART P1\n'+sentences.join(' ')),reviewHandler,reviewHandler]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,2);
- const reviewCall=ai.calls.find(call=>call.request.messages[0].content.startsWith('Review the complete answer'));
- assert.ok(reviewCall,'the review call was made');
- assert.ok(reviewCall.request.max_completion_tokens>4200,
-  'a 25-claim review is no longer truncated by the old 4,200-token cap');
- assert.equal(reviewCall.request.max_completion_tokens,6700,
-  'the budget is 1,200 plus 220 tokens per review record');
+ assert.equal(ai.calls.length,3,'compose plus the two split review halves');
+ const reviewCalls=ai.calls.filter(call=>call.request.messages[0].content.startsWith('Review the complete answer'));
+ assert.equal(reviewCalls.length,2,'the many-claim review is split into two calls');
+ assert.deepEqual(reviewCalls.map(call=>call.request.max_completion_tokens).sort((a,b)=>b-a),
+  [4060,3840],'each half budget is 1,200 plus 220 tokens per review record in that half (13 and 12 claims)');
  assert.equal(result.trace.reviewRetry,undefined,'a completed review is not retried');
 });
 
@@ -5233,7 +5259,7 @@ test('a third-party speaker still needs a speech cue in the source',async()=>{
   attributedReview('Petra Lindqvist')]);
  const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
   [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,3,'compose, review, and the batch 24 rescue (which cannot anchor the claim either)');
  assert.equal(result.coverage,'none','an unanchored third-party attribution cannot verify the claim');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.sourceId==='S1'&&issue.reason==='source-attribution-unanchored'));
@@ -5245,7 +5271,7 @@ test('matching a different work’s author does not anchor spans from another wo
   attributedReview('Ines Vidal',{sourceId:'S2'})]);
  const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
   [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,2);
+ assert.equal(ai.calls.length,3,'compose, review, and the batch 24 rescue (which cannot anchor the claim either)');
  assert.equal(result.coverage,'none',
   'the exemption is per source: Vidal does not author the geese passage');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
@@ -7393,4 +7419,200 @@ test('a gate-repair adoption records its re-review decisions and keeps verified 
  assert.ok((result.trace.reReviewDecisions||[])
   .some(decision=>decision.sourceId==='S1'&&decision.accepted===true),
   'the re-review acceptance for the restored citation is in the trace');
+});
+
+// Batch 24 (B24-1): a zero-accept part gets one rescue re-review
+// before the citation gate and containment. The router below keys
+// each mock response to the system prompt of the stage that asks for
+// it, so the rescue (and, in the rejection case, the gate repair) is
+// exercised through the real call sequence.
+function batch24RouterAI({reviewClaims,rescueVerdict}){
+ const calls=[];
+ const draft='PART P1\nHume links necessity to custom and regular conjunction. [S1]\n'+
+  'Custom is the great guide of human life.';
+ const ai={calls,run:async(model,request)=>{
+  calls.push({model,request});
+  const system=String(request?.messages?.[0]?.content||'');
+  if(system.startsWith('Answer the reader'))return answer(draft);
+  if(system.startsWith('Review the complete answer')){
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+    answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
+    retainedContextClaimIds:['P1-C2']}],
+    claims:reviewClaims})};
+  }
+  if(system.startsWith('Judge only the listed claim')){
+   const payload=JSON.parse(request.messages[1].content);
+   return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+    claimId:item.claimId,sourceId:item.sourceId,verdict:rescueVerdict,
+    fragment:item.spans[0].text}))})};
+  }
+  if(system.startsWith('Patch only the requested claims')){
+   const payload=JSON.parse(request.messages[1].content);
+   return {response:JSON.stringify({parts:[{partId:'P1',
+    replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+     text:'Custom is the great guide of human life.'})),additions:[]}]})};
+  }
+  throw new Error('unexpected stage in batch 24 fixture: '+system.slice(0,40));
+ }};
+ return ai;
+}
+const batch24RejectingClaims=[{claimId:'P1-C1',status:'partial',
+ sources:[{sourceId:'S1',status:'partial',spanIds:[],
+  attributionStatus:'not_applicable',attributedSpeaker:'',
+  subjectAttributionStatus:'supported',attributedSubject:'Hume',
+  evidenceRole:'work-assertion',
+  supportBoundary:'The span states the custom account but the claim was demoted.'}]}];
+
+test('batch 24 rescue re-review flips a zero-accept part so it ships cited and escapes containment',async()=>{
+ const ai=batch24RouterAI({reviewClaims:batch24RejectingClaims,rescueVerdict:'supported'});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/Hume links necessity to custom and regular conjunction\. \[S1\]/);
+ assert.equal(result.evidenceMap.length,1);
+ assert.equal(result.trace.sourceRequiredContainment.disposition,'all-shipped-source-parts-cited');
+ const rescue=result.trace.rescueReview;
+ assert.ok(rescue,'the rescue outcome is recorded in the trace');
+ assert.equal(rescue.parts.length,1);
+ assert.equal(rescue.parts[0].partId,'P1');
+ assert.equal(rescue.parts[0].outcome,'completed');
+ assert.equal(rescue.parts[0].flipped,1);
+ assert.deepEqual(rescue.parts[0].claims.map(claim=>[claim.claimId,claim.sourceId,claim.verdict]),
+  [['P1-C1','S1','supported']]);
+ assert.ok(rescue.parts[0].claims[0].fragment.length>0,'the decisive fragment is recorded');
+ assert.ok(result.trace.reviewContract.reviewDecisions.some(decision=>
+  decision.claimId==='P1-C1'&&decision.accepted===true&&decision.rescueAccepted===true),
+  'the flipped decision is marked rescueAccepted in the review decisions');
+});
+
+test('batch 24 rescue re-review that rejects everything leaves the part to containment',async()=>{
+ const ai=batch24RouterAI({reviewClaims:batch24RejectingClaims,rescueVerdict:'not-supported'});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.rescueReview.parts[0].outcome,'completed');
+ assert.equal(result.trace.rescueReview.parts[0].flipped,0);
+ assert.equal(result.trace.rescueReview.parts[0].claims[0].verdict,'not-supported');
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureStage,'source-required-containment');
+ assert.deepEqual(result.trace.sourceRequiredContainment.uncitedPartIds,['P1']);
+ assert.doesNotMatch(result.answer,/great guide of human life/);
+});
+
+test('batch 24 rescue never fires for a part with an accepted claim',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n'+
+   'Hume treats causation as a directly observed power. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+    retainedContextClaimIds:[]}],
+    claims:payload.claims.map(claim=>{
+     const accepted=claim.claimId==='P1-C1';
+     const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+     return {claimId:claim.claimId,status:accepted?'answered':'partial',
+      sources:[{sourceId:'S1',status:accepted?'answered':'partial',
+       spanIds:accepted?[spanId]:[],
+       subjectAttributionStatus:'supported',attributedSubject:'Hume'}]};
+    })})};
+  }],{decorateReview:false,decorateClauses:false,decorateSubject:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.rescueReview,undefined,'no zero-accept part, no rescue');
+ assert.equal(ai.calls.length,2,'compose and review only');
+ assert.equal(result.outcome,'verified-source-draft');
+});
+
+test('batch 24 split review covers all claims of a part with more than ten source-linked claims',async()=>{
+ const sentences=Array.from({length:12},(_,index)=>
+  `Hume point ${index+1} links necessity to custom and regular conjunction. [S1]`);
+ const calls=[];
+ const ai={calls,run:async(model,request)=>{
+  calls.push({model,request});
+  const system=String(request?.messages?.[0]?.content||'');
+  if(system.startsWith('Answer the reader'))
+   return answer('PART P1\n'+sentences.join(' '));
+  if(system.startsWith('Review the complete answer')){
+   const payload=parsePayload(request.messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:[payload.claims[0].claimId],retainedContextClaimIds:[]}],
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
+      subjectAttributionStatus:'supported',attributedSubject:'Hume'}))}))})};
+  }
+  throw new Error('unexpected stage in split-review fixture: '+system.slice(0,40));
+ }};
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ const reviewCalls=calls.filter(call=>
+  String(call.request.messages[0].content).startsWith('Review the complete answer'));
+ assert.equal(reviewCalls.length,2,'a 12-claim part is reviewed in two concurrent calls');
+ const halfSizes=reviewCalls.map(call=>JSON.parse(call.request.messages[1].content).claims.length)
+  .sort((a,b)=>a-b);
+ assert.deepEqual(halfSizes,[6,6],'the halves partition the claims');
+ const accepted=result.trace.reviewContract.reviewDecisions
+  .filter(decision=>decision.accepted===true);
+ assert.equal(accepted.length,12,'merged decisions cover every claim');
+ assert.equal(result.evidenceMap.length,12);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.trace.rescueReview,undefined,'no zero-accept part, no rescue');
+});
+
+test('batch 24 review-stage failure after the in-build review retry does not whole-build retry',async()=>{
+ const requestFailed=()=>new Error('Review request failed');
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  requestFailed(),requestFailed(),
+  answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureStage,'review');
+ assert.equal(result.failureCode,'review-request-failed');
+ assert.equal(result.trace.reviewRetry.attempted,true,
+  'the in-build review retry ran before the failure');
+ assert.equal(result.trace.answerRetry,undefined,
+  'batch 24 (B24-4): no whole-build retry follows an attempted review retry');
+ assert.equal(ai.calls.length,3,'compose, the failed review, and its compact retry — no second build');
+});
+
+test('batch 24 compose-stage transient failure still whole-build retries',async()=>{
+ const requestFailed=()=>Object.assign(new Error('Compose request failed'),
+  {code:'answer-request-failed'});
+ const ai=makeAI([requestFailed(),requestFailed(),
+  answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.deepEqual(result.trace.answerRetry,
+  {code:'answer-request-failed',outcome:'recovered'},
+  'a non-review transient failure keeps the whole-build retry');
+ assert.equal(ai.calls.length,4,'two failed compose attempts, then the retried build');
+});
+
+test('batch 24 pseudonymous-voice guard: a span naming the speaker identifies the voice',async()=>{
+ const pseudonymSource={...hume,id:'S1',bookId:'140',
+  title:'Fear and Trembling — Søren Kierkegaard',page:32,
+  text:'Johannes de Silentio describes faith as a relation to God.',
+  preview:'Johannes de Silentio describes faith as a relation to God.'};
+ const plan={...onePartPlan,sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
+  parts:[{...onePartPlan.parts[0],question:'What does Fear and Trembling say about faith?',
+   sourceBookIds:['140'],candidateSourceIds:['S1']}]};
+ const ai=makeAI([answer('PART P1\nThe speaker describes faith as a relation to God. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   const evidence=claim.sourceEvidence[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
+    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:[evidence.spanIds[0]]}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer('What does Fear and Trembling say about faith?',
+  [pseudonymSource],ai,[],{plan,
+   catalog:{...catalog,140:'Fear and Trembling — Søren Kierkegaard'},trace:true});
+ assert.equal(result.coverage,'full',
+  'the bound span names Johannes de Silentio, so the voice is identified by the evidence');
+ assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='pseudonymous-voice-unidentified'));
 });

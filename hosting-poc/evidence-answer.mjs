@@ -313,6 +313,52 @@ function mergeReviewRepairs(rawReview,requested,repair){
   return {ok:true,review:{...rawReview,claims}};
 }
 
+// Batch 24 (B24-1): zero-accept rescue re-review. When a
+// source-required part finishes review with no accepted source-linked
+// claim, containment will certainly kill it; before that happens, one
+// focused pass re-judges the part's rejected claim/source pairs under
+// a binary in-substance standard. Modeled on REVIEW_REPAIR_PROMPT:
+// judge only the listed pairs, reconsider nothing else. The semantic
+// audit of the batch 22–23 containment deaths found most of those
+// rejections were demotions of claims their bound spans state in
+// substance (clause-completeness demands, the pseudonymous-voice form
+// rule, subject-string mismatch); the binary standard below is the
+// support standard the rubric grades, and genuine overreach — added
+// framing, a second side, a causal step, a stronger verb — still
+// fails it, so Dostoevsky-pattern parts die honestly.
+const RESCUE_REVIEW_PROMPT=`Judge only the listed claim and source pairs. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether the supplied span text states the claim in substance: return "supported" when a reasonable reader would say the span says what the claim says, and "not-supported" when the claim adds anything the span does not state — an interpretive framing, a second side or position, an unstated causal step, or a stronger verb than the span uses. Distinguish a work's own position from a reported view, narrative voice, or editorial context. In fragment, quote the decisive span text your verdict rests on, copied exactly from one of the pair's supplied spans. Do not infer support from a citation alone. Return exactly one decision for every listed pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text"}]}.`;
+// Batch 24 (B24-1): strict validation of a rescue response. Any
+// deviation — wrong count, an unrequested or duplicated pair, an
+// unrecognized verdict, a missing fragment, or a "supported" verdict
+// whose fragment does not appear in that pair's span texts — rejects
+// the whole rescue for the part, which then keeps its original review
+// decisions exactly. A malformed rescue can never make things worse.
+function parseRescueDecisions(rescue,requested){
+  if(!Array.isArray(rescue?.decisions)||rescue.decisions.length!==requested.length)
+    return {ok:false,reason:'decision-count-mismatch'};
+  const expected=new Map(requested.map(item=>[item.claimId+'|'+item.sourceId,item]));
+  const normalizeFragmentText=value=>String(value||'').normalize('NFKC')
+    .toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/gu,' ');
+  const received=new Map();
+  for(const item of rescue.decisions){
+    const key=String(item?.claimId||'')+'|'+String(item?.sourceId||'');
+    const request=expected.get(key);
+    const fragment=typeof item?.fragment==='string'?item.fragment.trim().slice(0,280):'';
+    if(!request||received.has(key)||
+       !['supported','not-supported'].includes(item?.verdict)||!fragment)
+      return {ok:false,reason:'invalid-or-unrequested-decision'};
+    if(item.verdict==='supported'){
+      const needle=normalizeFragmentText(fragment);
+      const found=needle.length>=8&&request.spans.some(span=>
+        normalizeFragmentText(span.text).includes(needle));
+      if(!found)return {ok:false,reason:'fragment-not-in-span'};
+    }
+    received.set(key,{verdict:item.verdict,fragment});
+  }
+  if(received.size!==expected.size)return {ok:false,reason:'missing-decision'};
+  return {ok:true,decisions:received};
+}
+
 // Batch 10 (B10-2): round-robin selection across parts for the
 // missing-decision repair subset — group the decisions by part in
 // first-appearance order, then cycle through the groups taking one
@@ -1119,6 +1165,16 @@ function deterministicSupportedClauseSalvage(claimText,clauseReview,citedIds,
   return {text:/[.!?][”’"]?$/u.test(text)?text:`${text}.`,sourceId,
     spanIds:clauseSpanIds,method:'reviewed-clause-extraction'};
 }
+// Batch 24 (B24-2): word-boundary containment of a speaker name in a
+// span's own text, using the same escape/boundary logic as the
+// contains helper inside sourceVoiceAttributionIssue. A bound span
+// that itself names the pseudonymous speaker identifies the voice, so
+// a claim bound to it is not demoted for leaving the voice unnamed.
+function spanTextNamesSpeaker(text,speaker){
+  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const name=String(speaker||'').trim();
+  return Boolean(name&&new RegExp(`\\b${escape(name)}\\b`,'iu').test(String(text||'')));
+}
 function sourceVoiceAttributionIssue(text,source,plan,precedingAnswers=[],sourceById=new Map()){
   const provenance=sourceProvenance(source,plan,source?.scopeText||source?.text||source?.preview||'');
   const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
@@ -1641,6 +1697,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             {evidenceRole:sourceDecision.evidenceRole}:{}),
           ...(typeof sourceDecision.supportBoundary==='string'&&sourceDecision.supportBoundary.trim()?
             {supportBoundary:sourceDecision.supportBoundary.trim().slice(0,180)}:{}),
+          // Batch 24 (B24-1): a decision flipped by the zero-accept
+          // rescue re-review keeps its marker through normalization so
+          // the trace's claim decisions show which acceptances the
+          // rescue produced.
+          ...(sourceDecision.rescueAccepted===true?{rescueAccepted:true}:{}),
           legacyMissingSpan:sourceDecision.legacyMissingSpan===true};
         const existing=sourceDecisions.get(sourceId);
         if(!existing){sourceDecisions.set(sourceId,normalizedDecision);continue;}
@@ -1738,9 +1799,35 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           !speakerIsWorkAuthor(claimedSpeaker,sourceById.get(sourceId))&&
           !hasExplicitSpeakerCue(speakerCueContext(cueSourceText,selected),claimedSpeaker)?
           'source-attribution-unanchored':'';
-        const provenanceAttributionIssue=sourceDecision?.status==='answered'?
+        let provenanceAttributionIssue=sourceDecision?.status==='answered'?
           sourceVoiceAttributionIssue(candidateText,sourceById.get(sourceId),plan,
             precedingAnswers,sourceById):'';
+        // Batch 24 (B24-2): the pseudonymous-voice demotion is a form
+        // requirement on the claim text, and the semantic audit found
+        // it rejecting claims whose own bound spans name the speaker
+        // ("It is Johannes de silentio who says this…"). When any span
+        // selected for this claim/source itself contains the speaker's
+        // name, the voice is identified by the evidence and the
+        // demotion is suppressed; the claim's fate rests on its
+        // support verdict. One deterministic exception: a claim that
+        // itself names a different person (above all the credited
+        // author) as its subject or speaker keeps the demotion —
+        // attributing the pseudonym's words to that other person is
+        // the misattribution the rule exists to stop, and a span
+        // naming the true speaker does not excuse it. Other voice
+        // issues (editorial mediation) are untouched.
+        if(provenanceAttributionIssue==='pseudonymous-voice-unidentified'){
+          const workVoice=sourceProvenance(sourceById.get(sourceId),plan,
+            cueSourceText)?.workVoice;
+          const speaker=workVoice?.kind==='pseudonymous-author'?
+            String(workVoice.name||'').trim():'';
+          if(speaker&&selected.some(item=>spanTextNamesSpeaker(item.quote,speaker))){
+            const namedOthers=[...personSubjects,
+              ...(claimSpeaker?[claimSpeaker]:[])]
+              .filter(name=>!personNamesMatch(name,speaker));
+            if(!namedOthers.length)provenanceAttributionIssue='';
+          }
+        }
         const attributionIssue=modelAttributionIssue||speakerMismatchIssue||subjectAttributionIssue||
           unanchoredSpeakerIssue||provenanceAttributionIssue;
         const selectedQuote=selected.map(item=>item.quote).join(' ');
@@ -1831,6 +1918,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
               .map(item=>({sourceId:item.sourceId,status:item.status,spanIds:item.spanIds}))
           }))}:{}),
           accepted:supportedSourceIds.has(sourceId)&&!attributionIssue,
+          ...(sourceDecision?.rescueAccepted===true?{rescueAccepted:true}:{}),
           recoveredMissingDecision:sourceDecision.recoveredMissingDecision===true,
           validationReason:validationReason||null});
       }
@@ -2891,7 +2979,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // Longer answers produce more sentence-level review records. Scale the
     // existing review call's output allowance to that record count; this does
     // not add a call or limit the answer draft's length.
-    const reviewRecordCount=stage==='review-repair'?
+    const reviewRecordCount=stage==='review-repair'||stage==='review-rescue'?
       (Array.isArray(payload?.decisions)?payload.decisions.length:0):
       (Array.isArray(payload?.claims)?payload.claims.length:0)+
         (Array.isArray(payload?.parts)?payload.parts.reduce((count,part)=>count+
@@ -2908,7 +2996,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // allowance proportional to the record count so large reviews can finish.
     const outputTokenBudget=stage==='review'||stage==='answer-re-review'?
       Math.min(6800,1200+reviewRecordCount*220):
-      stage==='review-repair'?Math.min(3000,900+reviewRecordCount*160):
+      stage==='review-repair'||stage==='review-rescue'?Math.min(3000,900+reviewRecordCount*160):
       stage==='answer-repair'?2600:
       stage==='compose'?Math.min(3600,Math.max(1800,900+600*composePartCount)):1800;
     const modelRequest={messages,chat_template_kwargs:{enable_thinking:false},
@@ -3297,12 +3385,108 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           error.code:'review-request-failed';
       const packetsByPart=new Map(),rawReviewByPart=new Map(),reviewRetryParts=[];
       const partialReviewResponseParts=new Set(),completedPartialReviewParts=new Set();
+      // Batch 24 (B24-3): split review for large parts. Review timeouts
+      // concentrate in the largest per-part calls; a part whose packet
+      // holds more than ten source-linked claims is reviewed as two
+      // concurrent calls over claim halves — the same spans ride in
+      // both payloads, so no included claim loses span content — and
+      // the halves' raw reviews merge deterministically by claim ID.
+      // Part-level fields merge conservatively: the worse status wins,
+      // requirement coverage unions its answer claims per requirement,
+      // and direct-answer/retained/scaffolding lists union. A deadline
+      // failure in a half follows the same review-only retry path for
+      // that half; a half that still fails fails the part's review,
+      // exactly as an unsplit failure does today.
+      const REVIEW_SPLIT_CLAIM_THRESHOLD=10;
+      const mergeSplitReviewHalves=(first,second,partId)=>{
+        const statusRank={unanswered:0,partial:1,answered:2};
+        const worseStatus=(left,right)=>{
+          const a=hasRecognizedStatus(left)?normalizeStatus(left):'partial';
+          const b=hasRecognizedStatus(right)?normalizeStatus(right):'partial';
+          return statusRank[a]<=statusRank[b]?a:b;
+        };
+        const firstPart=(first?.parts||[]).find(part=>part.partId===partId)||first?.parts?.[0];
+        const secondPart=(second?.parts||[]).find(part=>part.partId===partId)||second?.parts?.[0];
+        let mergedPart=null;
+        if(firstPart&&secondPart){
+          const coverage=new Map();
+          for(const entry of [...(firstPart.requirementCoverage||[]),
+                               ...(secondPart.requirementCoverage||[])]){
+            const existing=coverage.get(entry?.requirementId);
+            if(!existing){coverage.set(entry?.requirementId,entry);continue;}
+            coverage.set(entry.requirementId,{...existing,
+              status:existing.status==='answered'||entry.status==='answered'?'answered':
+                worseStatus(existing.status,entry.status)==='unanswered'&&
+                entry.status==='unanswered'?'unanswered':'partial',
+              answerClaimIds:[...new Set([...(existing.answerClaimIds||[]),
+                ...(entry.answerClaimIds||[])])]});
+          }
+          const scaffoldingByClaim=new Map();
+          for(const link of [...(firstPart.scaffoldingLinks||[]),
+                              ...(secondPart.scaffoldingLinks||[])])
+            if(link?.claimId&&!scaffoldingByClaim.has(link.claimId))
+              scaffoldingByClaim.set(link.claimId,link);
+          mergedPart={...firstPart,
+            status:worseStatus(firstPart.status,secondPart.status),
+            answerStatus:worseStatus(firstPart.answerStatus||firstPart.status,
+              secondPart.answerStatus||secondPart.status),
+            repairable:firstPart.repairable===true||secondPart.repairable===true,
+            requirementCoverage:[...coverage.values()],
+            directAnswerClaimIds:[...new Set([...(firstPart.directAnswerClaimIds||[]),
+              ...(secondPart.directAnswerClaimIds||[])])],
+            retainedContextClaimIds:[...new Set([...(firstPart.retainedContextClaimIds||[]),
+              ...(secondPart.retainedContextClaimIds||[])])],
+            scaffoldingLinks:[...scaffoldingByClaim.values()]};
+        }else mergedPart=firstPart||secondPart||null;
+        return {parts:mergedPart?[mergedPart]:[],
+          claims:[...(first?.claims||[]),...(second?.claims||[])]};
+      };
       const attemptPartReview=async(checkedPart)=>{
         const partId=checkedPart.partId;
         let packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question});
+        const runReviewCall=payload=>run('review',REVIEW_PROMPT,payload,
+          parseReviewJson,{partId});
+        const runSplitReview=async splitPacket=>{
+          const claims=splitPacket.reviewClaims;
+          const midpoint=Math.ceil(claims.length/2);
+          const halfPayloads=[claims.slice(0,midpoint),claims.slice(midpoint)]
+            .map(halfClaims=>compactReviewPayload(question,splitPacket.reviewParts,halfClaims));
+          const halves=await Promise.all(halfPayloads.map(async(halfPayload,halfIndex)=>{
+            try{return await runReviewCall(halfPayload);}
+            catch(halfError){
+              if(reviewFailureCode(halfError)!=='inference-deadline-exceeded')
+                throw halfError;
+              const retryEntry={partId,reason:'inference-deadline-exceeded',
+                applied:false,mode:'review-only',samePacket:true,
+                splitHalf:halfIndex+1};
+              reviewRetryParts.push(retryEntry);
+              if(usage.calls>=callLimit){
+                retryEntry.outcome='not-attempted-call-budget';
+                if(halfError&&typeof halfError==='object')
+                  halfError.reviewOnlyRetryExhausted=true;
+                throw halfError;
+              }
+              try{
+                const retried=await runReviewCall(halfPayload);
+                retryEntry.applied=true;
+                retryEntry.outcome='recovered';
+                return retried;
+              }catch(retryError){
+                retryEntry.outcome='failed-again';
+                retryEntry.retryFailureCode=reviewFailureCode(retryError);
+                if(retryError&&typeof retryError==='object')
+                  retryError.reviewOnlyRetryExhausted=true;
+                throw retryError;
+              }
+            }
+          }));
+          return mergeSplitReviewHalves(halves[0],halves[1],partId);
+        };
+        const runPacketReview=splitPacket=>
+          splitPacket.reviewClaims.length>REVIEW_SPLIT_CLAIM_THRESHOLD?
+            runSplitReview(splitPacket):runReviewCall(splitPacket.reviewPayload);
         try{
-          const rawReview=await run('review',REVIEW_PROMPT,packet.reviewPayload,
-            parseReviewJson,{partId});
+          const rawReview=await runPacketReview(packet);
           return {packet,rawReview};
         }catch(firstReviewError){
           // A streamed provider can emit a complete JSON review before the
@@ -3326,7 +3510,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           const failureCode=reviewFailureCode(firstReviewError);
           const streamDeadlineUnsafe=options.inferenceTransport==='streaming'&&
             failureCode==='inference-deadline-exceeded';
-          if(failureCode==='inference-deadline-exceeded'){
+          if(failureCode==='inference-deadline-exceeded'&&
+             !firstReviewError?.reviewOnlyRetryExhausted){
             const retryEntry={partId,reason:failureCode,applied:false,
               mode:'review-only',samePacket:true};
             reviewRetryParts.push(retryEntry);
@@ -3339,8 +3524,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               // Reuse the original plan, composed claims, packet, and any
               // successful sibling reviews. A review deadline never restarts
               // composition or trims/rebuilds this part's evidence packet.
-              const retriedReview=await run('review',REVIEW_PROMPT,packet.reviewPayload,
-                parseReviewJson,{partId});
+              const retriedReview=await runPacketReview(packet);
               retryEntry.applied=true;
               retryEntry.outcome='recovered';
               return {packet,rawReview:retriedReview};
@@ -3352,14 +3536,19 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               throw retryError;
             }
           }
+          // Batch 24 (B24-3): a split half that already exhausted its
+          // review-only retry throws with reviewOnlyRetryExhausted set;
+          // the part's review has failed and must not fall through to
+          // the compact-packet retry below.
+          if(failureCode==='inference-deadline-exceeded'&&
+             firstReviewError?.reviewOnlyRetryExhausted)throw firstReviewError;
           if(streamDeadlineUnsafe||!retryableReviewCodes.includes(failureCode)||
              usage.calls>=callLimit)throw firstReviewError;
           const retryEntry={partId,reason:failureCode,applied:false};
           reviewRetryParts.push(retryEntry);
           packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question,
             packetSpanLimit:4});
-          const rawReview=await run('review',REVIEW_PROMPT,packet.reviewPayload,
-            parseReviewJson,{partId});
+          const rawReview=await runPacketReview(packet);
           retryEntry.applied=true;
           return {packet,rawReview};
         }
@@ -3520,6 +3709,115 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             applied:false,reason:'repair-evidence-unavailable'};
         }
         if(repairTrace)trace.reviewRepair=repairTrace;
+        // Batch 24 (B24-1): zero-accept rescue re-review. A
+        // source-required part (the batch-22 linkage definition, fixed
+        // on the plan by linkEvidenceToParts) with at least one
+        // source-linked decision and no accepted one is a certain
+        // containment death; give its rejected pairs one binary
+        // in-substance re-judgment before the citation gate and
+        // containment see the review. Flips augment the part's raw
+        // review decisions and the review is re-normalized, so every
+        // downstream flow sees the rescued decisions in the ordinary
+        // shape. A failed, invalid, or budget-blocked rescue changes
+        // nothing.
+        {
+          const rescueTrace={parts:[]};
+          for(const part of plan.parts){
+            if(part.sourceRequired!==true)continue;
+            const partDecisions=review.reviewDecisions.filter(decision=>
+              decision.partId===part.id&&decision.sourceId);
+            if(!partDecisions.length)continue;
+            if(partDecisions.some(decision=>decision.accepted===true))continue;
+            const entry={partId:part.id,claims:[],flipped:0,callLatencyMs:0};
+            rescueTrace.parts.push(entry);
+            const seenPairs=new Set(),requested=[];
+            for(const decision of partDecisions){
+              const key=decision.claimId+'|'+decision.sourceId;
+              if(seenPairs.has(key))continue;
+              seenPairs.add(key);
+              const claim=reviewClaims.find(item=>item.claimId===decision.claimId);
+              const answer=checked.parts.find(item=>item.partId===part.id)?.answers
+                .find(item=>item.claimId===decision.claimId);
+              const claimText=claim?.text||answer?.text||'';
+              const evidenceEntry=packetsByPart.get(part.id)?.reviewParts
+                .find(item=>item.partId===part.id)?.evidence
+                .find(item=>item.id===decision.sourceId);
+              const hintIds=new Set(claim?.sourceEvidence
+                ?.find(item=>item.sourceId===decision.sourceId)?.spanIds||[]);
+              let spans=(evidenceEntry?.spans||[])
+                .filter(span=>hintIds.has(span.spanId));
+              if(!spans.length)spans=evidenceEntry?.spans||[];
+              spans=spans.slice(0,MAX_REVIEW_SPANS_PER_SOURCE);
+              if(!claimText||!spans.length)continue;
+              requested.push({claimId:decision.claimId,sourceId:decision.sourceId,
+                claimText,spans:spans.map(({spanId,text})=>({spanId,text}))});
+            }
+            if(!requested.length){entry.outcome='no-rescuable-decisions';continue;}
+            if(usage.calls>=callLimit){
+              entry.outcome='not-attempted-call-budget';continue;
+            }
+            const rescueStartedAt=Date.now();
+            try{
+              const rescue=await run('review-rescue',RESCUE_REVIEW_PROMPT,
+                {question,partId:part.id,decisions:requested},
+                parseReviewJson,{partId:part.id});
+              entry.callLatencyMs=Date.now()-rescueStartedAt;
+              const parsed=parseRescueDecisions(rescue,requested);
+              if(!parsed.ok){
+                entry.outcome='invalid-response';entry.reason=parsed.reason;
+                continue;
+              }
+              entry.outcome='completed';
+              const raw=rawReviewByPart.get(part.id);
+              const flippedClaimIds=new Set();
+              for(const item of requested){
+                const verdict=parsed.decisions.get(item.claimId+'|'+item.sourceId);
+                entry.claims.push({claimId:item.claimId,sourceId:item.sourceId,
+                  verdict:verdict.verdict,fragment:verdict.fragment});
+                if(verdict.verdict!=='supported'||!raw)continue;
+                if(!Array.isArray(raw.claims))raw.claims=[];
+                let claimEntry=raw.claims.find(candidate=>
+                  String(candidate?.claimId||'')===item.claimId);
+                if(!claimEntry){
+                  claimEntry={claimId:item.claimId,status:'partial',sources:[]};
+                  raw.claims.push(claimEntry);
+                }
+                if(!Array.isArray(claimEntry.sources))claimEntry.sources=[];
+                let sourceDecision=claimEntry.sources.find(candidate=>
+                  String(candidate?.sourceId||'')===item.sourceId);
+                if(!sourceDecision){
+                  sourceDecision={sourceId:item.sourceId};
+                  claimEntry.sources.push(sourceDecision);
+                }
+                sourceDecision.status='answered';
+                sourceDecision.spanIds=item.spans.map(span=>span.spanId);
+                sourceDecision.rescueAccepted=true;
+                flippedClaimIds.add(item.claimId);
+                entry.flipped++;
+              }
+              // The rescue verdict judges the claim as written against
+              // its source, so a flipped claim whose source decisions
+              // are now all answered takes the claim-level 'answered'
+              // status too — normalization's group-coverage and
+              // attribution checks still apply on top of it.
+              if(raw&&flippedClaimIds.size){
+                for(const claimEntry of raw.claims||[]){
+                  if(!flippedClaimIds.has(String(claimEntry?.claimId||'')))continue;
+                  if(Array.isArray(claimEntry.sources)&&claimEntry.sources.length&&
+                     claimEntry.sources.every(decision=>decision?.status==='answered'))
+                    claimEntry.status='answered';
+                }
+              }
+              if(entry.flipped)review=normalizeAllParts();
+            }catch(error){
+              entry.callLatencyMs=Date.now()-rescueStartedAt;
+              entry.outcome='call-failed';
+              entry.failureCode=typeof error?.code==='string'?error.code:
+                'rescue-call-failed';
+            }
+          }
+          if(rescueTrace.parts.length)trace.rescueReview=rescueTrace;
+        }
         const acceptedClaimIdsByPart=new Map(review.parts.map(part=>[
           part.partId,new Set((part.answers||[]).map(answer=>answer.claimId))]));
         const repairCandidates=review.issues.length?[]:review.parts.filter(part=>
@@ -5862,6 +6160,18 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     const reviewRetryExhausted=result.failureStage==='review'&&
       result.failureCode==='inference-deadline-exceeded';
     if(reviewRetryExhausted)return result;
+    // Batch 24 (B24-4): the deadline-only guard above left a reachable
+    // path — a review-stage failure coded 'review-request-failed' is in
+    // ANSWER_RETRY_TRANSIENT_CODES, so when the in-build review-only
+    // retry had already run and failed, the wrapper still replayed the
+    // whole build (batch-23 first run, wealth pass 2: a 140 s second
+    // attempt for a review-stage death). Once the build's own trace
+    // shows the review retry was attempted, a review-stage failure is
+    // final whatever its code: the retry it needed already happened
+    // against the composed packet.
+    const reviewRetryAttempted=result.failureStage==='review'&&
+      result.trace?.reviewRetry?.attempted===true;
+    if(reviewRetryAttempted)return result;
     if(!ANSWER_RETRY_TRANSIENT_CODES.has(result.failureCode)&&!pipelineTransient)
       return result;
     firstCode=pipelineTransient?'answer-request-failed':result.failureCode;
