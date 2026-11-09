@@ -939,6 +939,18 @@ function traceableVerbatimClauseText(normalizedClaim,text){
   const normalized=normalizedClauseSurface(text);
   return normalized&&normalizedClaim.split(normalized).length-1===1?String(text).trim().slice(0,600):'';
 }
+function uniqueVerbatimClauseRange(claimText,clauseText){
+  const claim=String(claimText||''),text=String(clauseText||'').trim();
+  if(!text)return null;
+  const first=claim.indexOf(text);
+  if(first<0||claim.indexOf(text,first+1)>=0)return null;
+  const end=first+text.length;
+  const boundaryValid=(!/[\p{L}\p{N}\p{M}_]/u.test(claim[first-1]||'')||
+    !/[\p{L}\p{N}\p{M}_]/u.test(claim[first]||''))&&
+    (!/[\p{L}\p{N}\p{M}_]/u.test(claim[end-1]||'')||
+    !/[\p{L}\p{N}\p{M}_]/u.test(claim[end]||''));
+  return boundaryValid?{start:first,end}:null;
+}
 export function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMaps){
   if(!Array.isArray(raw)||!raw.length)return {decisions:[],warnings:[]};
   const warnings=[],decisions=[];
@@ -946,6 +958,7 @@ export function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMap
   for(const item of raw.slice(0,6)){
     let text=typeof item?.text==='string'?item.text.trim():'';
     const hasOffsets=Object.hasOwn(item||{},'start')||Object.hasOwn(item||{},'end');
+    let range=null,offsetRecovery='';
     if(hasOffsets){
       const claim=String(claimText||'');
       const offsetsValid=Number.isInteger(item?.start)&&Number.isInteger(item?.end);
@@ -953,27 +966,38 @@ export function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMap
         !(item.start>0&&/[\uDC00-\uDFFF]/u.test(claim[item.start])&&/[\uD800-\uDBFF]/u.test(claim[item.start-1]))&&
         !(item.end>0&&item.end<claim.length&&/[\uDC00-\uDFFF]/u.test(claim[item.end])&&/[\uD800-\uDBFF]/u.test(claim[item.end-1]));
       if(!rangeValid){
-        warnings.push('clause-range-invalid');
-        // Keep a unique verbatim clause for observational coverage analysis,
-        // while the unresolved flag continues to force the same partial
-        // disposition. Never trust text that is absent or ambiguous in claim.
-        const traceableText=traceableVerbatimClauseText(normalizedClaim,text);
-        decisions.push({text:traceableText,status:'partial',issueCode:'other',sources:[],unresolved:true});
-        continue;
+        const recovered=uniqueVerbatimClauseRange(claim,text);
+        if(!recovered){
+          warnings.push('clause-range-invalid');
+          const traceableText=traceableVerbatimClauseText(normalizedClaim,text);
+          decisions.push({text:traceableText,status:'partial',issueCode:'other',sources:[],unresolved:true});
+          continue;
+        }
+        range=recovered;offsetRecovery='unique-verbatim-text';
+        warnings.push('clause-range-recovered-from-unique-text');
+      }else{
+        const exactSlice=claim.slice(item.start,item.end).trim();
+        if(!text)text=exactSlice;
+        const boundaryValid=(!/[\p{L}\p{N}\p{M}_]/u.test(claim[item.start-1]||'')||
+          !/[\p{L}\p{N}\p{M}_]/u.test(claim[item.start]||''))&&
+          (!/[\p{L}\p{N}\p{M}_]/u.test(claim[item.end-1]||'')||
+          !/[\p{L}\p{N}\p{M}_]/u.test(claim[item.end]||''));
+        const textMatches=!item.text||normalizedClauseSurface(item.text)===normalizedClauseSurface(exactSlice);
+        if(!boundaryValid||!textMatches){
+          const recovered=uniqueVerbatimClauseRange(claim,text);
+          if(!recovered){
+            warnings.push(!boundaryValid?'clause-range-not-word-boundary':'clause-offset-text-mismatch');
+            decisions.push({text:traceableVerbatimClauseText(normalizedClaim,text),status:'partial',
+              issueCode:'other',sources:[],unresolved:true});
+            continue;
+          }
+          range=recovered;offsetRecovery='unique-verbatim-text';
+          warnings.push('clause-range-recovered-from-unique-text');
+        }else range={start:item.start,end:item.end};
       }
-      const exactSlice=claim.slice(item.start,item.end).trim();
-      if(!text)text=exactSlice;
-      const boundaryValid=(!/[\p{L}\p{N}\p{M}_]/u.test(claim[item.start-1]||'')||
-        !/[\p{L}\p{N}\p{M}_]/u.test(claim[item.start]||''))&&
-        (!/[\p{L}\p{N}\p{M}_]/u.test(claim[item.end-1]||'')||
-        !/[\p{L}\p{N}\p{M}_]/u.test(claim[item.end]||''));
-      const textMatches=!item.text||normalizedClauseSurface(item.text)===normalizedClauseSurface(exactSlice);
-      if(!boundaryValid||!textMatches){
-        warnings.push(!boundaryValid?'clause-range-not-word-boundary':'clause-offset-text-mismatch');
-        decisions.push({text:traceableVerbatimClauseText(normalizedClaim,text),status:'partial',
-          issueCode:'other',sources:[],unresolved:true});
-        continue;
-      }
+    }else if(text){
+      range=uniqueVerbatimClauseRange(String(claimText||''),text);
+      if(range)offsetRecovery='unique-verbatim-text';
     }
     const normalizedText=normalizedClauseSurface(text);
     if(!text||text.length>600||!normalizedText||!normalizedClaim.includes(normalizedText)){
@@ -1017,7 +1041,9 @@ export function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMap
       warnings.push('clause-supported-without-source-evidence');
     }
     if(status!=='answered'&&issueCode==='none')warnings.push('unsupported-clause-without-issue-code');
-    decisions.push({text,status,issueCode,sources});
+    decisions.push({text,status,issueCode,sources,
+      ...(range?{start:range.start,end:range.end}:{}),
+      ...(offsetRecovery?{offsetRecovery}:{})});
   }
   if(raw.length>6)warnings.push('clause-count-truncated');
   return {decisions,warnings:[...new Set(warnings)]};
@@ -1056,6 +1082,42 @@ function selectReviewSpansBySource(spanIdsBySource,citedIds,sources,reviewSpanMa
     if(!selected)break;
   }
   return selectedBySource;
+}
+function deterministicSupportedClauseSalvage(claimText,clauseReview,citedIds,
+  sourceDecisions,selectedBySource){
+  // This first version only removes a trailing, separately reviewed clause
+  // across an additive “, and” or semicolon boundary. Requiring one citation,
+  // exact offsets, and the same selected span at both review levels keeps
+  // ambiguous grammar, comparisons, and cross-source synthesis fail-closed.
+  const decisions=clauseReview?.decisions||[];
+  if(citedIds.size!==1||decisions.length!==2||decisions[0].status!=='answered'||
+     decisions[1].status==='answered'||decisions.some(item=>item.unresolved||
+       !Number.isInteger(item.start)||!Number.isInteger(item.end)))return null;
+  const sourceId=[...citedIds][0],claim=String(claimText||'');
+  const [supported,rejected]=decisions;
+  if(supported.start<0||supported.end<=supported.start||rejected.start<supported.end||
+     rejected.end>claim.length)return null;
+  if(claim.slice(supported.start,supported.end).trim()!==supported.text||
+     claim.slice(rejected.start,rejected.end).trim()!==rejected.text||
+     claim.slice(0,supported.start).trim()||
+     !/^\s*(?:,\s*and|;)\s*$/iu.test(claim.slice(supported.end,rejected.start))||
+     !/^[\s.!?]*$/u.test(claim.slice(rejected.end))||
+     /\b(?:because|although|unless|if|but|whereas|while|therefore|rather than|not only)\b/iu.test(claim))
+    return null;
+  const tokens=supported.text.match(/[\p{L}\p{N}]+/gu)||[];
+  if(tokens.length<4||!/^\p{Lu}/u.test(supported.text)||
+     /\b(?:and|or|but|because|of|for|to|with|the|a|an|that|which|who)$/iu.test(supported.text))
+    return null;
+  const clauseSource=(supported.sources||[]).find(item=>item.sourceId===sourceId);
+  const rawSource=(sourceDecisions||[]).find(item=>String(item?.sourceId||'')===sourceId);
+  const selectedIds=new Set((selectedBySource.get(sourceId)||[]).map(item=>item.spanId));
+  const clauseSpanIds=[...new Set(clauseSource?.spanIds||[])];
+  if(clauseSource?.status!=='answered'||!clauseSpanIds.length||
+     rawSource?.status!=='answered'||clauseSpanIds.some(id=>!selectedIds.has(id))||
+     clauseSpanIds.some(id=>!(rawSource.spanIds||[]).includes(id)))return null;
+  const text=supported.text.trim();
+  return {text:/[.!?][”’"]?$/u.test(text)?text:`${text}.`,sourceId,
+    spanIds:clauseSpanIds,method:'reviewed-clause-extraction'};
 }
 function sourceVoiceAttributionIssue(text,source,plan,precedingAnswers=[],sourceById=new Map()){
   const provenance=sourceProvenance(source,plan,source?.scopeText||source?.text||source?.preview||'');
@@ -1548,12 +1610,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       if(!decision){issues.push('missing-claim-decision');supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-decision'});continue;}
       let claimStatus=decision.status;
       const proposedSupportedText=decision.supportedText;
-      const validSupportedText=decision.status==='partial'&&proposedSupportedText.length>0&&
+      const validModelSupportedText=decision.status==='partial'&&proposedSupportedText.length>0&&
         proposedSupportedText!==String(answer.text||'').trim()&&
         proposedSupportedText.length<=600&&!/[\r\n]/u.test(proposedSupportedText)&&
         !/\[\s*S\d+/iu.test(proposedSupportedText)&&
         !/[.!?]\s+\S/u.test(proposedSupportedText);
-      const candidateText=validSupportedText?proposedSupportedText:answer.text;
       // Supplied clause decisions add specificity, but the model need not
       // mechanically partition every cited claim before exact source/span
       // review can accept it.
@@ -1587,6 +1648,13 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         [sourceId,sourceDecision.spanIds]));
       const selectedBySource=selectReviewSpansBySource(
         spanIdsBySource,citedIds,sources,reviewSpanMaps.get(part.id)||new Map());
+      const clauseSalvage=deterministicSupportedClauseSalvage(answer.text,clauseReview,
+        citedIds,decision.sources,selectedBySource);
+      const validSupportedText=Boolean(clauseSalvage||validModelSupportedText);
+      const candidateText=clauseSalvage?.text||
+        (validModelSupportedText?proposedSupportedText:answer.text);
+      const supportedTextMethod=clauseSalvage?'reviewed-clause-extraction':
+        validModelSupportedText?'reviewer-supported-text':'';
       const sourceById=new Map(sources.map(source=>[source.id,source]));
       const supportedSourceIds=new Set();
       // A well-formed partial/unanswered decision explicitly rejects that
@@ -1683,12 +1751,10 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             reason:negationScopeIssue});
         }
         // A claim-level "answered" label cannot override an explicit partial
-        // clause finding. A separately validated supportedText may still keep
-        // the narrower sentence; otherwise the original compound claim stays
-        // fail-closed and is omitted by the existing finalizer.
+        // clause finding. A validated narrower sentence may keep the supported
+        // remainder, but the rejected clause remains visible in diagnostics.
         const unsupportedClause=clauseReview.decisions.find(clause=>clause.status!=='answered');
-        if(unsupportedClause&&!validSupportedText&&selected.length>0&&
-          sourceDecision.status==='answered'){
+        if(unsupportedClause&&selected.length>0&&sourceDecision.status==='answered'){
           const boundSpanIds=(unsupportedClause.sources||[])
             .filter(item=>item.sourceId===sourceId).flatMap(item=>item.spanIds||[]);
           const composerSpans=[...(composerPacketSpansByPart?.get?.(part.id)?.values?.()||[])]
@@ -1702,10 +1768,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
               composerPacketSpanIds:composerSpans.map(span=>span.spanId),
               reviewPacketSpanIds:reviewSpans.map(span=>span.spanId),
               boundSpanIds};
-          sourceDecision.status='partial';
+          if(!validSupportedText)sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:'claim-clause-not-supported',issueCode:unsupportedClause.issueCode,
-            clauseText:unsupportedClause.text.slice(0,320),packetCoverage});
+            clauseText:unsupportedClause.text.slice(0,320),packetCoverage,
+            disposition:validSupportedText?'narrowed-claim-retained':'claim-demoted'});
         }
         const answeredWithoutSelectedSpan=sourceDecision.status==='answered'&&!selected.length;
         if(sourceDecision.recoveredMissingDecision||sourceDecision.status!=='answered'||!selected.length){
@@ -1792,6 +1859,9 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       }
       if(validSupportedText)reviewDecisions.push({partId:part.id,claimId:answer.claimId,
         originalClaimStatus:decision.status,supportedTextApplied:claimStatus==='answered',
+        supportedTextMethod,
+        ...(clauseSalvage?{salvagedClauseText:clauseSalvage.text,
+          salvagedSourceId:clauseSalvage.sourceId,salvagedSpanIds:clauseSalvage.spanIds}:{}),
         acceptedText:claimStatus==='answered'?candidateText.slice(0,320):'',
         validationReason:claimStatus==='answered'?null:'claim-narrowing-failed-evidence-validation'});
     }
@@ -3821,6 +3891,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           coverage:issue.packetCoverage||null}));
         const measurableClauses=rejectedClauses.filter(issue=>
           issue.packetCoverage?.measurement==='measured');
+        const clauseSalvageAdoptions=review.reviewDecisions.filter(item=>
+          item.supportedTextMethod==='reviewed-clause-extraction'&&item.supportedTextApplied);
+        trace.clauseSalvage={method:'reviewed-clause-extraction',adoptions:clauseSalvageAdoptions.length,
+          adoptedClaims:clauseSalvageAdoptions.map(item=>({partId:item.partId,
+            claimId:item.claimId,sourceId:item.salvagedSourceId,
+            spanIds:item.salvagedSpanIds||[]}))};
         trace.claimSpanFit={method:'normalized-content-term-coverage-v1',threshold:0.65,
           rejectedClauseCount:rejectedClauses.length,
           measurableClauseCount:measurableClauses.length,

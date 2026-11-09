@@ -37,6 +37,47 @@ test('batch 15 pilot route preserves subtitles and canonical quotation repair th
  assert.ok(result.trace.finalCoverageReconciliation.length);
 });
 
+test('batch 23 supported-clause salvage crosses the evidence-v2 pilot route',async()=>{
+ const token='batch23-supported-clause-pilot-fixture-token';
+ const supported='The passage links Athens’ growth with Sparta’s fear';
+ const rejected='reason alone establishes the war’s cause.';
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question'))
+   return {response:`PART P1\n${supported}, and ${rejected} [S1]`};
+  if(system.startsWith('Review the complete answer parts and claims')){
+   const payload=JSON.parse(input.messages[1].content),claim=payload.claims[0];
+   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+   const rejectedStart=claim.text.indexOf(rejected);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:[]}],claims:[{
+     claimId:claim.claimId,status:'partial',sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanId],attributionStatus:'not_applicable'}],clauses:[
+      {start:0,end:supported.length,text:supported,status:'answered',issueCode:'none',
+       sources:[{sourceId:'S1',spanIds:[spanId]}]},
+      {start:rejectedStart,end:claim.text.length,text:rejected,status:'partial',issueCode:'scope',
+       sources:[{sourceId:'S1',spanIds:[]}]}
+     ]}]})};
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What does the passage identify as the cause of the war?',
+  answerVariant:'with-review',trace:true,
+  sources:[pilot.fixture.body.sources[0]],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What does the passage identify as the cause of the war?',
+    sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ assert.equal(result.pipeline,'reader-evidence-v2');
+ assert.match(result.answer,/The passage links Athens’ growth with Sparta’s fear\. \[S1\]/);
+ assert.doesNotMatch(result.answer,/reason alone establishes the war’s cause/);
+ assert.equal(result.evidenceMap.length,1);
+ assert.equal(result.trace.clauseSalvage.adoptions,1);
+});
+
 test('batch 22 citation gate repairs a realistic uncited source-required part through evidence-v2 pilot',async()=>{
  const token='batch22-citation-adoption-pilot-fixture-token';
  let composeCalls=0,reviewCalls=0,repairCalls=0;
