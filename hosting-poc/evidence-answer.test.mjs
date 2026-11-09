@@ -4501,6 +4501,30 @@ test('citation gate records a forbidden repair field as schema refusal rather th
  assert.equal(result.outcome,'generation-failed');
 });
 
+test('citation gate records unexpected provider throws separately from validation refusals (batch 22)',async()=>{
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
+ const providerFailure=Object.assign(new TypeError('simulated repair adapter failure'),
+  {code:'adapter-bug'});
+ const ai=makeAI([answer('PART P1\nHume explains necessity through custom.'),
+  uncitedReview,providerFailure],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ const repair=result.trace.citationGate[0];
+ assert.equal(repair.action,'repair-threw');
+ assert.equal(repair.repairFailure.failureStep,'provider-call');
+ assert.equal(repair.repairFailure.errorClass,'TypeError');
+ assert.equal(repair.repairFailure.code,'adapter-bug');
+ assert.equal(repair.repairFailure.message,'simulated repair adapter failure');
+ assert.equal(repair.repairFailure.inputShape.partId,'P1');
+ assert.equal(repair.repairFailure.inputShape.targetCount,1);
+ assert.equal(repair.repairFailure.inputShape.answerCount,1);
+ assert.equal(repair.repairFailure.inputShape.linkedSourceCount,1);
+ assert.ok(repair.repairFailure.inputShape.repairPayloadBytes>0);
+ assert.equal(result.trace.citationGateSummary.outcomes.repairThrew,1);
+ assert.equal(result.outcome,'generation-failed');
+});
+
 test('source-required containment drops one peripheral uncited part but suppresses an uncited majority (batch 22)',async()=>{
  const runFixture=async(uncitedPartIds)=>{
   const plan={...twoSidePlan};
