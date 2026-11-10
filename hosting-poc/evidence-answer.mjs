@@ -1748,7 +1748,8 @@ function deriveDirectAnswerCovered(directAnswerIds,acceptedDirectAnswerIds,
 // not covered, is partial; incomplete requirements and a missing
 // comparison source group each demote an otherwise answered status.
 function derivePartStatuses({reviewerStatus,reviewerAnswerStatus,acceptedCount,
-  directAnswerIds,directAnswerCovered,requirementsComplete,comparisonComplete}){
+  directAnswerIds,directAnswerCovered,requirementsComplete,comparisonComplete,
+  derivedDirectAnswer=false}){
   let status=reviewerStatus||'unanswered';
   let answerStatus=reviewerAnswerStatus||reviewerStatus||'unanswered';
   if(!acceptedCount){status='unanswered';answerStatus='unanswered';}
@@ -1756,6 +1757,17 @@ function derivePartStatuses({reviewerStatus,reviewerAnswerStatus,acceptedCount,
   // Evidence coverage and answer completeness are scored separately,
   // but every nominated direct-answer claim must survive its checks.
   else if(status!=='answered'||!directAnswerCovered)status='partial';
+  // Batch 28 (B28-2): when the direct-answer set was derived
+  // deterministically (the reviewer nominated nothing, but its own
+  // requirement coverage names accepted answer claims), the
+  // reviewer's 'unanswered' rests on that same omission and cannot
+  // strand the accepted content: a covered derived direct answer
+  // makes the part answered, after which the ordinary demotions
+  // below still apply (incomplete requirements hold it to partial).
+  // Reviewer nominations are never overridden — this fires only
+  // when the derivation engaged.
+  if(derivedDirectAnswer&&acceptedCount&&answerStatus==='unanswered'&&directAnswerCovered)
+    answerStatus='answered';
   if(answerStatus==='answered'&&!directAnswerCovered)answerStatus='partial';
   if(directAnswerIds.length&&!directAnswerCovered&&acceptedCount)answerStatus='partial';
   if(!requirementsComplete&&answerStatus==='answered')answerStatus='partial';
@@ -1990,14 +2002,28 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       const clauseReview=normalizeClaimClauseDecisions(decision.clauses,answer.text,citedIds,
         reviewSpanMaps.get(part.id)||new Map());
       // Batch 27 (B27-4): record every traceable clause finding for
-      // each cited source of this claim, in the normalization's own
-      // terms (overall clause status, exactly as the demotion below
-      // reads it). The rescue packet's outstanding list is built from
-      // these records plus the claim-clause-not-supported issues.
+      // each cited source of this claim. Batch 28 (B28-1): the recorded
+      // status is the SOURCE's own clause-decision status, not the
+      // clause's overall status. The clause veto in re-normalization
+      // reads each pair separately (a clause answered overall can
+      // still demote one cited pair), and the veto can only be cleared
+      // for pairs whose open clauses were actually listed in the
+      // rescue packet — under overall-status recording a clause
+      // answered via another source never reached this pair's packet
+      // (batch 27: every vetoed flip had clausesSent=0). A cited
+      // source with no entry in the clause's sources list records
+      // 'unanswered' — the same reading the veto applies to it, since
+      // the clause is open for that pair until its own decision says
+      // otherwise. The packet filter (status !== 'answered') and all
+      // consumers are unchanged in shape.
       for(const clause of clauseReview.decisions){
         if(!clause.text)continue;
-        for(const sourceId of citedIds)clauseFindings.push({partId:part.id,
-          claimId:answer.claimId,sourceId,text:clause.text,status:clause.status});
+        for(const sourceId of citedIds){
+          const sourceClause=(clause.sources||[]).find(entry=>entry.sourceId===sourceId);
+          clauseFindings.push({partId:part.id,
+            claimId:answer.claimId,sourceId,text:clause.text,
+            status:sourceClause?sourceClause.status:'unanswered'});
+        }
       }
       if(clauseReview.warnings.length)warnings.push({partId:part.id,claimId:answer.claimId,
         code:'clause-review-normalization',details:clauseReview.warnings});
@@ -2376,22 +2402,12 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         validationReason:claimStatus==='answered'?null:'claim-narrowing-failed-evidence-validation'});
     }
     const acceptedClaimIds=new Set(acceptedAnswers.map(answer=>answer.claimId));
-    const directAnswerIds=reviewerPart?.directAnswerClaimIds||[];
-    for(const invalidId of reviewerPart?.invalidDirectAnswerClaimIds||[])
-      supportIssues.push({partId:part.id,reason:'invalid-direct-answer-claim-id',claimId:invalidId});
-    const acceptedDirectAnswerIds=directAnswerIds.filter(id=>acceptedClaimIds.has(id));
-    // The reviewer identifies which claim or claims answer this part
-    // (see deriveDirectAnswerCovered). This lets a sound later sentence
-    // answer the question when the opening sentence is weak, without
-    // relaxing evidence review.
-    const directAnswerCovered=deriveDirectAnswerCovered(directAnswerIds,
-      acceptedDirectAnswerIds,reviewerPart?.invalidDirectAnswerClaimIds,
-      reviewerPart?.answerStatus);
-    if(!directAnswerCovered&&acceptedAnswers.length){
-      const reason=directAnswerIds.length?'direct-answer-claim-not-supported':'direct-answer-claim-missing';
-      supportIssues.push({partId:part.id,reason});
-    }
     const plannedRequirements=part.requirements||[];
+    // Batch 28 (B28-2): requirement coverage is computed before the
+    // direct-answer derivation below, because the derivation reads
+    // its accepted answer claims. Each entry's answerClaimIds are
+    // already filtered to accepted claims, so the filter here is the
+    // same one this block has always applied.
     const requirementCoverage=plannedRequirements.map(requirement=>{
       const decision=(reviewerPart?.requirementCoverage||[])
         .find(item=>item.requirementId===requirement.id);
@@ -2408,6 +2424,39 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     });
     const requirementsComplete=!plannedRequirements.length||
       requirementCoverage.every(item=>item.status==='answered');
+    for(const invalidId of reviewerPart?.invalidDirectAnswerClaimIds||[])
+      supportIssues.push({partId:part.id,reason:'invalid-direct-answer-claim-id',claimId:invalidId});
+    // Batch 28 (B28-2): deterministic direct-answer derivation. When
+    // the reviewer nominated no direct-answer claims for the part but
+    // its requirement coverage names accepted answer claims, the
+    // direct-answer set is derived from those accepted
+    // requirement-answer claims (requirement order, deduplicated).
+    // Batch 27's Orwell failure: every claim accepted, requirements
+    // answered, directAnswerClaimIds empty — the part finalized
+    // 'unanswered' and the assembly filter discarded 27 of 27
+    // review-accepted claims. The derivation reuses the existing
+    // coverage machinery unchanged (deriveDirectAnswerCovered still
+    // fails closed on invalid ids); non-empty reviewer nominations
+    // are never touched.
+    let directAnswerIds=reviewerPart?.directAnswerClaimIds||[];
+    let directAnswerDerived=false;
+    if(!directAnswerIds.length){
+      const derivedIds=[...new Set(requirementCoverage
+        .flatMap(item=>item.answerClaimIds))];
+      if(derivedIds.length){directAnswerIds=derivedIds;directAnswerDerived=true;}
+    }
+    const acceptedDirectAnswerIds=directAnswerIds.filter(id=>acceptedClaimIds.has(id));
+    // The reviewer identifies which claim or claims answer this part
+    // (see deriveDirectAnswerCovered). This lets a sound later sentence
+    // answer the question when the opening sentence is weak, without
+    // relaxing evidence review.
+    const directAnswerCovered=deriveDirectAnswerCovered(directAnswerIds,
+      acceptedDirectAnswerIds,reviewerPart?.invalidDirectAnswerClaimIds,
+      reviewerPart?.answerStatus);
+    if(!directAnswerCovered&&acceptedAnswers.length){
+      const reason=directAnswerIds.length?'direct-answer-claim-not-supported':'direct-answer-claim-missing';
+      supportIssues.push({partId:part.id,reason});
+    }
     // Do not rely on the planner's intent label to decide whether a part is
     // a multi-source comparison. The trusted part scope and catalog groups
     // are authoritative: if a part names multiple primary/subject groups,
@@ -2418,7 +2467,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     const derivedStatuses=derivePartStatuses({reviewerStatus:reviewerPart?.status,
       reviewerAnswerStatus:reviewerPart?.answerStatus,
       acceptedCount:acceptedAnswers.length,directAnswerIds,directAnswerCovered,
-      requirementsComplete,comparisonComplete});
+      requirementsComplete,comparisonComplete,derivedDirectAnswer:directAnswerDerived});
     let status=derivedStatuses.status,answerStatus=derivedStatuses.answerStatus;
     if(derivedStatuses.statusBeforeComparison==='answered'&&!comparisonComplete)
       supportIssues.push({partId:part.id,reason:'comparison-support-missing-source-group'});
@@ -2432,7 +2481,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       ...(plannedRequirements.length?{requirementsComplete,requirementCoverage}:{}),
       directAnswerClaimIds:directAnswerIds,
       acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
-      directAnswerCovered});
+      directAnswerCovered,
+      // Batch 28 (B28-2): the derivation is recorded on the decision
+      // so a trace can show the direct-answer set came from the
+      // requirement coverage, not from a reviewer nomination.
+      ...(directAnswerDerived?{directAnswerDerived:true}:{})});
     answerContext.push(...acceptedAnswers);
     const requirementClaimIds=new Map();
     for(const decision of requirementCoverage)for(const claimId of decision.answerClaimIds){
@@ -4187,8 +4240,16 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           const planPart=plan.parts.find(item=>item.id===partId);
           const acceptedClaimIds=new Set((mergedPart.answers||[])
             .map(answer=>answer.claimId));
-          const directAnswerIds=rawPart?.directAnswerClaimIds||
+          // Batch 28 (B28-2): prefer a non-empty reviewer nomination;
+          // an empty raw list falls back to the merged decision's set,
+          // which carries the B28-2 derived set when normalization
+          // derived one (an empty array would otherwise shadow it and
+          // re-strand the part at recompute).
+          const directAnswerIds=rawPart?.directAnswerClaimIds?.length?
+            rawPart.directAnswerClaimIds:
             mergedDecision.directAnswerClaimIds||[];
+          const directAnswerDerived=!(rawPart?.directAnswerClaimIds?.length)&&
+            mergedDecision.directAnswerDerived===true;
           const acceptedDirectAnswerIds=directAnswerIds
             .filter(id=>acceptedClaimIds.has(id));
           const directAnswerCovered=deriveDirectAnswerCovered(directAnswerIds,
@@ -4227,7 +4288,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           const derived=derivePartStatuses({reviewerStatus:rawPart?.status,
             reviewerAnswerStatus:rawPart?.answerStatus,
             acceptedCount:acceptedClaimIds.size,directAnswerIds,
-            directAnswerCovered,
+            directAnswerCovered,derivedDirectAnswer:directAnswerDerived,
             requirementsComplete:requirementsComplete!==false,
             comparisonComplete:!review.supportIssues.some(issue=>
               issue.partId===partId&&
@@ -4829,7 +4890,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               // Re-review follows the same per-part split as the initial
               // review: one concurrent call per repaired part, normalized
               // in plan order.
-              const repairedPackets=await Promise.all(repairedChecked.parts.map(async repairedPart=>{
+              // Batch 28 (B28-2): the per-part re-reviews settle
+              // independently. Batch 27's Orwell failure ran them under
+              // one Promise.all, so a single part's deadline aborted
+              // every sibling's re-review and the whole repair was
+              // discarded even where it had succeeded. A part whose
+              // re-review call fails is recorded with its own failure
+              // and simply never enters the adoption set below; the
+              // adoption rule itself is unchanged.
+              const settledReReviews=await Promise.allSettled(repairedChecked.parts.map(async repairedPart=>{
                 const packet=buildReviewPacket([repairedPart],
                   {sources,pageById,plan:targetPlan,question,
                    priorRejectionsByPart:priorRejectionsByPart()});
@@ -4837,6 +4906,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                   packet.reviewPayload,parseReviewJson,{partId:repairedPart.partId});
                 return {repairedPart,packet,rawReview};
               }));
+              const repairedPackets=[],reReviewFailures=[];
+              settledReReviews.forEach((settled,index)=>{
+                if(settled.status==='fulfilled')repairedPackets.push(settled.value);
+                else reReviewFailures.push({partId:repairedChecked.parts[index].partId,
+                  reason:typeof settled.reason?.code==='string'?
+                    settled.reason.code:'answer-re-review-failed'});
+              });
+              if(reReviewFailures.length)
+                answerRepairTrace.reReviewFailures=reReviewFailures;
               // Batch 5 (L4): adoption is per part. Adoption used to be
               // all-or-nothing — one part whose re-review still failed
               // discarded every other part's successful repair. Now a part
@@ -4880,8 +4958,14 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               }
               if(!adoptedPartIds.length)
                 throw new ModelFormatError('answer-re-review','Repaired direct answer did not pass independent review.',
-                  rejectedRepairParts.some(item=>item.reason==='answer-re-review-incomplete')?
-                    'answer-re-review-incomplete':'answer-re-review-unsupported');
+                  // Batch 28 (B28-2/B28-3): when a re-review call
+                  // itself failed, its own code names the failure (the
+                  // re-review deadline), not the generic incomplete
+                  // label — the same code the old all-or-nothing
+                  // Promise.all surfaced through the outer catch.
+                  reReviewFailures[0]?.reason||
+                  (rejectedRepairParts.some(item=>item.reason==='answer-re-review-incomplete')?
+                    'answer-re-review-incomplete':'answer-re-review-unsupported'));
               const adoptedIds=new Set(adoptedPartIds);
               // Batch 8 (B8-2): an adopted repair was judged by a real
               // review round; its rejections join the archive before
@@ -7371,6 +7455,31 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         {...failure,validationReasons:validationReasonCodes(trace.rejected)}:
         failure?{stage:failure.stage,code:failure.code}:null,
       reviewFailure,elapsedMs:Date.now()-started};
+    // Batch 28 (B28-3): outcome-surface honesty. The
+    // unverified-source-draft label collapses five distinct
+    // downgrade flags, and until now nothing on the result named
+    // which ones fired — batch 27's Plato outcome read as unreviewed
+    // prose when the truth (a strict-minority part dropped after
+    // failed review, every shipped sentence reviewed) was only
+    // reconstructable from the trace. Whenever any flag fires, the
+    // result carries downgradeReasons naming them; the outcome label
+    // strings themselves are unchanged. Likewise, a build that ends
+    // with no answer after a stage failure (the Orwell shape: the
+    // answer-repair cycle died at a re-review deadline) carried an
+    // empty failureCode — the stage's recorded failure is surfaced
+    // instead, without touching the build's own failure bindings.
+    const downgradeReasons=[];
+    if(salvage)downgradeReasons.push('salvage');
+    if(unreviewed)downgradeReasons.push('unreviewed');
+    if(unvalidatedPartsDropped)downgradeReasons.push('unvalidatedPartsDropped');
+    if(hasReviewCoverageGaps)downgradeReasons.push('hasReviewCoverageGaps');
+    if(hasUntracedCitedClaims)downgradeReasons.push('hasUntracedCitedClaims');
+    if(downgradeReasons.length)trace.final={...(trace.final||{}),downgradeReasons};
+    const stageFailure=(!answer&&!failure&&!reviewFailure&&
+      trace.answerRepair?.attempted===true&&trace.answerRepair?.applied!==true&&
+      trace.answerRepair?.reason&&
+      trace.answerRepair.reason!=='answer-repair-no-material-change')?
+      {code:trace.answerRepair.reason,stage:'answer-repair'}:null;
     const noText=!answer;
     return {outcome:answer?((salvage||unreviewed||unvalidatedPartsDropped||hasReviewCoverageGaps||hasUntracedCitedClaims)?'unverified-source-draft':used.size?'verified-source-draft':'general-context-answer'):
         failure?'generation-failed':'insufficient-evidence',
@@ -7388,6 +7497,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         used.size||reviewedLibraryClaims?'claim-review':'general-context-review',
       ...(failure?{failureCode:failure.code,failureStage:failure.stage}:{}),
       ...(reviewFailure?{failureCode:reviewFailure.code,failureStage:reviewFailure.stage}:{}),
+      // Batch 28 (B28-3): the downgrade reasons and the causing
+      // stage failure ride on the result itself (see above); both
+      // are conditional spreads, so a result with no downgrade and
+      // no stage failure keeps its exact previous shape.
+      ...(downgradeReasons.length?{downgradeReasons}:{}),
+      ...(stageFailure?{failureCode:stageFailure.code,failureStage:stageFailure.stage}:{}),
       // Batch 10 (B10-4): always present in v2 build results — the
       // batch-9 lesson was a depthRepair field that existed at both
       // ends (gateway spread, harness normalization) but was never
