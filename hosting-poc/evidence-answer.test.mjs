@@ -7444,7 +7444,10 @@ function batch24RouterAI({reviewClaims,rescueVerdict}){
    const payload=JSON.parse(request.messages[1].content);
    return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
     claimId:item.claimId,sourceId:item.sourceId,verdict:rescueVerdict,
-    fragment:item.spans[0].text}))})};
+    fragment:item.spans[0].text,
+    // Batch 25 (B25-Q2): a supported verdict must carry the
+    // element-by-element check or the parser downgrades it.
+    ...(rescueVerdict==='supported'?{elements:[{element:item.claimText,stated:true}]}:{})}))})};
   }
   if(system.startsWith('Patch only the requested claims')){
    const payload=JSON.parse(request.messages[1].content);
@@ -7615,4 +7618,384 @@ test('batch 24 pseudonymous-voice guard: a span naming the speaker identifies th
   'the bound span names Johannes de Silentio, so the voice is identified by the evidence');
  assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
   issue.reason==='pseudonymous-voice-unidentified'));
+});
+
+// ---------------------------------------------------------------------------
+// Batch 25 (B25-Q1/Q2/Q3/Q4/L1/L2)
+// ---------------------------------------------------------------------------
+
+// Stage-keyed router for the batch-25 fixtures: composer, initial
+// review (and any re-review, via reviewResponder), rescue, and repair
+// responders are supplied per test.
+function batch25RouterAI({reviewResponder,rescueResponder,repairResponder,
+  draftText='PART P1\nHume says custom operates on the imagination. [S1]'}={}){
+ const calls=[];
+ const ai={calls,run:async(_model,request)=>{
+  calls.push(request);
+  const system=String(request?.messages?.[0]?.content||'');
+  if(system.startsWith('Answer the reader'))return {response:draftText};
+  if(system.startsWith('Judge only the listed claim')){
+   if(!rescueResponder)throw new Error('unexpected rescue call');
+   return rescueResponder(request);
+  }
+  if(system.startsWith('Patch only the requested claims')){
+   if(!repairResponder)throw new Error('unexpected repair call');
+   return repairResponder(request);
+  }
+  if(system.startsWith('Review the complete answer'))return reviewResponder(request);
+  throw new Error('unexpected AI call: '+system.slice(0,60));
+ }};
+ return ai;
+}
+const rescueSupportedResponder=({messages})=>{
+ const payload=JSON.parse(messages[1].content);
+ return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+  claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
+  fragment:item.spans[0].text,
+  elements:[{element:item.claimText,stated:true}]}))})};
+};
+const planWithRequirement={...onePartPlan,parts:[{...onePartPlan.parts[0],
+ requirements:[{id:'P1-R1',text:'Explain the role of custom in causal inference.'}]}]};
+
+test('batch 25 Q1: rescue flips propagate into the part contract so the rescued part ships',async()=>{
+ // Production shape (Kierkegaard sel-p1, batch 24): the reviewer's
+ // requirement coverage maps NO claims (answerClaimIds []) and every
+ // claim is rejected, so the part contract reads unanswered even
+ // after the rescue flips its direct-answer claim.
+ const reviewResponder=()=>({response:JSON.stringify({parts:[{partId:'P1',
+   status:'partial',answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
+   retainedContextClaimIds:[],
+   requirementCoverage:[{requirementId:'P1-R1',status:'partial',answerClaimIds:[]}]}],
+  claims:[{claimId:'P1-C1',status:'partial',
+   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
+    subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})});
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:rescueSupportedResponder});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:planWithRequirement,catalog,trace:true});
+ assert.equal(result.trace.rescueReview.parts[0].flipped,1);
+ assert.match(result.answer,/custom operates on the imagination/,
+  'the rescued part ships its prose');
+ assert.match(result.answer,/\[S1\]/,'the rescued part ships cited');
+ const recompute=result.trace.contractRecompute;
+ assert.ok(recompute,'the contract recompute is recorded');
+ assert.equal(recompute.parts[0].partId,'P1');
+ assert.equal(recompute.parts[0].before.requirements['P1-R1'],'partial');
+ assert.equal(recompute.parts[0].after.requirements['P1-R1'],'answered',
+  'the empty requirement mapping is recomputed from the now-accepted direct-answer claim');
+ assert.notEqual(recompute.parts[0].after.finalStatus,'unanswered');
+ const decision=result.trace.reviewContract.partDecisions.find(item=>item.partId==='P1');
+ assert.deepEqual(decision.requirementCoverage[0].answerClaimIds,['P1-C1']);
+ assert.equal(decision.requirementCoverage[0].status,'answered');
+ assert.notEqual(decision.finalStatus,'unanswered',
+  'the shipped part decision no longer reads unanswered');
+});
+
+test('batch 25 Q2: a part with accepted claims but incomplete coverage gets a rescue pass',async()=>{
+ const draftText='PART P1\nHume says custom operates on the imagination. [S1]\n'+
+  'Hume says the mind is determined by custom to infer one object from another. [S1]';
+ const reviewResponder=()=>({response:JSON.stringify({parts:[{partId:'P1',
+   status:'partial',answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
+   retainedContextClaimIds:[],
+   requirementCoverage:[{requirementId:'P1-R1',status:'partial',answerClaimIds:['P1-C1']}]}],
+  claims:[{claimId:'P1-C1',status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+     subjectAttributionStatus:'supported',attributedSubject:'Hume'}]},
+   {claimId:'P1-C2',status:'partial',
+    sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
+     subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})});
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:rescueSupportedResponder,
+  draftText});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:planWithRequirement,catalog,trace:true});
+ const rescue=result.trace.rescueReview;
+ assert.ok(rescue,'rescue fired although one claim was already accepted');
+ assert.equal(rescue.parts[0].trigger,'coverage-incomplete');
+ assert.equal(rescue.parts[0].flipped,1);
+ assert.deepEqual(rescue.parts[0].claims.map(claim=>claim.claimId),['P1-C2'],
+  'only the rejected pair was re-judged');
+ assert.match(result.answer,/determined by custom to infer one object from another/,
+  'the rescued claim ships beside the already-accepted one');
+});
+
+test('batch 25 Q2: a supported verdict with an unstated element does not flip',async()=>{
+ const reviewResponder=()=>({response:JSON.stringify({parts:[{partId:'P1',
+   status:'partial',answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
+   retainedContextClaimIds:[]}],
+  claims:[{claimId:'P1-C1',status:'partial',
+   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
+    subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})});
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
+   fragment:item.spans[0].text,
+   elements:[{element:'custom operates on the imagination',stated:true},
+    {element:'custom is the sole guide of human life',stated:false}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ const rescue=result.trace.rescueReview;
+ assert.equal(rescue.parts[0].flipped,0,
+  'the multi-element claim is not flipped while one element is unstated');
+ assert.equal(rescue.parts[0].claims[0].verdict,'not-supported');
+ assert.equal(rescue.parts[0].claims[0].elementDowngrade,true);
+ assert.equal(rescue.parts[0].claims[0].elements.length,2,
+  'the element check is recorded in the trace');
+ assert.doesNotMatch(result.answer,/custom operates on the imagination/);
+});
+
+test('batch 25 Q3: an invalid rescue response gets one compact retry and the flips apply',async()=>{
+ const reviewResponder=()=>({response:JSON.stringify({parts:[{partId:'P1',
+   status:'partial',answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
+   retainedContextClaimIds:[]}],
+  claims:[{claimId:'P1-C1',status:'partial',
+   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
+    subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})});
+ let rescueCalls=0;
+ const rescueResponder=request=>{
+  rescueCalls++;
+  if(rescueCalls===1){
+   const payload=JSON.parse(request.messages[1].content);
+   return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+    claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
+    fragment:'a fragment that appears in no supplied span',
+    elements:[{element:item.claimText,stated:true}]}))})};
+  }
+  return rescueSupportedResponder(request);
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ const rescue=result.trace.rescueReview;
+ assert.equal(rescueCalls,2,'the rescue was retried exactly once');
+ assert.equal(rescue.parts[0].outcome,'completed-after-retry');
+ assert.equal(rescue.parts[0].attempts.length,2);
+ assert.equal(rescue.parts[0].attempts[0].outcome,'invalid-response');
+ assert.equal(rescue.parts[0].attempts[1].compact,true);
+ assert.equal(rescue.parts[0].flipped,1);
+ assert.match(result.answer,/custom operates on the imagination/,
+  'the retried rescue flips the claim and the part ships');
+});
+
+test('batch 25 Q4: a gate repair citing one of several linked sources is adopted',async()=>{
+ const twoSourcePlan={...onePartPlan,parts:[{...onePartPlan.parts[0],
+  candidateSourceIds:['S1','S2'],sourceBookIds:['35','40']}]};
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
+ const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction. [S1]'}],
+  additions:[]}]})};
+ const citedReReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.'),
+  uncitedReview,citedRepair,citedReReview],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume,kant],ai,[],{plan:twoSourcePlan,catalog,trace:true});
+ assert.equal(ai.calls.length,4,'compose, review, the gate repair, and its re-review');
+ assert.deepEqual(result.trace.citationGate,
+  [{partId:'P1',action:'repair-applied',preGateStatus:'answered'}],
+  'citing one of the two linked sources now satisfies the candidate check');
+ assert.match(result.answer,/regular conjunction\. \[S1\]/);
+ assert.equal(result.questionParts[0].status,'supported');
+ assert.deepEqual(result.trace.repairCycleLedger,
+  {P1:[{phase:'citation-presence',outcomeChanged:true}]},
+  'the adopted gate cycle is recorded in the cross-phase ledger');
+});
+
+test('batch 25 Q4: a gate repair citing a foreign source is still refused',async()=>{
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1','P1-C2']}],claims:[]})};
+ const foreignRepair={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:[
+   {claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction in experience. [S2]'},
+   {claimId:'P1-C2',text:'Custom, for Hume, guides the inference from one object to another.'}],
+  additions:[]}]})};
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.\n\n'+
+   'Custom, for Hume, guides causal inference.'),
+  uncitedReview,foreignRepair],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume,kant],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.citationGate[0].action,'repair-refused');
+ assert.equal(result.trace.citationGate[0].repairFailure.failureStep,'citation-candidate-check',
+  'a citation outside the part’s linked sources does not satisfy the gate');
+ assert.equal(result.trace.citationGate[0].repairFailure.candidateCheck.linkedSourceCount,1);
+ assert.doesNotMatch(result.answer,/regular conjunction in experience/);
+});
+
+test('batch 25 L1: a one-claim repair re-reviews only that claim and carries the rest',async()=>{
+ const claimTexts=[
+  'Hume links necessity to custom and regular conjunction.',
+  'Custom determines the mind to infer one object from another.',
+  'Constant conjunction is observed throughout nature.',
+  'The idea of necessity arises from an impression of reflection.'];
+ const draft='PART P1\n'+claimTexts.join('\n\n');
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+  retainedContextClaimIds:['P1-C1','P1-C2','P1-C3','P1-C4']}],claims:[]})};
+ const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:claimTexts.map((text,index)=>({claimId:'P1-C'+(index+1),
+   text:index===0?text+' [S1]':text})),
+  additions:[]}]})};
+ let reReviewPayload=null;
+ const deltaReReview=(_model,{messages})=>{
+  reReviewPayload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:reReviewPayload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],
+   claims:reReviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const ai=makeAI([answer(draft),uncitedReview,citedRepair,deltaReReview],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,4,'compose, review, the gate repair, and its re-review');
+ assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C1'],
+  'the re-review packet contains only the claim whose citation set changed');
+ assert.deepEqual(result.trace.deltaReReview,
+  [{partId:'P1',deltaClaimIds:['P1-C1'],carriedClaimIds:['P1-C2','P1-C3','P1-C4']}]);
+ assert.equal(result.trace.citationGate[0].action,'repair-applied');
+ for(const text of claimTexts)
+  assert.ok(result.answer.includes(text),
+   'carried claims keep their verdicts and ship: '+text.slice(0,40));
+ assert.match(result.answer,/regular conjunction\. \[S1\]/);
+});
+
+test('batch 25 L1: a repair changing every claim falls back to a full re-review',async()=>{
+ const claimTexts=[
+  'Hume links necessity to custom and regular conjunction.',
+  'Custom determines the mind to infer one object from another.'];
+ const draft='PART P1\n'+claimTexts.join('\n\n');
+ const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+  retainedContextClaimIds:['P1-C1','P1-C2']}],claims:[]})};
+ const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:claimTexts.map((text,index)=>({claimId:'P1-C'+(index+1),
+   text:text+' [S1]'})),
+  additions:[]}]})};
+ let reReviewPayload=null;
+ const fullReReview=(_model,{messages})=>{
+  reReviewPayload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:reReviewPayload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],
+   claims:reReviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const ai=makeAI([answer(draft),uncitedReview,citedRepair,fullReReview],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,4);
+ assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C1','P1-C2'],
+  'every claim changed, so the re-review packet is the whole part');
+ assert.deepEqual(result.trace.deltaReReview,
+  [{partId:'P1',deltaClaimIds:['P1-C1','P1-C2'],carriedClaimIds:[]}]);
+ assert.equal(result.trace.citationGate[0].action,'repair-applied');
+});
+
+test('batch 25 L2: cycles are ledgered across phases and a changed first cycle allows a second',async()=>{
+ // Phase 1 (answer repair): the reviewer marks the part repairable
+ // with its direct answer unsupported; the repair is adopted (the
+ // outcome class changes) but the adopted text still ships uncited,
+ // so the citation gate runs phase 2 and its repair is adopted too.
+ const initialReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+   answerStatus:'partial',repairable:true,directAnswerClaimIds:['P1-C1'],
+   retainedContextClaimIds:[]}],
+  claims:[{claimId:'P1-C1',status:'partial',
+   sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
+   clauses:[{text:'Hume links necessity to custom.',status:'partial',issueCode:'none',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
+ const repairOnce=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'Hume links necessity to custom and regular conjunction.'})),
+   additions:[]}]})};
+ };
+ const acceptCited=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const acceptContext=()=>({response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+   retainedContextClaimIds:['P1-C1']}],claims:[]})});
+ const gateRepair={response:JSON.stringify({parts:[{partId:'P1',
+  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction. [S1]'}],
+  additions:[]}]})};
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom. [S1]'),
+  initialReview,rescueRejection(),repairOnce,acceptContext,gateRepair,acceptCited],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.answerRepair.applied,true,
+  'the answer-repair cycle adopted its candidate');
+ assert.equal(result.trace.citationGate[0].action,'repair-applied',
+  'the gate cycle still ran after the changed first cycle');
+ assert.deepEqual(result.trace.repairCycleLedger,
+  {P1:[{phase:'answer-repair',outcomeChanged:true},
+    {phase:'citation-presence',outcomeChanged:true}]});
+});
+
+test('batch 25 L2: two no-change cycles are ledgered and no third repair is attempted',async()=>{
+ // Phase 1 (answer repair): repairable part, repair runs, its
+ // re-review rejects it — no change. Phase 2 (citation gate): the
+ // part still ships uncited; the gate repair produces a candidate
+ // whose re-review also refuses — no change. Later phases must not
+ // run another repair for the part.
+ const initialReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+   answerStatus:'partial',repairable:true,directAnswerClaimIds:['P1-C1'],
+   retainedContextClaimIds:['P1-C2']}],
+  claims:[{claimId:'P1-C1',status:'partial',
+   sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
+   clauses:[{text:'Hume links necessity to custom.',status:'partial',issueCode:'none',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
+ const repairOnce=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'Hume links necessity to custom and regular conjunction. [S1]'})),
+   additions:[]}]})};
+ };
+ const rejectingReReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+   answerStatus:'partial',directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'partial',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'partial',spanIds:[]}))}))})};
+ };
+ const gateRepair=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'Custom is the great guide of human life. [S1]'})),
+   additions:[]}]})};
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom. [S1]\n'+
+   'Custom is the great guide of human life.'),
+  initialReview,rescueRejection(),repairOnce,rejectingReReview,
+  gateRepair,rejectingReReview],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,7,
+  'compose, review, rescue, answer repair + re-review, gate repair + re-review — and nothing further');
+ assert.equal(result.trace.answerRepair.applied,false);
+ assert.deepEqual(result.trace.repairCycleLedger,
+  {P1:[{phase:'answer-repair',outcomeChanged:false},
+    {phase:'citation-presence',outcomeChanged:false}]},
+  'both cross-phase cycles are recorded as no-change');
 });
