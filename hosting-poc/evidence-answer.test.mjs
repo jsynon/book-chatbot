@@ -8623,3 +8623,257 @@ test('batch 27 B27-6: rendered-text verification still flags genuinely absent cl
   'Custom guides expectation. [S1]'),['P1-C2']);
 });
 
+// ---------------------------------------------------------------------------
+// Batch 28 (B28-1..B28-3)
+// ---------------------------------------------------------------------------
+
+test('batch 28 B28-1: a clause answered via one source is listed in the other source\'s rescue packet',async()=>{
+ // The clause is answered overall — Hume's spans establish it —
+ // but Kant's own clause decision is open (no spans). Under the
+ // batch-27 recording (overall status replicated to every cited
+ // source) the S2 pair's packet listed zero outstanding clauses, so
+ // the veto population and the packet population could never agree.
+ const clauseText='Custom leads the mind to infer one object from another';
+ const claimText=clauseText+', and causality is a pure conception of the understanding.';
+ const twoSourcePlan={version:'reader-evidence-v2',intent:'compare',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How do Hume and Kant each ground causal necessity?',
+   sourceBookIds:['35','40'],searchQueries:['Hume Kant causality'],
+   candidateSourceIds:['S1','S2'],
+   requirements:[{id:'P1-R1',text:'Explain how custom grounds the inference to causal necessity.'}]}],
+  queries:['Hume Kant causality']};
+ const review={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[],
+   requirementCoverage:[{requirementId:'P1-R1',status:'partial',
+    answerClaimIds:['P1-C1']}]}],
+  claims:[{claimId:'P1-C1',status:'partial',
+   sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+     attributionStatus:'not_applicable',attributedSpeaker:'',evidenceRole:'work-assertion'},
+    {sourceId:'S2',status:'partial',spanIds:[],
+     attributionStatus:'not_applicable',attributedSpeaker:'',evidenceRole:'work-assertion'}],
+   clauses:[{text:clauseText,status:'answered',issueCode:'none',
+    sources:[{sourceId:'S1',spanIds:['S1-Q1']},{sourceId:'S2',spanIds:[]}]}]}]};
+ const ai=batch26RouterAI({
+  draft:`PART P1\n${claimText} [S1, S2]`,
+  review,
+  rescue:payload=>{
+   const item=payload.decisions[0];
+   assert.equal(item.sourceId,'S2','only the open pair is rescue-asked');
+   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
+    verdict:'supported',fragment:item.spans[0].text,
+    elements:[{element:item.claimText,stated:true}],
+    clauses:[{text:clauseText,stated:true,
+     fragment:'Causality is one of the categories of relation'}]}]})};
+  }});
+ const result=await composeEvidenceAnswer('How do Hume and Kant each ground causal necessity?',
+  [hume,kant],ai,[],{plan:twoSourcePlan,catalog,trace:true});
+ const pair=result.trace.rescueReview.parts[0].requestedPairs
+  .find(entry=>entry.sourceId==='S2');
+ assert.equal(pair.outstandingClauseCount,1,
+  'the per-source recording lists the clause for the pair it is open for');
+ assert.deepEqual(pair.outstandingClauses,[clauseText]);
+ assert.equal(result.trace.rescueReview.parts[0].flipped,1,
+  'the clearing clause verdict lets the flip apply');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S2');
+ assert.equal(decision.accepted,true);
+ assert.match(result.answer,/causality is a pure conception of the understanding/,
+  'the flipped claim text ships');
+ assert.equal(result.outcome,'verified-source-draft');
+});
+
+test('batch 28 B28-2: accepted requirement answers derive the direct-answer set the reviewer omitted',async()=>{
+ // The batch-27 Orwell shape: every claim accepted, the requirement
+ // answered by an accepted claim, but the reviewer's part verdict
+ // says answerStatus 'unanswered' with an empty directAnswerClaimIds
+ // — the omission that stranded 27 of 27 accepted claims.
+ const ai=batch26RouterAI({
+  draft:'PART P1\nCustom operates on the imagination and guides causal inference. [S1]',
+  review:{parts:[{partId:'P1',status:'answered',answerStatus:'unanswered',
+    directAnswerClaimIds:[],retainedContextClaimIds:[],
+    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
+     answerClaimIds:['P1-C1']}]}],
+   claims:[{claimId:'P1-C1',status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+     attributionStatus:'not_applicable',attributedSpeaker:'',
+     evidenceRole:'work-assertion'}]}]},
+  rescue:rescueNotSupported});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:planWithRequirement,catalog,trace:true});
+ const decision=result.trace.reviewContract.partDecisions.find(item=>item.partId==='P1');
+ assert.equal(decision.directAnswerDerived,true,
+  'the derivation is recorded on the part decision');
+ assert.deepEqual(decision.directAnswerClaimIds,['P1-C1']);
+ assert.equal(decision.directAnswerCovered,true);
+ assert.equal(result.questionParts[0].answerStatus,'answered');
+ assert.match(result.answer,/operates on the imagination/,
+  'the accepted answer ships instead of stranding at assembly');
+ assert.equal(result.outcome,'verified-source-draft');
+});
+
+test('batch 28 B28-2: reviewer nominations present leave the derivation and the verdict untouched',async()=>{
+ // Same shape as the Orwell test, but the reviewer DID nominate the
+ // direct-answer claim while still marking the part unanswered. The
+ // derivation engages only on the empty case, and a reviewer
+ // verdict is never overridden by it.
+ const ai=batch26RouterAI({
+  draft:'PART P1\nCustom operates on the imagination and guides causal inference. [S1]',
+  review:{parts:[{partId:'P1',status:'answered',answerStatus:'unanswered',
+    directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[],
+    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
+     answerClaimIds:['P1-C1']}]}],
+   claims:[{claimId:'P1-C1',status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+     attributionStatus:'not_applicable',attributedSpeaker:'',
+     evidenceRole:'work-assertion'}]}]},
+  rescue:rescueNotSupported});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:planWithRequirement,catalog,trace:true});
+ const decision=result.trace.reviewContract.partDecisions.find(item=>item.partId==='P1');
+ assert.equal(decision.directAnswerDerived,undefined,
+  'no derivation is recorded when the reviewer nominated claims');
+ assert.equal(result.questionParts[0].answerStatus,'unanswered',
+  'behavior is exactly the pre-batch-28 behavior for this shape');
+ assert.doesNotMatch(result.answer,/operates on the imagination/);
+});
+
+test('batch 28 B28-2: one part\'s re-review deadline cannot abort a sibling part\'s repair',async()=>{
+ const twoPartPlan={version:'reader-evidence-v2',intent:'compare',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[
+   {id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
+    searchQueries:['Hume necessity custom'],candidateSourceIds:['S1']},
+   {id:'P2',question:'How does Kant explain causal necessity?',sourceBookIds:['40'],
+    searchQueries:['Kant causality a priori'],candidateSourceIds:['S2']}],
+  queries:['Hume custom','Kant a priori']};
+ const repairedTexts={
+  P1:'Hume explains necessity through custom and repeated conjunction, repaired. [S1]',
+  P2:'Kant explains causality as an a priori category of the understanding, repaired. [S2]'};
+ const ai={calls:[],async run(model,request){
+  const messages=request.messages;
+  ai.calls.push(messages);
+  const system=messages[0].content;
+  if(system.startsWith('Answer the reader'))
+   return {response:'PART P1\nHume says necessity is a directly observed power. [S1]\n'+
+    'PART P2\nKant says causality is directly observed in experience. [S2]'};
+  if(system.startsWith('Judge only the listed claim')){
+   const payload=JSON.parse(messages[1].content);
+   return {response:JSON.stringify({decisions:(payload.decisions||[]).map(item=>({
+    claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
+    fragment:item.spans?.[0]?.text||'no support'}))})};
+  }
+  if(system.startsWith('Patch only the requested claims')){
+   const payload=parsePayload(messages);
+   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,
+    replacements:(part.repair?.replaceClaimIds||[])
+     .map(claimId=>({claimId,text:repairedTexts[part.partId]})),additions:[]}))})};
+  }
+  if(system.startsWith('Review the complete answer')){
+   const payload=parsePayload(messages);
+   const part=payload.parts[0],claim=payload.claims[0];
+   if(claim.text.includes('repaired')){
+    if(part.partId==='P2'){
+     const error=new Error('Inference deadline exceeded');
+     error.code='inference-deadline-exceeded';error.stage='answer-re-review';
+     throw error;
+    }
+    const spanId=claim.sourceEvidence
+     .find(item=>item.sourceId===claim.sourceIds[0]).spanIds[0];
+    return {response:JSON.stringify({parts:[{partId:part.partId,status:'answered',
+      answerStatus:'answered',directAnswerClaimIds:[claim.claimId]}],
+     claims:[{claimId:claim.claimId,status:'answered',
+      sources:[{sourceId:claim.sourceIds[0],status:'answered',spanIds:[spanId],
+       attributionStatus:'not_applicable',attributedSpeaker:'',
+       subjectAttributionStatus:'supported',
+       attributedSubject:part.partId==='P1'?'Hume':'Kant',
+       evidenceRole:'work-assertion'}]}]})};
+   }
+   return {response:JSON.stringify({parts:[{partId:part.partId,status:'partial',
+     answerStatus:'partial',repairable:true,directAnswerClaimIds:[claim.claimId]}],
+    claims:[{claimId:claim.claimId,status:'partial',
+     sources:[{sourceId:claim.sourceIds[0],status:'partial',spanIds:[]}]}]})};
+  }
+  throw new Error('unexpected stage: '+system.slice(0,60));
+ }};
+ const result=await composeEvidenceAnswer('How do Hume and Kant explain causal necessity?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],
+  {plan:twoPartPlan,catalog,trace:true});
+ assert.equal(result.trace.answerRepair.applied,true,
+  'the surviving part\'s repair still applies');
+ assert.deepEqual(result.trace.answerRepair.adoptedPartIds,['P1']);
+ assert.deepEqual(result.trace.answerRepair.reReviewFailures,
+  [{partId:'P2',reason:'inference-deadline-exceeded'}],
+  'the failed part records its own re-review failure');
+ assert.match(result.answer,/repeated conjunction, repaired/,
+  'the adopted repair ships');
+ assert.doesNotMatch(result.answer,/a priori category of the understanding, repaired/,
+  'the timed-out part\'s repair does not ship');
+});
+
+test('batch 28 B28-3: a strict-minority drop names unvalidatedPartsDropped on the result, label unchanged',async()=>{
+ // The batch-27 Plato shape: one part of three fails review twice
+ // and is dropped as a strict minority; every shipped sentence was
+ // reviewed. The outcome label stays 'unverified-source-draft' —
+ // but the result now says WHY it was downgraded.
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant treats causality as a category of relation and a pure conception of the understanding. [S2]\n'+
+  'PART P3\nHume ties causal expectation to custom, whereas Kant treats causality as an a priori category. [S1, S2]';
+ const dispatchReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  if(payload.parts[0].partId==='P2'){
+   const error=new Error('Review response was truncated');
+   error.code='review-output-truncated';error.stage='review';
+   throw error;
+  }
+  return review([['P1','answered'],['P2','answered'],['P3','answered']])(_model,{messages});
+ };
+ const ai=makeAI([answer(draft),dispatchReviewer,dispatchReviewer,dispatchReviewer,dispatchReviewer]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant differ over causal necessity?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:twoSidePlan,catalog,trace:true});
+ assert.equal(result.outcome,'unverified-source-draft',
+  'the outcome label string is unchanged');
+ assert.deepEqual(result.trace.reviewCompletion.unvalidatedPartIds,['P2']);
+ assert.ok(Array.isArray(result.downgradeReasons),
+  'the result carries its downgrade reasons');
+ assert.ok(result.downgradeReasons.includes('unvalidatedPartsDropped'),
+  'the dropped part is named as the downgrade cause');
+ assert.deepEqual(result.trace.final.downgradeReasons,result.downgradeReasons,
+  'the trace carries the same record');
+});
+
+test('batch 28 B28-3: a case lost to a stage failure carries the failure code on the result',async()=>{
+ // The repair is written, but its independent re-review dies on the
+ // provider deadline and nothing else ships. Before batch 28 the
+ // result carried no failureCode at all — the deadline existed only
+ // inside the trace's answer-repair record.
+ const deadlineError=Object.assign(new Error('Inference deadline exceeded'),
+  {code:'inference-deadline-exceeded',stage:'answer-re-review'});
+ const ai=makeAI([
+  answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
+  },
+  rescueRejection(),
+  (_model,{messages})=>{
+   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C1',text:
+    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]'}],additions:[]}]})};
+  },
+  deadlineError
+ ],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'insufficient-evidence');
+ assert.equal(result.trace.answerRepair.reason,'inference-deadline-exceeded');
+ assert.equal(result.failureCode,'inference-deadline-exceeded',
+  'the causing stage failure is surfaced on the result');
+ assert.equal(result.failureStage,'answer-repair');
+ assert.equal(result.downgradeReasons,undefined,
+  'no downgrade flag fired, so no downgradeReasons field appears');
+});
+
