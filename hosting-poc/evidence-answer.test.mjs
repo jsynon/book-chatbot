@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,findClaimCitationOffenses,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimPersonSubject,claimPersonSubjects,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,normalizeClaimClauseDecisions} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
-import {splitCitedSentenceUnits,reconcileFinalPartCoverage} from './evidence-answer.mjs';
+import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims} from './evidence-answer.mjs';
 
 test('batch 15 preserves quoted sentence punctuation and leading Markdown subtitles',()=>{
  for(const text of [
@@ -7861,7 +7861,12 @@ test('batch 25 L1: a one-claim repair re-reviews only that claim and carries the
  assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C1'],
   'the re-review packet contains only the claim whose citation set changed');
  assert.deepEqual(result.trace.deltaReReview,
-  [{partId:'P1',deltaClaimIds:['P1-C1'],carriedClaimIds:['P1-C2','P1-C3','P1-C4']}]);
+  [{partId:'P1',deltaClaimIds:['P1-C1'],carriedClaimIds:['P1-C2','P1-C3','P1-C4'],
+   claimMapping:[{candidateClaimId:'P1-C1',priorClaimId:'P1-C1'},
+    {candidateClaimId:'P1-C2',priorClaimId:'P1-C2'},
+    {candidateClaimId:'P1-C3',priorClaimId:'P1-C3'},
+    {candidateClaimId:'P1-C4',priorClaimId:'P1-C4'}],
+   newClaimIds:[],removedClaimIds:[]}]);
  assert.equal(result.trace.citationGate[0].action,'repair-applied');
  for(const text of claimTexts)
   assert.ok(result.answer.includes(text),
@@ -7899,7 +7904,10 @@ test('batch 25 L1: a repair changing every claim falls back to a full re-review'
  assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C1','P1-C2'],
   'every claim changed, so the re-review packet is the whole part');
  assert.deepEqual(result.trace.deltaReReview,
-  [{partId:'P1',deltaClaimIds:['P1-C1','P1-C2'],carriedClaimIds:[]}]);
+  [{partId:'P1',deltaClaimIds:['P1-C1','P1-C2'],carriedClaimIds:[],
+   claimMapping:[{candidateClaimId:'P1-C1',priorClaimId:'P1-C1'},
+    {candidateClaimId:'P1-C2',priorClaimId:'P1-C2'}],
+   newClaimIds:[],removedClaimIds:[]}]);
  assert.equal(result.trace.citationGate[0].action,'repair-applied');
 });
 
@@ -7998,4 +8006,316 @@ test('batch 25 L2: two no-change cycles are ledgered and no third repair is atte
   {P1:[{phase:'answer-repair',outcomeChanged:false},
     {phase:'citation-presence',outcomeChanged:false}]},
   'both cross-phase cycles are recorded as no-change');
+});
+
+// Batch 26. The addendum to the shipment-leak diagnosis measured the
+// batch-25 rescue end to end: 55 flips, ZERO accepted — 42 vetoed by
+// clause demotion and 13 by attribution vetoes in re-normalization,
+// because rescue flipped the pair's status without ever addressing the
+// layers that demote it; and re-review verdicts were merged by
+// positional claim ID across repair re-segmentation, so verdicts
+// landed on the wrong texts. The tests below cross the pilot route
+// (composeEvidenceAnswer) for each item: B26-1 clause clearances,
+// B26-2 attribution anchors, B26-3 text-identity claim mapping,
+// B26-4 flip-veto and rendered-text shipment records.
+const batch26RouterAI=({review, rescue, draft})=>{
+ const ai={calls:[], async run(model,request){
+  const messages=request.messages;
+  ai.calls.push(messages);
+  const system=messages[0].content;
+  if(system.startsWith('Answer the reader'))return {response:draft};
+  if(system.startsWith('Review the complete answer'))return {response:JSON.stringify(review)};
+  if(system.startsWith('Judge only the listed claim'))return rescue(parsePayload(messages));
+  if(system.startsWith('Patch only the requested claims')){
+   const payload=parsePayload(messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',
+    replacements:(payload.parts[0].repair||payload.parts[0]).replaceClaimIds
+     .map(claimId=>({claimId,text:'Custom is the great guide of human life. [S1]'})),
+    additions:[]}]})};
+  }
+  throw new Error('unexpected stage: '+system.slice(0,60));
+ }};
+ return ai;
+};
+const clausePartialReview={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+  directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2'],
+  directAnswerRequirementIds:[],requirements:[]}],
+ claims:[{claimId:'P1-C1',status:'partial',
+  sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
+   attributionStatus:'not_applicable',attributedSpeaker:'',
+   subjectAttributionStatus:'supported',attributedSubject:'Hume',
+   evidenceRole:'work-assertion',supportBoundary:'Supports the full sentence.'}],
+  clauses:[
+   {text:'Hume links necessity to custom',status:'answered',issueCode:'none',
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]},
+   {text:'treats constant conjunction as its basis',status:'partial',issueCode:'compound',
+    sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1']}]},
+   {text:'the mind is determined to infer one object from another',status:'answered',
+    issueCode:'none',sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}]}]};
+
+test('batch 26 B26-1: a rescue clearance of the outstanding clause lets the flip ship the claim',async()=>{
+ let rescuePayload;
+ const ai=batch26RouterAI({
+  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
+  review:clausePartialReview,
+  rescue:payload=>{
+   rescuePayload=payload;
+   const item=payload.decisions[0];
+   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
+    verdict:'supported',fragment:item.spans[0].text,
+    elements:[{element:item.claimText,stated:true}],
+    clauses:[{text:'treats constant conjunction as its basis',stated:true,
+     fragment:'similar objects are constantly conjoined'}]}]})};
+  }});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.deepEqual(rescuePayload.decisions[0].outstandingClauses,
+  [{text:'treats constant conjunction as its basis'}],
+  'the rescue request carries exactly the outstanding clause');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.ok(result.answer.includes('Hume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]'),
+  'the flipped claim sentence ships in the final answer');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.equal(decision.rescueAccepted,true);
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.deepEqual(rescueClaim.clearedClauses,
+  [{text:'treats constant conjunction as its basis',
+   fragment:'similar objects are constantly conjoined'}]);
+ assert.equal(rescueClaim.flipOutcome,'accepted');
+ assert.equal(rescueClaim.flipVeto,undefined);
+ const reconciliation=result.trace.finalCoverageReconciliation
+  .find(entry=>entry.partId==='P1');
+ assert.ok(reconciliation.shippedClaimIds.includes('P1-C1'));
+ assert.equal(reconciliation.textAbsentClaimIds,undefined,
+  'B26-4: rendered-text verification ran and found the shipped claim present');
+});
+
+test('batch 26 B26-1: without a clause clearance the demotion stands and the flip is recorded vetoed',async()=>{
+ const ai=batch26RouterAI({
+  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
+  review:clausePartialReview,
+  rescue:payload=>{
+   const item=payload.decisions[0];
+   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
+    verdict:'supported',fragment:item.spans[0].text,
+    elements:[{element:item.claimText,stated:true}]}]})};
+  }});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ const rescueEntry=result.trace.rescueReview.parts[0];
+ assert.equal(rescueEntry.flipped,1,'the flip itself was applied before re-normalization');
+ const rescueClaim=rescueEntry.claims[0];
+ assert.equal(rescueClaim.flipOutcome,'vetoed');
+ assert.deepEqual(rescueClaim.flipVeto,
+  {layer:'clause',reason:'claim-source-not-supported'});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ assert.equal(decision.accepted,false,'the clause demotion stands (fail-closed)');
+ assert.notEqual(result.outcome,'verified-source-draft');
+ assert.ok(!result.answer.includes('treats constant conjunction as its basis'));
+});
+
+const subjectMismatchReview={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+  directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2'],
+  directAnswerRequirementIds:[],requirements:[]}],
+ claims:[{claimId:'P1-C1',status:'answered',
+  sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+   attributionStatus:'not_applicable',attributedSpeaker:'',
+   subjectAttributionStatus:'supported',attributedSubject:'Kant',
+   evidenceRole:'work-assertion',supportBoundary:'Supports the full sentence.'}]}]};
+
+test('batch 26 B26-2: a rescue flip anchored to the work author clears a subject mismatch',async()=>{
+ let rescuePayload;
+ const ai=batch26RouterAI({
+  draft:'PART P1\nHume links necessity to custom and regular conjunction. [S1]\nCustom is the great guide of human life.',
+  review:subjectMismatchReview,
+  rescue:payload=>{
+   rescuePayload=payload;
+   const item=payload.decisions[0];
+   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
+    verdict:'supported',fragment:item.spans[0].text,anchor:'Hume',
+    elements:[{element:item.claimText,stated:true}]}]})};
+  }});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.deepEqual(rescuePayload.decisions[0].attributionFinding,
+  {reason:'source-subject-attribution-mismatch'},
+  'the rescue request carries the attribution finding to answer');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.ok(result.answer.includes('Hume links necessity to custom and regular conjunction. [S1]'),
+  'the anchored flip ships the claim');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.equal(decision.rescueAccepted,true);
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.equal(rescueClaim.anchor,'Hume');
+ assert.equal(rescueClaim.flipOutcome,'accepted');
+ assert.equal(rescueClaim.flipVeto,undefined);
+});
+
+test('batch 26 B26-2: an anchor that matches no candidate holds the flip and records the veto',async()=>{
+ const ai=batch26RouterAI({
+  draft:'PART P1\nHume links necessity to custom and regular conjunction. [S1]\nCustom is the great guide of human life.',
+  review:subjectMismatchReview,
+  rescue:payload=>{
+   const item=payload.decisions[0];
+   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
+    verdict:'supported',fragment:item.spans[0].text,anchor:'Kant',
+    elements:[{element:item.claimText,stated:true}]}]})};
+  }});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ const rescueEntry=result.trace.rescueReview.parts[0];
+ assert.equal(rescueEntry.flipped,0,'no flip is applied without a valid anchor');
+ const rescueClaim=rescueEntry.claims[0];
+ assert.equal(rescueClaim.attributionHeld,true);
+ assert.equal(rescueClaim.verdict,'not-supported');
+ assert.deepEqual(rescueClaim.flipVeto,
+  {layer:'attribution',held:true,reason:'source-subject-attribution-mismatch'});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ assert.equal(decision.accepted,false);
+ assert.equal(result.outcome,'generation-failed');
+});
+
+test('batch 26 B26-3: a repair that splits a claim keeps verdicts on their own texts through delta re-review',async()=>{
+ // The Wealth shape, through the citation gate: the part ships
+ // only uncited context claims (its one cited claim was rejected),
+ // and the gate repair rewrites one context claim into two
+ // sentences while citing another. Re-segmentation of the repaired
+ // paragraph — now cited — splits the two sentences into separate
+ // claims, minting a new claim in the middle of the part and
+ // shifting every later claim's position by one.
+ const splitReview={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2','P1-C3','P1-C4'],
+   directAnswerRequirementIds:[],requirements:[]}],
+  claims:[{claimId:'P1-C1',status:'partial',
+   sources:[{sourceId:'S1',status:'partial',spanIds:[],
+    attributionStatus:'not_applicable',attributedSpeaker:'',
+    subjectAttributionStatus:'supported',attributedSubject:'Hume',
+    evidenceRole:'work-assertion',supportBoundary:'No span was supplied.'}]}]};
+ let reReviewPayload;
+ const gateRepair=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const texts={'P1-C2':'Constant conjunction is observed throughout nature. It is observed in every case of resembling objects.',
+   'P1-C3':'Custom is the great guide of human life. [S1]',
+   'P1-C4':'The idea of necessity arises from an impression of reflection.'};
+  return {response:JSON.stringify({parts:[{partId:'P1',
+   replacements:payload.parts[0].repair.replaceClaimIds
+    .map(claimId=>({claimId,text:texts[claimId]})),additions:[]}]})};
+ };
+ const deltaReReview=(_model,{messages})=>{
+  reReviewPayload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C3'],
+    retainedContextClaimIds:reReviewPayload.parts[0].contextClaims.map(claim=>claim.claimId),
+    directAnswerRequirementIds:[],requirements:[]}],
+   claims:reReviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(entry=>entry.sourceId===sourceId).spanIds[0]],
+     attributionStatus:'not_applicable',attributedSpeaker:'',
+     subjectAttributionStatus:'supported',attributedSubject:'Hume',
+     evidenceRole:'work-assertion'}))}))})};
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1] Constant conjunction is observed throughout nature. Custom is the great guide of human life.\n\n'+
+   'The idea of necessity arises from an impression of reflection.'),
+  {response:JSON.stringify(splitReview)},rescueRejection(),gateRepair,deltaReReview],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,5,'compose, review, rescue, gate repair, one delta re-review');
+ assert.equal(result.trace.citationGate[0].action,'repair-applied');
+ assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C3'],
+  'only the changed cited claim is sent for a source decision');
+ assert.deepEqual(reReviewPayload.parts[0].contextClaims.map(claim=>claim.claimId),
+  ['P1-C1','P1-C2'],
+  'the split halves are delta context claims; the carried claim is not re-reviewed');
+ assert.deepEqual(result.trace.deltaReReview,
+  [{partId:'P1',deltaClaimIds:['P1-C1','P1-C2','P1-C3'],
+   carriedClaimIds:['P1-C4'],
+   claimMapping:[{candidateClaimId:'P1-C1',priorClaimId:'P1-C2'},
+    {candidateClaimId:'P1-C2',priorClaimId:null},
+    {candidateClaimId:'P1-C3',priorClaimId:'P1-C3'},
+    {candidateClaimId:'P1-C4',priorClaimId:'P1-C4'}],
+   newClaimIds:['P1-C2'],removedClaimIds:[]}],
+  'identity mapping is recorded: the first candidate claim is the old second claim, the split-off sentence is new');
+ for(const fragment of ['Constant conjunction is observed throughout nature.',
+   'It is observed in every case of resembling objects.',
+   'Custom is the great guide of human life. [S1]',
+   'The idea of necessity arises from an impression of reflection.'])
+  assert.ok(result.answer.includes(fragment),'answer ships: '+fragment);
+ const carriedDecision=result.trace.reReviewDecisions
+  .find(entry=>entry.claimId==='P1-C4');
+ assert.ok(carriedDecision.claimText.startsWith('The idea of necessity'),
+  'the carried verdict for P1-C4 belongs to the idea text, not a shifted neighbour');
+});
+
+test('batch 26 B26-3: an ambiguous text mapping falls back to a whole-part re-review',async()=>{
+ // Two identical context claims make the candidate-to-prior mapping
+ // ambiguous (each duplicate matches both originals), so the delta
+ // path must refuse to carry anything and re-review the whole part.
+ const duplicateReview={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+   directAnswerClaimIds:['P1-C1'],
+   retainedContextClaimIds:['P1-C2','P1-C3','P1-C4'],
+   directAnswerRequirementIds:[],requirements:[]}],
+  claims:[{claimId:'P1-C1',status:'partial',
+   sources:[{sourceId:'S1',status:'partial',spanIds:[],
+    attributionStatus:'not_applicable',attributedSpeaker:'',
+    subjectAttributionStatus:'supported',attributedSubject:'Hume',
+    evidenceRole:'work-assertion',supportBoundary:'No span was supplied.'}]}]};
+ let reReviewPayload;
+ const gateRepair=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const texts={'P1-C2':'Constant conjunction is observed throughout nature. [S1]',
+   'P1-C3':'Custom is the great guide of human life.',
+   'P1-C4':'Custom is the great guide of human life.'};
+  return {response:JSON.stringify({parts:[{partId:'P1',
+   replacements:payload.parts[0].repair.replaceClaimIds
+    .map(claimId=>({claimId,text:texts[claimId]})),additions:[]}]})};
+ };
+ const fullReReview=(_model,{messages})=>{
+  reReviewPayload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+    retainedContextClaimIds:reReviewPayload.parts[0].contextClaims.map(claim=>claim.claimId),
+    directAnswerRequirementIds:[],requirements:[]}],
+   claims:reReviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(entry=>entry.sourceId===sourceId).spanIds[0]],
+     attributionStatus:'not_applicable',attributedSpeaker:'',
+     subjectAttributionStatus:'supported',attributedSubject:'Hume',
+     evidenceRole:'work-assertion'}))}))})};
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1] Constant conjunction is observed throughout nature.\n\n'+
+   'Custom is the great guide of human life.\n\n'+
+   'Custom is the great guide of human life.'),
+  {response:JSON.stringify(duplicateReview)},rescueRejection(),gateRepair,fullReReview],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,5,'compose, review, rescue, gate repair, whole-part re-review');
+ assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C1'],
+  'the whole candidate is re-reviewed: its cited claim is in the packet');
+ assert.deepEqual(reReviewPayload.parts[0].contextClaims.map(claim=>claim.claimId),
+  ['P1-C2','P1-C3'],
+  'and both duplicated context claims are in the packet too — nothing was carried');
+ assert.equal(result.trace.deltaReReview[0].mappingFallback,'ambiguous-claim-mapping');
+ assert.deepEqual(result.trace.deltaReReview[0].carriedClaimIds,[]);
+ assert.equal(result.trace.citationGate[0].action,'repair-applied');
+});
+
+test('batch 26 B26-4: rendered-text verification records a shipped claim whose text is absent',async()=>{
+ const parts=[{part:{id:'P1',sourceRequired:true},answers:[
+  {claimId:'P1-C1',text:'Hume links necessity to custom.',sourceIds:['S1']},
+  {claimId:'P1-C2',text:'Custom is the great guide of human life.',sourceIds:['S1']}]}];
+ const reconciliation=reconcileFinalPartCoverage(parts,new Set(['P1']));
+ assert.deepEqual(reconciliation[0].shippedClaimIds,['P1-C1','P1-C2'],
+  'ID bookkeeping alone reports both claims shipped');
+ const absent=findTextAbsentShippedClaims(reconciliation[0].shippedClaimIds,
+  parts[0].answers,'Hume links necessity to custom. [S1]');
+ assert.deepEqual(absent,['P1-C2'],
+  'the text check catches the claim the bookkeeping cannot see is missing');
 });

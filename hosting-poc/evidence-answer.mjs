@@ -326,7 +326,7 @@ function mergeReviewRepairs(rawReview,requested,repair){
 // support standard the rubric grades, and genuine overreach — added
 // framing, a second side, a causal step, a stronger verb — still
 // fails it, so Dostoevsky-pattern parts die honestly.
-const RESCUE_REVIEW_PROMPT=`Judge only the listed claim and source pairs. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether the supplied span text states the claim in substance: return "supported" when a reasonable reader would say the span says what the claim says, and "not-supported" when the claim adds anything the span does not state — an interpretive framing, a second side or position, an unstated causal step, or a stronger verb than the span uses. Distinguish a work's own position from a reported view, narrative voice, or editorial context. In fragment, quote the decisive span text your verdict rests on, copied exactly from one of the pair's supplied spans. Do not infer support from a citation alone. Batch 25 (B25-Q2): break the claim into its distinct elements — each fact, relation, or qualification it asserts — and list them in elements, marking each element stated:true only when the supplied spans state that element; a "supported" verdict requires every element of the claim to be stated. Return exactly one decision for every listed pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}]}]}.`;
+const RESCUE_REVIEW_PROMPT=`Judge only the listed claim and source pairs. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether the supplied span text states the claim in substance: return "supported" when a reasonable reader would say the span says what the claim says, and "not-supported" when the claim adds anything the span does not state — an interpretive framing, a second side or position, an unstated causal step, or a stronger verb than the span uses. Distinguish a work's own position from a reported view, narrative voice, or editorial context. In fragment, quote the decisive span text your verdict rests on, copied exactly from one of the pair's supplied spans. Do not infer support from a citation alone. Batch 25 (B25-Q2): break the claim into its distinct elements — each fact, relation, or qualification it asserts — and list them in elements, marking each element stated:true only when the supplied spans state that element; a "supported" verdict requires every element of the claim to be stated. Batch 26 (B26-1): when a pair lists outstandingClauses — clause findings from the original review that were not answered — judge each listed clause on its own against the pair's spans and return one clauses entry per listed clause, copying its text exactly, with stated:true only when the spans state that clause and a fragment quoting the decisive span text for that clause exactly. Batch 26 (B26-2): when a pair carries an attributionFinding, also name in anchor the speaker or subject the span itself anchors the claim to, copied as the name appears in the span text (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Return exactly one decision for every listed pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
 // Batch 24 (B24-1): strict validation of a rescue response. Any
 // deviation — wrong count, an unrequested or duplicated pair, an
 // unrecognized verdict, a missing fragment, or a "supported" verdict
@@ -347,12 +347,13 @@ function parseRescueDecisions(rescue,requested){
     if(!request||received.has(key)||
        !['supported','not-supported'].includes(item?.verdict)||!fragment)
       return {ok:false,reason:'invalid-or-unrequested-decision'};
-    if(item.verdict==='supported'){
-      const needle=normalizeFragmentText(fragment);
-      const found=needle.length>=8&&request.spans.some(span=>
+    const fragmentInSpans=value=>{
+      const needle=normalizeFragmentText(value);
+      return needle.length>=8&&request.spans.some(span=>
         normalizeFragmentText(span.text).includes(needle));
-      if(!found)return {ok:false,reason:'fragment-not-in-span'};
-    }
+    };
+    if(item.verdict==='supported'&&!fragmentInSpans(fragment))
+      return {ok:false,reason:'fragment-not-in-span'};
     // Batch 25 (B25-Q2): a "supported" verdict must survive the
     // element-by-element check — the batch-24 flips that failed audit
     // were multi-element claims waved through by the binary standard.
@@ -368,13 +369,76 @@ function parseRescueDecisions(rescue,requested){
        (!elements.length||elements.some(element=>element.stated!==true))){
       verdict='not-supported';elementDowngrade=true;
     }
+    // Batch 26 (B26-1): clause clearances. When the request listed the
+    // pair's outstanding (not-answered) clause findings, a clause is
+    // cleared only when the verdict accounts for it individually: an
+    // entry copying the clause's text, marked stated, whose own
+    // fragment passes the same strict in-span check as the pair
+    // fragment. Anything less — no entry, stated:false, a fragment the
+    // spans do not contain — leaves the clause outstanding, and the
+    // ordinary clause demotion decides the pair at re-normalization
+    // (recorded as a flip veto by B26-4). Clearance is per pair: it is
+    // consumed only by this source decision at re-normalization.
+    let clearedClauses=[];
+    if(verdict==='supported'&&Array.isArray(request.outstandingClauses)&&
+       request.outstandingClauses.length){
+      const entries=Array.isArray(item?.clauses)?item.clauses:[];
+      for(const clause of request.outstandingClauses){
+        const entry=entries.find(candidate=>
+          normalizedClauseSurface(candidate?.text||'')===
+            normalizedClauseSurface(clause.text));
+        if(!entry||entry.stated!==true)continue;
+        const clauseFragment=typeof entry.fragment==='string'?
+          entry.fragment.trim().slice(0,280):'';
+        if(!clauseFragment||!fragmentInSpans(clauseFragment))continue;
+        clearedClauses.push({text:clause.text,fragment:clauseFragment});
+      }
+    }
+    // Batch 26 (B26-2): attribution anchoring. When the pair's original
+    // decision carries an attribution finding, a flip additionally
+    // requires a validated anchor: the rescue names the speaker or
+    // subject, the name must match a person the claim itself names (or
+    // the source's pseudonymous voice), and the name must be evidenced
+    // — it occurs in the verdict's fragment or in one of the pair's
+    // span texts, or it is the author of the pair source's own work
+    // (the byline anchoring the speaker gate already recognizes for
+    // author narration). No valid anchor, no flip: the pair is held,
+    // recorded as attributionHeld, and the original decision stands.
+    let anchor='',attributionHeld=false;
+    if(verdict==='supported'&&request.attributionFinding){
+      anchor=typeof item?.anchor==='string'?item.anchor.trim().slice(0,120):'';
+      const candidates=Array.isArray(request.anchorCandidates)?
+        request.anchorCandidates:[];
+      const byline=Array.isArray(request.anchorBylineAuthors)?
+        request.anchorBylineAuthors:[];
+      const valid=Boolean(anchor)&&
+        candidates.some(name=>personNamesMatch(anchor,name))&&
+        (spanTextNamesSpeaker(fragment,anchor)||
+         request.spans.some(span=>spanTextNamesSpeaker(span.text,anchor))||
+         byline.some(name=>personNamesMatch(anchor,name)));
+      if(!valid){verdict='not-supported';attributionHeld=true;}
+    }
     received.set(key,{verdict,fragment,
       ...(elements.length?{elements}:{}),
-      ...(elementDowngrade?{elementDowngrade:true}:{})});
+      ...(elementDowngrade?{elementDowngrade:true}:{}),
+      ...(clearedClauses.length?{clearedClauses}:{}),
+      ...(anchor?{anchor}:{}),
+      ...(attributionHeld?{attributionHeld:true}:{})});
   }
   if(received.size!==expected.size)return {ok:false,reason:'missing-decision'};
   return {ok:true,decisions:received};
 }
+
+// Batch 26 (B26-2): the attribution-family validation reasons a
+// normalized review decision can carry. A rejected pair whose recorded
+// reason is one of these gets the finding in its rescue packet, so the
+// rescue can try to satisfy the attribution guard with evidence.
+const RESCUE_ATTRIBUTION_REASONS=new Set(['source-attribution-conflict',
+  'source-attribution-unclear','source-attribution-not-applicable',
+  'source-attribution-speaker-mismatch','source-attribution-unanchored',
+  'source-subject-attribution-missing','source-subject-attribution-conflict',
+  'source-subject-attribution-unclear','source-subject-attribution-mismatch',
+  'pseudonymous-voice-unidentified','editorial-source-attribution-unqualified']);
 
 // Batch 10 (B10-2): round-robin selection across parts for the
 // missing-decision repair subset — group the decisions by part in
@@ -879,6 +943,25 @@ export function reconcileFinalPartCoverage(parts,includedPartIds,{suppressed=fal
     }
     if(!claimIds.size){item.status='unanswered';item.answerStatus='unanswered';}
     return {partId:item.part.id,shippedClaimIds:[...claimIds],requirements:changes};
+  });
+}
+
+// Batch 26 (B26-4): rendered-text verification of shipment. The
+// reconciliation above counts claim IDs from the parts' answer
+// records; batches 24–25 both reported claims shipped whose sentences
+// never reached the rendered answer, because no layer compared the
+// bookkeeping to the text. Given a part's shipped claim IDs, its
+// answer records, and the final rendered answer, return the shipped
+// IDs whose claim text cannot be located in the answer (using the
+// assembly audit's own representation test). An ID with no answer
+// record at all counts as absent — the bookkeeping claims a shipment
+// the part cannot produce.
+export function findTextAbsentShippedClaims(shippedClaimIds,answers,answerText){
+  const normalizedAnswer=normalizedProseSurface(answerText);
+  const byId=new Map((answers||[]).map(answer=>[answer.claimId,answer]));
+  return (shippedClaimIds||[]).filter(claimId=>{
+    const record=byId.get(claimId);
+    return !record||!claimTextAppears(record.text,normalizedAnswer);
   });
 }
 
@@ -1662,7 +1745,15 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     suppliedClaims.set(id,{status:normalizeStatus(item.status),
       supportedText:typeof item.supportedText==='string'?item.supportedText.trim():'',
       sources:sourceDecisions,
-      clauses:Array.isArray(item.clauses)?item.clauses:[]});
+      clauses:Array.isArray(item.clauses)?item.clauses:[],
+      // Batch 26 (B26-1): per-pair clause clearances recorded on the
+      // raw claim by the rescue re-review. Carried through verbatim;
+      // the clause veto below consumes only the clearances recorded
+      // for the source decision being normalized, and only when that
+      // decision is rescueAccepted.
+      rescueClauseClearances:Array.isArray(item.rescueClauseClearances)?
+        item.rescueClauseClearances.filter(clearance=>clearance&&
+          typeof clearance.text==='string'&&clearance.text&&clearance.sourceId):[]});
   }
   const supportIssues=[],answerContext=[...initialAnswerContext],reviewDecisions=[],partDecisions=[];
   const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
@@ -1910,7 +2001,21 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // A claim-level "answered" label cannot override an explicit partial
         // clause finding. A validated narrower sentence may keep the supported
         // remainder, but the rejected clause remains visible in diagnostics.
-        const unsupportedClause=clauseReview.decisions.find(clause=>clause.status!=='answered');
+        // Batch 26 (B26-1): a rescueAccepted source decision consumes the
+        // clause clearances the rescue recorded for this exact claim/source
+        // pair — a clause the rescue cleared with element coverage and a
+        // validated fragment no longer counts as outstanding FOR THIS
+        // DECISION. Clauses the rescue did not clear demote exactly as
+        // before (fail-closed), and every other source decision of the
+        // claim still sees the original clause findings.
+        const rescueClearedClauseTexts=sourceDecision.rescueAccepted===true?
+          new Set((decision.rescueClauseClearances||[])
+            .filter(clearance=>String(clearance.sourceId)===sourceId)
+            .map(clearance=>normalizedClauseSurface(clearance.text))):null;
+        const unsupportedClause=clauseReview.decisions.find(clause=>
+          clause.status!=='answered'&&
+          !(rescueClearedClauseTexts&&
+            rescueClearedClauseTexts.has(normalizedClauseSurface(clause.text))));
         if(unsupportedClause&&selected.length>0&&sourceDecision.status==='answered'){
           const boundSpanIds=(unsupportedClause.sources||[])
             .filter(item=>item.sourceId===sourceId).flatMap(item=>item.spanIds||[]);
@@ -3945,8 +4050,52 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               if(!spans.length)spans=evidenceEntry?.spans||[];
               spans=spans.slice(0,MAX_REVIEW_SPANS_PER_SOURCE);
               if(!claimText||!spans.length)continue;
-              requested.push({claimId:decision.claimId,sourceId:decision.sourceId,
-                claimText,spans:spans.map(({spanId,text})=>({spanId,text}))});
+              const requestedEntry={claimId:decision.claimId,sourceId:decision.sourceId,
+                claimText,spans:spans.map(({spanId,text})=>({spanId,text}))};
+              // Batch 26 (B26-1): the pair's outstanding clause
+              // findings join the packet. Outstanding is computed with
+              // the same normalization re-normalization will apply, so
+              // the list the rescue judges is exactly the list that
+              // would otherwise veto its flip. Clauses without
+              // traceable text cannot be judged or matched and are
+              // left outstanding (they keep vetoing, fail-closed).
+              const rawClaim=(rawReviewByPart.get(part.id)?.claims||[])
+                .find(candidate=>String(candidate?.claimId||'')===decision.claimId);
+              if(rawClaim&&Array.isArray(rawClaim.clauses)&&rawClaim.clauses.length){
+                const clauseReview=normalizeClaimClauseDecisions(rawClaim.clauses,
+                  claimText,new Set(answer?.sourceIds||[]),
+                  packetsByPart.get(part.id)?.reviewSpanMapsByPart?.get(part.id)||
+                    new Map());
+                const outstandingClauses=clauseReview.decisions
+                  .filter(clause=>clause.status!=='answered'&&clause.text)
+                  .map(clause=>({text:clause.text}));
+                if(outstandingClauses.length)
+                  requestedEntry.outstandingClauses=outstandingClauses;
+              }
+              // Batch 26 (B26-2): a pair rejected on an attribution
+              // finding carries the finding, the claim-side names an
+              // anchor may match, and (non-enumerably, so it never
+              // reaches the model) the pair source's byline authors
+              // for the deterministic anchor validation.
+              if(RESCUE_ATTRIBUTION_REASONS.has(decision.validationReason||'')){
+                requestedEntry.attributionFinding={reason:decision.validationReason};
+                const pairSource=sources.find(source=>source.id===decision.sourceId);
+                const anchorCandidates=[...new Set([
+                  specificClaimSpeaker(claimText),
+                  ...claimPersonSubjects(claimText)].filter(Boolean))];
+                if(decision.validationReason==='pseudonymous-voice-unidentified'){
+                  const voice=sourceProvenance(pairSource,plan,
+                    pairSource?.scopeText||pairSource?.text||pairSource?.preview||'')
+                    ?.workVoice;
+                  if(voice?.kind==='pseudonymous-author'&&voice.name&&
+                     !anchorCandidates.includes(voice.name))
+                    anchorCandidates.push(voice.name);
+                }
+                requestedEntry.anchorCandidates=anchorCandidates;
+                Object.defineProperty(requestedEntry,'anchorBylineAuthors',{
+                  value:catalogIdentity(pairSource?.title||'').authors||[]});
+              }
+              requested.push(requestedEntry);
             }
             if(!requested.length){entry.outcome='no-rescuable-decisions';continue;}
             if(usage.calls>=callLimit){
@@ -3975,8 +4124,17 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                   entry.outcome='invalid-response';entry.reason=parsed.reason;
                   continue;
                 }
-                const compactRequested=requested.map(item=>({...item,
-                  spans:item.spans.slice(0,2)}));
+                const compactRequested=requested.map(item=>{
+                  const compact={...item,spans:item.spans.slice(0,2)};
+                  // Batch 26 (B26-2): the byline authors ride
+                  // non-enumerably on the request (never serialized
+                  // to the model), so the spread above drops them;
+                  // re-attach or a byline-anchored flip would be held
+                  // on the retry for a bookkeeping reason.
+                  if(item.anchorBylineAuthors)Object.defineProperty(compact,
+                    'anchorBylineAuthors',{value:item.anchorBylineAuthors});
+                  return compact;
+                });
                 const retryStartedAt=Date.now();
                 const retryRescue=await run('review-rescue',RESCUE_REVIEW_PROMPT,
                   {question,partId:part.id,decisions:compactRequested},
@@ -3998,10 +4156,20 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               const flippedClaimIds=new Set();
               for(const item of appliedRequested){
                 const verdict=parsed.decisions.get(item.claimId+'|'+item.sourceId);
-                entry.claims.push({claimId:item.claimId,sourceId:item.sourceId,
+                const claimRecord={claimId:item.claimId,sourceId:item.sourceId,
                   verdict:verdict.verdict,fragment:verdict.fragment,
                   ...(verdict.elements?{elements:verdict.elements}:{}),
-                  ...(verdict.elementDowngrade?{elementDowngrade:true}:{})});
+                  ...(verdict.elementDowngrade?{elementDowngrade:true}:{}),
+                  ...(verdict.clearedClauses?{clearedClauses:verdict.clearedClauses}:{}),
+                  ...(verdict.anchor?{anchor:verdict.anchor}:{}),
+                  ...(verdict.attributionHeld?{attributionHeld:true}:{})};
+                // Batch 26 (B26-4): an attribution-held pair never
+                // flips; its veto is known already, so record it here
+                // rather than in the post-normalization pass below.
+                if(verdict.attributionHeld)
+                  claimRecord.flipVeto={layer:'attribution',held:true,
+                    reason:item.attributionFinding?.reason||'attribution'};
+                entry.claims.push(claimRecord);
                 if(verdict.verdict!=='supported'||!raw)continue;
                 if(!Array.isArray(raw.claims))raw.claims=[];
                 let claimEntry=raw.claims.find(candidate=>
@@ -4020,6 +4188,45 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 sourceDecision.status='answered';
                 sourceDecision.spanIds=item.spans.map(span=>span.spanId);
                 sourceDecision.rescueAccepted=true;
+                // Batch 26 (B26-1): record the pair's clause
+                // clearances on the raw claim, where re-normalization
+                // consumes them for this source decision only.
+                if(verdict.clearedClauses?.length){
+                  if(!Array.isArray(claimEntry.rescueClauseClearances))
+                    claimEntry.rescueClauseClearances=[];
+                  for(const cleared of verdict.clearedClauses){
+                    const surface=normalizedClauseSurface(cleared.text);
+                    if(!claimEntry.rescueClauseClearances.some(existing=>
+                      String(existing?.sourceId||'')===item.sourceId&&
+                      normalizedClauseSurface(existing?.text||'')===surface))
+                      claimEntry.rescueClauseClearances.push({
+                        sourceId:item.sourceId,text:cleared.text,
+                        fragment:cleared.fragment});
+                  }
+                }
+                // Batch 26 (B26-2): a validated anchor satisfies the
+                // attribution guard with evidence. Subject findings
+                // name the subject; speaker findings name the speaker
+                // (and a reviewer attribution of conflict/unclear is
+                // superseded by the anchored re-judgment). Provenance
+                // findings (pseudonymous voice, editorial mediation)
+                // are computed from the claim text itself and take no
+                // field writes — the flip stands or falls by the
+                // guard's own rules at re-normalization.
+                if(verdict.anchor){
+                  const findingReason=item.attributionFinding?.reason||'';
+                  if(findingReason.includes('subject')){
+                    sourceDecision.subjectAttributionStatus='supported';
+                    sourceDecision.attributedSubject=verdict.anchor;
+                  }else if(findingReason&&
+                    !findingReason.includes('pseudonymous')&&
+                    !findingReason.includes('editorial')){
+                    sourceDecision.attributedSpeaker=verdict.anchor;
+                    if(['conflict','unclear','not_applicable','missing',undefined]
+                      .includes(sourceDecision.attributionStatus))
+                      sourceDecision.attributionStatus='supported';
+                  }
+                }
                 flippedClaimIds.add(item.claimId);
                 entry.flipped++;
               }
@@ -4063,6 +4270,41 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               if(record)recomputeTrace.parts.push(record);
             }
             if(recomputeTrace.parts.length)trace.contractRecompute=recomputeTrace;
+          }
+          // Batch 26 (B26-4): record every flip's post-normalization
+          // outcome in the rescue trace itself. Batch 25's flips all
+          // died at re-normalization (clause demotions, attribution
+          // vetoes) while the rescue trace reported only that they
+          // flipped; acceptance had to be reconstructed from three
+          // other trace sections after the fact. A flip whose final
+          // decision is not accepted now carries the vetoing layer
+          // and the decision's recorded reason.
+          for(const entry of rescueTrace.parts){
+            for(const claim of entry.claims){
+              if(claim.flipVeto||claim.verdict!=='supported')continue;
+              const finalDecision=(review.reviewDecisions||[]).find(decision=>
+                decision.partId===entry.partId&&decision.claimId===claim.claimId&&
+                decision.sourceId===claim.sourceId);
+              if(finalDecision?.accepted===true){
+                claim.flipOutcome='accepted';
+              }else{
+                const reason=finalDecision?.validationReason||'decision-not-recorded';
+                // The clause demotion surfaces on the decision only
+                // as the generic not-supported reason; the demotion
+                // itself is recorded in the final review's support
+                // issues, which is the reliable layer signal.
+                const clauseVeto=reason==='claim-clause-not-supported'||
+                  (review.supportIssues||[]).some(issue=>
+                    issue.partId===entry.partId&&issue.claimId===claim.claimId&&
+                    issue.sourceId===claim.sourceId&&
+                    issue.reason==='claim-clause-not-supported');
+                claim.flipOutcome='vetoed';
+                claim.flipVeto={reason,
+                  layer:clauseVeto?'clause':
+                    /attribution|pseudonymous|editorial-source/.test(reason)?
+                      'attribution':'other'};
+              }
+            }
           }
         }
         const acceptedClaimIdsByPart=new Map(review.parts.map(part=>[
@@ -4904,25 +5146,91 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // profile (median 36.8 s) although a repair typically changes
       // one or two claims. The re-review packet now contains only
       // the claims whose normalized text or citation set differs
-      // from the pre-repair part — claim identity is positional,
-      // the mapping the repair machinery itself uses (the candidate
-      // is re-segmented with fresh positional IDs; see B9-5) — plus
-      // any unchanged claim sharing an answer sentence with a changed
-      // one (adjacent in the same paragraph, or text-contained).
-      // Unchanged claims keep their prior decisions: the merged
-      // result is assembled at the decisions level and the part-level
-      // fields are recomputed over the FULL claim set with the same
-      // derivation the normal path uses (derivePartStatuses /
-      // deriveDirectAnswerCovered), so no verdict is dropped and no
-      // part field describes only the delta subset. When every claim
-      // changed (or none did), the full re-review runs as before.
+      // from the pre-repair part, plus any unchanged claim sharing an
+      // answer sentence with a changed one (adjacent in the same
+      // paragraph, or text-contained). Unchanged claims keep their
+      // prior decisions: the merged result is assembled at the
+      // decisions level and the part-level fields are recomputed over
+      // the FULL claim set with the same derivation the normal path
+      // uses (derivePartStatuses / deriveDirectAnswerCovered), so no
+      // verdict is dropped and no part field describes only the delta
+      // subset. When every claim changed (or none did), the full
+      // re-review runs as before.
+      // Batch 26 (B26-3): claim identity across the re-segmentation
+      // is TEXTUAL, not positional. B25-L1 compared prior and
+      // candidate by array index because the candidate is
+      // re-segmented with fresh positional IDs (B9-5); batch 25's
+      // production traces showed 30 of 41 re-review decisions
+      // misaligned whenever a repair shifted the segmentation (a
+      // heading split from its bullet, a claim merged or re-inserted)
+      // — verdicts attached to the wrong texts while every trace
+      // layer reported the lost claims shipped. Candidate and prior
+      // claims are now matched by normalized-text identity: an exact
+      // normalized match, or containment of the shorter text in the
+      // longer at a length ratio of at least 0.6 (and at least 24
+      // normalized characters, so short generic sentences cannot
+      // match by containment). A candidate matching more than one
+      // prior, or a prior matching more than one candidate, makes the
+      // mapping ambiguous and the part falls back to the whole-part
+      // re-review below rather than merging positionally. Unmapped
+      // candidates are new claims (always re-reviewed); unmapped
+      // priors are removed claims. The mapping is recorded in the
+      // delta trace so a re-review decision's claimId can always be
+      // reconciled to the text it judged.
       const priorAnswers=item.answers||[];
       const candidateAnswers=candidate.answers||[];
       const citationKey=answer=>[...new Set(answer.sourceIds||[])].sort().join(',');
+      const candidateKeys=candidateAnswers.map(answer=>deltaTextKey(answer.text));
+      const priorKeys=priorAnswers.map(answer=>deltaTextKey(answer.text));
+      const identityMatch=(candidateKey,priorKey)=>{
+        if(!candidateKey||!priorKey)return false;
+        if(candidateKey===priorKey)return true;
+        const shorter=Math.min(candidateKey.length,priorKey.length);
+        const longer=Math.max(candidateKey.length,priorKey.length);
+        if(shorter<24)return false;
+        return shorter/longer>=0.6&&
+          (candidateKey.includes(priorKey)||priorKey.includes(candidateKey));
+      };
+      const candidateToPrior=new Map(),priorToCandidate=new Map();
+      let ambiguousMapping=false;
+      candidateAnswers.forEach((_,candidateIndex)=>{
+        const matches=[];
+        priorAnswers.forEach((_,priorIndex)=>{
+          if(identityMatch(candidateKeys[candidateIndex],priorKeys[priorIndex]))
+            matches.push(priorIndex);
+        });
+        if(matches.length>1)ambiguousMapping=true;
+        else if(matches.length===1)candidateToPrior.set(candidateIndex,matches[0]);
+      });
+      priorAnswers.forEach((_,priorIndex)=>{
+        const matches=[];
+        candidateAnswers.forEach((_,candidateIndex)=>{
+          if(identityMatch(candidateKeys[candidateIndex],priorKeys[priorIndex]))
+            matches.push(candidateIndex);
+        });
+        if(matches.length>1)ambiguousMapping=true;
+        else if(matches.length===1)priorToCandidate.set(priorIndex,matches[0]);
+      });
+      for(const [candidateIndex,priorIndex] of candidateToPrior)
+        if(priorToCandidate.get(priorIndex)!==candidateIndex)ambiguousMapping=true;
+      const claimMapping=candidateAnswers.map((answer,candidateIndex)=>({
+        candidateClaimId:answer.claimId,
+        priorClaimId:candidateToPrior.has(candidateIndex)?
+          priorAnswers[candidateToPrior.get(candidateIndex)].claimId:null}));
+      const newClaimIds=candidateAnswers
+        .filter((_,index)=>!candidateToPrior.has(index)).map(answer=>answer.claimId);
+      const removedClaimIds=priorAnswers
+        .filter((_,index)=>!priorToCandidate.has(index)).map(answer=>answer.claimId);
+      const priorClaimIdToCandidateClaimId=new Map();
+      for(const [candidateIndex,priorIndex] of candidateToPrior)
+        priorClaimIdToCandidateClaimId.set(priorAnswers[priorIndex].claimId,
+          candidateAnswers[candidateIndex].claimId);
       const changedIndexes=new Set();
       candidateAnswers.forEach((answer,index)=>{
-        const prior=priorAnswers[index];
-        if(!prior||deltaTextKey(answer.text)!==deltaTextKey(prior.text)||
+        const priorIndex=candidateToPrior.get(index);
+        if(priorIndex===undefined){changedIndexes.add(index);return;}
+        const prior=priorAnswers[priorIndex];
+        if(deltaTextKey(answer.text)!==deltaTextKey(prior.text)||
            citationKey(answer)!==citationKey(prior))
           changedIndexes.add(index);
       });
@@ -4945,7 +5253,16 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         .filter((_,index)=>changedIndexes.has(index)).map(answer=>answer.claimId);
       const carriedClaimIds=candidateAnswers
         .filter((_,index)=>!changedIndexes.has(index)).map(answer=>answer.claimId);
-      const useDelta=deltaClaimIds.length>0&&carriedClaimIds.length>0;
+      // Batch 26 (B26-3): carried claims are keyed in the merge by
+      // their PRIOR claim IDs (the namespace their decisions and
+      // accepted answers live in) and translated to candidate IDs
+      // only when the merged record is written.
+      const carriedPriorClaimIds=new Set();
+      candidateAnswers.forEach((_,index)=>{
+        if(!changedIndexes.has(index))
+          carriedPriorClaimIds.add(priorAnswers[candidateToPrior.get(index)].claimId);
+      });
+      const useDelta=!ambiguousMapping&&deltaClaimIds.length>0&&carriedClaimIds.length>0;
       if(!useDelta){
         const packet=buildReviewPacket([candidate],{sources,pageById,plan:singlePlan,question,
           priorRejectionsByPart:priorRejectionsByPart()});
@@ -4955,7 +5272,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           packet.reviewSpanMapsByPart,question,packet.reviewClaims,[],archiveEntriesByPart(),
           composerPacketSpansByPart);
         reReview.deltaReview={deltaClaimIds:candidateAnswers.map(answer=>answer.claimId),
-          carriedClaimIds:[]};
+          carriedClaimIds:[],claimMapping,newClaimIds,removedClaimIds,
+          ...(ambiguousMapping?{mappingFallback:'ambiguous-claim-mapping'}:{})};
         deltaReReviewTrace.push({partId:planPart.id,...reReview.deltaReview});
         // Batch 8 (B8-2): a gate re-review is a review round like any
         // other; its rejections join the archive before containment runs.
@@ -4975,26 +5293,33 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // Merge at the decisions level: carried claims keep the
       // decisions of record (the part's adopted re-review decisions
       // when it was repaired before, else the main review's).
-      const carriedIds=new Set(carriedClaimIds);
+      // Batch 26 (B26-3): carried records live in the PRIOR claim-ID
+      // namespace. They are selected by prior ID and rewritten to the
+      // candidate ID of the claim they map to, so the merged part is
+      // uniformly in the candidate namespace and no record is ever
+      // selected by a positional coincidence of IDs.
       const priorDecisions=(item.reReviewDecisions?.length?
         item.reReviewDecisions:(review?.reviewDecisions||[]))
         .filter(decision=>decision.partId===planPart.id);
       const mergedDecisions=[
-        ...priorDecisions.filter(decision=>carriedIds.has(decision.claimId)),
+        ...priorDecisions.filter(decision=>carriedPriorClaimIds.has(decision.claimId))
+          .map(decision=>({...decision,
+            claimId:priorClaimIdToCandidateClaimId.get(decision.claimId)||
+              decision.claimId})),
         ...(deltaReview.reviewDecisions||[])];
       const priorReviewPart=review?.parts.find(part=>part.partId===planPart.id);
       const carriedAnswerById=new Map(),carriedEvidenceById=new Map();
       for(const answer of priorReviewPart?.answers||[])
-        if(carriedIds.has(answer.claimId))carriedAnswerById.set(answer.claimId,answer);
+        if(carriedPriorClaimIds.has(answer.claimId))carriedAnswerById.set(answer.claimId,answer);
       for(const entry of priorReviewPart?.evidence||[])
-        if(carriedIds.has(entry.claimId))carriedEvidenceById.set(entry.claimId,entry);
+        if(carriedPriorClaimIds.has(entry.claimId))carriedEvidenceById.set(entry.claimId,entry);
       if(item.reReviewDecisions?.length){
         // The part was adopted from an earlier re-review: its shipped
         // answers/evidence are the newer record for carried claims.
         for(const answer of item.answers||[])
-          if(carriedIds.has(answer.claimId))carriedAnswerById.set(answer.claimId,answer);
+          if(carriedPriorClaimIds.has(answer.claimId))carriedAnswerById.set(answer.claimId,answer);
         for(const entry of item.evidence||[])
-          if(carriedIds.has(entry.claimId))carriedEvidenceById.set(entry.claimId,entry);
+          if(carriedPriorClaimIds.has(entry.claimId))carriedEvidenceById.set(entry.claimId,entry);
       }
       const deltaAnswerById=new Map((deltaPart?.answers||[])
         .map(answer=>[answer.claimId,answer]));
@@ -5004,14 +5329,24 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         list.push(entry);deltaEvidenceByClaim.set(entry.claimId,list);
       }
       const mergedAnswers=[],mergedEvidence=[];
-      for(const answer of candidateAnswers){
-        const accepted=deltaAnswerById.get(answer.claimId)||
-          carriedAnswerById.get(answer.claimId);
-        if(accepted)mergedAnswers.push(accepted);
-        const evidenceEntries=deltaEvidenceByClaim.get(answer.claimId)||
-          (carriedEvidenceById.has(answer.claimId)?
-            [carriedEvidenceById.get(answer.claimId)]:[]);
-        mergedEvidence.push(...evidenceEntries);
+      for(const [candidateIndex,answer] of candidateAnswers.entries()){
+        // Batch 26 (B26-3): a changed claim takes the delta review's
+        // record (candidate namespace); a carried claim takes the
+        // prior record for the claim it MAPS to, rewritten to the
+        // candidate ID — never the record whose ID merely coincides
+        // with the candidate's position.
+        if(changedIndexes.has(candidateIndex)){
+          const accepted=deltaAnswerById.get(answer.claimId);
+          if(accepted)mergedAnswers.push(accepted);
+          mergedEvidence.push(...(deltaEvidenceByClaim.get(answer.claimId)||[]));
+        }else{
+          const priorClaimId=priorAnswers[candidateToPrior.get(candidateIndex)].claimId;
+          const carried=carriedAnswerById.get(priorClaimId);
+          if(carried)mergedAnswers.push({...carried,claimId:answer.claimId});
+          const carriedEvidence=carriedEvidenceById.get(priorClaimId);
+          if(carriedEvidence)mergedEvidence.push({...carriedEvidence,
+            claimId:answer.claimId});
+        }
       }
       const acceptedClaimIds=new Set(mergedAnswers.map(answer=>answer.claimId));
       const candidateClaimIds=new Set(candidateAnswers.map(answer=>answer.claimId));
@@ -5020,7 +5355,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       const priorPartDecision=(review?.partDecisions||[])
         .find(entry=>entry.partId===planPart.id);
       const directAnswerIds=[...new Set([
-        ...(priorPartDecision?.directAnswerClaimIds||[]),
+        ...(priorPartDecision?.directAnswerClaimIds||[])
+          .map(id=>priorClaimIdToCandidateClaimId.get(id)).filter(Boolean),
         ...(rawDeltaPart?.directAnswerClaimIds||[]).map(String)])]
         .filter(id=>candidateClaimIds.has(id));
       const acceptedDirectAnswerIds=directAnswerIds
@@ -5046,7 +5382,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             .find(entry=>entry.requirementId===requirement.id);
           const deltaCoverage=(rawDeltaPart?.requirementCoverage||[])
             .find(entry=>entry.requirementId===requirement.id);
-          const mapped=[...new Set([...(priorCoverage?.answerClaimIds||[]),
+          const mapped=[...new Set([
+            ...(priorCoverage?.answerClaimIds||[])
+              .map(id=>priorClaimIdToCandidateClaimId.get(id)).filter(Boolean),
             ...(deltaCoverage?.answerClaimIds||[]).map(String)])]
             .filter(id=>candidateClaimIds.has(id));
           const mappedAccepted=mapped.filter(id=>acceptedClaimIds.has(id));
@@ -5088,8 +5426,13 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       const deltaScaffoldingIds=new Set(deltaScaffolding.map(entry=>entry.claimId));
       const mergedScaffolding=[
         ...(priorReviewPart?.reviewScaffolding||[])
-          .filter(entry=>carriedIds.has(entry.claimId)&&
-            !deltaScaffoldingIds.has(entry.claimId)),
+          .filter(entry=>carriedPriorClaimIds.has(entry.claimId)&&
+            !deltaScaffoldingIds.has(
+              priorClaimIdToCandidateClaimId.get(entry.claimId)))
+          .map(entry=>({...entry,
+            claimId:priorClaimIdToCandidateClaimId.get(entry.claimId)||entry.claimId,
+            supportClaimIds:(entry.supportClaimIds||[])
+              .map(id=>priorClaimIdToCandidateClaimId.get(id)).filter(Boolean)})),
         ...deltaScaffolding];
       const mergedPart={partId:planPart.id,status:derived.status,
         answerStatus:derived.answerStatus,answers:mergedAnswers,
@@ -5103,7 +5446,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           (deltaPart?.scaffoldingInvalidLinks||0),
         scaffoldingInvalidLinkDetails:[
           ...(priorReviewPart?.scaffoldingInvalidLinkDetails||[])
-            .filter(entry=>carriedIds.has(entry.claimId)),
+            .filter(entry=>carriedPriorClaimIds.has(entry.claimId)),
           ...(deltaPart?.scaffoldingInvalidLinkDetails||[])]};
       const mergedPartDecision={partId:planPart.id,
         reviewerStatus:rawDeltaPart?.status||priorPartDecision?.reviewerStatus||'unanswered',
@@ -5118,12 +5461,18 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         warnings:deltaReview.warnings||[],
         supportIssues:[
           ...(review?.supportIssues||[]).filter(issue=>
-            issue.partId===planPart.id&&issue.claimId&&carriedIds.has(issue.claimId)),
+            issue.partId===planPart.id&&issue.claimId&&
+            carriedPriorClaimIds.has(issue.claimId))
+            .map(issue=>({...issue,
+              claimId:priorClaimIdToCandidateClaimId.get(issue.claimId)||
+                issue.claimId})),
           ...(deltaReview.supportIssues||[])],
         recovered:deltaReview.recovered||[],
         reviewDecisions:mergedDecisions,partDecisions:[mergedPartDecision],
-        deltaReview:{deltaClaimIds,carriedClaimIds}};
-      deltaReReviewTrace.push({partId:planPart.id,deltaClaimIds,carriedClaimIds});
+        deltaReview:{deltaClaimIds,carriedClaimIds,claimMapping,
+          newClaimIds,removedClaimIds}};
+      deltaReReviewTrace.push({partId:planPart.id,deltaClaimIds,carriedClaimIds,
+        claimMapping,newClaimIds,removedClaimIds});
       // Batch 8 (B8-2): as above — the merged round's rejections join
       // the archive before containment runs (the archive dedups
       // carried claims by part + normalized text).
@@ -6557,6 +6906,19 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     const includedPartIds=new Set(included.map(item=>item.part.id));
     trace.finalCoverageReconciliation=reconcileFinalPartCoverage(parts,includedPartIds,
       {suppressed:assemblySuppressed});
+    // Batch 26 (B26-4): verify each shipped claim against the final
+    // rendered text and record the ones whose text is absent. This
+    // runs on the final answer string — after containment, the
+    // incomplete-ending suppression, and any audit salvage — so the
+    // reconciliation can no longer report a shipment the reader
+    // never sees.
+    for(const entry of trace.finalCoverageReconciliation){
+      if(!entry.shippedClaimIds.length)continue;
+      const partAnswers=(parts.find(item=>item.part.id===entry.partId)?.answers)||[];
+      const textAbsentClaimIds=findTextAbsentShippedClaims(
+        entry.shippedClaimIds,partAnswers,answer);
+      if(textAbsentClaimIds.length)entry.textAbsentClaimIds=textAbsentClaimIds;
+    }
     const finalClaimIdsByPart=new Map(trace.finalCoverageReconciliation.map(item=>
       [item.partId,new Set(item.shippedClaimIds)]));
     const partCitationIds=new Map(parts.map(item=>[item.part.id,
