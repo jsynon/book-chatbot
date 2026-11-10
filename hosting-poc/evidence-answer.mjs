@@ -326,7 +326,17 @@ function mergeReviewRepairs(rawReview,requested,repair){
 // support standard the rubric grades, and genuine overreach — added
 // framing, a second side, a causal step, a stronger verb — still
 // fails it, so Dostoevsky-pattern parts die honestly.
-const RESCUE_REVIEW_PROMPT=`Judge only the listed claim and source pairs. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether the supplied span text states the claim in substance: return "supported" when a reasonable reader would say the span says what the claim says, and "not-supported" when the claim adds anything the span does not state — an interpretive framing, a second side or position, an unstated causal step, or a stronger verb than the span uses. Distinguish a work's own position from a reported view, narrative voice, or editorial context. In fragment, quote the decisive span text your verdict rests on, copied exactly from one of the pair's supplied spans. Do not infer support from a citation alone. Batch 25 (B25-Q2): break the claim into its distinct elements — each fact, relation, or qualification it asserts — and list them in elements, marking each element stated:true only when the supplied spans state that element; a "supported" verdict requires every element of the claim to be stated. Batch 26 (B26-1): when a pair lists outstandingClauses — clause findings from the original review that were not answered — judge each listed clause on its own against the pair's spans and return one clauses entry per listed clause, copying its text exactly, with stated:true only when the spans state that clause and a fragment quoting the decisive span text for that clause exactly. Batch 26 (B26-2): when a pair carries an attributionFinding, also name in anchor the speaker or subject the span itself anchors the claim to, copied as the name appears in the span text (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Return exactly one decision for every listed pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
+const RESCUE_REVIEW_PROMPT=`Judge only the listed claim and source pairs. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether the supplied span text states the claim in substance: return "supported" when a reasonable reader would say the span says what the claim says, and "not-supported" when the claim adds anything the span does not state — an interpretive framing, a second side or position, an unstated causal step, or a stronger verb than the span uses. Distinguish a work's own position from a reported view, narrative voice, or editorial context. In fragment, quote the decisive span text your verdict rests on, copied exactly from one of the pair's supplied spans. Do not infer support from a citation alone. Batch 25 (B25-Q2): break the claim into its distinct elements — each fact, relation, or qualification it asserts — and list them in elements, marking each element stated:true only when the supplied spans state that element; a "supported" verdict requires every element of the claim to be stated. Batch 26 (B26-1): when a pair lists outstandingClauses — clause findings from the original review that were not answered — judge each listed clause on its own against the pair's spans and return one clauses entry per listed clause, copying its text exactly, with stated:true only when the spans state that clause and a fragment quoting the decisive span text for that clause exactly. Batch 26 (B26-2): when a pair carries an attributionFinding, also name in anchor the speaker or subject the span itself anchors the claim to, copied as the name appears in the span text (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Batch 27 (B27-4): clause entries are required, not optional — a "supported" verdict for a pair listing outstandingClauses that omits any listed clause is invalid, is re-asked once, and is then recorded not-supported. Return exactly one decision for every listed pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
+// Batch 27 (B27-5): the rescue retry's compact instruction. The
+// batch-25 compact retry compacted the EVIDENCE (spans capped at two
+// per pair), which made two production retries structurally incapable
+// of succeeding — the fragment that would validate lived in a later
+// span the retry never sent. The retry now compacts the instruction
+// instead: it re-asks only the pairs whose verdicts failed validation,
+// with their full span sets, under this shorter form of the same
+// contract (same verdict standard, same element/clause/anchor fields,
+// same exact-fragment rule).
+const RESCUE_REVIEW_RETRY_PROMPT=`Judge only the listed claim and source pairs — a previous response for these pairs failed validation, and this re-ask carries their full span sets. For each pair, decide whether the supplied span text states the claim in substance: "supported" when a reasonable reader would say the span says what the claim says, "not-supported" when the claim adds anything the span does not state. In fragment, copy the decisive span text exactly from one of the pair's supplied spans. List the claim's elements in elements, each marked stated:true only when the spans state it; "supported" requires every element stated. When a pair lists outstandingClauses, return one clauses entry per listed clause, copying its text exactly, stated:true only when the spans state that clause, with a fragment quoting its decisive span text exactly — a supported verdict omitting any listed clause is invalid. When a pair carries an attributionFinding, name in anchor the speaker or subject the span itself anchors the claim to (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Return exactly one decision per listed pair as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
 // Batch 24 (B24-1): strict validation of a rescue response. Any
 // deviation — wrong count, an unrequested or duplicated pair, an
 // unrecognized verdict, a missing fragment, or a "supported" verdict
@@ -340,6 +350,11 @@ function parseRescueDecisions(rescue,requested){
   const normalizeFragmentText=value=>String(value||'').normalize('NFKC')
     .toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/gu,' ');
   const received=new Map();
+  // Batch 27 (B27-4/B27-5): pair-specific validation failures are
+  // collected with the pairs that caused them, so the retry can be
+  // scoped to exactly those pairs. Clause-verdict omissions are
+  // gathered across the whole response before failing it.
+  const clauseMissingPairs=[];
   for(const item of rescue.decisions){
     const key=String(item?.claimId||'')+'|'+String(item?.sourceId||'');
     const request=expected.get(key);
@@ -353,7 +368,10 @@ function parseRescueDecisions(rescue,requested){
         normalizeFragmentText(span.text).includes(needle));
     };
     if(item.verdict==='supported'&&!fragmentInSpans(fragment))
-      return {ok:false,reason:'fragment-not-in-span'};
+      // Batch 27 (B27-5): the failing pair is named so the retry can
+      // re-ask only it, with its full span set.
+      return {ok:false,reason:'fragment-not-in-span',failedPairs:[key],
+        decisions:received};
     // Batch 25 (B25-Q2): a "supported" verdict must survive the
     // element-by-element check — the batch-24 flips that failed audit
     // were multi-element claims waved through by the binary standard.
@@ -380,9 +398,26 @@ function parseRescueDecisions(rescue,requested){
     // (recorded as a flip veto by B26-4). Clearance is per pair: it is
     // consumed only by this source decision at re-normalization.
     let clearedClauses=[];
+    // Batch 27 (B27-4): clause entries are enforced, the way element
+    // entries have been since B25-Q2. A "supported" verdict for a pair
+    // whose packet listed outstanding clauses is incomplete when it
+    // returns no clauses array or omits any listed clause (no entry
+    // copying that clause's text). Batch 26 left this unenforced and
+    // the model omitted clause verdicts on most supported pairs while
+    // returning elements on 102/102 — compliance followed enforcement.
+    // An incomplete response fails validation (collected in
+    // clauseMissingPairs below) and feeds the retry; a verdict that
+    // still omits them after the retry is recorded not-supported with
+    // reason clause-verdicts-missing and never flips.
+    let clauseVerdictsMissing=false;
     if(verdict==='supported'&&Array.isArray(request.outstandingClauses)&&
        request.outstandingClauses.length){
       const entries=Array.isArray(item?.clauses)?item.clauses:[];
+      clauseVerdictsMissing=!Array.isArray(item?.clauses)||
+        request.outstandingClauses.some(clause=>!entries.some(candidate=>
+          normalizedClauseSurface(candidate?.text||'')===
+            normalizedClauseSurface(clause.text)));
+      if(clauseVerdictsMissing)clauseMissingPairs.push(key);
       for(const clause of request.outstandingClauses){
         const entry=entries.find(candidate=>
           normalizedClauseSurface(candidate?.text||'')===
@@ -422,9 +457,12 @@ function parseRescueDecisions(rescue,requested){
       ...(elements.length?{elements}:{}),
       ...(elementDowngrade?{elementDowngrade:true}:{}),
       ...(clearedClauses.length?{clearedClauses}:{}),
+      ...(clauseVerdictsMissing?{clauseVerdictsMissing:true}:{}),
       ...(anchor?{anchor}:{}),
       ...(attributionHeld?{attributionHeld:true}:{})});
   }
+  if(clauseMissingPairs.length)return {ok:false,reason:'clause-verdicts-missing',
+    failedPairs:clauseMissingPairs,decisions:received};
   if(received.size!==expected.size)return {ok:false,reason:'missing-decision'};
   return {ok:true,decisions:received};
 }
@@ -438,6 +476,10 @@ const RESCUE_ATTRIBUTION_REASONS=new Set(['source-attribution-conflict',
   'source-attribution-speaker-mismatch','source-attribution-unanchored',
   'source-subject-attribution-missing','source-subject-attribution-conflict',
   'source-subject-attribution-unclear','source-subject-attribution-mismatch',
+  // Batch 27 (B27-2): the subject-not-named demotion is an attribution
+  // finding the rescue can answer with an anchor — a packet span that
+  // names the person restores the pair with evidence.
+  'subject-not-named-in-span',
   'pseudonymous-voice-unidentified','editorial-source-attribution-unqualified']);
 
 // Batch 10 (B10-2): round-robin selection across parts for the
@@ -956,12 +998,69 @@ export function reconcileFinalPartCoverage(parts,includedPartIds,{suppressed=fal
 // assembly audit's own representation test). An ID with no answer
 // record at all counts as absent — the bookkeeping claims a shipment
 // the part cannot produce.
+// Batch 27 (B27-6): recalibrated representation test for the
+// shipment check below. The batch-26 checker compared each claim's
+// raw text against the raw final answer and flagged 263 of 408
+// shipped claims, including plainly-present ones: assembly renders
+// claims through markdown normalization, bold unwrapping, internal-ID
+// sanitization, and citation re-attachment, so the shipped form of a
+// claim routinely differs from its record text in furniture alone.
+// Both sides now go through the same surface: markdown furniture
+// (heading markers, blockquote bars, list bullets, bold/strike
+// markers) stripped, quotation marks and dashes normalized the way
+// quote repair leaves them, citation markers removed, case and
+// whitespace collapsed. A claim counts as present when either its
+// record text or its rendered text appears in that surface — in full,
+// sentence by sentence (assembly can re-paragraph a multi-sentence
+// claim), or by the head-and-tail anchors the assembly audit uses.
+function renderedTextSurface(value){
+  return normalizedProseSurface(String(value||'')
+    .replace(/^\s{0,3}#{1,6}\s+/gmu,' ')
+    .replace(/^\s*>\s?/gmu,' ')
+    .replace(/^\s*(?:[-*•]|\d+[.)])\s+/gmu,' ')
+    .replace(/\*|__|~~/gu,'')
+    .replace(/[“”]/gu,'"').replace(/[‘’]/gu,"'")
+    .replace(/…/gu,'...')
+    .replace(/[—–]/gu,'-'))
+    // Assembly attaches citation markers BEFORE a sentence's
+    // terminal punctuation ("…every year [S1]."), so stripping the
+    // markers leaves "year ." in the haystack while the claim needle
+    // reads "year." — the batch-26 checker's dominant false-positive
+    // (it breaks the exact match and the tail anchor of every long
+    // claim rendered that way). Collapsing space-before-punctuation
+    // on both sides restores the comparison.
+    .replace(/\s+([.,;:!?])/gu,'$1');
+}
+function renderedSurfaceAppears(needle,haystack){
+  if(!needle||!haystack)return false;
+  if(haystack.includes(needle))return true;
+  if(!needle.includes('...')){
+    const sentences=needle.split(/(?<=[.!?])\s+/u)
+      .map(sentence=>sentence.trim()).filter(Boolean);
+    if(sentences.length>1&&
+       sentences.every(sentence=>sentence.length<12||haystack.includes(sentence)))
+      return true;
+  }
+  if(needle.length>90){
+    let head=needle.slice(0,45);
+    if(/\S/u.test(needle[45]||''))head=head.replace(/\s+\S*$/u,'');
+    let tail=needle.slice(-45);
+    if(/\S/u.test(needle[needle.length-46]||''))tail=tail.replace(/^\S*\s+/u,'');
+    if(head.length>=40&&tail.length>=40&&
+       haystack.includes(head)&&haystack.includes(tail))return true;
+  }
+  return false;
+}
 export function findTextAbsentShippedClaims(shippedClaimIds,answers,answerText){
-  const normalizedAnswer=normalizedProseSurface(answerText);
+  const normalizedAnswer=renderedTextSurface(answerText);
   const byId=new Map((answers||[]).map(answer=>[answer.claimId,answer]));
   return (shippedClaimIds||[]).filter(claimId=>{
     const record=byId.get(claimId);
-    return !record||!claimTextAppears(record.text,normalizedAnswer);
+    if(!record)return true;
+    const needles=[record.text,record.renderedText]
+      .filter(value=>typeof value==='string'&&value)
+      .map(renderedTextSurface);
+    return !needles.some(needle=>renderedSurfaceAppears(needle,normalizedAnswer));
   });
 }
 
@@ -1432,12 +1531,31 @@ function specificClaimSpeaker(value){
   return name;
 }
 const PERSON_ATTRIBUTION_VERBS='acts?|acted|orders?|ordered|commands?|commanded|leads?|led|kills?|killed|takes?|took|makes?|made|gives?|gave|brings?|brought|keeps?|kept|holds?|held|believes?|believed|thinks?|thought|feels?|felt|knows?|knew|wants?|wanted|fears?|feared|hopes?|hoped|intends?|intended|seeks?|sought|chooses?|chose|refuses?|refused|decides?|decided|remembers?|remembered|recognizes?|recognized|understands?|understood|sees?|saw|hears?|heard|loves?|loved|hates?|hated|desires?|desired|suspects?|suspected|concludes?|concluded|prefers?|preferred|expects?|expected|worries?|worried|carries?|carried|moves?|moved|identif(?:y|ies|ied)|explains?|explained|grounds?|grounded|treats?|treated|defines?|defined|proposes?|proposed|asserts?|asserted|maintains?|maintained|calls?|called|considers?|considered|regards?|regarded|reports?|reported|speaks?|spoke|says?|said|teaches?|taught|argues?|argued|writes?|wrote|claims?|claimed|describes?|described';
-const PERSON_STATE_NOUNS='conviction|belief|view|motive|intention|desire|fear|hope|memory|anger|resolve|judgment|plan|purpose|suspicion|expectation|ambition|attitude|disposition|character|decision|loyalty|grief|pride|shame|knowledge|understanding';
+// Batch 27 (B27-1): irregular past-tense finite verbs. The generic
+// predicate pattern below only recognizes s/ed/ing endings, so the
+// narrative past tense — sat, stood, went, came, fell, rose — was
+// invisible to subject extraction, and a claim whose actor used one
+// produced no subject target at all (the batch-26 Conrad decision:
+// "Kurtz sat at the head of an immense round table" extracted []).
+// This is a general English irregular-verb class, not a phrase list.
+const PERSON_IRREGULAR_PAST_VERBS='arose|became|began|bore|broke|came|chose|drew|drank|drove|ate|fell|fought|found|flew|forgot|got|grew|hung|lay|left|lost|meant|met|paid|ran|rang|read|rode|rose|sat|sang|sank|sent|shook|shot|slept|slid|spent|stood|stole|struck|swam|swept|tore|told|understood|went|woke|wore|won';
+// Batch 27 (B27-1): bare present-tense stems that can follow a name in
+// subject position (subjunctive and coordinated finite forms, and the
+// narrative stems the s/ed/ing pattern cannot see). Kept to common
+// finite action/state stems so a following preposition or noun cannot
+// fake a predicate.
+const PERSON_BARE_STEM_VERBS='act|appear|argue|arise|ask|assume|believe|call|carry|choose|claim|come|command|consider|continue|decide|describe|desire|enter|exist|explain|fall|fear|feel|find|follow|give|go|hold|hope|intend|keep|know|lead|leave|live|look|love|maintain|make|mean|move|note|observe|order|prefer|propose|regard|remain|remember|report|rise|rule|say|see|seek|seem|speak|stand|state|take|teach|tell|think|treat|understand|want|write';
+const PERSON_STATE_NOUNS='conviction|belief|view|motive|intention|desire|fear|hope|memory|anger|resolve|judgment|plan|purpose|suspicion|expectation|ambition|attitude|disposition|character|decision|loyalty|grief|pride|shame|knowledge|understanding|authority|power|influence|position|control|command';
 export function claimPersonSubjects(value){
   const text=String(value||'').replace(/^\s*(?:[-*]|\d+[.)])\s*/u,'');
-  const name='((?!(?:The|A|An|Because|Although|While|When|If|That|As|And|But|Whereas|Who)\\b)[\\p{Lu}][\\p{L}\\p{M}\\u0027\\u2019.-]*(?:\\s+[\\p{Lu}][\\p{L}\\p{M}\\u0027\\u2019.-]*){0,2})';
-  const lead='(?:^|[,:;!?—–()]\\s*|\\b(?:[Bb]ecause|[Aa]lthough|[Ww]hile|[Ww]hen|[Ii]f|[Tt]hat|[Aa]s|[Aa]nd|[Bb]ut|[Ww]hereas|[Ww]ho)\\s+)';
-  const predicate=`(?:${PERSON_ATTRIBUTION_VERBS}|(?:is|are|was|were|has|had|does|did|can|could|may|might|must|will|would|should)|[\\p{Ll}]{3,}(?:s|ed|ing))`;
+  const name='((?!(?:The|A|An|Because|Although|While|When|If|That|As|And|But|Whereas|Who|How|Where|Before|After|Until|Once|Though)\\b)[\\p{Lu}][\\p{L}\\p{M}\\u0027\\u2019.-]*(?:\\s+[\\p{Lu}][\\p{L}\\p{M}\\u0027\\u2019.-]*){0,2})';
+  // Batch 27 (B27-1): the lead-in set gains the subordinators that
+  // introduce subject clauses in narrative prose — how, where, before,
+  // after, until, once, though. Without "how", a subject inside a
+  // reported perception clause ("…noting how Kurtz sat…") was
+  // unreachable no matter what the predicate side recognized.
+  const lead='(?:^|[,:;!?—–()]\\s*|\\b(?:[Bb]ecause|[Aa]lthough|[Ww]hile|[Ww]hen|[Ii]f|[Tt]hat|[Aa]s|[Aa]nd|[Bb]ut|[Ww]hereas|[Ww]ho|[Hh]ow|[Ww]here|[Bb]efore|[Aa]fter|[Uu]ntil|[Oo]nce|[Tt]hough)\\s+)';
+  const predicate=`(?:${PERSON_ATTRIBUTION_VERBS}|${PERSON_IRREGULAR_PAST_VERBS}|${PERSON_BARE_STEM_VERBS}|(?:is|are|was|were|has|had|does|did|can|could|may|might|must|will|would|should)|[\\p{Ll}]{3,}(?:s|ed|ing))`;
   const patterns=[new RegExp(`${lead}${name}(?:['’]s)?\\s+${predicate}\\b`,'gu'),
     new RegExp(`${lead}${name}['’]s\\s+(?:(?:unalterable|unyielding|firm|strong|deep|growing|private|personal|moral|religious|political)\\s+)?(?:${PERSON_STATE_NOUNS})\\b`,'gu')];
   const subjects=[];
@@ -1445,12 +1563,39 @@ export function claimPersonSubjects(value){
     const candidate=match[1].trim();
     const parts=normalizedPersonName(candidate).split(' ').filter(Boolean);
     if(NON_SPECIFIC_SPEAKERS.has(parts[0]))continue;
+    // Batch 27 (B27-1): capitalized determiners and quantifiers in
+    // sentence-initial position ("Other goods can…", "All men are…")
+    // are not person references; the s/ed/ing and auxiliary predicates
+    // happily attach verbs to them. Excluding them keeps subject
+    // targets person-shaped, which the B27-2 gate now relies on.
+    if(['other','another','all','each','every','any','some','many','few','both']
+      .includes(parts[0]))continue;
     if(!subjects.some(name=>personNamesMatch(name,candidate)))subjects.push(candidate);
   }
   return subjects;
 }
 export function claimPersonSubject(value){
   return claimPersonSubjects(value)[0]||'';
+}
+// Batch 27 (B27-1): blind-spot telemetry for the extractor. A claim
+// carries a capitalized name candidate when a capitalized sequence is
+// followed by a lowercase word or a possessive — the shape of a person
+// reference in subject or possessor position — yet the extractor above
+// returned no subject for it. Counting those decisions (in
+// normalizeReview) makes the grammar's remaining holes measurable in
+// the trace instead of anecdotal. Telemetry only: this never gates.
+function hasCapitalizedNameCandidate(value){
+  const text=String(value||'').replace(/^\s*(?:[-*]|\d+[.)])\s*/u,'');
+  const pattern=/([\p{Lu}][\p{L}\p{M}\u0027\u2019.-]*(?:\s+[\p{Lu}][\p{L}\p{M}\u0027\u2019.-]*){0,2})\s+(?:[\p{Ll}]{2,}|['’]s\b)/gu;
+  for(const match of text.matchAll(pattern)){
+    const candidate=match[1].trim();
+    const parts=normalizedPersonName(candidate).split(' ').filter(Boolean);
+    if(!parts.length||NON_SPECIFIC_SPEAKERS.has(parts[0]))continue;
+    if(/^(?:how|where|before|after|until|once|though|because|although|while|when|if|that|as|and|but|whereas|who)$/u
+      .test(parts[0]))continue;
+    return true;
+  }
+  return false;
 }
 function hasExplicitSpeakerCue(sourceText,speaker){
   const name=String(speaker||'').trim();
@@ -1525,6 +1670,20 @@ export function personNamesMatch(left,right){
   const aParts=a.split(' '),bParts=b.split(' ');
   if(aParts.at(-1)===bParts.at(-1)&&aParts.at(-1).length>=4&&
     (aParts.length===1||bParts.length===1))return true;
+  // Batch 27 (B27-2): a one- or two-token name that is the trailing
+  // suffix of a longer name matches it — particle surnames and
+  // initialism bylines ("Du Bois" against "W. E. B. Du Bois",
+  // "De Silentio" against "Johannes de Silentio") name the same
+  // person, and the work-author anchoring exception must recognize
+  // them or it never fires for those bylines. Two full names that
+  // merely share a surname still do not match: the shorter side must
+  // be the longer side's exact suffix.
+  const shorter=aParts.length<=bParts.length?aParts:bParts;
+  const longer=shorter===aParts?bParts:aParts;
+  if(shorter.length>=1&&shorter.length<=2&&longer.length>shorter.length&&
+     shorter.at(-1).length>=4&&
+     shorter.every((part,index)=>part===longer[longer.length-shorter.length+index]))
+    return true;
   return aParts.length>=2&&bParts.length>=2&&
     aParts[0]===bParts[0]&&aParts.at(-1)===bParts.at(-1);
 }
@@ -1756,6 +1915,14 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           typeof clearance.text==='string'&&clearance.text&&clearance.sourceId):[]});
   }
   const supportIssues=[],answerContext=[...initialAnswerContext],reviewDecisions=[],partDecisions=[];
+  // Batch 27 (B27-1/B27-4): this normalization's own clause findings,
+  // recorded per claim×source pair from the same clauseReview the
+  // demotion below consumes, and the subject-extraction blind-spot
+  // count. The rescue packet (B27-4) reads the clause findings from
+  // here — the first normalization's records — instead of recomputing
+  // them with divergent inputs.
+  const clauseFindings=[];
+  let subjectExtractionBlindSpots=0;
   const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
     String(claim?.claimId||''),new Map((Array.isArray(claim?.sourceEvidence)?claim.sourceEvidence:[])
       .map(item=>[String(item?.sourceId||''),Array.isArray(item?.spanIds)?item.spanIds:[]]))
@@ -1822,6 +1989,16 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       // review can accept it.
       const clauseReview=normalizeClaimClauseDecisions(decision.clauses,answer.text,citedIds,
         reviewSpanMaps.get(part.id)||new Map());
+      // Batch 27 (B27-4): record every traceable clause finding for
+      // each cited source of this claim, in the normalization's own
+      // terms (overall clause status, exactly as the demotion below
+      // reads it). The rescue packet's outstanding list is built from
+      // these records plus the claim-clause-not-supported issues.
+      for(const clause of clauseReview.decisions){
+        if(!clause.text)continue;
+        for(const sourceId of citedIds)clauseFindings.push({partId:part.id,
+          claimId:answer.claimId,sourceId,text:clause.text,status:clause.status});
+      }
       if(clauseReview.warnings.length)warnings.push({partId:part.id,claimId:answer.claimId,
         code:'clause-review-normalization',details:clauseReview.warnings});
       const sourceDecisions=new Map();
@@ -1918,6 +2095,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const subjectStatus=sourceDecision?.subjectAttributionStatus||'missing';
         const personSubjects=claimPersonSubjects(candidateText);
         const subjectTargets=personSubjects.length?personSubjects:claimSpeaker?[claimSpeaker]:[];
+        // Batch 27 (B27-1): a claim that carries a capitalized name
+        // candidate but yields no subject target is an extraction
+        // blind spot — counted, never gated on.
+        if(!subjectTargets.length&&hasCapitalizedNameCandidate(candidateText))
+          subjectExtractionBlindSpots++;
         const subjectAttributionIssue=subjectTargets.length&&subjectStatus==='missing'?
           'source-subject-attribution-missing':
           subjectTargets.length&&subjectStatus!=='not_applicable'&&
@@ -1976,6 +2158,66 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         }
         const attributionIssue=modelAttributionIssue||speakerMismatchIssue||subjectAttributionIssue||
           unanchoredSpeakerIssue||provenanceAttributionIssue;
+        // Batch 27 (B27-2): a person named as a claim's actor must be
+        // named in the evidence — where the evidence presents an
+        // actor under a pronoun. The checks above compare claim-side
+        // and reviewer-side strings against each other, so a reviewer
+        // that resolves a span's bare pronoun to the wrong person
+        // ratifies its own error (the batch-26 Conrad decision, third
+        // recurrence: the span's actor is "he", the reviewer's
+        // boundary and attributedSubject both say Kurtz, and no layer
+        // ever compared the name against the span). This gate does:
+        // when an accepted span for this pair carries a third-person
+        // personal pronoun (an actor the span itself does not name)
+        // and no accepted span names the attributed subject, the
+        // name was resolved from outside the evidence and the
+        // decision demotes fail-closed as subject-not-named-in-span.
+        // Scope, deliberately: spans with no subject-pronoun actor
+        // (expository paraphrase, the work's own first-person voice,
+        // possessive-only reference to an antecedent the span itself
+        // names) present no pronoun resolution to check, and the
+        // reviewer's substance judgment stands there as it always has. Two existing
+        // anchoring routes exempt a target: the target is the author
+        // of this source's own work (speakerIsWorkAuthor — the byline
+        // anchors author narration), or the target is this source's
+        // pseudonymous work voice (sourceProvenance — the catalog
+        // provenance anchors the voice the claim names). The rescue
+        // anchor machinery (B26-2) is the relief valve for demotions:
+        // this reason rides the rescue attribution set, and a packet
+        // span naming the person restores the pair with evidence.
+        const subjectNameIssue=(()=>{
+          if(sourceDecision.status!=='answered'||!selected.length||!subjectTargets.length)
+            return '';
+          const gateTargets=attributedSubject&&
+            subjectTargets.some(name=>personNamesMatch(name,attributedSubject))?
+            [attributedSubject]:subjectTargets;
+          const spanNamesPerson=(quote,target)=>{
+            if(spanTextNamesSpeaker(quote,target))return true;
+            const surname=normalizedPersonName(target).split(' ')
+              .filter(Boolean).at(-1)||'';
+            return surname.length>=4&&spanTextNamesSpeaker(quote,surname);
+          };
+          const pairSource=sourceById.get(sourceId);
+          const workVoice=sourceProvenance(pairSource,plan,cueSourceText)?.workVoice;
+          const targetExempt=target=>
+            speakerIsWorkAuthor(target,pairSource)||
+            (workVoice?.kind==='pseudonymous-author'&&
+             personNamesMatch(target,String(workVoice.name||'')));
+          const targetsToName=gateTargets.filter(target=>!targetExempt(target));
+          if(!targetsToName.length)return '';
+          if(targetsToName.every(target=>
+            selected.some(item=>spanNamesPerson(item.quote,target))))return '';
+          // No accepted span names the subject. The demotion applies
+          // only when a span actually presents an unnamed actor — a
+          // third-person subject pronoun (he/she/they) whose referent
+          // the reviewer had to supply. Possessives and object
+          // pronouns ride on an antecedent the span itself usually
+          // names ("the geese hold their course"), and reflexives and
+          // "it/its" introduce no person actor at all.
+          const hasPronounActor=selected.some(item=>
+            /\b(?:he|she|they)\b/iu.test(item.quote));
+          return hasPronounActor?'subject-not-named-in-span':'';
+        })();
         const selectedQuote=selected.map(item=>item.quote).join(' ');
         const polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
           hasDirectPolarityContradiction(candidateText,selectedQuote)?
@@ -1997,6 +2239,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:negationScopeIssue});
+        }
+        if(subjectNameIssue){
+          sourceDecision.status='partial';
+          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
+            reason:subjectNameIssue});
         }
         // A claim-level "answered" label cannot override an explicit partial
         // clause finding. A validated narrower sentence may keep the supported
@@ -2048,7 +2295,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         }else{
           supportedSourceIds.add(sourceId);
         }
-        const validationReason=attributionIssue||polarityIssue||negationScopeIssue||
+        const validationReason=attributionIssue||subjectNameIssue||polarityIssue||negationScopeIssue||
           (sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
           sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan?'missing-claim-source-span':
           sourceDecision.status!=='answered'?'claim-source-not-supported':
@@ -2077,7 +2324,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             sources:clause.sources.filter(item=>item.sourceId===sourceId)
               .map(item=>({sourceId:item.sourceId,status:item.status,spanIds:item.spanIds}))
           }))}:{}),
-          accepted:supportedSourceIds.has(sourceId)&&!attributionIssue,
+          accepted:supportedSourceIds.has(sourceId)&&!attributionIssue&&!subjectNameIssue,
           ...(sourceDecision?.rescueAccepted===true?{rescueAccepted:true}:{}),
           recoveredMissingDecision:sourceDecision.recoveredMissingDecision===true,
           validationReason:validationReason||null});
@@ -2247,7 +2494,8 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
       directAnswerCovered,...(reviewerPart?.repairable===true?{repairable:true}:{}),reason:''};
   });
-  return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions};
+  return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions,
+    clauseFindings,subjectExtractionBlindSpots};
 }
 
 const VALIDATION_REASON_CODES=new Set([
@@ -3781,7 +4029,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       const issueExcludedPartIds=new Set(),excludedIssues=[];
       const normalizeAllParts=()=>{
         const merged={parts:[],issues:[],warnings:[],supportIssues:[],recovered:[],
-          reviewDecisions:[],partDecisions:[]};
+          reviewDecisions:[],partDecisions:[],clauseFindings:[],
+          subjectExtractionBlindSpots:0};
         // Normalization is deterministic CPU work; run it in plan order so
         // each part still sees the accepted answers of the parts before it,
         // exactly as the single-call review produced them.
@@ -3821,6 +4070,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           merged.recovered.push(...single.recovered);
           merged.reviewDecisions.push(...single.reviewDecisions);
           merged.partDecisions.push(...single.partDecisions);
+          // Batch 27 (B27-4/B27-1): carry the normalization's own
+          // clause findings and blind-spot count into the merged
+          // review the rescue packet and the trace read.
+          merged.clauseFindings.push(...(single.clauseFindings||[]));
+          merged.subjectExtractionBlindSpots+=single.subjectExtractionBlindSpots||0;
           context.push(...(single.parts[0]?.answers||[]));
         }
         return merged;
@@ -4029,6 +4283,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               .filter(decision=>decision.accepted!==true);
             if(!rejectedDecisions.length)continue;
             const entry={partId:part.id,claims:[],flipped:0,callLatencyMs:0,
+              // Batch 27 (B27-3): every requested pair is recorded
+              // with what the packet actually carried, so a failed
+              // flip can be attributed to the packet or the response
+              // from data. Batch 26 traced outcomes only, which left
+              // packet-vs-compliance indistinguishable.
+              requestedPairs:[],
               trigger:zeroAccept?'zero-accept':'coverage-incomplete'};
             rescueTrace.parts.push(entry);
             const seenPairs=new Set(),requested=[];
@@ -4052,23 +4312,42 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               if(!claimText||!spans.length)continue;
               const requestedEntry={claimId:decision.claimId,sourceId:decision.sourceId,
                 claimText,spans:spans.map(({spanId,text})=>({spanId,text}))};
-              // Batch 26 (B26-1): the pair's outstanding clause
-              // findings join the packet. Outstanding is computed with
-              // the same normalization re-normalization will apply, so
-              // the list the rescue judges is exactly the list that
-              // would otherwise veto its flip. Clauses without
-              // traceable text cannot be judged or matched and are
-              // left outstanding (they keep vetoing, fail-closed).
-              const rawClaim=(rawReviewByPart.get(part.id)?.claims||[])
-                .find(candidate=>String(candidate?.claimId||'')===decision.claimId);
-              if(rawClaim&&Array.isArray(rawClaim.clauses)&&rawClaim.clauses.length){
-                const clauseReview=normalizeClaimClauseDecisions(rawClaim.clauses,
-                  claimText,new Set(answer?.sourceIds||[]),
-                  packetsByPart.get(part.id)?.reviewSpanMapsByPart?.get(part.id)||
-                    new Map());
-                const outstandingClauses=clauseReview.decisions
-                  .filter(clause=>clause.status!=='answered'&&clause.text)
-                  .map(clause=>({text:clause.text}));
+              // Batch 27 (B27-4): the pair's outstanding clause
+              // findings join the packet from the FIRST
+              // normalization's own records — the clause findings that
+              // normalization recorded for this pair (review.clauseFindings)
+              // plus any claim-clause-not-supported support issue's
+              // clause text — replacing the batch-26 recomputation,
+              // which re-ran clause normalization here with different
+              // inputs (packet claim text, a separately looked-up span
+              // map) than the normalization whose demotion the flip
+              // must survive, so the list the rescue judged could
+              // diverge from the list that vetoed it. (The support
+              // issues alone carry only the first demoting clause and
+              // only when the source was answered, so the recorded
+              // findings are the primary source; the issues union in
+              // for completeness.) Clauses without traceable text
+              // cannot be judged or matched and stay outstanding
+              // (they keep vetoing, fail-closed).
+              {
+                const outstandingBySurface=new Map();
+                const addOutstanding=text=>{
+                  const surface=normalizedClauseSurface(text||'');
+                  if(surface&&!outstandingBySurface.has(surface))
+                    outstandingBySurface.set(surface,{text:String(text).trim()});
+                };
+                for(const finding of review.clauseFindings||[]){
+                  if(finding.partId===part.id&&finding.claimId===decision.claimId&&
+                     finding.sourceId===decision.sourceId&&
+                     finding.status!=='answered')addOutstanding(finding.text);
+                }
+                for(const issue of review.supportIssues||[]){
+                  if(issue.partId===part.id&&issue.claimId===decision.claimId&&
+                     issue.sourceId===decision.sourceId&&
+                     issue.reason==='claim-clause-not-supported')
+                    addOutstanding(issue.clauseText);
+                }
+                const outstandingClauses=[...outstandingBySurface.values()];
                 if(outstandingClauses.length)
                   requestedEntry.outstandingClauses=outstandingClauses;
               }
@@ -4095,6 +4374,16 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 Object.defineProperty(requestedEntry,'anchorBylineAuthors',{
                   value:catalogIdentity(pairSource?.title||'').authors||[]});
               }
+              // Batch 27 (B27-3): trace the request itself — the
+              // outstanding clauses sent (count and texts), whether an
+              // attribution finding rode along, and the span count.
+              entry.requestedPairs.push({claimId:requestedEntry.claimId,
+                sourceId:requestedEntry.sourceId,
+                outstandingClauseCount:(requestedEntry.outstandingClauses||[]).length,
+                outstandingClauses:(requestedEntry.outstandingClauses||[])
+                  .map(clause=>clause.text),
+                attributionFindingSent:Boolean(requestedEntry.attributionFinding),
+                spanCount:requestedEntry.spans.length});
               requested.push(requestedEntry);
             }
             if(!requested.length){entry.outcome='no-rescuable-decisions';continue;}
@@ -4110,13 +4399,18 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               let parsed=parseRescueDecisions(rescue,requested);
               let appliedRequested=requested;
               if(!parsed.ok){
-                // Batch 25 (B25-Q3): a rescue response that fails
-                // strict parsing gets ONE compact retry — the same
-                // claims and pairs with spans capped at two per pair,
-                // mirroring the review retry discipline. Batch 24 lost
-                // two of eight part-attempts to fragment validation
-                // with no second chance. A call failure or timeout
-                // does NOT retry (handled by the catch below).
+                // Batch 27 (B27-5): a rescue response that fails
+                // strict parsing gets ONE retry, re-asking only the
+                // pairs whose verdicts failed validation (the parse
+                // names them in failedPairs; a response-level failure
+                // re-asks every pair), with their FULL span sets and
+                // the compact retry instruction. This replaces the
+                // batch-25 compact retry, which capped spans at two
+                // per pair — when the validating fragment lived in a
+                // later span, the retry was structurally incapable of
+                // succeeding (the two production rescue deaths in
+                // batch 26). A call failure or timeout does NOT retry
+                // (handled by the catch below).
                 entry.attempts=[{outcome:'invalid-response',reason:parsed.reason,
                   callLatencyMs:entry.callLatencyMs}];
                 if(usage.calls>=callLimit){
@@ -4124,33 +4418,81 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                   entry.outcome='invalid-response';entry.reason=parsed.reason;
                   continue;
                 }
-                const compactRequested=requested.map(item=>{
-                  const compact={...item,spans:item.spans.slice(0,2)};
-                  // Batch 26 (B26-2): the byline authors ride
-                  // non-enumerably on the request (never serialized
-                  // to the model), so the spread above drops them;
-                  // re-attach or a byline-anchored flip would be held
-                  // on the retry for a bookkeeping reason.
-                  if(item.anchorBylineAuthors)Object.defineProperty(compact,
-                    'anchorBylineAuthors',{value:item.anchorBylineAuthors});
-                  return compact;
-                });
+                const failedKeys=Array.isArray(parsed.failedPairs)&&
+                  parsed.failedPairs.length?new Set(parsed.failedPairs):null;
+                const retryRequested=failedKeys?
+                  requested.filter(item=>
+                    failedKeys.has(item.claimId+'|'+item.sourceId)):requested;
+                const retryScope=failedKeys?'failed-pairs':'all-pairs';
                 const retryStartedAt=Date.now();
-                const retryRescue=await run('review-rescue',RESCUE_REVIEW_PROMPT,
-                  {question,partId:part.id,decisions:compactRequested},
+                const retryRescue=await run('review-rescue',RESCUE_REVIEW_RETRY_PROMPT,
+                  {question,partId:part.id,decisions:retryRequested},
                   parseReviewJson,{partId:part.id});
                 const retryLatencyMs=Date.now()-retryStartedAt;
                 entry.callLatencyMs+=retryLatencyMs;
-                const retryParsed=parseRescueDecisions(retryRescue,compactRequested);
-                entry.attempts.push({outcome:retryParsed.ok?'completed':'invalid-response',
-                  ...(retryParsed.ok?{}:{reason:retryParsed.reason}),
-                  callLatencyMs:retryLatencyMs,compact:true});
-                if(!retryParsed.ok){
+                const retryParsed=parseRescueDecisions(retryRescue,retryRequested);
+                if(retryParsed.ok){
+                  const mergedDecisions=failedKeys?
+                    new Map([...(parsed.decisions||[]),...retryParsed.decisions]):
+                    retryParsed.decisions;
+                  // The merged map must carry a verdict for every
+                  // requested pair before anything is applied — a
+                  // pair no parse judged stays unflipped by keeping
+                  // the whole rescue invalid (fail-closed).
+                  if(!requested.every(item=>
+                    mergedDecisions.has(item.claimId+'|'+item.sourceId))){
+                    entry.attempts.push({outcome:'invalid-response',
+                      reason:'missing-decision',
+                      callLatencyMs:retryLatencyMs,retryScope,
+                      retriedPairCount:retryRequested.length,fullSpans:true});
+                    entry.outcome='invalid-response';entry.reason='missing-decision';
+                    continue;
+                  }
+                  entry.attempts.push({outcome:'completed',
+                    callLatencyMs:retryLatencyMs,retryScope,
+                    retriedPairCount:retryRequested.length,fullSpans:true});
+                  parsed={ok:true,decisions:mergedDecisions};
+                  entry.outcome='completed-after-retry';
+                }else if(parsed.reason==='clause-verdicts-missing'||
+                         retryParsed.reason==='clause-verdicts-missing'){
+                  // Batch 27 (B27-4): after the retry, a verdict
+                  // that still omits its listed clause entries is
+                  // recorded as not-supported with reason
+                  // clause-verdicts-missing; it never flips. This
+                  // downgrade applies only when every requested pair
+                  // carries an individual verdict from one of the two
+                  // parses — a pair no parse judged keeps the whole
+                  // rescue invalid (fail-closed, exactly as before).
+                  const merged=new Map(parsed.decisions||[]);
+                  for(const [key,decision] of retryParsed.decisions||[])
+                    merged.set(key,decision);
+                  const coversAll=requested.every(item=>
+                    merged.has(item.claimId+'|'+item.sourceId));
+                  if(!coversAll){
+                    entry.attempts.push({outcome:'invalid-response',
+                      reason:'clause-verdicts-missing',
+                      callLatencyMs:retryLatencyMs,retryScope,
+                      retriedPairCount:retryRequested.length,fullSpans:true});
+                    entry.outcome='invalid-response';
+                    entry.reason='clause-verdicts-missing';
+                    continue;
+                  }
+                  for(const [key,decision] of merged)
+                    if(decision.clauseVerdictsMissing)
+                      merged.set(key,{...decision,verdict:'not-supported'});
+                  entry.attempts.push({outcome:'clause-verdicts-missing',
+                    callLatencyMs:retryLatencyMs,retryScope,
+                    retriedPairCount:retryRequested.length,fullSpans:true});
+                  parsed={ok:true,decisions:merged};
+                  entry.outcome='completed-after-retry';
+                }else{
+                  entry.attempts.push({outcome:'invalid-response',
+                    reason:retryParsed.reason,
+                    callLatencyMs:retryLatencyMs,retryScope,
+                    retriedPairCount:retryRequested.length,fullSpans:true});
                   entry.outcome='invalid-response';entry.reason=retryParsed.reason;
                   continue;
                 }
-                parsed=retryParsed;appliedRequested=compactRequested;
-                entry.outcome='completed-after-retry';
               }else entry.outcome='completed';
               const raw=rawReviewByPart.get(part.id);
               const flippedClaimIds=new Set();
@@ -4160,6 +4502,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                   verdict:verdict.verdict,fragment:verdict.fragment,
                   ...(verdict.elements?{elements:verdict.elements}:{}),
                   ...(verdict.elementDowngrade?{elementDowngrade:true}:{}),
+                  // Batch 27 (B27-4): a verdict recorded
+                  // not-supported after the retry for omitting its
+                  // listed clause entries carries the reason in the
+                  // trace, distinct from a judged not-supported.
+                  ...(verdict.clauseVerdictsMissing?
+                    {clauseVerdictsMissing:true,reason:'clause-verdicts-missing'}:{}),
                   ...(verdict.clearedClauses?{clearedClauses:verdict.clearedClauses}:{}),
                   ...(verdict.anchor?{anchor:verdict.anchor}:{}),
                   ...(verdict.attributionHeld?{attributionHeld:true}:{})};
@@ -4745,6 +5093,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           supportIssues:review.supportIssues,recovered:[...review.recovered,
             ...syntaxRecoveries],
           reviewDecisions:review.reviewDecisions,partDecisions:review.partDecisions,
+          // Batch 27 (B27-1): extraction blind spots are counted in
+          // the contract so the grammar's remaining holes are a
+          // measurable trace number, not an anecdote.
+          ...(review.subjectExtractionBlindSpots?
+            {subjectExtractionBlindSpots:review.subjectExtractionBlindSpots}:{}),
           ...(failedReviewParts.length?{failedParts:failedReviewParts
             .map(item=>({partId:item.partId,code:item.code}))}:{})};
         // Per-part contract problems fail only their own part (recorded in

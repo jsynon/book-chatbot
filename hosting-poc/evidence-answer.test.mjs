@@ -7745,7 +7745,7 @@ test('batch 25 Q2: a supported verdict with an unstated element does not flip',a
  assert.doesNotMatch(result.answer,/custom operates on the imagination/);
 });
 
-test('batch 25 Q3: an invalid rescue response gets one compact retry and the flips apply',async()=>{
+test('batch 25 Q3 + batch 27 B27-5: an invalid rescue response gets one failed-pairs full-span retry and the flips apply',async()=>{
  const reviewResponder=()=>({response:JSON.stringify({parts:[{partId:'P1',
    status:'partial',answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
    retainedContextClaimIds:[]}],
@@ -7772,7 +7772,13 @@ test('batch 25 Q3: an invalid rescue response gets one compact retry and the fli
  assert.equal(rescue.parts[0].outcome,'completed-after-retry');
  assert.equal(rescue.parts[0].attempts.length,2);
  assert.equal(rescue.parts[0].attempts[0].outcome,'invalid-response');
- assert.equal(rescue.parts[0].attempts[1].compact,true);
+ // Batch 27 (B27-5): the retry no longer compacts the evidence. It
+ // re-asks only the pair whose verdict failed validation, with its
+ // full span set, under the compact retry instruction.
+ assert.equal(rescue.parts[0].attempts[1].outcome,'completed');
+ assert.equal(rescue.parts[0].attempts[1].retryScope,'failed-pairs');
+ assert.equal(rescue.parts[0].attempts[1].retriedPairCount,1);
+ assert.equal(rescue.parts[0].attempts[1].fullSpans,true);
  assert.equal(rescue.parts[0].flipped,1);
  assert.match(result.answer,/custom operates on the imagination/,
   'the retried rescue flips the claim and the part ships');
@@ -8092,7 +8098,7 @@ test('batch 26 B26-1: a rescue clearance of the outstanding clause lets the flip
   'B26-4: rendered-text verification ran and found the shipped claim present');
 });
 
-test('batch 26 B26-1: without a clause clearance the demotion stands and the flip is recorded vetoed',async()=>{
+test('batch 26 B26-1 + batch 27 B27-4: a supported verdict omitting its clause entries never flips',async()=>{
  const ai=batch26RouterAI({
   draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
   review:clausePartialReview,
@@ -8105,14 +8111,24 @@ test('batch 26 B26-1: without a clause clearance the demotion stands and the fli
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
   [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
  const rescueEntry=result.trace.rescueReview.parts[0];
- assert.equal(rescueEntry.flipped,1,'the flip itself was applied before re-normalization');
+ // Batch 27 (B27-4): clause entries are enforced like element
+ // entries. The supported verdict returns no clauses entry for the
+ // listed outstanding clause on either attempt, so it is invalid,
+ // retried once, and then recorded not-supported with reason
+ // clause-verdicts-missing — it never flips, so the clause demotion
+ // the flip would have faced never even engages.
+ assert.equal(rescueEntry.flipped,0,
+  'a verdict that omits its listed clause entries never flips');
+ assert.equal(rescueEntry.outcome,'completed-after-retry');
+ assert.deepEqual(rescueEntry.attempts.map(attempt=>attempt.outcome),
+  ['invalid-response','clause-verdicts-missing']);
  const rescueClaim=rescueEntry.claims[0];
- assert.equal(rescueClaim.flipOutcome,'vetoed');
- assert.deepEqual(rescueClaim.flipVeto,
-  {layer:'clause',reason:'claim-source-not-supported'});
+ assert.equal(rescueClaim.verdict,'not-supported');
+ assert.equal(rescueClaim.clauseVerdictsMissing,true);
+ assert.equal(rescueClaim.reason,'clause-verdicts-missing');
  const decision=result.trace.reviewContract.reviewDecisions
   .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,false,'the clause demotion stands (fail-closed)');
+ assert.equal(decision.accepted,false,'the claim stays unaccepted (fail-closed)');
  assert.notEqual(result.outcome,'verified-source-draft');
  assert.ok(!result.answer.includes('treats constant conjunction as its basis'));
 });
@@ -8319,3 +8335,291 @@ test('batch 26 B26-4: rendered-text verification records a shipped claim whose t
  assert.deepEqual(absent,['P1-C2'],
   'the text check catches the claim the bookkeeping cannot see is missing');
 });
+
+// ---------------------------------------------------------------------------
+// Batch 27 (B27-1..B27-6)
+// ---------------------------------------------------------------------------
+
+test('batch 27 B27-1: subject extraction sees narrative prose',()=>{
+ // The three verified batch-26 failures: an irregular past-tense
+ // predicate, a subordinate clause after "how", and a possessive
+ // state noun outside the old list.
+ assert.deepEqual(claimPersonSubjects('Kurtz sat at the head of an immense round table.'),
+  ['Kurtz']);
+ assert.deepEqual(claimPersonSubjects(
+  'He observes the physical manifestation of Kurtz\'s authority, noting how Kurtz sat at the head of an immense round table in the station\'s mess-room, a position that felt like an "unalterable conviction".'),
+  ['Kurtz']);
+ assert.deepEqual(claimPersonSubjects("Kurtz's authority shaped his command."),['Kurtz']);
+ assert.deepEqual(claimPersonSubjects('Marlow notes how Kurtz sat at the head of the table.'),
+  ['Marlow','Kurtz']);
+ // Negative controls: abstractions, determiners, and places stay empty.
+ assert.deepEqual(claimPersonSubjects('Necessity arises from constant conjunction.'),[]);
+ assert.deepEqual(claimPersonSubjects('Other goods can be snatched away by fortune and circumstance.'),[]);
+ assert.deepEqual(claimPersonSubjects('The city stands where the river bends, and its people trade with the valley towns.'),[]);
+ assert.equal(personNamesMatch('Du Bois','W. E. B. Du Bois'),true,
+  'particle surnames match initialism bylines (the work-author exception depends on it)');
+ assert.equal(personNamesMatch('De Silentio','Johannes de Silentio'),true);
+});
+
+// Batch 27 (B27-2): the Conrad shape through the pilot route. The
+// span's actor is the pronoun "he" (the Outer Station manager); the
+// reviewer resolves the pronoun to Kurtz in both its boundary and its
+// attributedSubject. Before batch 27 every layer compared those
+// model strings against each other and the claim shipped.
+const conradPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Joseph Conrad',role:'primary',bookIds:['77']}],
+ parts:[{id:'P1',question:'In Heart of Darkness, who sat at the head of the round table in the station mess-room?',
+   sourceBookIds:['77'],searchQueries:['Conrad round table mess-room'],
+   candidateSourceIds:['S1']}],queries:['Conrad round table mess-room']};
+const conradPronounText='The manager of the Outer Station was a commonplace man who inspired neither love nor fear. '+
+ 'When annoyed at meal-times by the constant quarrels of the white men about precedence, he ordered an immense round table to be made, for which a special house had to be built. '+
+ 'This was the station\'s mess-room. The men sat down to their meals under his eye, and the quarrels about precedence ended.';
+const conradSource={id:'S1',bookId:'77',title:'Heart of Darkness — Joseph Conrad',page:88,
+ text:conradPronounText,preview:'He ordered an immense round table to be made.'};
+const conradReview=spanIds=>({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+  directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[]}],
+ claims:[{claimId:'P1-C1',status:'answered',sources:[{sourceId:'S1',status:'answered',
+  spanIds,attributionStatus:'not_applicable',attributedSpeaker:'',
+  subjectAttributionStatus:'supported',attributedSubject:'Kurtz',
+  evidenceRole:'character-or-narrator',
+  supportBoundary:'establishes that Kurtz ordered an immense round table for the station\'s mess-room.'}]}]});
+const rescueNotSupported=payload=>({response:JSON.stringify({decisions:
+ (payload.decisions||[]).map(item=>({claimId:item.claimId,sourceId:item.sourceId,
+  verdict:'not-supported',fragment:item.spans?.[0]?.text||'no support'}))})});
+
+test('batch 27 B27-2: a pronoun-actor span cannot corroborate the reviewer-resolved name',async()=>{
+ const spans=buildReviewSpans('S1',conradPronounText);
+ const pronounSpan=spans.find(span=>span.text.includes('he ordered an immense round table'));
+ assert.ok(pronounSpan,'the fixture span carries the pronoun actor');
+ const ai=batch26RouterAI({
+  draft:'PART P1\nKurtz sat at the head of an immense round table in the station\'s mess-room. [S1]',
+  review:conradReview([pronounSpan.spanId]),
+  rescue:rescueNotSupported});
+ const result=await composeEvidenceAnswer('In Heart of Darkness, who sat at the head of the round table in the station mess-room?',
+  [conradSource],ai,[],{plan:conradPlan,
+   catalog:{77:'Heart of Darkness — Joseph Conrad'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ assert.equal(decision.accepted,false,
+  'reviewer and claim agreeing on a name no span states no longer ships');
+ assert.equal(decision.validationReason,'subject-not-named-in-span');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.claimId==='P1-C1'&&issue.sourceId==='S1'&&
+  issue.reason==='subject-not-named-in-span'));
+ assert.doesNotMatch(result.answer,/Kurtz sat at the head/);
+ // The demotion is an attribution finding the rescue can answer:
+ // the requested pair carried the finding (B27-3 trace shape).
+ const requested=result.trace.rescueReview.parts[0].requestedPairs[0];
+ assert.equal(requested.attributionFindingSent,true);
+});
+
+test('batch 27 B27-2: a co-accepted span naming the person ships the same claim',async()=>{
+ const namingSentence='Kurtz sat at the head of the immense round table whenever he came down to the station.';
+ const sourceText=conradPronounText+' '+namingSentence;
+ const spans=buildReviewSpans('S1',sourceText);
+ const pronounSpan=spans.find(span=>span.text.includes('he ordered an immense round table'));
+ const namingSpan=spans.find(span=>span.text.includes('Kurtz sat at the head'));
+ assert.ok(pronounSpan&&namingSpan);
+ const source={...conradSource,text:sourceText};
+ const ai=batch26RouterAI({
+  draft:'PART P1\nKurtz sat at the head of an immense round table in the station\'s mess-room. [S1]',
+  review:conradReview([pronounSpan.spanId,namingSpan.spanId]),
+  rescue:rescueNotSupported});
+ const result=await composeEvidenceAnswer('In Heart of Darkness, who sat at the head of the round table in the station mess-room?',
+  [source],ai,[],{plan:conradPlan,
+   catalog:{77:'Heart of Darkness — Joseph Conrad'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ assert.equal(decision.accepted,true,
+  'an accepted span naming the subject corroborates the name');
+ assert.equal(decision.validationReason,null);
+ assert.match(result.answer,/Kurtz sat at the head of an immense round table/);
+ assert.equal(result.questionParts[0].status,'supported');
+});
+
+test('batch 27 B27-1: extraction blind spots are counted in the review contract',async()=>{
+ const spans=buildReviewSpans('S1',conradPronounText);
+ const ai=batch26RouterAI({
+  draft:'PART P1\nKurtz at the station commanded attention. [S1]',
+  review:{parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[]}],
+   claims:[{claimId:'P1-C1',status:'answered',sources:[{sourceId:'S1',status:'answered',
+    spanIds:[spans[0].spanId],attributionStatus:'not_applicable',attributedSpeaker:'',
+    evidenceRole:'work-assertion'}]}]},
+  rescue:rescueNotSupported});
+ const result=await composeEvidenceAnswer('Who commanded attention at the station?',
+  [conradSource],ai,[],{plan:conradPlan,
+   catalog:{77:'Heart of Darkness — Joseph Conrad'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ assert.equal(decision.subjectAttributionStatus,undefined,
+  'no subject was extracted, so the decision carries no subject fields (the silent shape)');
+ assert.equal(result.trace.reviewContract.subjectExtractionBlindSpots,1,
+  'the claim carries a capitalized name candidate, so the blind spot is counted');
+});
+
+test('batch 27 B27-3/B27-4: the rescue request is traced and its clauses come from the first normalization',async()=>{
+ let rescuePayload;
+ const ai=batch26RouterAI({
+  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
+  review:clausePartialReview,
+  rescue:payload=>{
+   rescuePayload=payload;
+   const item=payload.decisions[0];
+   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
+    verdict:'supported',fragment:item.spans[0].text,
+    elements:[{element:item.claimText,stated:true}],
+    clauses:[{text:'treats constant conjunction as its basis',stated:true,
+     fragment:'similar objects are constantly conjoined'}]}]})};
+  }});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ // The packet's outstanding list equals the first normalization's own
+ // clause findings for the pair — the not-answered clause decisions
+ // recorded on the pair's review decision — not a recomputation.
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ const expectedOutstanding=(decision.clauseDecisions||[])
+  .filter(clause=>clause.status!=='answered').map(clause=>clause.text);
+ assert.deepEqual(expectedOutstanding,['treats constant conjunction as its basis']);
+ assert.deepEqual(rescuePayload.decisions[0].outstandingClauses,
+  expectedOutstanding.map(text=>({text})));
+ // B27-3 trace shape: the request itself is recorded per pair.
+ assert.deepEqual(result.trace.rescueReview.parts[0].requestedPairs,
+  [{claimId:'P1-C1',sourceId:'S1',outstandingClauseCount:1,
+   outstandingClauses:['treats constant conjunction as its basis'],
+   attributionFindingSent:false,
+   spanCount:rescuePayload.decisions[0].spans.length}]);
+});
+
+test('batch 27 B27-4: a supported verdict omitting one listed clause is retried and then flips',async()=>{
+ const twoClauseReview={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2']}],
+  claims:[{claimId:'P1-C1',status:'partial',
+   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
+    attributionStatus:'not_applicable',attributedSpeaker:'',
+    subjectAttributionStatus:'supported',attributedSubject:'Hume',
+    evidenceRole:'work-assertion',supportBoundary:'Supports the full sentence.'}],
+   clauses:[
+    {text:'Hume links necessity to custom',status:'answered',issueCode:'none',
+     sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]},
+    {text:'treats constant conjunction as its basis',status:'partial',issueCode:'compound',
+     sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1']}]},
+    {text:'the mind is determined to infer one object from another',status:'partial',
+     issueCode:'scope',sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1']}]}]}]};
+ let rescueCalls=0;
+ const ai=batch26RouterAI({
+  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
+  review:twoClauseReview,
+  rescue:payload=>{
+   rescueCalls++;
+   const item=payload.decisions[0];
+   assert.deepEqual(item.outstandingClauses.map(clause=>clause.text),
+    ['treats constant conjunction as its basis',
+     'the mind is determined to infer one object from another'],
+    'both outstanding clauses from the first normalization ride in the packet');
+   const clauses=rescueCalls===1?
+    [{text:'treats constant conjunction as its basis',stated:true,
+      fragment:'similar objects are constantly conjoined'}]:
+    [{text:'treats constant conjunction as its basis',stated:true,
+      fragment:'similar objects are constantly conjoined'},
+     {text:'the mind is determined to infer one object from another',stated:true,
+      fragment:'the mind is determined by custom to infer one from the other'}];
+   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
+    verdict:'supported',fragment:item.spans[0].text,
+    elements:[{element:item.claimText,stated:true}],clauses}]})};
+  }});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(rescueCalls,2,'the clause-incomplete verdict was re-asked exactly once');
+ const rescueEntry=result.trace.rescueReview.parts[0];
+ assert.deepEqual(rescueEntry.attempts.map(attempt=>attempt.outcome),
+  ['invalid-response','completed']);
+ assert.equal(rescueEntry.attempts[0].reason,'clause-verdicts-missing');
+ assert.equal(rescueEntry.flipped,1,
+  'the completed clause verdicts let the flip apply');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.match(result.answer,/treats constant conjunction as its basis/);
+});
+
+test('batch 27 B27-5: the retry re-asks only the failed pair, with its full span set',async()=>{
+ const spanTexts=[
+  'Custom is the great guide of human life, and it is to custom alone that we must look for the explanation of causal inference in every case.',
+  'Constant conjunction is observed throughout nature, where similar objects are constantly conjoined in every instance that experience offers us.',
+  'Repetition shapes the inference by determining the mind, through repeated conjunction, to expect the same train of events as before.'];
+ const sourceText=spanTexts.join(' ');
+ const spans=buildReviewSpans('S1',sourceText);
+ assert.equal(spans.length,3,'the fixture source yields three distinct spans');
+ const source={id:'S1',bookId:'35',title:catalog[35],page:42,text:sourceText,
+  preview:'Custom is the great guide of human life.'};
+ const review={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
+   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[]}],
+  claims:[
+   {claimId:'P1-C1',status:'partial',sources:[{sourceId:'S1',status:'partial',
+     spanIds:[spans[0].spanId],attributionStatus:'not_applicable',attributedSpeaker:'',
+     subjectAttributionStatus:'supported',attributedSubject:'Hume',
+     evidenceRole:'work-assertion'}]},
+   {claimId:'P1-C2',status:'partial',sources:[{sourceId:'S1',status:'partial',
+     spanIds:[spans[2].spanId],attributionStatus:'not_applicable',attributedSpeaker:'',
+     subjectAttributionStatus:'supported',attributedSubject:'Repetition',
+     evidenceRole:'work-assertion'}]}]};
+ let rescueCalls=0;let retryPayload=null;
+ const ai=batch26RouterAI({
+  draft:'PART P1\nCustom guides human life and causal inference. [S1]\n\nRepetition shapes the inference through repeated conjunction. [S1]',
+  review,
+  rescue:payload=>{
+   rescueCalls++;
+   if(rescueCalls===1)return {response:JSON.stringify({decisions:[
+    {claimId:'P1-C1',sourceId:'S1',verdict:'not-supported',
+     fragment:payload.decisions[0].spans[0].text},
+    {claimId:'P1-C2',sourceId:'S1',verdict:'supported',
+     fragment:'a fragment that appears in no supplied span',
+     elements:[{element:'Repetition shapes the inference',stated:true}]}]})};
+   retryPayload=payload;
+   const item=payload.decisions[0];
+   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
+    verdict:'supported',
+    fragment:item.spans.find(span=>span.text.includes('Repetition shapes')).text,
+    elements:[{element:item.claimText,stated:true}]}]})};
+  }});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [source],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(rescueCalls,2);
+ assert.equal(retryPayload.decisions.length,1,
+  'only the pair whose verdict failed validation is re-asked');
+ assert.equal(retryPayload.decisions[0].claimId,'P1-C2');
+ assert.equal(retryPayload.decisions[0].spans.length,3,
+  'the retry carries the pair\'s FULL span set — under the batch-25 two-span cap, the validating fragment (span three) could never be quoted');
+ const rescueEntry=result.trace.rescueReview.parts[0];
+ assert.equal(rescueEntry.attempts[1].retryScope,'failed-pairs');
+ assert.equal(rescueEntry.attempts[1].fullSpans,true);
+ assert.equal(rescueEntry.flipped,1,'the retried pair flips on its third span');
+ assert.match(result.answer,/Repetition shapes the inference/);
+});
+
+test('batch 27 B27-6: rendered-text verification tolerates furniture and quote normalization',()=>{
+ const answers=[
+  {claimId:'P1-C1',text:'**Practice vs. Reason:** Custom guides expectation.',
+   renderedText:'**Practice vs. Reason:** Custom guides expectation. [S1]'},
+  {claimId:'P1-C2',text:'He calls it "a settled readiness" in reasoning.',
+   renderedText:'He calls it "a settled readiness" in reasoning. [S1]'},
+  {claimId:'P1-C3',text:'Custom guides expectation. Repetition shapes inference.',
+   renderedText:'Custom guides expectation. Repetition shapes inference. [S1]'}];
+ const answerText='Practice vs. Reason: Custom guides expectation. [S1]\n\n'+
+  'He calls it “a settled readiness” in reasoning. [S1]\n\n'+
+  '- Custom guides expectation.\n- Repetition shapes inference.';
+ assert.deepEqual(findTextAbsentShippedClaims(['P1-C1','P1-C2','P1-C3'],
+  answers,answerText),[],
+  'bold furniture, curly quotes, and list re-paragraphing no longer read as absence');
+});
+
+test('batch 27 B27-6: rendered-text verification still flags genuinely absent claims',()=>{
+ const answers=[
+  {claimId:'P1-C1',text:'Custom guides expectation.',sourceIds:['S1']},
+  {claimId:'P1-C2',text:'Fortune turns her wheel without pause.',sourceIds:['S1']}];
+ assert.deepEqual(findTextAbsentShippedClaims(['P1-C1','P1-C2'],answers,
+  'Custom guides expectation. [S1]'),['P1-C2']);
+});
+
