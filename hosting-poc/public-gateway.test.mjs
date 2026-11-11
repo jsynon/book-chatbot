@@ -2565,6 +2565,21 @@ test('provisional candidates mirror verification entry validation (batch 5 verif
  assert.throws(()=>prepareCandidatePages(question,
   [{bookId:'152',page:38,text:'too short'}]),/Unacceptable page text size/);
 });
+test('provisional candidates preserve validated facet ranks for the selector (batch 34 B34-4)',()=>{
+ const text='The public disputes were over a breached agreement, whereas growing power created fear.';
+ const candidates=prepareCandidatePages(question,[{bookId:'152',page:38,text,
+  candidatePartIds:['P1'],facetRanks:[{facet:0,rank:1},{facet:4,rank:3}]}]);
+ assert.deepEqual(candidates[0].facetRanks,[{facet:0,rank:1},{facet:4,rank:3}],
+  'facet ranks survive intake so the Worker diversity pass can act on them');
+ const unrated=prepareCandidatePages(question,[{bookId:'152',page:38,text}]);
+ assert.equal('facetRanks' in unrated[0],false,'absent ranks stay absent');
+ assert.throws(()=>prepareCandidatePages(question,
+  [{bookId:'152',page:38,text,facetRanks:[{facet:0,rank:0}]}]),/Invalid source facet ranks/);
+ assert.throws(()=>prepareCandidatePages(question,
+  [{bookId:'152',page:38,text,facetRanks:[{facet:-1,rank:1}]}]),/Invalid source facet ranks/);
+ assert.throws(()=>prepareCandidatePages(question,
+  [{bookId:'152',page:38,text,facetRanks:'none'}]),/Invalid source facet ranks/);
+});
 test('search planning runs at temperature 0 and fails at its 30 s deadline (batch 5 L2/L6)',async(t)=>{
  let seen;
  const ai={run:async(_model,input)=>{seen=input;
