@@ -128,7 +128,7 @@ export function isHeadingOnlySpan(text){
   return totalWords<=28&&lines.every(line=>isHeadingLine(line));
 }
 
-const REVIEW_STOP_WORDS=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
+export const REVIEW_STOP_WORDS=new Set(('a an and are as at be because been being by can could did do does for from had has have how i in into is it its may might of on or our shall should that the their them then there these they this those to was were what when where which who will with would').split(' '));
 // These small families help rank ordinary paraphrases and inflections. They
 // are ranking hints only: the semantic reviewer still decides support, and
 // exact word-form overlap always receives the stronger score. These families
