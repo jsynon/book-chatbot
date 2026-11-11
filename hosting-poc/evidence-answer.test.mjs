@@ -4,6 +4,31 @@ import {composeEvidenceAnswer,linkEvidenceToParts,derivePartContract,COMPOSER_PR
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims} from './evidence-answer.mjs';
+import {reviewDeadlineMsForPacket} from './evidence-answer.mjs';
+
+test('batch 33 (B33-9) review deadline scales with packet size between its floor and cap',()=>{
+ // Floor: the pre-batch-33 flat value holds for any packet up to
+ // 6000 span words (36000 span characters at 6 chars/word), including
+ // the empty packet and a missing metrics object.
+ assert.equal(reviewDeadlineMsForPacket({spanCharacters:0}),60000);
+ assert.equal(reviewDeadlineMsForPacket({}),60000);
+ assert.equal(reviewDeadlineMsForPacket({spanCharacters:36000}),60000);
+ // Steps: +15000 per full 6000 words above the first 6000.
+ assert.equal(reviewDeadlineMsForPacket({spanCharacters:72000}),75000);
+ assert.equal(reviewDeadlineMsForPacket({spanCharacters:108000}),90000);
+ assert.equal(reviewDeadlineMsForPacket({spanCharacters:144000}),105000);
+ // Cap: 120000 at 30000+ words, and never above it.
+ assert.equal(reviewDeadlineMsForPacket({spanCharacters:180000}),120000);
+ assert.equal(reviewDeadlineMsForPacket({spanCharacters:1800000}),120000);
+ // Monotonic non-decreasing across the whole range.
+ let previous=0;
+ for(let chars=0;chars<=400000;chars+=5000){
+  const value=reviewDeadlineMsForPacket({spanCharacters:chars});
+  assert.ok(value>=previous&&value>=60000&&value<=120000,
+   `deadline monotonic and bounded at ${chars} chars`);
+  previous=value;
+ }
+});
 
 test('batch 15 preserves quoted sentence punctuation and leading Markdown subtitles',()=>{
  for(const text of [
@@ -4221,6 +4246,12 @@ test('final audit failures record their predicate and restore state in normal an
 });
 
 test('final audit salvage drops one failing part from a two-part answer and names it missing',async()=>{
+ // Batch 33 (B33-2/B33-3): this fixture pinned the strict-minority
+ // cliff through batch 32 — one failing part of two suppressed the
+ // whole answer even with the survivor audit passing (the phase-3
+ // Gatsby SP1 shape). The salvage now requires exactly a surviving
+ // part and a passing survivor re-audit; the dropped part is traced
+ // and disclosed to the reader by the B33-3 absent-part label.
  const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
   'PART P2\nKant treats causality as an a priori category of relation. [S2]';
  const plan={...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)};
@@ -4228,12 +4259,16 @@ test('final audit salvage drops one failing part from a two-part answer and name
  const ai=makeAI([answer(draft),reviewBoth,reviewBoth]);
  const result=await composeEvidenceAnswer(plan.resolvedQuestion,[hume,kant],ai,[],{
   plan,catalog,trace:true,postReviewAuditPartId:'P1'});
- assert.equal(result.outcome,'generation-failed','one failing part out of two is a tie, not a strict minority');
- assert.equal(result.answer,'I could not complete a reliable answer this time. Please try again.');
- assert.deepEqual(result.trace.final.auditSalvage,undefined);
+ assert.equal(result.outcome,'unverified-source-draft',
+  'the clean survivor of a 1-of-2 partition ships, capped below verified');
+ assert.match(result.answer,/Kant treats causality as an a priori category/);
+ assert.match(result.answer,/This part of the question could not be answered from the library: How does Hume explain causal necessity\?/,
+  'the dropped part is disclosed in the answer text (B33-3)');
+ assert.deepEqual(result.trace.final.auditSalvage.droppedPartIds,['P1']);
  assert.deepEqual(result.trace.final.auditPartition.failingPartIds,['P1']);
  assert.deepEqual(result.trace.final.auditPartition.survivingPartIds,['P2']);
- assert.equal(result.trace.final.auditPartition.disposition,'suppressed');
+ assert.equal(result.trace.final.auditPartition.disposition,'salvaged');
+ assert.deepEqual(result.trace.final.absentPartLabelsInAnswer,['P1']);
 });
 
 test('final audit salvage still drops a localized failure from a larger answer',async()=>{
@@ -9981,6 +10016,611 @@ test('batch 31 B31-2: the Kierkegaard voice shape is not demoted when the review
  assert.match(result.answer,/faith as a relation to God/);
 });
 
+test('batch 33 B33-1: span heads reach the review packet and the Conrad production claims demote and do not flip',async()=>{
+ // Production fixture (phase-2 batch-32 Conrad SP1, P2-C4/P2-C5):
+ // the exact S1 page text (book 315, p. 34) and the exact shipped
+ // claim texts. The passage is Marlow's interview with the station
+ // manager; the claims credit Kurtz with the manager's round table,
+ // "unalterable conviction", and smile. On the batch-32 code the
+ // reviewer could not see who the passage's "he" was — the subject
+ // is fixed by narration before each span window — and both claims
+ // shipped. With spanHead in the packet, the reviewer identifies
+ // the span subject as someone other than the claims' subject and
+ // returns a subject conflict; the rescue, shown the same heads,
+ // judges both pairs not-supported, so neither flips.
+ const pageText=['there were no external checks. Once when various tropical',
+  'diseases had laid low almost every ‘agent’ in the station, he',
+  'was heard to say, ‘Men who come out here should have no',
+  ' entrails.’ He sealed the utterance with that smile of his, as',
+  'though it had been a door opening into a darkness he had',
+  'in his keeping. You fancied you had seen things—but the',
+  'seal was on. When annoyed at meal-times by the constant',
+  'quarrels of the white men about precedence, he ordered an',
+  'immense round table to be made, for which a special house',
+  'had to be built. This was the station’s mess-room. Where',
+  'he sat was the first place—the rest were nowhere. One felt',
+  'this to be his unalterable conviction. He was neither civil',
+  'nor uncivil. He was quiet. He allowed his ‘boy’—an overfed',
+  'young negro from the coast—to treat the white men, under',
+  'his very eyes, with provoking insolence.',
+  '   ‘He began to speak as soon as he saw me. I had been very',
+  'long on the road. He could not wait. Had to start without',
+  'me. The up-river stations had to be relieved. There had been',
+  'so many delays already that he did not know who was dead',
+  'and who was alive, and how they got on—and so on, and so',
+  'on. He paid no attention to my explanations, and, playing',
+  'with a stick of sealing-wax, repeated several times that the',
+  'situation was ‘very grave, very grave.’ There were rumours',
+  'that a very important station was in jeopardy, and its chief,',
+  'Mr. Kurtz, was ill. Hoped it was not true. Mr. Kurtz was …',
+  'I felt weary and irritable. Hang Kurtz, I thought. I inter-',
+  'rupted him by saying I had heard of Mr. Kurtz on the coast.',
+  '‘Ah! So they talk of him down there,’ he murmured to him-',
+  ' self. Then he began again, assuring me Mr. Kurtz was the'].join('\n');
+ const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:34,url:'https://example.test/conrad#page=34',text:pageText,
+  preview:'He sealed the utterance with that smile of his.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Joseph Conrad',role:'primary',bookIds:['315']}],
+  parts:[{id:'P1',question:'In Heart of Darkness, how does Marlow’s picture of Kurtz take shape in this passage?',
+   sourceBookIds:['315'],searchQueries:['Kurtz Marlow picture'],
+   candidateSourceIds:['S1']}],queries:['Kurtz Marlow picture']};
+ const captured={};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const catalogByText=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment));
+  const smile=catalogByText('door opening into a darkness');
+  const table=catalogByText('immense round table');
+  const conviction=catalogByText('unalterable conviction');
+  captured.smileHead=smile?.head;captured.tableHead=table?.head;
+  captured.smileText=smile?.text;
+  const [first,second]=payload.claims;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+   answerStatus:'partial',
+   directAnswerClaimIds:[first.claimId,second.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:first.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[table.spanId,conviction.spanId],
+      subjectAttributionStatus:'conflict'}]},
+    {claimId:second.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[smile.spanId],
+      subjectAttributionStatus:'conflict'}]}]})};
+ };
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
+   fragment:item.spans[0].text,
+   elements:[{element:item.claimText,stated:false}]}))})};
+ };
+ const draft='PART P1\n'+
+  'He observes Kurtz\'s commanding and "unalterable conviction," noting how Kurtz\'s mere presence dictated the social order at the station, such as his insistence on a specific place at the mess-room table. [S1]\n'+
+  'Marlow also witnesses the physical and psychological impact of Kurtz\'s presence, noting the "smile" that seemed to act as a "door opening into a darkness". [S1]';
+ const ai=batch25RouterAI({reviewResponder,rescueResponder,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, how does Marlow’s picture of Kurtz take shape?',
+  [source],ai,[],{plan,catalog:b30ConradCatalog,trace:true});
+ assert.match(captured.smileHead||'',/no\s+entrails/,
+  'the smile span carries its preceding narration as a separate head');
+ assert.ok(captured.tableHead?.includes('smile of his'),
+  'the round-table span head carries the interview narration before it');
+ assert.ok(!captured.smileText.includes('entrails'),
+  'the head is never merged into the span text itself');
+ const decisions=result.trace.reviewContract.reviewDecisions
+  .filter(item=>item.sourceId==='S1');
+ assert.equal(decisions.length,2);
+ for(const decision of decisions){
+  assert.equal(decision.accepted,false);
+  assert.equal(decision.validationReason,'source-subject-attribution-conflict');
+ }
+ assert.equal(result.trace.rescueReview.parts[0].flipped,0,
+  'neither demoted pair flips at the rescue');
+ assert.doesNotMatch(result.answer,/unalterable conviction/);
+ assert.doesNotMatch(result.answer,/door opening into a darkness/);
+});
+
+const b33HeadFillers=[
+ 'The helmsman kept the steamer steady as the shore came into view, holding the vessel against the current that pressed her toward the bank and the shallows beyond.',
+ 'An order from the bridge sent the steamer closer to the shore before dusk, and the leadsman began to call the depths as the water shoaled along the bank.',
+ 'The helmsman watched the shore while the steamer slowed in the current, and the mate stood ready with the anchor as the light began to fail over the water.',
+ 'The steamer approached the shore with her engines slowed, and the helmsman kept her head against the current while the crew watched the bank in silence.',
+ 'Orders passed along the deck as the steamer neared the shore, and the helmsman answered each one with a turn of the wheel and a glance toward the bank.',
+ 'The shore rose dark against the evening light as the steamer approached, and the helmsman steered by the marks the leadsman called from the bow.',
+ 'When the steamer came near the shore the helmsman held her steady in the current, and the crew stood ready at their stations along the rail to land.',
+ 'The captain’s orders reached the helmsman as the steamer approached the shore, and the vessel answered slowly, her wheel hard over against the pressing current.'];
+const b33ActorSentence='He ordered the helmsman to steer the steamer toward the shore, and the crew, who had been waiting in silence for the signal, moved at once to their stations along the rail.';
+function b33HeadPage(namingSentence){
+ // Eight high-relevance filler sentences push the naming sentence
+ // out of the 8-span review packet; the naming sentence survives
+ // only as the actor span's head.
+ return {id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:44,url:'https://example.test/conrad#page=44',
+  text:[...b33HeadFillers,namingSentence,b33ActorSentence].join(' '),
+  preview:'He ordered the helmsman to steer the steamer toward the shore.'};
+}
+function b33HeadReviewResponder(captured){
+ return ({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  const actor=payload.spanCatalog.find(entry=>
+   entry.text.includes('He ordered the helmsman'));
+  const naming=payload.spanCatalog.find(entry=>
+   entry.text.includes('taken command')||entry.text.includes('reputation'));
+  captured.actorId=actor?.spanId;captured.actorHead=actor?.head;
+  captured.namingId=naming?.spanId;
+  captured.packetSpanIds=payload.parts[0].evidence[0].spanIds;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[actor.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Marlow'}]}]})};
+ };
+}
+
+test('batch 33 B33-1: a subject named only in a span head releases the pronoun-span demotion at the gate',async()=>{
+ // Control: the claim's true subject is named as a narration
+ // subject ONLY in the actor span's head — the naming sentence is
+ // ranked out of the packet as a span, so the batch-31 antecedent
+ // test can pass only by reading the head.
+ const source=b33HeadPage('Marlow had taken command of the steamer only that morning, after the manager’s sudden illness left the vessel without a captain for the voyage upriver.');
+ const captured={};
+ const ai=batch25RouterAI({
+  reviewResponder:b33HeadReviewResponder(captured),
+  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ assert.ok(captured.actorHead?.includes('Marlow had taken command'),
+  'the actor span head carries the naming sentence');
+ assert.ok(!captured.packetSpanIds.includes(captured.namingId),
+  'the naming sentence is not itself a packet span — the head is the only carrier');
+ const suppressed=result.trace.reviewContract.gateDemotionsSuppressed;
+ assert.equal(suppressed?.length,1);
+ assert.equal(suppressed[0].reason,'subject-not-named-in-span');
+ assert.equal(suppressed[0].antecedentSpanId,captured.actorId,
+  'the antecedent was found in the actor span’s own head');
+ assert.equal(suppressed[0].antecedentInHead,true);
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.match(result.answer,/Marlow orders the helmsman/);
+});
+
+test('batch 33 B33-1: a possessive-only mention in a head releases nothing at the gate',async()=>{
+ // Negative control (the trait shape's habitat): the head names
+ // the claim's subject only as a possessor. The gate antecedent
+ // test keeps its non-possessive bar for heads exactly as for span
+ // text, so the demotion stands and the pair does not ship.
+ const source=b33HeadPage('The officers of the company spoke often of Marlow’s reputation for steadiness aboard the steamer, and the crew trusted his judgment in the difficult reaches of the river.');
+ const captured={};
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
+   fragment:item.spans[0].text,
+   elements:[{element:item.claimText,stated:false}]}))})};
+ };
+ const ai=batch25RouterAI({
+  reviewResponder:b33HeadReviewResponder(captured),
+  rescueResponder,
+  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ assert.ok(captured.actorHead?.includes('Marlow’s reputation'),
+  'the head carries the possessive-only mention');
+ assert.equal(result.trace.reviewContract.gateDemotionsSuppressed,undefined,
+  'a possessive-only head antecedent never suppresses at the gate');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,false);
+ assert.equal(decision.validationReason,'subject-not-named-in-span');
+ assert.doesNotMatch(result.answer,/Marlow orders the helmsman/);
+});
+
+test('batch 33 B33-1: head content cannot support a claim — a rescue fragment copied from a head fails validation',async()=>{
+ // Separation by construction: heads feed antecedent tests and
+ // reviewer context only. A rescue verdict whose decisive fragment
+ // is text that exists solely in a span's head (the naming
+ // sentence here is possessive-only, so the gate demotion stands
+ // and the rescue runs; the sentence itself is not a packet span)
+ // fails the fragment-in-span-text validation, so the flip never
+ // happens — head content is not evidence, however the rescue
+ // judges the pair.
+ const source=b33HeadPage('The officers of the company spoke often of Marlow’s reputation for steadiness aboard the steamer, and the crew trusted his judgment in the difficult reaches of the river.');
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  const actor=payload.spanCatalog.find(entry=>
+   entry.text.includes('He ordered the helmsman'));
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[actor.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Marlow'}]}]})};
+ };
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
+   fragment:'The officers of the company spoke often of Marlow’s reputation for steadiness aboard the steamer',
+   elements:[{element:item.claimText,stated:true}],anchor:'Marlow'}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder,
+  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ const rescue=result.trace.rescueReview.parts[0];
+ assert.equal(rescue.flipped,0,
+  'a fragment drawn only from a head never flips the pair');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,false);
+ assert.doesNotMatch(result.answer,/Marlow orders the helmsman/);
+});
+
+const b33PPPage=[
+ 'The whole of what Elizabeth had already heard, his claims on Mr. Darcy, was now openly acknowledged by Wickham to the whole party.',
+ 'Elizabeth Bennet had listened to the tale in silence, though she said nothing in reply to the company assembled there that evening.',
+ 'Jane Bennet, who had arrived later in the evening, heard the same account with her usual composure and gentleness of temper.',
+ 'Miss Bennet was the only creature who could suppose there might be any extenuating circumstances in the case, unknown to the society of Hertfordshire; her mild and steady candour always pleaded for allowances, and urged the possibility of mistakes—but by everybody else Mr. Darcy was condemned as the worst of men.'].join(' ');
+const b33PPSource={id:'S1',bookId:'341',title:'Pride and Prejudice — Jane Austen',
+ page:83,url:'https://example.test/pp#page=83',text:b33PPPage,
+ preview:'Miss Bennet was the only creature who could suppose there might be any extenuating circumstances in the case.'};
+const b33PPPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Jane Austen',role:'primary',bookIds:['341']}],
+ parts:[{id:'P1',question:'In Pride and Prejudice, how do Elizabeth and Jane respond to the case against Darcy?',
+  sourceBookIds:['341'],searchQueries:['Bennet Darcy extenuating circumstances'],
+  candidateSourceIds:['S1']}],queries:['Bennet Darcy extenuating circumstances']};
+const b33PPCatalog={'341':'Pride and Prejudice — Jane Austen'};
+
+test('batch 33 B33-4: a claim resting on a shared title+surname form demotes when the packet attests two people with that surname',async()=>{
+ // Production shape (phase-3 P&P SP1 P1-C6): the span's words are
+ // Jane Bennet's; the claim credits Elizabeth; the span names her
+ // only as "Miss Bennet". The packet attests both sisters in full,
+ // so the shared form cannot carry the attribution. A sibling
+ // claim whose span names Jane Bennet in full ships unaffected.
+ const draft='PART P1\n'+
+  'While others in society condemn him as "the worst of men," Elizabeth is one of the few who searches for "extenuating circumstances." [S1]\n'+
+  'Jane Bennet pleaded for allowances with her mild and steady candour. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const target=payload.spanCatalog.find(entry=>
+   entry.text.includes('extenuating circumstances'));
+  const janeSpan=payload.spanCatalog.find(entry=>
+   entry.text.includes('gentleness of temper'));
+  const claims=payload.claims.map(claim=>({
+   claimId:claim.claimId,status:'answered',
+   sources:[{sourceId:'S1',status:'answered',
+    spanIds:[claim.claimId.endsWith('C1')?target.spanId:janeSpan.spanId],
+    subjectAttributionStatus:'supported',
+    attributedSubject:claim.claimId.endsWith('C1')?
+     'Elizabeth Bennet':'Jane Bennet'}]}));
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],claims})};
+ };
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
+   fragment:'',elements:[{element:item.claimText,stated:false}],anchor:''}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In Pride and Prejudice, how do Elizabeth and Jane respond to the case against Darcy?',
+  [b33PPSource],ai,[],{plan:b33PPPlan,catalog:b33PPCatalog,trace:true});
+ const decisions=result.trace.reviewContract.reviewDecisions
+  .filter(item=>item.sourceId==='S1');
+ const elizabeth=decisions.find(item=>item.claimId.endsWith('C1'));
+ const jane=decisions.find(item=>item.claimId.endsWith('C2'));
+ assert.equal(elizabeth.accepted,false,
+  'the shared-form attribution demotes');
+ assert.equal(elizabeth.validationReason,'source-attribution-unanchored');
+ const familyIssue=result.trace.reviewContract.supportIssues.find(item=>
+  item.claimId===elizabeth.claimId&&item.sourceId==='S1'&&
+  item.reason==='source-attribution-unanchored');
+ assert.equal(familyIssue?.familyNameAmbiguity?.surname,'Bennet',
+  'the support issue records the same-family producer');
+ assert.equal(jane.accepted,true,
+  'the fully-named sibling claim is unaffected');
+ assert.doesNotMatch(result.answer,/extenuating circumstances/);
+ assert.match(result.answer,/Jane Bennet pleaded for allowances/);
+});
+
+test('batch 33 B33-4: a head naming the person in full disambiguates the shared form',async()=>{
+ // The span still names only "Miss Bennet", but the span's head
+ // (B33-1) names Jane Bennet in full as the actor of the pleading
+ // — the attribution is anchored and the claim ships.
+ const page=[
+  'The company had talked of little else all evening, and the case against Mr. Darcy was rehearsed again in every corner of the room before the tea was served.',
+  'Jane Bennet argued, whenever the case was mentioned in company, that allowances ought to be made for mistakes before any man was condemned outright.',
+  'Miss Bennet was the only creature who could suppose there might be any extenuating circumstances in the case, unknown to the society of Hertfordshire; her mild and steady candour always pleaded for allowances, and urged the possibility of mistakes—but by everybody else Mr. Darcy was condemned as the worst of men.',
+  'Elizabeth Bennet, who had listened to the whole account in silence, walked home with her sister under a sky full of stars that night.'].join(' ');
+ const source={...b33PPSource,text:page};
+ const draft='PART P1\n'+
+  'Jane searches for "extenuating circumstances" while Mr. Darcy is condemned as the worst of men. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const target=payload.spanCatalog.find(entry=>
+   entry.text.includes('extenuating circumstances'));
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
+   status:'answered',sources:[{sourceId:'S1',status:'answered',
+   spanIds:[target.spanId],subjectAttributionStatus:'supported',
+   attributedSubject:'Jane Bennet'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In Pride and Prejudice, how do Elizabeth and Jane respond to the case against Darcy?',
+  [source],ai,[],{plan:b33PPPlan,catalog:b33PPCatalog,trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.sourceId==='S1');
+ assert.equal(decision.accepted,true,
+  'the head disambiguates the shared form and the claim ships');
+ assert.equal(result.trace.reviewContract.supportIssues.some(item=>
+  item.familyNameAmbiguity),false);
+ assert.match(result.answer,/extenuating circumstances/);
+});
+
+// ---------------------------------------------------------------------------
+// Batch 33 (B33-5): gate economy II pilots.
+// ---------------------------------------------------------------------------
+
+test('batch 33 B33-5 (a): a bullet-label claim whose content the spans state is exempt from the label demotion; unstated content is not',async()=>{
+ // Production shape (phase-2 Empires P2): the reviewer demoted
+ // the pair because the passages "do not explicitly categorize
+ // them as 'Economic and Environmental Factors'" — the composer's
+ // own synthesis label, measured as if it were claim content. The
+ // label-stripped content is fully stated by the bound span, so
+ // the demotion does not stand. The control claim wears the same
+ // form but its content is genuinely unstated, and it demotes.
+ const source={id:'S1',bookId:'287',title:'Decline and Fall — Edward Gibbon',
+  page:210,url:'https://example.test/gibbon#page=210',
+  text:'The opening of new sea routes diverted the trade of the region, and the plague, returning year after year, thinned the towns and weakened the ability of the province to defend itself against its enemies.',
+  preview:'The opening of new sea routes diverted the trade of the region.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Edward Gibbon',role:'primary',bookIds:['287']}],
+  parts:[{id:'P1',question:'In the Decline and Fall, what factors weakened the empire’s ability to defend itself?',
+   sourceBookIds:['287'],searchQueries:['sea routes plague defend'],
+   candidateSourceIds:['S1']}],queries:['sea routes plague defend']};
+ const draft='PART P1\n'+
+  '* **Economic and Environmental Factors:** The opening of new sea routes or the impact of the plague can weaken a region\u2019s ability to defend itself. [S1]\n'+
+  '* **Naval Supremacy:** The building of a great fleet of warships gave the empire command of every sea and harbor along the coast. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const spanId=payload.spanCatalog[0].spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+   answerStatus:'answered',
+   directAnswerClaimIds:[payload.claims.find(claim=>
+    claim.text.includes('Economic'))?.claimId].filter(Boolean),
+   retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,
+    status:'answered',sources:[{sourceId:'S1',status:'partial',
+     spanIds:[spanId],
+     supportBoundary:claim.text.includes('Economic')?
+      'The spans mention specific historical factors like new sea routes and plague, but do not explicitly categorize them as Economic and Environmental Factors.':
+      'The spans describe trade routes and plague, not a war fleet.'}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In the Decline and Fall, what factors weakened the empire\u2019s ability to defend itself?',
+  [source],ai,[],{plan,catalog:{'287':'Decline and Fall — Edward Gibbon'},trace:true});
+ const decisions=result.trace.reviewContract.reviewDecisions;
+ const exempted=decisions.find(item=>item.claimId.endsWith('C1'));
+ const control=decisions.find(item=>item.claimId.endsWith('C2'));
+ assert.equal(exempted.accepted,true,
+  'the label demotion does not stand when the content is stated');
+ assert.equal(control.accepted,false,
+  'genuinely unstated bullet-label content still demotes');
+ const suppressed=result.trace.reviewContract.gateDemotionsSuppressed||[];
+ assert.ok(suppressed.some(item=>item.kind==='bullet-label'&&
+  item.claimId===exempted.claimId),
+  'the exemption is recorded as a gate suppression');
+ assert.ok((result.trace.vetoCensus||[]).some(item=>
+  item.kind==='bullet-label'&&item.outcome==='suppressed'),
+  'the veto census carries the exemption');
+ assert.match(result.answer,/new sea routes/);
+ assert.doesNotMatch(result.answer,/great fleet of warships/);
+});
+
+test('batch 33 B33-5 (b): a companion span stating the claim restores a reviewer not-supported verdict (the Love shape)',async()=>{
+ // Production shape (phase-3 Love P2-C7): the reviewer bound one
+ // span, found the specific proposition unstated there, and noted
+ // it was "better supported by other spans in the source" — the
+ // companion span states it, with the subject anchored. The pair
+ // is restored and recorded.
+ const source={id:'S1',bookId:'500',title:'The Doctrine of Marriage — John Milton',
+  page:31,url:'https://example.test/milton#page=31',
+  text:'Milton describes marriage as a social institution, sanctioned by law and custom, by which two persons are joined for the ordering of household and property. Milton teaches that marriage, entered in faith, is a spiritual union in which two souls are joined before God.',
+  preview:'Milton describes marriage as a social institution.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'John Milton',role:'primary',bookIds:['500']}],
+  parts:[{id:'P1',question:'In The Doctrine of Marriage, how does Milton present the nature of marriage?',
+   sourceBookIds:['500'],searchQueries:['Milton marriage spiritual union'],
+   candidateSourceIds:['S1']}],queries:['Milton marriage spiritual union']};
+ const draft='PART P1\nMilton presents marriage as a spiritual union in which two souls are joined before God. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const bound=payload.spanCatalog.find(entry=>
+   entry.text.includes('social institution'));
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
+   status:'answered',sources:[{sourceId:'S1',status:'partial',
+   spanIds:[bound.spanId],subjectAttributionStatus:'supported',
+   attributedSubject:'John Milton',
+   supportBoundary:'The span identifies marriage as a social institution, but the specific spiritual union claim is better supported by other spans in the source.'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In The Doctrine of Marriage, how does Milton present the nature of marriage?',
+  [source],ai,[],{plan,catalog:{'500':'The Doctrine of Marriage — John Milton'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions[0];
+ assert.equal(decision.accepted,true,
+  'the companion span restores the pair');
+ const restorations=result.trace.reviewContract.gateRestorations||[];
+ assert.ok(restorations.some(item=>item.kind==='companion-span'),
+  'the restoration is recorded');
+ assert.match(result.answer,/spiritual union/);
+});
+
+test('batch 33 B33-5 (b): a companion span stating the claim suppresses a subject-mismatch demotion (the Forgiveness shape)',async()=>{
+ // Production shape (phase-3 Forgiveness): the reviewer resolved
+ // the bound span's proposition to Augustine while the claim's
+ // extracted targets missed him, and the gate demoted on the
+ // mismatch — while another packet span states the proposition
+ // with Augustine as its subject. The demotion is suppressed.
+ const source={id:'S1',bookId:'600',title:'Confessions — St. Augustine',
+  page:112,url:'https://example.test/augustine#page=112',
+  text:'He speaks of the blessings that men receive in this life and of the will by which they are distributed among the nations of the earth. I have learned that God gives all blessings of His sovereign good pleasure, not due to the merits of good-will, and I assert this plainly.',
+  preview:'He speaks of the blessings that men receive in this life.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'St. Augustine',role:'primary',bookIds:['600']}],
+  parts:[{id:'P1',question:'In the Confessions, how does Augustine describe the giving of blessings?',
+   sourceBookIds:['600'],searchQueries:['Augustine blessings sovereign pleasure'],
+   candidateSourceIds:['S1']}],queries:['Augustine blessings sovereign pleasure']};
+ const draft='PART P1\nHe teaches that God gives all blessings of His sovereign good pleasure, not due to the merits of good-will. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const bound=payload.spanCatalog.find(entry=>
+   entry.text.includes('distributed among the nations'));
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
+   status:'answered',sources:[{sourceId:'S1',status:'answered',
+   spanIds:[bound.spanId],subjectAttributionStatus:'supported',
+   attributedSubject:'St. Augustine',
+   supportBoundary:'The span confirms that grace is given of God\u2019s sovereign good pleasure, not due to merits of good-will.'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In the Confessions, how does Augustine describe the giving of blessings?',
+  [source],ai,[],{plan,catalog:{'600':'Confessions — St. Augustine'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions[0];
+ assert.equal(decision.accepted,true,
+  'the companion span suppresses the mismatch demotion');
+ const suppressed=result.trace.reviewContract.gateDemotionsSuppressed||[];
+ assert.ok(suppressed.some(item=>item.kind==='companion-span'),
+  'the suppression is recorded with its kind');
+ assert.match(result.answer,/sovereign good pleasure/);
+});
+
+test('batch 33 B33-5 (b): the unanchored veto of a rescue flip must pass the antecedent test (the Wuthering shape)',async()=>{
+ // Production shape (phase-3 Wuthering P2-C5): the rescue judged
+ // the pair supported with anchor "Catherine"; re-normalization
+ // vetoed it as source-attribution-unanchored because the bound
+ // span's cue window holds no Catherine speech cue — while the
+ // packet's own narration names Catherine as a subject. The veto
+ // now has to pass the antecedent test first, and it does not
+ // survive it.
+ const source={id:'S1',bookId:'362',title:'Wuthering Heights — Emily Brontë',
+  page:74,url:'https://example.test/wuthering#page=74',
+  text:'Confused as Catherine was, her wits were alert at applying our conversation. \u201CAh! Nelly has played traitor,\u201D she exclaimed, passionately. \u201CNelly is my hidden enemy.\u201D The wind was loud upon the moor that night, and the house stood dark against the driving rain from the hills. Catherine took the letter from the drawer and hid it beneath the loose board in the passage that winter, where none of the household would think to look for it.',
+  preview:'Confused as Catherine was, her wits were alert.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Emily Brontë',role:'primary',bookIds:['362']}],
+  parts:[{id:'P1',question:'In Wuthering Heights, what does Catherine accuse Nelly of?',
+   sourceBookIds:['362'],searchQueries:['Catherine Nelly played traitor'],
+   candidateSourceIds:['S1']}],queries:['Catherine Nelly played traitor']};
+ const draft='PART P1\nCatherine claims that Nelly has "played traitor" by sharing information or perhaps withholding it in a way that harms the family. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const bound=payload.spanCatalog.find(entry=>
+   entry.text.includes('Confused as Catherine was'));
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
+   status:'answered',sources:[{sourceId:'S1',status:'answered',
+   spanIds:[bound.spanId],attributionStatus:'supported',
+   attributedSpeaker:'Catherine',
+   subjectAttributionStatus:'supported',
+   attributedSubject:'Catherine'}]}]})};
+ };
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
+   fragment:'\u201CAh! Nelly has played traitor,\u201D she exclaimed, passionately.',
+   elements:[{element:item.claimText,stated:true}],anchor:'Catherine'}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In Wuthering Heights, what does Catherine accuse Nelly of?',
+  [source],ai,[],{plan,catalog:{'362':'Wuthering Heights — Emily Brontë'},trace:true});
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.equal(rescueClaim.flipOutcome,'accepted',
+  'the antecedent parity blocks the unanchored veto');
+ const restorations=result.trace.reviewContract.gateRestorations||[];
+ assert.ok(restorations.some(item=>item.kind==='antecedent-parity'&&
+  item.reason==='source-attribution-unanchored'),
+  'the parity suppression is recorded');
+ assert.match(result.answer,/played traitor/);
+});
+
+test('batch 33 B33-5 (c): a polarity veto falls when a packet span carries the claim’s own polarity construction (the Science shape)',async()=>{
+ // Production shape (phase-2 Science P1-C3): the claim restates
+ // the source's "cannot completely dissect" in the same
+ // construction, the reviewer's boundary agreed with the claim,
+ // and the rescue flip was vetoed for polarity because the pooled
+ // selected spans also contained an affirming clause. A packet
+ // span that carries the claim's negative construction — and does
+ // not itself contradict the claim — suppresses the veto.
+ const source={id:'S1',bookId:'287',title:'Modern Philosophy — J.P. Cooke',
+  page:300,url:'https://example.test/cooke#page=300',
+  text:'Cooke writes that we cannot employ the scalpel of analysis upon the distinction itself, since the instrument ends where the spirit begins. Even if with the scalpel of our modern philosophy we cannot completely dissect the two, the distinction between the spiritual and the material remains.',
+  preview:'Cooke writes that we cannot employ the scalpel of analysis.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'J.P. Cooke',role:'primary',bookIds:['287']}],
+  parts:[{id:'P1',question:'In Modern Philosophy, what does Cooke say about the scalpel of analysis?',
+   sourceBookIds:['287'],searchQueries:['Cooke scalpel dissect spiritual material'],
+   candidateSourceIds:['S1']}],queries:['Cooke scalpel dissect spiritual material']};
+ const draft='PART P1\nCooke suggests that modern philosophy can employ the scalpel of analysis, though it cannot completely dissect the distinction between the spiritual and the material. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+   answerStatus:'partial',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
+   status:'partial',sources:[{sourceId:'S1',status:'partial',
+   spanIds:payload.spanCatalog.map(entry=>entry.spanId),
+   subjectAttributionStatus:'supported',attributedSubject:'J.P. Cooke',
+   supportBoundary:'Establishes that Cooke\u2019s work suggests scientific and philosophical analysis cannot completely dissect the distinction between the spiritual and material.'}]}]})};
+ };
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
+   fragment:'we cannot completely dissect the two',
+   elements:[{element:item.claimText,stated:true}],anchor:'Cooke'}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In Modern Philosophy, what does Cooke say about the scalpel of analysis?',
+  [source],ai,[],{plan,catalog:{'287':'Modern Philosophy — J.P. Cooke'},trace:true});
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.equal(rescueClaim.flipOutcome,'accepted',
+  'the polarity-agreement suppression lets the flip ship');
+ const restorations=result.trace.reviewContract.gateRestorations||[];
+ assert.ok(restorations.some(item=>item.kind==='polarity-agreement'),
+  'the suppression is recorded as a polarity-agreement restoration');
+ assert.ok((result.trace.vetoCensus||[]).some(item=>
+  item.layer==='polarity'&&item.outcome==='restored'),
+  'the veto census carries the polarity event at trace level');
+ assert.match(result.answer,/completely dissect/);
+});
+
 test('batch 31 B31-2: a positive-contradiction mismatch stands regardless of antecedents',async()=>{
  // Pilot (v): the claim names Hume as its subject; the reviewer
  // attributes the pair to Kant. The extractor positively
@@ -10517,6 +11157,295 @@ test('batch 32 B32-5: the coverage exception — demoted content independently c
   'the context claim ships under the coverage exception');
  assert.equal(result.trace.contextClaimInheritsDemotion,undefined,
   'no inheritance is recorded when the exception applies');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 33 (B33-6): B32-5 predicate-sharing recalibration, calibrated
+// on the two batch-32 production pairs.
+// ---------------------------------------------------------------------------
+
+const b33HobbesContextText='Hobbes and Rousseau offer fundamentally opposing views on the nature of human beings in their respective state of nature descriptions, differing on whether humans are driven by competitive passions or by a peaceful, self-sufficient existence.';
+const b33HobbesDemotedText='Unlike Hobbes\'s view of humans as inherently competitive and driven by socialized passions, Rousseau portrays the natural human as a robust, self-sufficient being whose primary drive is simple survival and whose character is not yet corrupted by the sense of honor or egoism found in civilized life.';
+const b33NarratorsContextText='Marlow shapes the narrative in *Heart of Darkness* through a framed, observational lens, presenting his story as a recounted experience shared with a group of listeners.';
+const b33NarratorsDemotedText='This admission suggests that while the listeners (and by extension, the readers) are observing the story from a position of hindsight or outside the immediate psychological pressure of the journey, Marlow remains a limited vessel, constrained by his own perceptions and the "darkness" of the experience.';
+function b33InheritanceReview({demotedMarker,spanId}){
+ return ({messages})=>{
+  const payload=parsePayload(messages);
+  const accepted=payload.claims.find(claim=>claim.text.includes('tale told aboard'));
+  const contextIds=(payload.parts[0].contextClaims||[]).map(claim=>claim.claimId);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[accepted.claimId],
+   retainedContextClaimIds:contextIds}],
+   claims:payload.claims.map(claim=>claim.text.includes(demotedMarker)?
+    {claimId:claim.claimId,status:'partial',
+     sources:[{sourceId:'S1',status:'partial',spanIds:[spanId]}]}:
+    {claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanId],subjectAttributionStatus:'supported',
+      attributedSubject:'The narrator'}]})})};
+ };
+}
+
+test('batch 33 B33-6: the Hobbes production pair still inherits — shared predicate content restates the demoted claim',async()=>{
+ // Batch-32 phase-2 all-pass1, P1-C1 (context) vs P1-C14
+ // (gate-demoted): similarity 0.258, and the overlap is
+ // predicative — shared verb-form token "driven", shared content
+ // bigram "self sufficient". The recalibrated rule still drops
+ // the context claim.
+ const draft='PART P1\n'+
+  'The narrative is framed as a tale told aboard a yacht at anchor on the river. [S1]\n'+
+  b33HobbesDemotedText+' [S1]\n'+b33HobbesContextText;
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Hobbes and Rousseau',role:'primary',bookIds:['35']}],
+  parts:[{id:'P1',question:'How do Hobbes and Rousseau describe the state of nature?',
+   sourceBookIds:['35'],searchQueries:['Hobbes Rousseau state of nature'],
+   candidateSourceIds:['S1']}],queries:['Hobbes Rousseau state of nature']};
+ const ai=batch25RouterAI({
+  reviewResponder:b33InheritanceReview({demotedMarker:'socialized passions',spanId:'S1-Q1'}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How do Hobbes and Rousseau describe the state of nature?',
+  [hume],ai,[],{plan,catalog,trace:true});
+ const inherited=result.trace.contextClaimInheritsDemotion||[];
+ assert.equal(inherited.length,1,
+  'the Hobbes context claim inherits the demotion');
+ assert.ok(Math.abs(inherited[0].similarity-0.258)<0.01,
+  'the recorded similarity is the production measurement (0.258)');
+ assert.doesNotMatch(result.answer,/fundamentally opposing views/,
+  'the restating context claim is dropped');
+});
+
+test('batch 33 B33-6: the Narrators production pair no longer inherits — entity overlap alone is topical kinship',async()=>{
+ // Batch-32 phase-2 all-pass2, P2-C1 (context) vs P2-C6
+ // (gate-demoted): similarity 0.217 — above B32-5's threshold —
+ // but the shared tokens are entity/topic nouns only (marlow,
+ // listeners, story, darkness, experience): no shared verb-form
+ // token, no shared content bigram. The false drop is corrected;
+ // the context claim ships.
+ const draft='PART P1\n'+
+  'The narrative is framed as a tale told aboard a steamer at anchor on the river. [S1]\n'+
+  b33NarratorsDemotedText+' [S1]\n'+b33NarratorsContextText;
+ const ai=batch25RouterAI({
+  reviewResponder:b33InheritanceReview({demotedMarker:'limited vessel',spanId:'S1-Q1'}),
+  draftText:draft});
+ const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:44,url:'https://example.test/conrad#page=44',
+  text:'He ordered the helmsman to steer the steamer toward the shore, and the crew, who had been waiting in silence for the signal, moved at once to their stations along the rail.',
+  preview:'He ordered the helmsman to steer the steamer toward the shore.'};
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ assert.equal(result.trace.contextClaimInheritsDemotion,undefined,
+  'no inheritance is recorded for the entity-only overlap');
+ assert.match(result.answer,/shapes the narrative/,
+  'the context claim ships');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 33 (B33-3): absent-part disclosure pilots (the partition-drop
+// shape is piloted with B33-2 above, on the rewritten salvage test).
+// ---------------------------------------------------------------------------
+
+test('batch 33 B33-3: a part emptied at review (context-drop shape) is disclosed in the answer text',async()=>{
+ // P2's cited claim is demoted at review and its context claim is
+ // not retained: the part ships nothing without any final-audit
+ // involvement. Before B33-3 the answer silently omitted the part
+ // (the C&P SP2 P3 shape). The disclosure segment names the part's
+ // question in the answer text itself.
+ const draft='PART P1\n'+
+  'Hume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\n'+
+  'Kant treats causality as an a priori category of the understanding. [S2]\n'+
+  'This category is one of the pure concepts that make experience possible.';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const partId=payload.parts[0].partId;
+  if(partId==='P1'){
+   const humeClaim=payload.claims.find(claim=>
+    claim.text.includes('causal expectation'));
+   return {response:JSON.stringify({parts:[
+    {partId:'P1',status:'answered',answerStatus:'answered',
+     directAnswerClaimIds:[humeClaim.claimId],retainedContextClaimIds:[]}],
+    claims:[
+     {claimId:humeClaim.claimId,status:'answered',
+      sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+       subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})};
+  }
+  const kantClaim=payload.claims.find(claim=>
+   claim.text.includes('a priori category'));
+  return {response:JSON.stringify({parts:[
+   {partId:'P2',status:'partial',answerStatus:'partial',
+    directAnswerClaimIds:[],retainedContextClaimIds:[]}],
+   claims:[
+    {claimId:kantClaim.claimId,status:'partial',
+     sources:[{sourceId:'S2',status:'partial',spanIds:['S2-Q1']}]}]})};
+ };
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
+   fragment:'',elements:[{element:item.claimText,stated:false}],anchor:''}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder,draftText:draft});
+ const result=await composeEvidenceAnswer('How do Hume and Kant explain causality?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:{...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)},
+   catalog,trace:true});
+ assert.match(result.answer,/causal expectation through custom/,
+  'the surviving part ships');
+ assert.ok(result.answer.includes(
+  'This part of the question could not be answered from the library: '+
+  'How does Kant explain causal necessity?'),
+  'the emptied part is disclosed in the answer text');
+ assert.deepEqual(result.trace.final.absentPartLabelsInAnswer,['P2']);
+});
+
+test('batch 33 B33-3: a fully shipped answer carries no absent-part disclosure',async()=>{
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
+   status:'answered',sources:[{sourceId:'S1',status:'answered',
+   spanIds:['S1-Q1'],subjectAttributionStatus:'supported',
+   attributedSubject:'Hume'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,draftText:draft});
+ const result=await composeEvidenceAnswer('How does Hume explain causality?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.match(result.answer,/causal expectation through custom/);
+ assert.equal(result.trace.final.absentPartLabelsInAnswer,undefined);
+ assert.doesNotMatch(result.answer,/could not be answered from the library/);
+});
+
+// ---------------------------------------------------------------------------
+// Batch 33 (B33-8): empty-measurement guard + review-packet plumbing.
+// ---------------------------------------------------------------------------
+
+const b33SmithSource={id:'S1',bookId:'260',title:'The Wealth of Nations — Adam Smith',
+ page:12,url:'https://example.test/won#page=12',candidatePartIds:['P1'],
+ text:'The division of labour improves the dexterity of the workman by reducing his activity to one simple operation. It increases the productive powers of labour by saving the time commonly lost in passing from one species of work to another. The improvement in dexterity also makes the invention of machinery more likely, since the attention is fixed on a single object.',
+ preview:'The division of labour improves the dexterity of the workman.'};
+const b33SmithPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Adam Smith',role:'primary',bookIds:['260']}],
+ parts:[{id:'P1',question:'In The Wealth of Nations, how does the division of labour affect the workman?',
+  sourceBookIds:['260'],searchQueries:['division of labour dexterity'],
+  candidateSourceIds:['S1']}],queries:['division of labour dexterity']};
+const b33SmithCatalog={'260':'The Wealth of Nations — Adam Smith'};
+
+test('batch 33 B33-8: an all-uncited part still gets a review packet — the candidate fallback (the Smith SP2 shape)',async()=>{
+ // Production shape: the draft's citation groups failed draft
+ // validation (rejected sentences) or were never written, so every
+ // surviving claim is uncited. Before the fix the review packet
+ // for such a part carried zero sources and zero spans (batch 6's
+ // cited-only wiring), the reviewer judged an empty view, and the
+ // part refused wholesale. The packet now falls back to the part's
+ // candidate sources; a reviewer that can see the evidence retains
+ // the context claims and the answer ships.
+ const draft='PART P1\n'+
+  'The division of labour improves the dexterity of the workman by reducing his activity to a single simple operation. [S0]\n'+
+  'It increases the productive powers of labour by saving the time commonly lost in passing from one species of work to another.\n'+
+  'The improvement in dexterity also makes the invention of machinery more likely, since attention is fixed on a single object.';
+ let packetEvidenceCount=-1,packetSpanCount=-1;
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  packetEvidenceCount=payload.parts[0].evidence.length;
+  packetSpanCount=payload.parts[0].evidence
+   .reduce((total,entry)=>total+entry.spanIds.length,0);
+  const contextIds=(payload.parts[0].contextClaims||[]).map(claim=>claim.claimId);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[],
+   retainedContextClaimIds:contextIds}],claims:[]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In The Wealth of Nations, how does the division of labour affect the workman?',
+  [b33SmithSource],ai,[],{plan:b33SmithPlan,catalog:b33SmithCatalog,trace:true});
+ assert.ok(packetEvidenceCount>=1,
+  'the review packet carries the candidate source for the all-uncited part');
+ assert.ok(packetSpanCount>=1,
+  'the review packet carries spans the reviewer can judge against');
+ const decisions=result.trace.reviewContract.reviewDecisions;
+ assert.ok(decisions.length>=1&&decisions.every(item=>item.accepted),
+  'the reviewer judged the claims against real evidence and retained them — no empty-view kills');
+ assert.equal(result.trace.reviewContract.supportIssues.some(item=>
+  item.reason==='part-level-context-not-supported'),false,
+  'no part-level-context-not-supported kills remain for the part');
+ // Shipment of this exact shape is then governed by B31-1's
+ // zero-cited containment rule (a book-scoped answer with no
+ // verified citation still suppresses) — a separate approved
+ // policy, outside B33-8's scope. What B33-8 changes is that the
+ // refusal no longer rests on an unmeasured review.
+ assert.equal(result.trace.sourceRequiredContainment.disposition,
+  'suppressed-not-strict-minority');
+});
+
+test('batch 33 B33-8: with zero packet-visible spans anywhere, a context kill is recorded unmeasured and the claim falls back to its own review outcome',async()=>{
+ // The guard's own shape: no cited sources AND no candidate
+ // sources — the part has no packet view on either side. The
+ // reviewer returns per-claim outcomes (answered) but retains
+ // nothing at part level. Before the guard, the claims died as
+ // 'context-claim-not-retained' — a demotion resting on an empty
+ // measurement. Now the part records contextSupportUnmeasured and
+ // each claim falls back to its own review outcome.
+ const source={...hume,candidatePartIds:[]};
+ const plan={...onePartPlan,parts:onePartPlan.parts.map(part=>({...part,
+  candidateSourceIds:[],sourceBookIds:[]}))};
+ const draft='PART P1\n'+
+  'Hume explains causal expectation through custom rather than reasoning.\n'+
+  'Custom is the great guide of human life in all factual reasoning.';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+   answerStatus:'partial',directAnswerClaimIds:[],retainedContextClaimIds:[]}],
+   claims:(payload.parts[0].contextClaims||[]).map(claim=>({
+    claimId:claim.claimId,status:'answered',sources:[]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,draftText:draft});
+ const result=await composeEvidenceAnswer('How does Hume explain causality?',
+  [source],ai,[],{plan,catalog,trace:true});
+ assert.deepEqual(result.trace.reviewContract.contextSupportUnmeasured,['P1'],
+  'the part is recorded as unmeasured');
+ const decisions=result.trace.reviewContract.reviewDecisions
+  .filter(item=>item.contextOnly);
+ assert.ok(decisions.length>=1&&decisions.every(item=>
+  item.contextSupportUnmeasured===true&&item.accepted===true),
+  'the claims fall back to their own answered outcomes');
+ assert.match(result.answer,/great guide of human life/,
+  'the fallback-accepted context claims ship');
+});
+
+test('batch 33 B33-8: a measured non-retention still demotes — the guard does not fire when the packet view is non-empty',async()=>{
+ // Control: the part's packet carries spans (a cited sibling
+ // claim), the reviewer declines to retain the context claim, and
+ // the kill stands with its ordinary reason — no unmeasured
+ // record.
+ const draft='PART P1\n'+
+  'Hume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'Custom is the great guide of human life in all factual reasoning.';
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const cited=payload.claims.find(claim=>!claim.contextOnly);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[cited.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:cited.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+     subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,draftText:draft});
+ const result=await composeEvidenceAnswer('How does Hume explain causality?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.trace.reviewContract.contextSupportUnmeasured,undefined,
+  'no unmeasured record when the view was non-empty');
+ const contextDecision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.contextOnly);
+ assert.equal(contextDecision.accepted,false);
+ assert.equal(contextDecision.validationReason,'context-claim-not-retained');
+ assert.doesNotMatch(result.answer,/great guide of human life/);
+ assert.match(result.answer,/causal expectation through custom/);
 });
 
 // ---------------------------------------------------------------------------
