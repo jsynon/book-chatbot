@@ -3,31 +3,55 @@ import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,derivePartContract,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimPersonSubjects,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,normalizeClaimClauseDecisions,claimPossessiveOnlySubjects} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
-import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims} from './evidence-answer.mjs';
-import {reviewDeadlineMsForPacket} from './evidence-answer.mjs';
-
-test('batch 33 (B33-9) review deadline scales with packet size between its floor and cap',()=>{
- // Floor: the pre-batch-33 flat value holds for any packet up to
- // 6000 span words (36000 span characters at 6 chars/word), including
- // the empty packet and a missing metrics object.
- assert.equal(reviewDeadlineMsForPacket({spanCharacters:0}),60000);
- assert.equal(reviewDeadlineMsForPacket({}),60000);
- assert.equal(reviewDeadlineMsForPacket({spanCharacters:36000}),60000);
- // Steps: +15000 per full 6000 words above the first 6000.
- assert.equal(reviewDeadlineMsForPacket({spanCharacters:72000}),75000);
- assert.equal(reviewDeadlineMsForPacket({spanCharacters:108000}),90000);
- assert.equal(reviewDeadlineMsForPacket({spanCharacters:144000}),105000);
- // Cap: 120000 at 30000+ words, and never above it.
- assert.equal(reviewDeadlineMsForPacket({spanCharacters:180000}),120000);
- assert.equal(reviewDeadlineMsForPacket({spanCharacters:1800000}),120000);
- // Monotonic non-decreasing across the whole range.
- let previous=0;
- for(let chars=0;chars<=400000;chars+=5000){
-  const value=reviewDeadlineMsForPacket({spanCharacters:chars});
-  assert.ok(value>=previous&&value>=60000&&value<=120000,
-   `deadline monotonic and bounded at ${chars} chars`);
-  previous=value;
- }
+import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims,applyAssemblyAntecedentGuard,reconcileAssemblyLoss,classifySpanRegion,finalizeVetoCensus} from './evidence-answer.mjs';
+test('batch 34 (B34-5) retired B33-9 scaling: an oversized review packet gets the flat 60000 deadline',async()=>{
+ // The packet below carries ~96,000 span characters (~16,000 packet
+ // words): under B33-9's retired scaling its initial review call
+ // recorded timeoutMs 75000. Batch 34 retired the scaling on the
+ // measured batch-33 distribution (105 initial-review calls, p50
+ // 27.8 s, no 60–90 s completion cluster; the 3 timeouts were stalls
+ // whose identical work finished in ~half the time on retry), so the
+ // flat pre-batch-33 deadline must hold at any packet size.
+ const sentence=(i,j)=>`Hume passage ${i} section ${j} explains that necessity and causation arise from the uniformity observable in nature, where similar objects are constantly conjoined together and the mind is determined by custom to infer one from the other in every single observed instance of their regular conjunction across experience and habit.`;
+ const sources=Array.from({length:40},(_,i)=>({id:'S'+(i+1),bookId:'35',
+  title:catalog[35],page:100+i,url:`https://example.test/hume#page=${100+i}`,
+  text:Array.from({length:12},(_,j)=>sentence(i+1,j+1)).join(' '),
+  preview:'Hume on necessity and custom.'}));
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
+   searchQueries:['Hume necessity custom'],candidateSourceIds:sources.map(s=>s.id),
+   requirements:[{id:'P1-R1',text:'Explain the role of custom in causal inference.'}]}],
+  queries:['Hume necessity custom']};
+ const draft='PART P1\n'+Array.from({length:8},(_,g)=>
+  `Hume links necessity to custom and regular conjunction in group ${g+1}. `+
+  sources.slice(g*5,g*5+5).map(s=>`[${s.id}]`).join(' ')).join(' ');
+ const ai={calls:[],run:async(model,request)=>{
+  ai.calls.push({model,request});
+  const system=String(request?.messages?.[0]?.content||'');
+  if(system.startsWith('Answer the reader'))return answer(draft);
+  if(system.startsWith('Review the complete answer')){
+   const payload=parsePayload(request.messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+    retainedContextClaimIds:[],
+    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
+     answerClaimIds:payload.claims.map(claim=>claim.claimId)}]}],
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
+      subjectAttributionStatus:'supported',attributedSubject:'Hume'}))}))})};
+  }
+  throw new Error('unexpected stage in B34-5 fixture: '+system.slice(0,40));
+ }};
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  sources,ai,[],{plan,catalog,trace:true,transportDiagnostics:true});
+ const reviewCalls=result.trace.inferenceCalls.filter(call=>call.stage==='review');
+ assert.ok(reviewCalls.length>=1,'the pilot route made a review call');
+ for(const call of reviewCalls)
+  assert.equal(call.timeoutMs,60000,
+   'review deadline is the flat 60000 even for a packet B33-9 would have scaled');
 });
 
 test('batch 15 preserves quoted sentence punctuation and leading Markdown subtitles',()=>{
@@ -11662,4 +11686,1434 @@ test('batch 32 B32-10 (b): a quote bound to the wrong source is rebound to the s
  assert.equal(rebinds[0].toSourceId,'S1');
  assert.deepEqual(rebinds[0].fromSourceIds,['S3']);
  assert.equal(rebinds[0].mode,'replace');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 34 (B34-1): context-support redesign (layer 1) + assembly
+// antecedent guard (layer 2). Fixtures carry the production claim
+// texts from the batch-33 artifacts (phase-2 Narrators AP2 P3,
+// phase-3 Solitude P1, phase-2 Science AP1 P1, batch-31 Dostoevsky
+// SP2 via the B32-5 fixture); demoted context-claim texts are the
+// audit records' claimText values verbatim.
+// ---------------------------------------------------------------------------
+
+const b34UmSource={id:'S1',bookId:'184',
+ title:'Notes from the Underground — Fyodor Dostoevsky',page:22,
+ url:'https://example.test/underground#page=22',
+ text:'I am a sick man. I am a spiteful man. I am an unattractive man. To be excessively conscious is an illness, a real, thorough illness; for ordinary human life even half that consciousness would be more than enough. I have lived in my corner, suffering mockery and humiliation in my own soul, and I have intentionally turned every feeling into its opposite, taking refuge in irony and spite, in the inertia of a man who cannot become even an insect.',
+ preview:'I am a sick man. I am a spiteful man.'};
+const b34MarlowSource={id:'S2',bookId:'315',
+ title:'Heart of Darkness — Joseph Conrad',page:43,
+ url:'https://example.test/conrad#page=43',
+ text:'It seems to me that I am trying to tell you a dream, making a vain attempt, because no relation of a dream can convey the dream-sensation, that commingling of absurdity, surprise, and bewilderment which is of the very essence of dreams. It is impossible to convey the life-sensation of any given epoch of one\u2019s existence; what makes its truth, its meaning, its subtle and penetrating essence is impossible. We live, as we dream, alone.',
+ preview:'It seems to me that I am trying to tell you a dream.'};
+const b34NarratorsPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['184']},
+  {label:'Joseph Conrad',role:'primary',bookIds:['315']}],
+ parts:[{id:'P1',question:'How does the Underground Man shape and limit what the reader can conclude?',
+   sourceBookIds:['184'],searchQueries:['Underground Man consciousness'],
+   candidateSourceIds:['S1']},
+  {id:'P2',question:'How does Marlow shape and limit what the reader can conclude?',
+   sourceBookIds:['315'],searchQueries:['Marlow dream sensation'],
+   candidateSourceIds:['S2']},
+  {id:'P3',question:'How do the Underground Man and Marlow contrast as narrators?',
+   sourceBookIds:['184','315'],searchQueries:['narrator contrast unreliability'],
+   candidateSourceIds:['S1','S2']}],queries:['narrators']};
+const b34NarratorsCatalog={...catalog,
+ '184':'Notes from the Underground — Fyodor Dostoevsky',
+ '315':'Heart of Darkness — Joseph Conrad'};
+// Production P3 claim texts (phase-2 batch-33 Narrators AP2).
+const b34P3C1='The relationship between the Underground Man and Marlow is one of contrast in the source of their narrative unreliability: Dostoevsky utilizes psychological unreliability, whereas Conrad utilizes observational and structural mediation.';
+const b34P3C2='The Underground Man\u2019s unreliability is internal and volitional.';
+const b34P3C3='He shapes the narrative by intentionally distorting his own psyche, using his "consciousness" to create complexity and doubt where others seek simplicity.';
+const b34P3C4='He limits the reader by being an unreliable witness to his own soul, making it impossible to distinguish between his true suffering and his "mockery".';
+const b34P3C5='His mechanism is one of active, self-conscious subversion of meaning.';
+const b34P3C6='In contrast, Marlow\u2019s unreliability is external and epistemological.';
+const b34P3C7='He shapes the narrative by filtering reality through the lens of a "dream-sensation," prioritizing the "feeling" of an event over its literal mechanics.';
+const b34P3C8='He limits the reader not through self-deception, but through the admitted inadequacy of language and the overwhelming "darkness" of the truths he encounters.';
+const b34P3C9='While the Underground Man limits the reader by being too deeply embedded in his own distorted ego, Marlow limits the reader by standing at the edge of an experience that he finds fundamentally unutterable.';
+const b34P3C10='Ultimately, the Underground Man limits the reader through the chaotic instability of the self, while Marlow limits the reader through the impenetrable nature of the external world.';
+function b34NarratorsDraft(p3C9){
+ // Each claim is its own paragraph (blank-line separated), as in
+ // the production draft: the orphan claims shipped as standalone
+ // bare-"He" paragraphs.
+ return 'PART P1\n'+
+  'The Underground Man introduces himself as a sick and spiteful man whose excessive consciousness distorts everything he reports. [S1]\n\n'+
+  'PART P2\n'+
+  'Marlow shapes his tale as a dream he cannot fully convey, warning his listeners that the sensation of the events escapes language. [S2]\n\n'+
+  'PART P3\n'+
+  [b34P3C1,b34P3C2,b34P3C3+' [S1]',b34P3C4+' [S1]',b34P3C5,b34P3C6,
+   b34P3C7+' [S2]',b34P3C8+' [S2]',p3C9,b34P3C10].join('\n\n');
+}
+function b34NarratorsReview({messages}){
+ const payload=parsePayload(messages);
+ const spanByFragment=fragment=>payload.spanCatalog
+  .find(entry=>entry.text.includes(fragment))?.spanId;
+ const rules=[
+  {marker:'sick and spiteful man whose excessive',sourceId:'S1',
+   fragment:'excessively conscious',subject:'Underground Man'},
+  {marker:'dream he cannot fully convey',sourceId:'S2',
+   fragment:'dream-sensation',subject:'Marlow'},
+  {marker:'intentionally distorting his own psyche',sourceId:'S1',
+   fragment:'excessively conscious',subject:'Underground Man'},
+  {marker:'unreliable witness to his own soul',sourceId:'S1',
+   fragment:'mockery',subject:'Underground Man'},
+  {marker:'filtering reality through the lens',sourceId:'S2',
+   fragment:'dream-sensation',subject:'Marlow'},
+  {marker:'admitted inadequacy of language',sourceId:'S2',
+   fragment:'impossible to convey',subject:'Marlow'}];
+ const claims=payload.claims.map(claim=>{
+  const rule=rules.find(item=>claim.text.includes(item.marker));
+  if(!rule)throw new Error('unmapped claim in B34 fixture: '+claim.text.slice(0,60));
+  return {claimId:claim.claimId,status:'answered',
+   sources:[{sourceId:rule.sourceId,status:'answered',
+    spanIds:[spanByFragment(rule.fragment)],
+    subjectAttributionStatus:'supported',attributedSubject:rule.subject,
+    attributedSpeaker:rule.subject}]};
+ });
+ const parts=payload.parts.map(part=>({partId:part.partId,status:'answered',
+  answerStatus:'answered',
+  directAnswerClaimIds:payload.claims
+   .filter(claim=>claim.claimId.startsWith(part.partId+'-'))
+   .map(claim=>claim.claimId),
+  retainedContextClaimIds:[]}));
+ return {response:JSON.stringify({parts,claims})};
+}
+const b34RescueRefused=({messages})=>{
+ const payload=JSON.parse(messages[1].content);
+ return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+  claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
+  fragment:item.spans[0].text,
+  elements:[{element:item.claimText,stated:false}]}))})};
+};
+function b34ClaimIdByText(result,prefix){
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>(item.claimText||'').startsWith(prefix));
+ return decision?.claimId;
+}
+
+test('batch 34 B34-1 pilot (a): Narrators framing survives layer 1 and layer 2 re-anchors the orphan paragraphs',async()=>{
+ // Production: every P3 framing claim was purge-demoted; C3/C4 (the
+ // Underground Man's cited claims, opening with bare "He") shipped
+ // between Marlow paragraphs and read as Marlow's. Under layer 1
+ // the closing syntheses (C9/C10 — connective tissue over the
+ // surviving cited claims) are rescued; under layer 2 the orphans
+ // are re-anchored to their recorded subjects.
+ const ai=batch25RouterAI({reviewResponder:b34NarratorsReview,
+  rescueResponder:b34RescueRefused,draftText:b34NarratorsDraft(b34P3C9)});
+ const result=await composeEvidenceAnswer(
+  'How do narrators such as Dostoevsky\u2019s Underground Man and Conrad\u2019s Marlow shape and limit what the reader can conclude?',
+  [b34UmSource,b34MarlowSource],ai,[],{plan:b34NarratorsPlan,
+   catalog:b34NarratorsCatalog,trace:true});
+ const rescues=result.trace.reviewContract.framingRescues||[];
+ const c9Id=b34ClaimIdByText(result,'While the Underground Man limits');
+ const c10Id=b34ClaimIdByText(result,'Ultimately, the Underground Man limits');
+ assert.ok(rescues.some(entry=>entry.claimId===c9Id),
+  'the While-synthesis is rescued by layer 1');
+ assert.ok(rescues.some(entry=>entry.claimId===c10Id),
+  'the Ultimately-synthesis is rescued by layer 1');
+ assert.match(result.answer,/While the Underground Man limits the reader by being too deeply embedded/);
+ assert.match(result.answer,/Ultimately, the Underground Man limits the reader through the chaotic instability/);
+ assert.match(result.answer,/Underground Man shapes the narrative by intentionally distorting/,
+  'the S6 orphan paragraph is re-anchored to the Underground Man');
+ assert.match(result.answer,/Marlow shapes the narrative by filtering reality/,
+  'the Marlow orphan paragraph is re-anchored to Marlow');
+ assert.doesNotMatch(result.answer,/He shapes the narrative by intentionally distorting/,
+  'no bare-He orphan paragraph ships');
+ const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
+ assert.ok(rewritten.some(entry=>entry.subject==='Underground Man'));
+ assert.ok(rewritten.some(entry=>entry.subject==='Marlow'));
+});
+
+test('batch 34 B34-1 pilot (a2): with the framing claims wall-blocked, layer 2 still re-anchors (layers are independent)',async()=>{
+ // The C9 variant carries a new numeric token (1864) that no
+ // surviving claim or question holds: layer 1's wall refuses it
+ // and the demotion stands. The orphan claims must STILL be
+ // re-anchored by layer 2 alone — the layers are not gated on
+ // each other.
+ const c9Variant=b34P3C9.replace('fundamentally unutterable.',
+  'fundamentally unutterable in 1864.');
+ const ai=batch25RouterAI({reviewResponder:b34NarratorsReview,
+  rescueResponder:b34RescueRefused,draftText:b34NarratorsDraft(c9Variant)});
+ const result=await composeEvidenceAnswer(
+  'How do narrators such as Dostoevsky\u2019s Underground Man and Conrad\u2019s Marlow shape and limit what the reader can conclude?',
+  [b34UmSource,b34MarlowSource],ai,[],{plan:b34NarratorsPlan,
+   catalog:b34NarratorsCatalog,trace:true});
+ const rescues=result.trace.reviewContract.framingRescues||[];
+ const c9Id=b34ClaimIdByText(result,'While the Underground Man limits');
+ assert.ok(!rescues.some(entry=>entry.claimId===c9Id),
+  'the wall-blocked synthesis is not rescued');
+ assert.doesNotMatch(result.answer,/unutterable in 1864/);
+ assert.match(result.answer,/Underground Man shapes the narrative by intentionally distorting/,
+  'layer 2 re-anchors the orphan without any layer-1 rescue');
+ assert.doesNotMatch(result.answer,/He shapes the narrative by intentionally distorting/);
+});
+
+test('batch 34 B34-1 pilot (b): Solitude — the Proust bullet is re-anchored to Proust, not Luther',async()=>{
+ // Production (phase-3 Solitude P1): the purge demoted C5, the
+ // bullet heading naming Marcel Proust; C6 then shipped as a bare
+ // "He suggests…" inside the Luther bullet's sequence. The heading
+ // is framing-class (bullet-label lead-in): if layer 1's wall
+ // passes it, it ships and anchors the bullet; otherwise layer 2
+ // rewrites the orphan's pronoun to Proust. Either way the bullet
+ // must not read as Luther's.
+ const sourceLuther={id:'S1',bookId:'151',
+  title:'Martin Luther — Lytton Strachey',page:18,
+  url:'https://example.test/luther#page=18',
+  text:'Martin Luther, during his period of poetical solitude at the Wartburg, gave himself to the translation of Scripture; afterwards he was plunged into the most pitiful realities of public strife, and the whole world sought him — citizens, doctors, and princes all seeking his counsel on theological and social matters.',
+  preview:'Martin Luther, during his period of poetical solitude at the Wartburg.'};
+ const sourceProust={id:'S2',bookId:'414',
+  title:'In Search of Lost Time — Marcel Proust',page:2571,
+  url:'https://example.test/proust#page=2571',
+  text:'The emancipation of the spiritual life, once it is complete, permits a man to sustain thought and preserve an internal solitude even while surrounded by numerous company; the danger is not the presence of others but the worldly disposition one brings to society, for the library\u2019s solitude and the drawing-room\u2019s society meet in a mind that has learned to be alone in a crowd.',
+  preview:'The emancipation of the spiritual life, once it is complete.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Various authors',role:'primary',bookIds:['151','414']}],
+  parts:[{id:'P1',question:'How do writers weigh solitude against social life?',
+   sourceBookIds:['151','414'],searchQueries:['solitude society'],
+   candidateSourceIds:['S1','S2']}],queries:['solitude society']};
+ const draft='PART P1\n'+[
+  'Writers and thinkers weigh solitude against social life by viewing them as distinct states that can either exist in tension or reach a point of functional integration.',
+  '* **The transition from isolation to social engagement:** In the life of Martin Luther, there is a marked shift from a period of "poetical solitude" at Wartburg to a phase of intense social and political activity. [S1]',
+  'After his period of isolation, he was "plunged into the most pitiful realities" and became a central figure for the "whole world," with citizens, doctors, and princes all seeking his counsel on theological and social matters. [S1]',
+  '* **The integration of solitude within society:** Marcel Proust describes a state where the boundary between the library (solitude) and the drawing-room (society) becomes permeable.',
+  'He suggests that once the emancipation of [the] spiritual life is complete, one can sustain thought and preserve an internal solitude even while surrounded by "numerous company". [S2]',
+  'In this view, the danger of society is not the presence of others, but the "worldly disposition" one brings to it. [S2]',
+  'Writers view the balance between solitude and society as a spectrum ranging from productive intellectual engagement to a dangerous erosion of social cohesion.'].join('\n\n');
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const spanByFragment=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  const rules=[
+   {marker:'life of Martin Luther',sourceId:'S1',fragment:'poetical solitude',subject:null},
+   {marker:'After his period of isolation',sourceId:'S1',fragment:'most pitiful realities',subject:null},
+   {marker:'He suggests that once the emancipation',sourceId:'S2',fragment:'emancipation of the spiritual life',subject:'Marcel Proust'},
+   {marker:'In this view, the danger of society',sourceId:'S2',fragment:'worldly disposition',subject:'Marcel Proust'}];
+  const claims=payload.claims.map(claim=>{
+   const rule=rules.find(item=>claim.text.includes(item.marker));
+   if(!rule)throw new Error('unmapped claim in B34 Solitude fixture');
+   return {claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:rule.sourceId,status:'answered',
+     spanIds:[spanByFragment(rule.fragment)],
+     ...(rule.subject?{subjectAttributionStatus:'supported',
+      attributedSubject:rule.subject,attributedSpeaker:rule.subject}:{})}]};
+  });
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],claims})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How do writers and thinkers weigh solitude against social life?',
+  [sourceLuther,sourceProust],ai,[],{plan,
+   catalog:{...catalog,'151':'Martin Luther — Lytton Strachey',
+    '414':'In Search of Lost Time — Marcel Proust'},trace:true});
+ assert.match(result.answer,/life of Martin Luther/,
+  'the Luther bullet ships intact');
+ const headingShipped=/integration of solitude within society/.test(result.answer);
+ const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
+ const orphanId=b34ClaimIdByText(result,'He suggests that once the emancipation');
+ if(headingShipped){
+  assert.ok((result.trace.reviewContract.framingRescues||[])
+   .some(entry=>entry.claimId===
+    b34ClaimIdByText(result,'* **The integration of solitude')),
+   'the heading shipped via a layer-1 framing rescue');
+ }else{
+  assert.ok(rewritten.some(entry=>entry.claimId===orphanId&&
+   entry.subject==='Marcel Proust'),
+   'layer 2 rewrote the orphan to Proust');
+  assert.match(result.answer,/Marcel Proust suggests that once the emancipation/);
+ }
+ assert.doesNotMatch(result.answer,/He suggests that once the emancipation/,
+  'the Proust claim never ships as a bare He under Luther');
+});
+
+test('batch 34 B34-1 pilot (c): Science — thesis and conclusion framing ships over surviving cited claims; non-framing context still demotes',async()=>{
+ // Production (phase-2 Science AP1 P1): all five context claims
+ // were purge-demoted, including the part's opening thesis (C1)
+ // and closing restatement (C10). Both are connective tissue over
+ // the part's surviving cited claims and must ship under layer 1;
+ // C5 — mid-part, no framing shape — is not framing-class and its
+ // demotion stands; C7's synthesis vocabulary is not carried by
+ // the survivors, so the wall refuses it too.
+ const source={id:'S1',bookId:'285',
+  title:'The Ante-Nicene Fathers, Volume II — Various authors',page:1209,
+  url:'https://example.test/ante-nicene#page=1209',
+  text:'Demonstration is a discourse agreeable to reason, drawing from points already admitted, and it produces scientific belief in the soul of the learner. Knowledge is of two kinds: scientific and certain knowledge, and knowledge that is merely based on hope. A physician is ideally deficient in no element of the power of healing, and a Gnostic defective in no element of scientific knowledge. A syllogism draws a single conclusion from several premises, whereas demonstration shows one thing that is one and identical.',
+  preview:'Demonstration is a discourse agreeable to reason.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Various authors',role:'primary',bookIds:['285']}],
+  parts:[{id:'P1',question:'How do authors distinguish certainty from opinion?',
+   sourceBookIds:['285'],searchQueries:['demonstration certainty opinion'],
+   candidateSourceIds:['S1']}],queries:['certainty']};
+ const draft='PART P1\n'+
+  'Authors in the library distinguish between different degrees of reliability in knowledge, categorizing information based on whether it produces certain scientific belief or merely leads to opinion.\n'+
+  'One perspective defines "demonstration" as a specific type of discourse that is agreeable to reason and serves to produce belief in disputed points by drawing from points that are already admitted. [S1]\n'+
+  'Within this framework, knowledge is split into two distinct modes: "scientific and certain" knowledge and knowledge that is "merely based on hope". [S1]\n'+
+  'This distinction is further clarified by the quality of the "scientific belief" produced in the learner; true demonstration is what produces this specific type of belief, whereas other forms of reasoning might only lead to mere opinion. [S1]\n'+
+  'The reliability of knowledge is also tied to the concept of "perfection" within a category or genus.\n'+
+  'For example, a physician is ideally one who is "deficient in no element of the power of healing," and a Gnostic is ideally one "who is defective in no element of scientific knowledge". [S1]\n'+
+  'This suggests that the certainty of knowledge is linked to the completeness and perfection of the subject\u2019s mastery over their field.\n'+
+  'Furthermore, a distinction is made between demonstration and syllogism based on how they reach conclusions.\n'+
+  'While a syllogism involves drawing a single conclusion from several different premises, a demonstration is indicative of one thing that is "one and identical". [S1]\n'+
+  'Authors distinguish between certainty and opinion by the capacity of a demonstration to produce scientific belief in the soul of the learner.';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId]}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How do authors in the library distinguish certainty from opinion?',
+  [source],ai,[],{plan,catalog:{...catalog,
+   '285':'The Ante-Nicene Fathers, Volume II — Various authors'},trace:true});
+ const rescues=result.trace.reviewContract.framingRescues||[];
+ assert.ok(rescues.some(entry=>entry.claimId===
+  b34ClaimIdByText(result,'Authors in the library distinguish')),
+  'the opening thesis is rescued');
+ assert.ok(rescues.some(entry=>entry.claimId===
+  b34ClaimIdByText(result,'Authors distinguish between certainty')),
+  'the closing restatement is rescued');
+ assert.match(result.answer,/different degrees of reliability in knowledge/);
+ assert.match(result.answer,/capacity of a demonstration to produce scientific belief/);
+ assert.doesNotMatch(result.answer,/tied to the concept of "perfection"/,
+  'the non-framing mid-part claim still demotes');
+ assert.doesNotMatch(result.answer,/linked to the completeness and perfection/,
+  'the wall refuses synthesis vocabulary the survivors do not carry');
+});
+
+test('batch 34 B34-1 pilot (d) NEGATIVE CONTROL: the batch-31 laundering claim, framing-shaped, still does not ship',async()=>{
+ // The batch-31 Dostoevsky shape routed through layer 1: the
+ // laundering claim (b32C5Text — Alyosha's rebuttal lines carried
+ // as Ivan's substance) sits at the part's opening frame position,
+ // uncited, unretained. It is framing-CLASS, but it introduces a
+ // sourced proposition the part's surviving claims do not carry —
+ // its span-verbatim run ("a lust of power, of filthy earthly
+ // gain, of domination") trips the wall, the fallback demotion
+ // stands, and the batch-31 outcome does not recur. If this pilot
+ // fails, layer 1 stops (design stop rule).
+ const draft='PART P1\n'+b32C5Text+'\n'+
+  'Ivan\u2019s narrative posits that for fifteen centuries, humanity has lived without "signs from heaven," leaving nothing but faith in what the heart says. [S4]\n'+
+  b32C4Text;
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const accepted=payload.claims[0];
+  const span=payload.spanCatalog[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[accepted.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:accepted.claimId,status:'answered',
+    sources:[{sourceId:'S4',status:'answered',spanIds:[span.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Ivan'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In The Brothers Karamazov, how does the Grand Inquisitor episode challenge Alyosha\u2019s faith?',
+  [b32KaramazovSource],ai,[],{plan:b32KaramazovPlan,
+   catalog:b32KaramazovCatalog,trace:true});
+ assert.doesNotMatch(result.answer,/keepers of the mystery/,
+  'the laundering claim does not ship through the framing channel');
+ assert.doesNotMatch(result.answer,/lust of power, of filthy earthly gain/,
+  'the laundered span wording does not ship');
+ const launderingId=b34ClaimIdByText(result,'The challenge also touches upon');
+ assert.ok(!(result.trace.reviewContract.framingRescues||[])
+  .some(entry=>entry.claimId===launderingId),
+  'layer 1 did not rescue the laundering claim');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId===launderingId);
+ assert.equal(decision.accepted,false);
+ assert.equal(decision.validationReason,'context-claim-not-retained');
+ assert.match(result.answer,/fifteen centuries/,
+  'the accepted cited claim ships');
+ assert.match(result.answer,/ceased to see signs from heaven/,
+  'control: the topical context claim ships (rescued or retained on its own merits)');
+});
+
+test('batch 34 B34-1 pilot (e): a framing-shaped claim smuggling a new actor, date, and quotation still demotes',async()=>{
+ const draft='PART P1\n'+
+  'In 1849, Kurtz wrote that "the horror alone" explained the darkness waiting upriver.\n'+
+  'Marlow shapes his tale as a dream he cannot fully convey, warning his listeners that the sensation of the events escapes language. [S1]\n'+
+  'He limits the reader by admitting that the life-sensation of an epoch cannot be conveyed at all. [S1]';
+ const source={...b34MarlowSource,id:'S1'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Joseph Conrad',role:'primary',bookIds:['315']}],
+  parts:[{id:'P1',question:'How does Marlow shape and limit what the reader can conclude?',
+   sourceBookIds:['315'],searchQueries:['Marlow dream sensation'],
+   candidateSourceIds:['S1']}],queries:['marlow']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Marlow'}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How does Marlow shape and limit what the reader can conclude?',
+  [source],ai,[],{plan,catalog:b34NarratorsCatalog,trace:true});
+ assert.doesNotMatch(result.answer,/1849/);
+ assert.doesNotMatch(result.answer,/the horror alone/);
+ const smuggledId=b34ClaimIdByText(result,'In 1849, Kurtz wrote');
+ assert.ok(!(result.trace.reviewContract.framingRescues||[])
+  .some(entry=>entry.claimId===smuggledId));
+ assert.match(result.answer,/Marlow shapes his tale as a dream/);
+});
+
+test('batch 34 B34-1 pilot (f) control: a pronoun genuinely continuing the previous subject ships byte-unchanged',async()=>{
+ const draft='PART P1\n'+
+  'Marlow shapes his tale as a dream he cannot fully convey, warning his listeners that the sensation of the events escapes language. [S1]\n'+
+  'He limits the reader by admitting that the life-sensation of an epoch cannot be conveyed at all. [S1]';
+ const source={...b34MarlowSource,id:'S1'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Joseph Conrad',role:'primary',bookIds:['315']}],
+  parts:[{id:'P1',question:'How does Marlow shape and limit what the reader can conclude?',
+   sourceBookIds:['315'],searchQueries:['Marlow dream sensation'],
+   candidateSourceIds:['S1']}],queries:['marlow']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Marlow'}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How does Marlow shape and limit what the reader can conclude?',
+  [source],ai,[],{plan,catalog:b34NarratorsCatalog,trace:true});
+ assert.match(result.answer,
+  /He limits the reader by admitting that the life-sensation of an epoch cannot be conveyed at all\./,
+  'the continuing pronoun ships exactly as composed');
+ assert.equal(result.trace.assemblyAntecedentGuard,undefined,
+  'the guard does not fire on a genuine continuation');
+});
+
+test('batch 34 B34-2 (i): an accepted disclosure claim lost by a gate repair is restored at assembly',async()=>{
+ // The War & Peace phase-3 SP2 shape: the review accepts a
+ // disclosure context claim ("the passages do not provide..."), a
+ // citation-gate repair then adopts a candidate whose re-review
+ // never retains it, and on pre-change code the claim vanishes
+ // with no record — the reader never learns the part's central
+ // fact is missing from the sources.
+ const tolstoy={id:'S1',bookId:'777',title:'War and Peace — Leo Tolstoy',page:901,
+  url:'https://example.test/war-and-peace#page=901',
+  text:'The movement of nations is the aggregate of individual lives; an army '+
+   'moves as a mass, and a regiment is one small part of a vast collective '+
+   'motion across the field, no single will directing the whole.',
+  preview:'The movement of nations is the aggregate of individual lives.'};
+ const b34Plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Leo Tolstoy',role:'primary',bookIds:['777']}],
+  parts:[{id:'P1',question:'What do Tolstoy\u2019s passages describe of Prince Andrei\u2019s battlefield experiences in the war?',
+   sourceBookIds:['777'],searchQueries:['Andrei battlefield'],candidateSourceIds:['S1']}],
+  queries:['Andrei battlefield']};
+ const draft='PART P1\n'+
+  'The passages do not provide the specific narrative details of Prince Andrei\u2019s battlefield experiences in the war.\n\n'+
+  'The movement of armies in the passages is the aggregate of innumerable individual acts rather than the expression of any single will. [S1]\n\n'+
+  'Andrei\u2019s regiment moves with the army as one small part of a vast collective motion.';
+ let reviewCalls=0;
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);reviewCalls++;
+  if(reviewCalls===1)return {response:JSON.stringify({parts:[{partId:'P1',
+    status:'partial',answerStatus:'partial',
+    directAnswerClaimIds:['P1-C3'],retainedContextClaimIds:['P1-C1','P1-C3']}],
+   claims:[{claimId:'P1-C2',status:'partial',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
+    clauses:[{text:'The movement of armies in the passages is the aggregate of innumerable individual acts rather than the expression of any single will.',
+     status:'partial',issueCode:'none',
+     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+    retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const repairResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  // The repair model rewrites both uncited claims: the direct one
+  // gains its citation; the disclosure claim is rewritten into a
+  // bland scene-setter — the loss the seam has to catch.
+  const texts={'P1-C1':'The war chapters open with the army already in motion across the frontier.',
+   'P1-C3':'Andrei\u2019s regiment moves with the army as one small part of a vast collective motion across the field. [S1]'};
+  return {response:JSON.stringify({parts:[{partId:'P1',
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:texts[claimId]||texts['P1-C3']})),
+   additions:[]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder,assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'What do Tolstoy\u2019s passages describe of Prince Andrei\u2019s battlefield experiences in the war?',
+  [tolstoy],ai,[],{plan:b34Plan,trace:true,
+  catalog:{777:'War and Peace — Leo Tolstoy'}});
+ assert.equal(result.trace.citationGate?.[0]?.action,'repair-applied',
+  'fixture sanity: the citation gate adopted the repair that loses the claim');
+ assert.match(result.answer,/do not provide the specific narrative details of Prince Andrei/,
+  'the accepted disclosure claim is restored into the shipped answer');
+ assert.deepEqual(result.trace.assemblyDisclosureRestored,
+  [{partId:'P1',claimId:'P1-C1'}]);
+ assert.deepEqual(result.trace.assemblyDisclosureDropped,[],
+  'the disclosure invariant holds on the shipped answer');
+ assert.match(result.answer,/collective motion across the field\. \[S1\]/,
+  'the repaired claim still ships');
+});
+
+test('batch 34 B34-2 (ii): a source-required claim shipping uncited inside a cited part labels the part',async()=>{
+ // The Faust shape: the part renders a citation, so B33-3's
+ // part-level test stays silent, while the wager CONDITION — a
+ // direct-answer and requirement claim — ships with no citation
+ // at all. The claim-level test labels the part; the allowance
+ // context claim in the same part (neither direct-answer nor
+ // requirement) ships unlabeled and is not named.
+ const faust={id:'S1',bookId:'888',title:'Faust — Johann Wolfgang von Goethe',page:44,
+  url:'https://example.test/faust#page=44',
+  text:'Faust speaks in the study: first let us agree the pact itself, '+
+   'Mephistopheles, and strike the bargain here, and let the terms be set '+
+   'down before any condition is named between us.',
+  preview:'Faust speaks in the study: first let us agree the pact itself.'};
+ const b34Plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Johann Wolfgang von Goethe',role:'primary',bookIds:['888']}],
+  parts:[{id:'P1',question:'What is the condition of the wager Faust makes?',
+   sourceBookIds:['888'],searchQueries:['Faust wager condition'],candidateSourceIds:['S1'],
+   sourceRequired:true,
+   requirements:[{id:'P1-R1',text:'State the condition on which Faust forfeits his soul.'}]}],
+  queries:['Faust wager condition']};
+ const draft='PART P1\n'+
+  'In the study, Faust proposes the pact to Mephistopheles and agrees to strike the bargain there. [S1]\n\n'+
+  'The wager\u2019s condition is that if Faust ever bids the passing moment stay, saying it is fair, that moment will be his last and his soul forfeit.\n\n'+
+  'Goethe reworked the older Faust chapbooks, whose hero was damned outright, into this drama of striving.';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog.find(entry=>entry.text.includes('strike the bargain'));
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C1','P1-C2'],
+    retainedContextClaimIds:['P1-C2','P1-C3'],
+    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
+     answerClaimIds:['P1-C1','P1-C2']}]}],
+   claims:[{claimId:'P1-C1',status:'answered',
+    attributedSubject:'Faust',attributedSpeaker:'Faust',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId]}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'What is the condition of the wager Faust makes?',[faust],ai,[],{
+  plan:b34Plan,trace:true,catalog:{888:'Faust — Johann Wolfgang von Goethe'}});
+ assert.match(result.answer,/wager\u2019s condition is that if Faust ever bids the passing moment stay/,
+  'the uncited condition claim still ships — labeled, not deleted');
+ assert.match(result.answer,/Retrieved passages could not be verified as supporting this part of the question: What is the condition of the wager Faust makes\?/,
+  'the part carries the claim-level disclosure label');
+ assert.deepEqual(result.trace.final?.claimLevelUncitedLabels,
+  [{partId:'P1',claimIds:['P1-C2']}],
+  'only the source-required claim is named — the allowance claim is not');
+ assert.match(result.answer,/drama of striving/,
+  'the general-knowledge allowance claim ships unlabeled in the same part');
+ assert.doesNotMatch(result.answer,/could not be answered from the library/,
+  'no absent-part label: the part did ship');
+ assert.deepEqual(result.trace.assemblyDisclosureDropped,[]);
+});
+
+test('batch 34 B34-1 layer 2 unit: a rescued framing claim from an earlier draft position is restored before its orphan; a later one is not pulled forward',()=>{
+ const parts=[{part:{id:'P3'},status:'partial',answerStatus:'partial',
+  evidence:[],
+  answers:[
+   {claimId:'P3-C1',text:'Marlow shapes the narrative through the dream-sensation of his voyage.',
+    renderedText:'Marlow shapes the narrative through the dream-sensation of his voyage.',
+    sourceIds:['S3'],paragraphIndex:0},
+   {claimId:'P3-C3',text:'He shapes the narrative by intentionally distorting his own psyche.',
+    renderedText:'He shapes the narrative by intentionally distorting his own psyche.',
+    sourceIds:['S6'],paragraphIndex:1}]}];
+ const decisions=[{partId:'P3',claimId:'P3-C3',sourceId:'S6',
+  attributedSubject:'Underground Man'}];
+ const framing={claimId:'P3-C2',
+  text:'The Underground Man\u2019s unreliability is internal and volitional.',
+  renderedText:'The Underground Man\u2019s unreliability is internal and volitional.',
+  sourceIds:[],paragraphIndex:0};
+ const actions=applyAssemblyAntecedentGuard(parts,{reviewDecisions:decisions,
+  restorable:[{partId:'P3',claimId:'P3-C2',answer:framing}]});
+ assert.deepEqual(actions.restored,[{partId:'P3',claimId:'P3-C2',
+  forClaimId:'P3-C3'}]);
+ assert.deepEqual(parts[0].answers.map(answer=>answer.claimId),
+  ['P3-C1','P3-C2','P3-C3'],
+  'the framing claim is restored directly before the orphan, in its own part');
+ assert.equal(parts[0].answers[1].paragraphIndex,1,
+  'the restored claim joins the orphan\u2019s paragraph');
+ // Position discipline: the same framing claim numbered AFTER the
+ // orphan (a closing synthesis) is never pulled forward — the
+ // orphan falls to the deterministic rewrite instead.
+ const parts2=[{part:{id:'P3'},status:'partial',answerStatus:'partial',
+  evidence:[],
+  answers:[
+   {claimId:'P3-C1',text:'Marlow shapes the narrative through the dream-sensation of his voyage.',
+    renderedText:'Marlow shapes the narrative through the dream-sensation of his voyage.',
+    sourceIds:['S3'],paragraphIndex:0},
+   {claimId:'P3-C3',text:'He shapes the narrative by intentionally distorting his own psyche.',
+    renderedText:'He shapes the narrative by intentionally distorting his own psyche.',
+    sourceIds:['S6'],paragraphIndex:1}]}];
+ const actions2=applyAssemblyAntecedentGuard(parts2,{reviewDecisions:decisions,
+  restorable:[{partId:'P3',claimId:'P3-C9',answer:{...framing,claimId:'P3-C9'}}]});
+ assert.deepEqual(actions2.restored,[]);
+ assert.deepEqual(actions2.rewritten,[{partId:'P3',claimId:'P3-C3',
+  subject:'Underground Man'}]);
+ assert.match(parts2[0].answers[1].text,/^Underground Man shapes the narrative/);
+});
+
+const b34GatsbySource={id:'S1',bookId:'301',
+ title:'The Great Gatsby — F. Scott Fitzgerald',page:112,
+ url:'https://example.test/gatsby#page=112',
+ text:'Gatsby took out a pile of shirts and began throwing them, one by one, before us, shirts of sheer linen and thick silk and fine flannel, which lost their folds as they fell and covered the table in many-colored disarray. Daisy bent her head into the shirts and began to cry, “It makes me sad because I’ve never seen such — such beautiful shirts before.”',
+ preview:'Gatsby took out a pile of shirts and began throwing them.'};
+const b34GatsbyBoundary='The span describes Daisy crying over the beautiful shirts, which is part of the witnessed scene.';
+const b34GatsbyPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'F. Scott Fitzgerald',role:'primary',bookIds:['301']}],
+ parts:[{id:'P1',question:'In The Great Gatsby, how does Daisy react to the display of wealth?',
+  sourceBookIds:['301'],searchQueries:['Gatsby shirts Daisy'],candidateSourceIds:['S1']}],
+ queries:['Gatsby shirts']};
+const b34GatsbyCatalog={301:'The Great Gatsby — F. Scott Fitzgerald'};
+function b34GatsbyReview({c2Subject='Gatsby',c2Boundary=b34GatsbyBoundary}={}){
+ return ({messages})=>{
+  const payload=parsePayload(messages);
+  const spanByFragment=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+    retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>{
+    if(claim.text.includes('shirt after shirt'))return {claimId:claim.claimId,
+     status:'answered',attributedSubject:'Gatsby',attributedSpeaker:'',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanByFragment('pile of shirts')],
+      subjectAttributionStatus:'supported',attributedSubject:'Gatsby',
+      attributedSpeaker:'',supportBoundary:'The span shows Gatsby throwing the shirts before his guests.'}]};
+    return {claimId:claim.claimId,status:'answered',
+     attributedSubject:c2Subject,attributedSpeaker:'',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanByFragment('never seen such')],
+      subjectAttributionStatus:'supported',attributedSubject:c2Subject,
+      attributedSpeaker:'',supportBoundary:c2Boundary}]};
+   })})};
+ };
+}
+
+test('batch 34 B34-3 pilot 1 (Gatsby): the boundary subject demotes the tears swap',async()=>{
+ const draft='PART P1\n'+
+  'Gatsby throws shirt after shirt before his guests, shirts of sheer linen and thick silk and fine flannel. [S1]\n\n'+
+  'He also witnesses the overwhelming impact of Gatsby’s luxury, such as the “beautiful shirts” that move Gatsby to tears. [S1]';
+ const ai=batch25RouterAI({reviewResponder:b34GatsbyReview(),
+  rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In The Great Gatsby, how does Daisy react to the display of wealth?',
+  [b34GatsbySource],ai,[],{plan:b34GatsbyPlan,catalog:b34GatsbyCatalog,trace:true});
+ assert.match(result.answer,/shirt after shirt/,
+  'the clean claim still ships');
+ assert.doesNotMatch(result.answer,/move Gatsby to tears/,
+  'the swapped claim is demoted by the boundary subject check');
+ const swaps=result.trace.reviewContract?.boundarySubjectChecks||[];
+ assert.deepEqual(swaps.map(entry=>({claimId:entry.claimId,
+   boundarySubject:entry.boundarySubject,via:entry.via})),
+  [{claimId:'P1-C2',boundarySubject:'Daisy',via:'boundary'}]);
+ assert.ok((result.trace.vetoCensus||[]).some(entry=>
+   entry.claimId==='P1-C2'&&entry.outcome==='demoted'&&
+   entry.kind==='boundary-subject'),
+  'the swap joins the veto census as a demotion');
+});
+
+test('batch 34 B34-3 pilot 2 (Wickham): the span speech attribution demotes the scandalous swap',async()=>{
+ const austen={id:'S1',bookId:'341',title:'Pride and Prejudice — Jane Austen',
+  page:78,url:'https://example.test/pride#page=78',
+  text:'Mr. Wickham, glad of an audience, told his story with great feeling. “I can never be in company with this Mr. Darcy without being grieved to the soul by a thousand tender recollections. His father, Miss Bennet, the late Mr. Darcy, was one of the best men that ever breathed, and the truest friend I ever had. His behaviour to myself has been scandalous; but I can proclaim nothing before all the world.”',
+  preview:'Mr. Wickham, glad of an audience, told his story.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Jane Austen',role:'primary',bookIds:['341']}],
+  parts:[{id:'P1',question:'How does Elizabeth Bennet judge Mr. Darcy early in Pride and Prejudice?',
+   sourceBookIds:['341'],searchQueries:['Elizabeth Darcy judgment'],candidateSourceIds:['S1']}],
+  queries:['Elizabeth Darcy']};
+ const draft='PART P1\n'+
+  'Elizabeth arrives at the Meryton assembly already disposed to think ill of Darcy.\n\n'+
+  'Early in the novel, she describes him as “very disagreeable” and views his behavior as “scandalous”. [S1]\n\n'+
+  'Wickham addresses Elizabeth directly as Miss Bennet while telling his story. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const spanByFragment=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C1','P1-C2'],
+    retainedContextClaimIds:['P1-C1']}],
+   claims:payload.claims.map(claim=>claim.text.includes('scandalous')?
+    {claimId:claim.claimId,status:'answered',attributedSubject:'',
+     attributedSpeaker:'Elizabeth Bennet',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanByFragment('scandalous')],
+      subjectAttributionStatus:'supported',attributedSubject:'',
+      attributedSpeaker:'Elizabeth Bennet',
+      supportBoundary:'Establishes Elizabeth’s early negative descriptions of Darcy as ‘very disagreeable’ and his behavior as ‘scandalous’.'}]}:
+    {claimId:claim.claimId,status:'answered',attributedSubject:'Wickham',
+     attributedSpeaker:'Wickham',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanByFragment('Miss Bennet')],
+      subjectAttributionStatus:'supported',attributedSubject:'Wickham',
+      attributedSpeaker:'Wickham',
+      supportBoundary:'The span shows Wickham addressing Miss Bennet in his account.'}]})})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How does Elizabeth Bennet judge Mr. Darcy early in Pride and Prejudice?',
+  [austen],ai,[],{plan,catalog:{341:'Pride and Prejudice — Jane Austen'},trace:true});
+ assert.match(result.answer,/already disposed to think ill of Darcy/,
+  'the retained context claim still ships');
+ assert.doesNotMatch(result.answer,/views his behavior as/,
+  'the swapped claim is demoted: the words are Wickham’s, not Elizabeth’s');
+ const swaps=result.trace.reviewContract?.boundarySubjectChecks||[];
+ assert.equal(swaps.length,1);
+ assert.equal(swaps[0].claimId,'P1-C2');
+ assert.equal(swaps[0].via,'span-speech');
+ assert.equal(swaps[0].boundarySubject,'Mr. Wickham');
+});
+
+test('batch 34 B34-3 pilot 3 (Emerson): the span clause subject demotes the despair swap',async()=>{
+ const emerson={id:'S1',bookId:'555',title:'Essays — Ralph Waldo Emerson',
+  page:201,url:'https://example.test/emerson#page=201',
+  text:'The essays, the fiction, and the poetry of the day have the like municipal limits. Their novelists despair of the heart. Thackeray finds that God has made no allowance for the poor thing in his universe.',
+  preview:'The essays, the fiction, and the poetry of the day have the like municipal limits.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Ralph Waldo Emerson',role:'primary',bookIds:['555']}],
+  parts:[{id:'P1',question:'How does Emerson judge the fiction of his day?',
+   sourceBookIds:['555'],searchQueries:['Emerson fiction novelists'],candidateSourceIds:['S1']}],
+  queries:['Emerson fiction']};
+ const draft='PART P1\n'+
+  'Emerson says the essays, fiction, and poetry of the day have municipal limits. [S1]\n\n'+
+  'For instance, some novelists portray characters who, in their pursuit of status or worldly success, ultimately “despair of the heart”. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const spanByFragment=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+    retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>claim.text.includes('despair')?
+    {claimId:claim.claimId,status:'answered',attributedSubject:'',
+     attributedSpeaker:'',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanByFragment('despair of the heart')],
+      subjectAttributionStatus:'supported',attributedSubject:'',
+      attributedSpeaker:'',
+      supportBoundary:'Confirms that novelists’ romances can fan low flames and that novelists may ‘despair of the heart’.'}]}:
+    {claimId:claim.claimId,status:'answered',attributedSubject:'Emerson',
+     attributedSpeaker:'Emerson',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanByFragment('municipal limits')],
+      subjectAttributionStatus:'supported',attributedSubject:'Emerson',
+      attributedSpeaker:'Emerson',
+      supportBoundary:'The span states Emerson’s judgment of the day’s essays, fiction, and poetry.'}]})})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How does Emerson judge the fiction of his day?',[emerson],ai,[],{
+  plan,catalog:{555:'Essays — Ralph Waldo Emerson'},trace:true});
+ assert.match(result.answer,/municipal limits/,
+  'the clean claim still ships');
+ assert.doesNotMatch(result.answer,/portray characters/,
+  'the swapped claim is demoted: the despair is the novelists’, not the characters’');
+ const swaps=result.trace.reviewContract?.boundarySubjectChecks||[];
+ assert.deepEqual(swaps.map(entry=>({claimId:entry.claimId,
+   boundarySubject:entry.boundarySubject,claimSubject:entry.claimSubject,
+   via:entry.via})),
+  [{claimId:'P1-C2',boundarySubject:'novelists',claimSubject:'characters',
+   via:'span-phrase'}]);
+});
+
+test('batch 34 B34-3 pilot 4 (parity): a boundary naming the claim’s subject blocks the attribution flip veto',async()=>{
+ // Gatsby ph3 SP2's shape: the reviewer attributes Daisy's tears
+ // to Gatsby (conflict), the claim demotes, the rescue judges the
+ // pair supported — and on pre-change code the same attribution
+ // ground vetoes the flip at re-normalization although the pair's
+ // boundary records Daisy crying.
+ const draft='PART P1\n'+
+  'Daisy is moved to tears by the beauty of the shirts Gatsby shows her. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog.find(entry=>entry.text.includes('never seen such'));
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+    answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
+    retainedContextClaimIds:[]}],
+   claims:[{claimId:'P1-C1',status:'partial',attributedSubject:'Gatsby',
+    attributedSpeaker:'',
+    sources:[{sourceId:'S1',status:'partial',spanIds:[span.spanId],
+     subjectAttributionStatus:'conflict',attributedSubject:'Gatsby',
+     attributedSpeaker:'',supportBoundary:b34GatsbyBoundary}]}]})};
+ };
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
+   fragment:'never seen such — such beautiful shirts before',
+   elements:[{element:item.claimText,stated:true}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In The Great Gatsby, how does Daisy react to the display of wealth?',
+  [b34GatsbySource],ai,[],{plan:b34GatsbyPlan,catalog:b34GatsbyCatalog,trace:true});
+ assert.match(result.answer,/Daisy is moved to tears/,
+  'the rescued claim ships: the boundary blocked the attribution veto');
+ assert.ok((result.trace.reviewContract?.gateRestorations||[]).some(entry=>
+   entry.kind==='boundary-subject'&&entry.claimId==='P1-C1'),
+  'the blocked veto is recorded as a boundary-subject restoration');
+ assert.ok((result.trace.vetoCensus||[]).some(entry=>
+   entry.claimId==='P1-C1'&&entry.outcome==='restored'&&
+   entry.kind==='boundary-subject'),
+  'the census counts the veto as restored, not stood');
+});
+
+test('batch 34 B34-3 controls: correct subject, different action, and silent boundary all ship unchanged',async()=>{
+ // (a) The same span and boundary with the claim correctly naming
+ // Daisy: the boundary names the claim's own subject — no swap.
+ const draftA='PART P1\n'+
+  'Gatsby throws shirt after shirt before his guests, shirts of sheer linen and thick silk and fine flannel. [S1]\n\n'+
+  'He also witnesses the overwhelming impact of Gatsby’s luxury, such as the “beautiful shirts” that move Daisy to tears. [S1]';
+ const aiA=batch25RouterAI({reviewResponder:b34GatsbyReview({c2Subject:'Daisy'}),
+  rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draftA});
+ const resultA=await composeEvidenceAnswer(
+  'In The Great Gatsby, how does Daisy react to the display of wealth?',
+  [b34GatsbySource],aiA,[],{plan:b34GatsbyPlan,catalog:b34GatsbyCatalog,trace:true});
+ assert.match(resultA.answer,/move Daisy to tears/,
+  'control (a): the correctly-attributed claim ships');
+ assert.deepEqual(resultA.trace.reviewContract?.boundarySubjectChecks||[],[],
+  'control (a): no swap recorded');
+ // (b) A claim about a different action in the same span: Gatsby
+ // displaying the shirts. The boundary's Daisy/crying association
+ // does not match the claim's action — no swap.
+ const draftB='PART P1\n'+
+  'Gatsby displays the beautiful shirts from his wardrobe for his guests. [S1]';
+ const reviewB=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog.find(entry=>entry.text.includes('pile of shirts'));
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+    retainedContextClaimIds:[]}],
+   claims:[{claimId:'P1-C1',status:'answered',attributedSubject:'Gatsby',
+    attributedSpeaker:'',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Gatsby',
+     attributedSpeaker:'',supportBoundary:b34GatsbyBoundary}]}]})};
+ };
+ const aiB=batch25RouterAI({reviewResponder:reviewB,
+  rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draftB});
+ const resultB=await composeEvidenceAnswer(
+  'In The Great Gatsby, how does Daisy react to the display of wealth?',
+  [b34GatsbySource],aiB,[],{plan:b34GatsbyPlan,catalog:b34GatsbyCatalog,trace:true});
+ assert.match(resultB.answer,/Gatsby displays the beautiful shirts/,
+  'control (b): the different-action claim ships');
+ assert.deepEqual(resultB.trace.reviewContract?.boundarySubjectChecks||[],[],
+  'control (b): no swap recorded');
+ // (c) The pilot-1 swap claim with a boundary that records no
+ // subject: record-dependence — behavior is unchanged and the
+ // claim ships exactly as it did before this batch.
+ const draftC='PART P1\n'+
+  'Gatsby throws shirt after shirt before his guests, shirts of sheer linen and thick silk and fine flannel. [S1]\n\n'+
+  'He also witnesses the overwhelming impact of Gatsby’s luxury, such as the “beautiful shirts” that move Gatsby to tears. [S1]';
+ const aiC=batch25RouterAI({reviewResponder:b34GatsbyReview({
+   c2Boundary:'The span covers the wardrobe scene during the mansion tour in detail.'}),
+  rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draftC});
+ const resultC=await composeEvidenceAnswer(
+  'In The Great Gatsby, how does Daisy react to the display of wealth?',
+  [b34GatsbySource],aiC,[],{plan:b34GatsbyPlan,catalog:b34GatsbyCatalog,trace:true});
+ assert.match(resultC.answer,/move Gatsby to tears/,
+  'control (c): with no subject in the record, the claim ships as before');
+ assert.deepEqual(resultC.trace.reviewContract?.boundarySubjectChecks||[],[],
+  'control (c): no swap recorded');
+});
+
+test('batch 34 B34-6 pilot (Wuthering): accepted claims lost to containment and the partial gate are reconciled, and a containment-dropped disclosure is not restored',async()=>{
+ // Production shape, verbatim in structure: the split retry recovered
+ // and judged every cited claim; the loss is downstream. C5/C9/C10 are
+ // accepted UNCITED context claims restating rejected draft claims
+ // (C11/C12/C13, archived by the initial review) at overlap >= 0.5,
+ // so rejection containment drops them; C6 is cited, its source
+ // accepted, but the reviewer judged it 'partial' with no narrowing,
+ // so normalizeReview never puts it in the part's answers while the
+ // contract still records accepted:true. C10 is also an absence
+ // disclosure: B34-2 must NOT restore it (it restates a rejection).
+ const wuthering={id:'S1',bookId:'123',title:'Wuthering Heights — Emily Brontë',
+  page:100,url:'https://example.test/wuthering#page=100',
+  text:'Catherine accused Nelly of being her hidden enemy and a traitor before the whole household. During a moment of intense distress, Catherine claimed that Nelly played traitor by encouraging Mr. Linton to harass her. Nelly presented herself as a neutral observer while managing the household affairs and maintaining personal relationships with the various masters and mistresses. Nelly defended her actions as those of a faithful servant in response to the accusations. Nelly spoke at length about the household routines and the daily management of the estate. The household accounts record the visitors who called during that winter. Lockwood noted the arrangement of the rooms when he first arrived.',
+  preview:'Catherine accused Nelly of being her hidden enemy.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Emily Brontë',role:'primary',bookIds:['123']}],
+  parts:[{id:'P1',question:'Where does Wuthering Heights give the reader reason to doubt Nelly\'s version of events?',
+   sourceBookIds:['123'],searchQueries:['Nelly reliability doubt'],
+   candidateSourceIds:['S1'],
+   requirements:[{id:'P1-R1',text:'Identify textual evidence or narrative inconsistencies that undermine Nelly Dean\'s reliability'}]}],
+  queries:['Nelly reliability']};
+ const draft='PART P1\n'+
+  'The novel gives the reader several reasons to doubt Nelly Dean, suggesting that her version of events may be colored by personal bias.\n\n'+
+  'The most explicit reason to doubt Nelly is provided by Catherine herself, who accuses her of being a "hidden enemy" and a "traitor". [S1]\n\n'+
+  'During a moment of intense distress, Catherine claims that Nelly played traitor by encouraging Mr. Linton to harass her. [S1]\n\n'+
+  'These accusations frame the deeper inconsistencies in Nelly\'s account.\n\n'+
+  '**Narrative Subjectivity and Omission** Nelly\'s reliability is further undermined by her tendency to judge the characters she describes. Nelly openly mocks Catherine\'s grief and calls Heathcliff a brute in her narration.\n\n'+
+  '**Inconsistencies in Perspective** While Nelly presents herself as a neutral observer, her involvement in the household\'s management and her personal relationships with the various masters and mistresses place her in a position of conflict of interest. [S1]\n\n'+
+  'Her desire to be seen as a "faithful servant" may lead her to sanitize her own role in the unfolding tragedies. [S1]\n\n'+
+  'The novel undermines Nelly\'s reliability through Catherine\'s direct accusations of betrayal and through Nelly\'s own admitted practice of selectively sharing information.\n\n'+
+  'The reader may also doubt Nelly\'s reliability because she admits to withholding or filtering information. Nelly hides Catherine\'s letters from Edgar and burns Heathcliff\'s notes.\n\n'+
+  'The passages do not describe Nelly filtering the information she passed to Heathcliff. Nelly invents whole conversations between Catherine and Heathcliff.\n\n'+
+  'Nelly openly mocks Catherine\'s grief and calls Heathcliff a brute in her narration. [S1]\n\n'+
+  'Nelly hides Catherine\'s letters from Edgar and burns Heathcliff\'s notes. [S1]\n\n'+
+  'Nelly invents whole conversations between Catherine and Heathcliff. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const spanByFragment=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  const entryFor=claim=>{
+   const text=claim.text;
+   const source={sourceId:'S1',status:'answered',attributionStatus:'supported',
+    attributedSubject:'',attributedSpeaker:''};
+   if(text.includes('hidden enemy'))return {claimId:claim.claimId,status:'answered',
+    attributedSubject:'',attributedSpeaker:'',
+    sources:[{...source,spanIds:[spanByFragment('hidden enemy')],
+     supportBoundary:'The spans show Catherine accusing Nelly of being a hidden enemy and a traitor.'}]};
+   if(text.includes('intense distress'))return {claimId:claim.claimId,status:'answered',
+    attributedSubject:'',attributedSpeaker:'',
+    sources:[{...source,spanIds:[spanByFragment('intense distress')],
+     supportBoundary:'The spans show Catherine claiming Nelly played traitor during a moment of distress.'}]};
+   if(text.includes('neutral observer'))return {claimId:claim.claimId,status:'partial',
+    attributedSubject:'',attributedSpeaker:'',
+    sources:[{...source,spanIds:[spanByFragment('neutral observer')],
+     supportBoundary:'The spans show Nelly\'s active role in managing affairs and her interactions with various characters, but do not explicitly state a \'conflict of interest\'.'}]};
+   // The rejected claims' propositions appear in NO span of the
+   // packet (that is what makes them rejected rather than
+   // companion-restored): give them a valid but unrelated span.
+   const rejected={claimId:claim.claimId,status:'unanswered',
+    attributedSubject:'',attributedSpeaker:'',
+    sources:[{sourceId:'S1',status:'unanswered',
+     spanIds:[spanByFragment('neutral observer')],
+     attributionStatus:'unsupported',subjectAttributionStatus:'unsupported',
+     attributedSubject:'',attributedSpeaker:'',
+     supportBoundary:'The spans do not support this claim.'}]};
+   return rejected;
+  };
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C2','P1-C3'],
+    retainedContextClaimIds:['P1-C1','P1-C4','P1-C5','P1-C8','P1-C9','P1-C10'],
+    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
+     answerClaimIds:['P1-C2','P1-C3']}]}],
+   claims:payload.claims.map(entryFor)})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'Where does Wuthering Heights give the reader reason to doubt Nelly\'s version of events?',
+  [wuthering],ai,[],{plan,catalog:{123:'Wuthering Heights — Emily Brontë'},trace:true});
+ assert.match(result.answer,/several reasons to doubt Nelly Dean/,
+  'the retained intro still ships');
+ assert.match(result.answer,/hidden enemy/,
+  'the direct-answer treachery claim still ships');
+ assert.match(result.answer,/intense distress/,
+  'the direct-answer distress claim still ships');
+ assert.match(result.answer,/deeper inconsistencies/,
+  'the retained bridge still ships');
+ assert.match(result.answer,/direct accusations of betrayal/,
+  'the retained conclusion still ships');
+ assert.doesNotMatch(result.answer,/Subjectivity/,
+  'the containment-dropped section does not ship');
+ assert.doesNotMatch(result.answer,/neutral observer/,
+  'the partial-gated section does not ship');
+ assert.doesNotMatch(result.answer,/hides Catherine's letters/,
+  'the containment-dropped withholding evidence does not ship');
+ assert.doesNotMatch(result.answer,/do not describe Nelly filtering/,
+  'the containment-dropped disclosure does not ship');
+ const containment=result.trace.rejectionContainment||[];
+ assert.equal(containment.filter(entry=>entry.claimId==='P1-C5').length,1,
+  'containment recorded the Subjectivity drop');
+ assert.equal(containment.filter(entry=>entry.claimId==='P1-C9').length,1,
+  'containment recorded the withholding drop');
+ assert.equal(containment.filter(entry=>entry.claimId==='P1-C10').length,1,
+  'containment recorded the disclosure drop');
+ const losses=result.trace.assemblyLoss||[];
+ const lossFor=claimId=>losses.find(entry=>entry.claimId===claimId);
+ assert.equal(losses.length,4,'four accepted claims are unshipped');
+ assert.deepEqual(lossFor('P1-C5'),
+  {partId:'P1',claimId:'P1-C5',reason:'rejection-containment',disposition:'traced'},
+  'the Subjectivity loss is reconciled as containment');
+ assert.deepEqual(lossFor('P1-C9'),
+  {partId:'P1',claimId:'P1-C9',reason:'rejection-containment',disposition:'traced'},
+  'the withholding loss is reconciled as containment');
+ assert.deepEqual(lossFor('P1-C10'),
+  {partId:'P1',claimId:'P1-C10',reason:'rejection-containment',disposition:'traced'},
+  'the disclosure loss is reconciled as containment');
+ assert.deepEqual(lossFor('P1-C6'),
+  {partId:'P1',claimId:'P1-C6',reason:'claim-partial-not-shipped',disposition:'traced'},
+  'the partial-gated loss is reconciled as the ship-gate, not unexplained');
+ assert.equal((result.trace.assemblyDisclosureRestored||[])
+  .some(entry=>entry.claimId==='P1-C10'),false,
+  'B34-2 does not restore a containment-dropped disclosure');
+ assert.deepEqual(result.trace.assemblyDisclosureDropped||[],[],
+  'no disclosure claim is silently dropped');
+});
+
+test('batch 34 B34-6 reconcileAssemblyLoss: unexplained losses restore when clean, withhold on rejection overlap, and cap the part when unrestorable',async()=>{
+ const baseParts=()=>[{part:{id:'P1'},
+  answers:[{claimId:'P1-C1',text:'The opening claim about Nelly Dean.',
+   renderedText:'The opening claim about Nelly Dean.',sourceIds:['S1'],paragraphIndex:0}],
+  answerStatus:'answered'}];
+ const cleanDecision={partId:'P1',claimId:'P1-C2',accepted:true,claimStatus:'answered'};
+ const validated=[{partId:'P1',answers:[{claimId:'P1-C2',
+  text:'The second claim about Nelly Dean and her narration.',
+  renderedText:'The second claim about Nelly Dean and her narration. [S1]',
+  sourceIds:['S1'],paragraphIndex:1}]}];
+ // (a) Clean unexplained loss with validated text: restored.
+ let parts=baseParts();
+ let losses=reconcileAssemblyLoss({parts,reviewDecisions:[cleanDecision],
+  validatedAnswers:validated,rejectionArchive:[],trace:{}});
+ assert.deepEqual(losses,[{partId:'P1',claimId:'P1-C2',reason:'unexplained',
+  disposition:'restored'}],'a clean unexplained loss restores from the validated draft');
+ assert.equal(parts[0].answers.some(answer=>answer.claimId==='P1-C2'),true,
+  'the restored claim joins the shipped answers');
+ assert.equal(parts[0].answerStatus,'answered','a restore leaves the part answered');
+ // (b) Same loss, but the validated text restates an archived rejection: withheld.
+ parts=baseParts();
+ losses=reconcileAssemblyLoss({parts,reviewDecisions:[cleanDecision],
+  validatedAnswers:validated,
+  rejectionArchive:[{partId:'P1',claimId:'P1-C9',
+   claimText:'The second claim about Nelly Dean and her narration.'}],trace:{}});
+ assert.deepEqual(losses,[{partId:'P1',claimId:'P1-C2',reason:'unexplained',
+  disposition:'withheld-rejection-overlap'}],
+  'a clean loss whose text restates a rejection is withheld, not restored');
+ assert.equal(parts[0].answers.some(answer=>answer.claimId==='P1-C2'),false,
+  'the withheld claim stays unshipped');
+ // (c) Clean unexplained loss with no validated text: the part is capped partial.
+ parts=baseParts();
+ losses=reconcileAssemblyLoss({parts,reviewDecisions:[cleanDecision],
+  validatedAnswers:[],rejectionArchive:[],trace:{}});
+ assert.deepEqual(losses,[{partId:'P1',claimId:'P1-C2',reason:'unexplained',
+  disposition:'unexplained-partial'}],
+  'an unrestorable unexplained loss is recorded, not silently shipped past');
+ assert.equal(parts[0].answerStatus,'partial',
+  'the part is capped at partial so the loss is reader-visible');
+ // (d) The ID hazard: the substance already ships under another ID.
+ parts=baseParts();
+ parts[0].answers.push({claimId:'P1-C9',
+  text:'The second claim about Nelly Dean and her narration.',
+  renderedText:'The second claim about Nelly Dean and her narration. [S1]',
+  sourceIds:['S1'],paragraphIndex:1});
+ losses=reconcileAssemblyLoss({parts,reviewDecisions:[cleanDecision],
+  validatedAnswers:validated,rejectionArchive:[],trace:{}});
+ assert.deepEqual(losses,[{partId:'P1',claimId:'P1-C2',
+  reason:'renumbered-substance-shipped',disposition:'traced'}],
+  'a renumbered claim whose substance ships is explained, not restored twice');
+ assert.equal(parts[0].answers.length,2,'no duplicate claim is added');
+ assert.equal(parts[0].answerStatus,'answered','no partial cap for a shipped substance');
+ // (e) Control: a fully shipped accepted set reconciles trivially.
+ parts=baseParts();
+ losses=reconcileAssemblyLoss({parts,
+  reviewDecisions:[{partId:'P1',claimId:'P1-C1',accepted:true,claimStatus:'answered'}],
+  validatedAnswers:validated,rejectionArchive:[],trace:{}});
+ assert.deepEqual(losses,[],'a clean run has no assembly loss');
+});
+
+test('batch 34 B34-7 classifySpanRegion: production page records classify apparatus vs text',()=>{
+ const longPage={page:118,text:'CHAPTER I | WHICH TREATS OF THE CHARACTER AND PURSUITS OF THE FAMOUS GENTLEMAN DON QUIXOTE OF LA MANCHA | IN a village of La Mancha, the name of which I have no desire to call to mind, there lived not long since one of those gentlemen that keep a lance in the lance-rack, an old buckler, a lean hack, and a greyhound for coursing. An olla of rather more beef than mutton, a salad on most nights, scraps on Saturdays, lentils on Fridays, and a pigeon or so extra on Sundays, made away with three-quarters of his income.'};
+ assert.equal(classifySpanRegion({text:'IT WAS with considerable reluctance that I abandoned in favour of the present undertaking what had long been my intention.',
+  head:'TRANSLATOR’S PREFACE | | I: ABOUT THIS TRANSLATION | '},longPage),'apparatus',
+  'a preface span is apparatus by its head');
+ assert.equal(classifySpanRegion({text:'TRANSLATOR’S PREFACE . . . . . . . . 38 | I: ABOUT THIS TRANSLATION . . . . . . 38',
+  head:'TABLE OF CONTENTS | '},longPage),'apparatus',
+  'a table-of-contents span is apparatus by its dotted leaders');
+ assert.equal(classifySpanRegion({text:'DON QUIXOTE',head:''},
+  {page:1,text:'1615\n\nDON QUIXOTE\n  Miguel de Cervantes\nTranslated by John Ormsby'}),'apparatus',
+  'a title-page span is apparatus by the short page');
+ assert.equal(classifySpanRegion({text:'IN a village of La Mancha, the name of which I have no desire to call to mind, there lived not long since one of those gentlemen that keep a lance in the lance-rack, an old buckler, a lean hack, and a greyhound for coursing.',
+  head:'CHAPTER I | WHICH TREATS OF THE CHARACTER AND PURSUITS OF THE FAMOUS GENTLEMAN DON QUIXOTE OF LA MANCHA | '},longPage),'text',
+  'the novel’s own opening chapter is text, not apparatus');
+ assert.equal(classifySpanRegion({text:'6.5–8.19: The great flood. This story describes God’s un-creation and re-creation of the world.',
+  head:'5 The Lord saw that the wickedness of humankind was great in the earth, and that every inclination of the thoughts of their hearts was only evil continually.'},longPage),'apparatus',
+  'a study note is apparatus by its verse-range key');
+ assert.equal(classifySpanRegion({text:'The version preserved here is an interweaving of parallel accounts, one of which links with the Priestly traditions of 1.1–2.3 and 5.1–32.',
+  head:'6.5–8.19: The great flood. This story describes God’s un-creation and re-creation of the world.'},longPage),'apparatus',
+  'note prose is apparatus by the verse-range references it cites');
+ assert.equal(classifySpanRegion({text:'a Meaning of Heb uncertain | b Or window',
+  head:'5 And Noah did all that the Lord had commanded him.'},longPage),'apparatus',
+  'a gloss-key span is apparatus');
+ assert.equal(classifySpanRegion({text:'18: Covenant, see 9.8–17n.',
+  head:'6.5–8.19: The great flood.'},longPage),'apparatus',
+  'an n-suffixed cross-reference is apparatus');
+ assert.equal(classifySpanRegion({text:'5 The Lord saw that the wickedness of humankind was great in the earth, and that every inclination of the thoughts of their hearts was only evil continually.',
+  head:'genesis 7 | '},longPage),'text',
+  'verse text is text: a bare verse number without a colon is not a note key');
+});
+
+test('batch 34 B34-7 pilot (Don Quixote): a framing claim resting only on introduction spans demotes when the novel’s own chapters are in the packet',async()=>{
+ // Production shape: the packet mixes the bound-in introduction
+ // (Translator's Preface, p. 38) with the novel's own opening
+ // chapter (p. 118). The framing claim cites only the preface;
+ // the chapter claims cite the novel. The framing must rest on
+ // the novel's chapters, not on the packaging.
+ const preface={id:'S1',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
+  page:38,url:'https://example.test/quixote#page=38',
+  text:'TRANSLATOR’S PREFACE | | I: ABOUT THIS TRANSLATION | IT WAS with considerable reluctance that I abandoned in favour of the present undertaking what had long been my intention. The work had occupied my thoughts for many years before I resolved to attempt it.',
+  preview:'TRANSLATOR’S PREFACE'};
+ const novel={id:'S2',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
+  page:118,url:'https://example.test/quixote#page=118',
+  text:'CHAPTER I | WHICH TREATS OF THE CHARACTER AND PURSUITS OF THE FAMOUS GENTLEMAN DON QUIXOTE OF LA MANCHA | IN a village of La Mancha, the name of which I have no desire to call to mind, there lived not long since one of those gentlemen that keep a lance in the lance-rack, an old buckler, a lean hack, and a greyhound for coursing. An olla of rather more beef than mutton, a salad on most nights, scraps on Saturdays, lentils on Fridays, and a pigeon or so extra on Sundays, made away with three-quarters of his income.',
+  preview:'CHAPTER I'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Miguel de Cervantes',role:'primary',bookIds:['124']}],
+  parts:[{id:'P1',question:'How does the opening of Don Quixote frame the novel’s view of chivalry?',
+   sourceBookIds:['124'],searchQueries:['Don Quixote opening chivalry'],
+   candidateSourceIds:['S1','S2'],
+   requirements:[{id:'P1-R1',text:'Show how the opening presents the hero and his chivalric outlook'}]}],
+  queries:['Don Quixote opening']};
+ const draft='PART P1\n'+
+  '**The Translator’s Preface:** the translator opens by explaining his reluctance to abandon his earlier undertaking for the present one. [S1]\n\n'+
+  'In a village of La Mancha, a country gentleman lives keeping a lance in the lance-rack and a greyhound for coursing. [S2]\n\n'+
+  'The novel opens by introducing its hero as a gentleman of La Mancha whose name the narrator declines to call to mind. [S2]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const spanByFragment=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C2','P1-C3'],
+    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
+     answerClaimIds:['P1-C2','P1-C3']}]}],
+   claims:payload.claims.map(claim=>{
+    const text=claim.text;
+    if(text.includes('reluctance'))return {claimId:claim.claimId,status:'answered',
+     attributedSubject:'',attributedSpeaker:'',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[spanByFragment('reluctance')],
+      subjectAttributionStatus:'supported',attributedSubject:'',
+      attributedSpeaker:'',
+      supportBoundary:'The preface describes the translator’s reluctance.'}]};
+    const fragment=text.includes('village of La Mancha')?'village of La Mancha':'call to mind';
+    return {claimId:claim.claimId,status:'answered',
+     attributedSubject:'',attributedSpeaker:'',
+     sources:[{sourceId:'S2',status:'answered',spanIds:[spanByFragment(fragment)],
+      subjectAttributionStatus:'supported',attributedSubject:'',
+      attributedSpeaker:'',
+      supportBoundary:'The chapter introduces the hero of La Mancha.'}]};
+   })})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How does the opening of Don Quixote frame the novel’s view of chivalry?',
+  [preface,novel],ai,[],{plan,catalog:{124:'Don Quixote — Miguel de Cervantes'},trace:true});
+ assert.doesNotMatch(result.answer,/reluctance/,
+  'the preface-only framing claim does not ship');
+ assert.match(result.answer,/village of La Mancha/,
+  'the chapter claim ships');
+ assert.match(result.answer,/call to mind/,
+  'the closing chapter claim ships');
+ assert.deepEqual(result.trace.reviewContract?.apparatusFramingChecks||[],
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',kind:'apparatus-framing'}],
+  'the demotion is traced with its source');
+ const census=(result.trace.reviewContract?.vetoCensus||[])
+  .find(entry=>entry.claimId==='P1-C1');
+ assert.deepEqual(census,{partId:'P1',claimId:'P1-C1',sourceId:'S1',
+  layer:'gate',ground:'framing-claim-apparatus-only',outcome:'demoted',
+  kind:'apparatus-framing',finalDisposition:'suppressed-and-dropped'},
+  'the veto census carries the demotion');
+ const decision=(result.trace.reviewContract?.reviewDecisions||[])
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision?.accepted,false,'the decision row records the demotion');
+ assert.equal(decision?.validationReason,'framing-claim-apparatus-only',
+  'the decision row names the ground');
+});
+
+test('batch 34 B34-7 controls: an introduction-only packet, a reception-fact content claim, and a study-note framing claim',async()=>{
+ const preface={id:'S1',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
+  page:38,url:'https://example.test/quixote#page=38',
+  text:'TRANSLATOR’S PREFACE | | I: ABOUT THIS TRANSLATION | IT WAS with considerable reluctance that I abandoned in favour of the present undertaking what had long been my intention. The work had occupied my thoughts for many years before I resolved to attempt it.',
+  preview:'TRANSLATOR’S PREFACE'};
+ const novel={id:'S2',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
+  page:118,url:'https://example.test/quixote#page=118',
+  text:'CHAPTER I | WHICH TREATS OF THE CHARACTER AND PURSUITS OF THE FAMOUS GENTLEMAN DON QUIXOTE OF LA MANCHA | IN a village of La Mancha, the name of which I have no desire to call to mind, there lived not long since one of those gentlemen that keep a lance in the lance-rack, an old buckler, a lean hack, and a greyhound for coursing.',
+  preview:'CHAPTER I'};
+ const noab={id:'S3',bookId:'638',title:'The New Oxford Annotated Bible — Michael D. Coogan',
+  page:47,url:'https://example.test/noab#page=47',
+  text:'genesis 7 | 5 The Lord saw that the wickedness of humankind was great in the earth, and that every inclination of the thoughts of their hearts was only evil continually. 6 And the Lord was sorry that he had made humankind on the earth, and it grieved him to his heart. | 7 | a Meaning of Heb uncertain | b Or window | 6.5–8.19: The great flood. This story describes God’s un-creation and re-creation of the world. The version preserved here is an interweaving of parallel accounts, one of which links with the Priestly traditions of 1.1–2.3 and 5.1–32, and the other of which links with the Yahwistic primeval history in 2.4b–4.26.',
+  preview:'genesis 7'};
+ const planFor=(parts)=>({version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Miguel de Cervantes',role:'primary',bookIds:['124']}],
+  parts,queries:['Don Quixote opening']});
+ const reviewFor=(directIds)=>({messages})=>{
+  const payload=parsePayload(messages);
+  const spanByFragment=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:directIds}],
+   claims:payload.claims.map(claim=>{
+    const text=claim.text;
+    // Payload claim texts strip their citation markers: read the
+    // cited source from the packet's own sourceEvidence, not the text.
+    const sourceId=claim.sourceEvidence?.[0]?.sourceId||'S1';
+    const fragment=text.includes('reluctance')?'reluctance':
+     text.includes('interweav')?'interweaving of parallel accounts':
+     text.includes('wickedness')?'wickedness of humankind':'village of La Mancha';
+    return {claimId:claim.claimId,status:'answered',
+     attributedSubject:'',attributedSpeaker:'',
+     sources:[{sourceId,status:'answered',spanIds:[spanByFragment(fragment)],
+      subjectAttributionStatus:'supported',attributedSubject:'',
+      attributedSpeaker:'',supportBoundary:'The span supports the claim.'}]};
+   })})};
+ };
+ const run=async(draft,sources,parts,directIds,question)=>{
+  const ai=batch25RouterAI({reviewResponder:reviewFor(directIds),
+   rescueResponder:b34RescueRefused,
+   repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+   assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+    parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+   draftText:draft});
+  return composeEvidenceAnswer(question,sources,ai,[],
+   {plan:planFor(parts),catalog:{124:'Don Quixote — Miguel de Cervantes',
+    638:'The New Oxford Annotated Bible — Michael D. Coogan'},trace:true});
+ };
+ // (a) Introduction-only packet (the SP1 shape): no text span exists,
+ // so the framing claim stands — the gate cannot fix a packet that
+ // gave the reviewer nothing else.
+ let result=await run('PART P1\n'+
+  '**The Translator’s Preface:** the translator opens by explaining his reluctance to abandon his earlier undertaking for the present one. [S1]',
+  [preface],[{id:'P1',question:'What does the Translator’s Preface to Don Quixote say about the translation?',
+   sourceBookIds:['124'],searchQueries:['Translator Preface'],candidateSourceIds:['S1']}],
+  ['P1-C1'],'What does the Translator’s Preface to Don Quixote say about the translation?');
+ assert.match(result.answer,/reluctance/,
+  'control (a): with no text span in the packet, the preface framing ships');
+ assert.deepEqual(result.trace.reviewContract?.apparatusFramingChecks||[],[],
+  'control (a): no apparatus demotion is recorded');
+ // (b) A content claim citing the preface for a fact ships even when
+ // text spans exist: the claim is not framing, so the gate does not apply.
+ result=await run('PART P1\n'+
+  'The translator abandoned his earlier undertaking with considerable reluctance to take up the present translation. [S1]\n\n'+
+  'In a village of La Mancha, a country gentleman lives keeping a lance in the lance-rack. [S2]',
+  [preface,novel],[{id:'P1',question:'How does the opening of Don Quixote frame the novel’s view of chivalry?',
+   sourceBookIds:['124'],searchQueries:['Don Quixote opening'],candidateSourceIds:['S1','S2']}],
+  ['P1-C1','P1-C2'],'How does the opening of Don Quixote frame the novel’s view of chivalry?');
+ assert.match(result.answer,/reluctance/,
+  'control (b): a content claim citing the preface ships');
+ assert.match(result.answer,/village of La Mancha/,'control (b): the chapter claim ships');
+ assert.deepEqual(result.trace.reviewContract?.apparatusFramingChecks||[],[],
+  'control (b): no apparatus demotion is recorded');
+ // (c) A study-note framing claim demotes when verse text is in the packet.
+ result=await run('PART P1\n'+
+  '**The Flood Story:** the notes explain that the flood story interweaves two parallel traditions. [S3]\n\n'+
+  'The Lord saw that the wickedness of humankind was great in the earth. [S3]',
+  [noab],[{id:'P1',question:'How does Genesis present the flood story?',
+   sourceBookIds:['638'],searchQueries:['Genesis flood'],candidateSourceIds:['S3']}],
+  ['P1-C1','P1-C2'],'How does Genesis present the flood story?');
+ assert.doesNotMatch(result.answer,/two parallel traditions/,
+  'control (c): the note-only framing claim does not ship');
+ assert.match(result.answer,/wickedness of humankind/,
+  'control (c): the verse-text claim ships');
+ assert.deepEqual(result.trace.reviewContract?.apparatusFramingChecks||[],
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S3',kind:'apparatus-framing'}],
+  'control (c): the study-note demotion is traced');
+});
+
+test('batch 34 B34-8 finalizeVetoCensus: every disposition from the shipped set and the shipped text',()=>{
+ // The census entries below cover all four (vote, shipped) cells
+ // plus the renumbering shape: P1-C2's substance ships as P1-C9,
+ // so its demotion did not take effect even though its own ID
+ // never ships.
+ const fleetText='The building of a great fleet of warships gave the empire command of every sea and harbor along the coast.';
+ const parts=[{part:{id:'P1'},answerStatus:'answered',
+  answers:[{claimId:'P1-C1',text:'The opening of new sea routes diverted the trade of the region.',renderedText:'The opening of new sea routes diverted the trade of the region. [S1]'},
+   {claimId:'P1-C3',text:'The plague thinned the towns year after year.',renderedText:'The plague thinned the towns year after year. [S1]'},
+   {claimId:'P1-C9',text:fleetText,renderedText:fleetText+' [S1]'}]},
+  {part:{id:'P2'},answerStatus:'unanswered',answers:[]}];
+ const answerText=parts[0].answers.map(answer=>answer.renderedText).join(' ');
+ const reviewDecisions=[
+  {partId:'P1',claimId:'P1-C1',claimText:'The opening of new sea routes diverted the trade of the region.'},
+  {partId:'P1',claimId:'P1-C2',claimText:fleetText},
+  {partId:'P1',claimId:'P1-C3',claimText:'The plague thinned the towns year after year.'},
+  {partId:'P1',claimId:'P1-C4',claimText:'The province could no longer defend itself against its enemies.'}];
+ const census=[
+  {partId:'P1',claimId:'P1-C1',sourceId:'S1',layer:'gate',ground:'bullet-label',outcome:'suppressed',kind:'bullet-label'},
+  {partId:'P1',claimId:'P1-C2',sourceId:'S1',layer:'gate',ground:'framing-claim-apparatus-only',outcome:'demoted',kind:'apparatus-framing'},
+  {partId:'P1',claimId:'P1-C3',sourceId:'S1',layer:'gate',ground:'source-subject-attribution-mismatch',outcome:'restored',kind:'boundary-subject'},
+  {partId:'P1',claimId:'P1-C4',sourceId:'S1',layer:'other',ground:'claim-clause-not-supported',outcome:'vetoed'},
+  {partId:'P1',claimId:'P1-C5',sourceId:'S1',layer:'gate',ground:'source-subject-attribution-mismatch',outcome:'restored',kind:'boundary-subject'}];
+ const returned=finalizeVetoCensus(census,{parts,answerText,reviewDecisions});
+ assert.equal(returned,census,'entries are annotated in place, so the trace mirrors see the disposition');
+ assert.equal(census[0].finalDisposition,'suppressed-and-shipped',
+  'a suppression vote on a claim that ships is recorded as shipped');
+ assert.equal(census[1].finalDisposition,'suppressed-and-shipped',
+  'the substance ships under another ID, so the demotion did not take effect');
+ assert.equal(census[2].finalDisposition,'stood',
+  'a restoration whose claim ships stood');
+ assert.equal(census[3].finalDisposition,'suppressed-and-dropped',
+  'a veto on a claim that never ships is recorded as dropped');
+ assert.equal(census[4].finalDisposition,'suppressed-and-dropped',
+  'a restoration whose claim never ships ends dropped');
+});
+
+test('batch 34 B34-8 pilot route: the census carries final dispositions in both trace mirrors',async()=>{
+ // Run A — the Don Quixote mixed packet (B34-7 fixture): the
+ // preface-only framing claim demotes on the apparatus ground and
+ // never ships, so its census entry must read
+ // suppressed-and-dropped. Run B — the Gibbon bullet-label
+ // exemption (B33-5 (a) fixture): the demotion does not stand, the
+ // claim ships cited, so its census entry must read
+ // suppressed-and-shipped — the production shape (Conrad P1-C5,
+ // Kierkegaard P1-C6, love P1-C6) that motivated the field.
+ const quixotePlan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Miguel de Cervantes',role:'primary',bookIds:['124']}],
+  parts:[{id:'P1',question:'How does the opening of Don Quixote frame the novel’s view of chivalry?',
+   sourceBookIds:['124'],searchQueries:['Don Quixote opening chivalry'],
+   candidateSourceIds:['S1','S2'],
+   requirements:[{id:'P1-R1',text:'Show how the opening presents the hero and his chivalric outlook'}]}],
+  queries:['Don Quixote opening']};
+ const preface={id:'S1',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
+  page:38,url:'https://example.test/quixote#page=38',
+  text:'TRANSLATOR’S PREFACE | | I: ABOUT THIS TRANSLATION | IT WAS with considerable reluctance that I abandoned in favour of the present undertaking what had long been my intention. The work had occupied my thoughts for many years before I resolved to attempt it.',
+  preview:'TRANSLATOR’S PREFACE'};
+ const novel={id:'S2',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
+  page:118,url:'https://example.test/quixote#page=118',
+  text:'CHAPTER I | WHICH TREATS OF THE CHARACTER AND PURSUITS OF THE FAMOUS GENTLEMAN DON QUIXOTE OF LA MANCHA | IN a village of La Mancha, the name of which I have no desire to call to mind, there lived not long since one of those gentlemen that keep a lance in the lance-rack, an old buckler, a lean hack, and a greyhound for coursing. An olla of rather more beef than mutton, a salad on most nights, scraps on Saturdays, lentils on Fridays, and a pigeon or so extra on Sundays, made away with three-quarters of his income.',
+  preview:'CHAPTER I'};
+ const quixoteDraft='PART P1\n'+
+  '**The Translator’s Preface:** the translator opens by explaining his reluctance to abandon his earlier undertaking for the present one. [S1]\n\n'+
+  'In a village of La Mancha, a country gentleman lives keeping a lance in the lance-rack and a greyhound for coursing. [S2]\n\n'+
+  'The novel opens by introducing its hero as a gentleman of La Mancha whose name the narrator declines to call to mind. [S2]';
+ const quixoteReview=({messages})=>{
+  const payload=parsePayload(messages);
+  const spanByFragment=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C2','P1-C3'],
+    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
+     answerClaimIds:['P1-C2','P1-C3']}]}],
+   claims:payload.claims.map(claim=>{
+    const text=claim.text;
+    if(text.includes('reluctance'))return {claimId:claim.claimId,status:'answered',
+     attributedSubject:'',attributedSpeaker:'',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[spanByFragment('reluctance')],
+      subjectAttributionStatus:'supported',attributedSubject:'',
+      attributedSpeaker:'',
+      supportBoundary:'The preface describes the translator’s reluctance.'}]};
+    const fragment=text.includes('village of La Mancha')?'village of La Mancha':'call to mind';
+    return {claimId:claim.claimId,status:'answered',
+     attributedSubject:'',attributedSpeaker:'',
+     sources:[{sourceId:'S2',status:'answered',spanIds:[spanByFragment(fragment)],
+      subjectAttributionStatus:'supported',attributedSubject:'',
+      attributedSpeaker:'',
+      supportBoundary:'The chapter introduces the hero of La Mancha.'}]};
+   })})};
+ };
+ const quixoteAi=batch25RouterAI({reviewResponder:quixoteReview,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:quixoteDraft});
+ const dropped=await composeEvidenceAnswer(
+  'How does the opening of Don Quixote frame the novel’s view of chivalry?',
+  [preface,novel],quixoteAi,[],{plan:quixotePlan,catalog:{124:'Don Quixote — Miguel de Cervantes'},trace:true});
+ assert.doesNotMatch(dropped.answer,/reluctance/,'run A: the apparatus-demoted claim does not ship');
+ const droppedEntry=(dropped.trace.vetoCensus||[])
+  .find(entry=>entry.claimId==='P1-C1');
+ assert.deepEqual(droppedEntry,{partId:'P1',claimId:'P1-C1',sourceId:'S1',
+  layer:'gate',ground:'framing-claim-apparatus-only',outcome:'demoted',
+  kind:'apparatus-framing',finalDisposition:'suppressed-and-dropped'},
+  'run A: the trace-level census carries the dropped disposition');
+ const droppedContract=(dropped.trace.reviewContract?.vetoCensus||[])
+  .find(entry=>entry.claimId==='P1-C1');
+ assert.equal(droppedContract?.finalDisposition,'suppressed-and-dropped',
+  'run A: the contract-level census carries the same disposition');
+ // Run B — Gibbon bullet-label exemption.
+ const gibbon={id:'S1',bookId:'287',title:'Decline and Fall — Edward Gibbon',
+  page:210,url:'https://example.test/gibbon#page=210',
+  text:'The opening of new sea routes diverted the trade of the region, and the plague, returning year after year, thinned the towns and weakened the ability of the province to defend itself against its enemies.',
+  preview:'The opening of new sea routes diverted the trade of the region.'};
+ const gibbonPlan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Edward Gibbon',role:'primary',bookIds:['287']}],
+  parts:[{id:'P1',question:'In the Decline and Fall, what factors weakened the empire’s ability to defend itself?',
+   sourceBookIds:['287'],searchQueries:['sea routes plague defend'],
+   candidateSourceIds:['S1']}],queries:['sea routes plague defend']};
+ const gibbonDraft='PART P1\n'+
+  '* **Economic and Environmental Factors:** The opening of new sea routes or the impact of the plague can weaken a region’s ability to defend itself. [S1]\n'+
+  '* **Naval Supremacy:** The building of a great fleet of warships gave the empire command of every sea and harbor along the coast. [S1]';
+ const gibbonReview=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const spanId=payload.spanCatalog[0].spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
+   answerStatus:'answered',
+   directAnswerClaimIds:[payload.claims.find(claim=>
+    claim.text.includes('Economic'))?.claimId].filter(Boolean),
+   retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,
+    status:'answered',sources:[{sourceId:'S1',status:'partial',
+     spanIds:[spanId],
+     supportBoundary:claim.text.includes('Economic')?
+      'The spans mention specific historical factors like new sea routes and plague, but do not explicitly categorize them as Economic and Environmental Factors.':
+      'The spans describe trade routes and plague, not a war fleet.'}]}))})};
+ };
+ const gibbonAi=batch25RouterAI({reviewResponder:gibbonReview,draftText:gibbonDraft});
+ const shipped=await composeEvidenceAnswer(
+  'In the Decline and Fall, what factors weakened the empire’s ability to defend itself?',
+  [gibbon],gibbonAi,[],{plan:gibbonPlan,catalog:{'287':'Decline and Fall — Edward Gibbon'},trace:true});
+ assert.match(shipped.answer,/new sea routes/,'run B: the exempted claim ships');
+ const shippedEntry=(shipped.trace.vetoCensus||[])
+  .find(entry=>entry.kind==='bullet-label');
+ assert.ok(shippedEntry,'run B: the census carries the exemption entry');
+ assert.equal(shippedEntry.outcome,'suppressed','run B: the layer vote is still suppression');
+ assert.equal(shippedEntry.finalDisposition,'suppressed-and-shipped',
+  'run B: the disposition says the suppression did not take effect');
+ const shippedContract=(shipped.trace.reviewContract?.vetoCensus||[])
+  .find(entry=>entry.kind==='bullet-label');
+ assert.equal(shippedContract?.finalDisposition,'suppressed-and-shipped',
+  'run B: the contract-level census carries the same disposition');
 });

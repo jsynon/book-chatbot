@@ -10,7 +10,7 @@
  * identity; they do not prove that a claim follows from the source.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {MAX_SELECTOR_CANDIDATES,enforcePartPacketFloor,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,
+import {MAX_SELECTOR_CANDIDATES,enforcePartPacketFloor,enforceSubmittedBookDiversity,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,
   selectEvidenceCandidates} from './evidence-selector.mjs';
 import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
@@ -869,6 +869,17 @@ export function prepareCandidatePages(question,items,
        item.candidatePartIds.length>6||item.candidatePartIds.some(value=>
          typeof value!=='string'||!/^P[1-9]\d*$/.test(value))))
       throw new Error('Invalid source part mapping');
+    // Batch 34 (B34-4): retrieval facet ranks ride along (validated,
+    // normalized, never trusted as evidence) so the Worker selector's
+    // diversity pass can represent facet-top books/pages — the layer
+    // that actually chooses the submitted set. Absent ranks degrade
+    // the pass to part-top representation; the ranks never reach the
+    // selector model's prompt.
+    if(item.facetRanks!==undefined&&(!Array.isArray(item.facetRanks)||
+       item.facetRanks.length>64||item.facetRanks.some(entry=>
+         !entry||!Number.isSafeInteger(entry.facet)||entry.facet<0||entry.facet>4096||
+         !Number.isSafeInteger(entry.rank)||entry.rank<1||entry.rank>100000)))
+      throw new Error('Invalid source facet ranks');
     const libraryVersion=item.libraryVersion===undefined?48:item.libraryVersion;
     if(!Number.isSafeInteger(libraryVersion)||!FINGERPRINT_ROOTS[libraryVersion])
       throw new Error('Invalid source claim');
@@ -886,7 +897,9 @@ export function prepareCandidatePages(question,items,
       text:stripWebCaptureFooters(item.text),
       preview:sourceExcerpt(item.text,question),
       ...(Array.isArray(item.candidatePartIds)?
-        {candidatePartIds:[...new Set(item.candidatePartIds)]}:{})});
+        {candidatePartIds:[...new Set(item.candidatePartIds)]}:{}),
+      ...(Array.isArray(item.facetRanks)?
+        {facetRanks:item.facetRanks.map(entry=>({facet:entry.facet,rank:entry.rank}))}:{})});
   }
   return sources;
 }
@@ -3995,7 +4008,21 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           const floorDecision=enforcePartPacketFloor(decision,selectorCandidates);
           const selectionRecovery=recoverUncoveredPartCandidates({...decision,
             selectedCandidateIds:floorDecision.selectedCandidateIds},selectorCandidates);
-          const selectedIds=selectionRecovery.selectedCandidateIds;
+          // Batch 34 (B34-4): the duplicate-bookId bar + facet
+          // representation run last in the selector chain, over the
+          // full pool rows (bookId, part links, facet ranks), so the
+          // bar holds on the set that actually packs. The outage
+          // fallback below keeps its own round-robin and does not
+          // pass through here.
+          const diversityRows=selectionCandidates.map((source,index)=>({
+            id:'C'+(index+1),bookId:String(source.bookId||''),page:source.page,
+            candidatePartIds:Array.isArray(source.candidatePartIds)?
+              source.candidatePartIds:[],
+            ...(Array.isArray(source.facetRanks)?{facetRanks:source.facetRanks}:{})}));
+          const diversity=enforceSubmittedBookDiversity(
+            selectionRecovery.selectedCandidateIds,diversityRows,
+            {partIds:plan.parts.map(part=>part.id)});
+          const selectedIds=diversity.selectedCandidateIds;
           if(!selectedIds.length){
             // Keep the selector's abstention: do not relabel retrieval-order
             // pages as relevant. The composer can still answer from broader
@@ -4013,8 +4040,25 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           const duplicateTrace=[];
           const recoveredPartLinks=[];
           const skippedPartRecoveries=[...selectionRecovery.skippedPartRecoveries];
+          // Batch 34 (B34-4): pages the diversity pass inserted carry
+          // their retrieval part links into the packet (scope-filtered
+          // exactly as the selector hints are), so composition sees
+          // the part association the insertion was for.
+          const diversityInsertedIds=new Set((diversity.diversityInserted||[])
+            .map(entry=>entry.candidateId));
+          const diversityLinks=[];
+          const diversitySkipped=[];
+          for(const entry of diversity.diversityInserted||[]){
+            const row=diversityRows.find(item=>item.id===entry.candidateId);
+            for(const partId of row?.candidatePartIds||[]){
+              const part=plan.parts.find(item=>item.id===partId);
+              if(part&&(!Array.isArray(part.sourceBookIds)||!part.sourceBookIds.length||
+                part.sourceBookIds.map(String).includes(String(row.bookId))))
+                diversityLinks.push({partId,candidateId:entry.candidateId});
+            }
+          }
           const packingIds=orderPacketForPacking(selectedIds,decision.parts,
-            floorDecision.packetFloorLinks);
+            [...floorDecision.packetFloorLinks,...diversityLinks]);
           for(const id of packingIds){
             const source=byCandidateId.get(id);
             if(!source)continue;
@@ -4022,7 +4066,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             const candidatePartIds=[...new Set([
               ...decision.parts.filter(part=>part.candidateIds.includes(id)).map(part=>part.partId),
               ...recoveredForCandidate.map(link=>link.partId),
-              ...floorDecision.packetFloorLinks.filter(link=>link.candidateId===id).map(link=>link.partId)
+              ...floorDecision.packetFloorLinks.filter(link=>link.candidateId===id).map(link=>link.partId),
+              ...diversityLinks.filter(link=>link.candidateId===id).map(link=>link.partId)
             ])];
             const candidatePartSupport=decision.parts.flatMap(part=>part.evidence
               .filter(entry=>entry.candidateId===id).map(entry=>({partId:part.partId,
@@ -4038,6 +4083,11 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
                 .filter(link=>link.candidateId!==id);
               floorDecision.packetFloorLinks=floorDecision.packetFloorLinks
                 .filter(link=>link.candidateId!==id);
+            }
+            if(!packed.source&&diversityInsertedIds.has(id)){
+              diversitySkipped.push({candidateId:id,reason:'answer-packet-budget'});
+              for(let index=diversityLinks.length-1;index>=0;index--)
+                if(diversityLinks[index].candidateId===id)diversityLinks.splice(index,1);
             }
             for(const link of recoveredForCandidate){
               if(packed.source)recoveredPartLinks.push({...link,candidateId:packed.source.candidateId,
@@ -4061,6 +4111,13 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             ...(recoveredPartLinks.length?{recoveredPartLinks}:{}),
             ...(skippedPartRecoveries.length?{skippedPartRecoveries}:{}),
             packetFloor:floorDecision.packetFloor,
+            ...(diversity.selectionDroppedFacets.length?
+              {selectionDroppedFacets:diversity.selectionDroppedFacets}:{}),
+            ...((diversity.diversityInserted?.length||diversity.diversityDeferred?.length||
+              diversitySkipped.length)?{selectionDiversity:{
+                inserted:diversity.diversityInserted||[],
+                deferred:diversity.diversityDeferred||[],
+                ...(diversitySkipped.length?{skipped:diversitySkipped}:{})}}:{}),
             suppressedDuplicates:duplicateTrace};
           sourceSelectionStatus='selected';
           }

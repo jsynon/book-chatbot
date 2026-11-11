@@ -359,6 +359,228 @@ export function enforcePartPacketFloor(decision,candidates){
     packetFloorLinks};
 }
 
+/* Batch 34 (B34-4): duplicate-bookId bar + facet representation at the
+ * Worker selector layer. Batch 33's B33-7(b) diversity lived only in
+ * the client's baseline selector (boundAnswerSources); the harness/live
+ * path's submitted sources are chosen HERE, and batch 33's record at
+ * this layer was: OpenStax 593 twice in both Ambition passes, Hersey
+ * 580 twice in phase-3 Solitude, Sonya's facet-top pages (436: rank 1
+ * in three facets, the pool's highest score) passed over in C&P SP2
+ * while all six slots went to other facets' pages. The batch-34 probe
+ * (batch34-probe-results.md) classified Sonya/Proust/Solitude as
+ * selection-stage and Darcy's letter as candidate-stage (it leaves
+ * this item for the query-generation work).
+ * Two bounded sub-passes over the selector's chosen set; neither adds
+ * a page beyond the shared cap and neither displaces a page the
+ * representation rules protect:
+ * (1) Duplicate-bookId bar (pools with >= 2 distinct books): a second
+ * page of an already-chosen book defers its slot — first to an
+ * unsubmitted candidate of an unrepresented facet-top / part-top
+ * book, then to any unsubmitted distinct-book candidate, in pool
+ * order. B33-7(b)'s precedence is preserved: when the duplicate's
+ * book is part-linked, it does not yield to a book with no part
+ * linkage at all. Deferred pages refill leftover slots.
+ * (2) Facet-top page representation (pools carrying facetRanks): a
+ * facet's rank-1 page that the selector passed over displaces the
+ * last chosen page that is expendable — not itself a facet-top page,
+ * not a book's sole chosen representative (multi-book pools), and
+ * not a part's sole chosen linked page. Targets are ordered by
+ * facet multiplicity (a page topping several facets is the pool's
+ * consensus strongest), then facet order, then pool order.
+ * Facet-top books / pages that still miss the set are traced in
+ * selectionDroppedFacets (the B33-7(b) trace shape, emitted by the
+ * Worker path), with the client's reason taxonomy for book-level
+ * drops and 'packet-filled-with-facet-tops' for page-level drops.
+ * When no candidate carries facetRanks, part-top books (each part's
+ * earliest pool-order linked candidate) are the representation
+ * targets and sub-pass (2) does not run — in scoped single-book
+ * pools part links do not discriminate (every page links every
+ * part), which the checkpoint records as this layer's known limit. */
+export function enforceSubmittedBookDiversity(selectedCandidateIds,candidates,
+ {limit=MAX_SELECTOR_SOURCES,partIds=[]}={}){
+  const rows=(Array.isArray(candidates)?candidates:[])
+    .filter(row=>row&&typeof row.id==='string');
+  const rowById=new Map(rows.map(row=>[row.id,row]));
+  const bookOf=row=>String(row?.bookId||'');
+  const linksOf=row=>[...new Set([
+    ...(Array.isArray(row?.candidatePartIds)?row.candidatePartIds:[]),
+    ...(Array.isArray(row?.retrievedPartHints)?row.retrievedPartHints:[])])];
+  const selected=[...new Set((Array.isArray(selectedCandidateIds)?selectedCandidateIds:[])
+    .filter(id=>typeof id==='string'))];
+  // Facet tops: per facet, the candidate holding the smallest rank
+  // (first in pool order wins a tie) — the client's facetTopBooks
+  // semantics, kept at both book and page level.
+  const facetTopPage=new Map();
+  for(const row of rows){
+    if(!Array.isArray(row.facetRanks))continue;
+    for(const entry of row.facetRanks){
+      if(!entry||!Number.isFinite(entry.rank))continue;
+      const current=facetTopPage.get(entry.facet);
+      if(!current||entry.rank<current.rank)
+        facetTopPage.set(entry.facet,{row,rank:entry.rank});
+    }
+  }
+  const facetOrder=(left,right)=>{
+    const a=Number(left),b=Number(right);
+    if(Number.isFinite(a)&&Number.isFinite(b))return a-b;
+    return String(left).localeCompare(String(right),undefined,{numeric:true});
+  };
+  const sortedFacets=[...facetTopPage.keys()].sort(facetOrder);
+  const targetBooks=[],targetBookSeen=new Set();
+  const addTargetBook=(bookId,via)=>{
+    if(bookId&&!targetBookSeen.has(bookId)){
+      targetBookSeen.add(bookId);targetBooks.push({bookId,via});
+    }
+  };
+  for(const facet of sortedFacets)
+    addTargetBook(bookOf(facetTopPage.get(facet).row),{facet});
+  const partOrder=[...(Array.isArray(partIds)?partIds:[])];
+  if(!partOrder.length)
+    for(const row of rows)for(const partId of linksOf(row))
+      if(!partOrder.includes(partId))partOrder.push(partId);
+  for(const partId of partOrder){
+    const topRow=rows.find(row=>linksOf(row).includes(partId));
+    if(topRow)addTargetBook(bookOf(topRow),{partId});
+  }
+  const poolBooks=new Set(rows.map(bookOf).filter(Boolean));
+  const linkedBooks=new Set(rows.filter(row=>linksOf(row).length)
+    .map(bookOf).filter(Boolean));
+  const inserted=[];
+  let chosen=[...selected],deferred=[];
+  // Sub-pass (1): the duplicate-bookId bar.
+  if(poolBooks.size>=2){
+    const selectedSet=new Set(selected);
+    const representedBySelection=new Set(selected
+      .map(id=>bookOf(rowById.get(id))).filter(Boolean));
+    const pendingTargetBooks=new Set(targetBooks
+      .filter(target=>!representedBySelection.has(target.bookId))
+      .map(target=>target.bookId));
+    const fillPool=rows.filter(row=>!selectedSet.has(row.id));
+    const usedFill=new Set();
+    const chosenBooks=new Set();
+    const takeFill=duplicateBook=>{
+      const pools=[fillPool.filter(row=>pendingTargetBooks.has(bookOf(row))),fillPool];
+      for(const pool of pools){
+        const fill=pool.find(row=>{
+          const book=bookOf(row);
+          if(!book||chosenBooks.has(book)||usedFill.has(row.id))return false;
+          // B33-7(b) precedence: a part-linked duplicate does not
+          // yield to a book with no part linkage at all.
+          if(linkedBooks.has(duplicateBook)&&!linkedBooks.has(book))return false;
+          return true;
+        });
+        if(fill)return fill;
+      }
+      return null;
+    };
+    const next=[];
+    for(const id of selected){
+      const book=bookOf(rowById.get(id));
+      if(book&&chosenBooks.has(book)){
+        const fill=takeFill(book);
+        if(fill){
+          usedFill.add(fill.id);
+          next.push(fill.id);chosenBooks.add(bookOf(fill));
+          inserted.push({candidateId:fill.id,bookId:bookOf(fill),
+            displacedCandidateId:id,reason:'duplicate-book-slot'});
+          deferred.push(id);
+          continue;
+        }
+        next.push(id);
+        continue;
+      }
+      next.push(id);
+      if(book)chosenBooks.add(book);
+    }
+    for(const id of deferred){
+      if(next.length>=limit)break;
+      if(!next.includes(id))next.push(id);
+    }
+    deferred=deferred.filter(id=>!next.includes(id));
+    chosen=next;
+  }
+  // Sub-pass (2): facet-top page representation.
+  const droppedPages=[];
+  if(facetTopPage.size){
+    const facetTopIds=new Set([...facetTopPage.values()].map(({row})=>row.id));
+    const pageFacets=new Map();
+    for(const [facet,{row}] of facetTopPage){
+      const list=pageFacets.get(row.id)||[];
+      list.push(facet);pageFacets.set(row.id,list);
+    }
+    const pageTargets=[...pageFacets.entries()]
+      .filter(([id])=>!chosen.includes(id))
+      .map(([id,facets])=>({candidateId:id,
+        facets:[...facets].sort(facetOrder),bookId:bookOf(rowById.get(id))}))
+      .sort((left,right)=>right.facets.length-left.facets.length||
+        facetOrder(left.facets[0],right.facets[0])||
+        rows.indexOf(rowById.get(left.candidateId))-
+          rows.indexOf(rowById.get(right.candidateId)));
+    for(const target of pageTargets){
+      let displacedIndex=-1;
+      for(let index=chosen.length-1;index>=0;index--){
+        const id=chosen[index];
+        if(facetTopIds.has(id))continue;
+        const row=rowById.get(id);
+        if(!row)continue;
+        const book=bookOf(row);
+        // B33-7(b) precedence, applied to pages: a facet-top page of
+        // a book with no part linkage does not displace a part-linked
+        // book's page (the Proust pass-1 shape, held at both layers).
+        if(book&&!linkedBooks.has(target.bookId)&&linkedBooks.has(book))continue;
+        if(poolBooks.size>=2){
+          if(book&&chosen.filter(other=>bookOf(rowById.get(other))===book)
+            .length<=1)continue;
+        }
+        const soleLink=linksOf(row).some(partId=>chosen.every(other=>
+          other===id||!linksOf(rowById.get(other)).includes(partId)));
+        if(soleLink)continue;
+        displacedIndex=index;
+        break;
+      }
+      if(displacedIndex<0){droppedPages.push(target);continue;}
+      const [displaced]=chosen.splice(displacedIndex,1);
+      chosen.splice(displacedIndex,0,target.candidateId);
+      inserted.push({candidateId:target.candidateId,bookId:target.bookId,
+        displacedCandidateId:displaced,reason:'facet-top-page',
+        facets:target.facets});
+    }
+  }
+  const finalBooks=new Map();
+  for(const id of chosen){
+    const book=bookOf(rowById.get(id));
+    if(book)finalBooks.set(book,(finalBooks.get(book)||0)+1);
+  }
+  const duplicateRemains=[...finalBooks.values()].some(count=>count>=2);
+  const selectionDroppedFacets=[];
+  for(const target of targetBooks){
+    if(finalBooks.has(target.bookId))continue;
+    selectionDroppedFacets.push({
+      ...(target.via.facet!==undefined?{facet:target.via.facet}:{partId:target.via.partId}),
+      bookId:target.bookId,
+      reason:duplicateRemains?'duplicate-book-slot-used':'packet-filled-with-distinct-books'});
+  }
+  // A facet whose top BOOK already missed is recorded once, at book
+  // level; page-level records cover the facets whose book made the
+  // set but whose top page did not.
+  const bookDroppedFacets=new Set(selectionDroppedFacets
+    .map(entry=>entry.facet).filter(facet=>facet!==undefined));
+  for(const target of droppedPages)
+    for(const facet of target.facets){
+      if(bookDroppedFacets.has(facet))continue;
+      selectionDroppedFacets.push({facet,bookId:target.bookId,
+        page:rowById.get(target.candidateId)?.page,
+        reason:'packet-filled-with-facet-tops'});
+    }
+  selectionDroppedFacets.sort((left,right)=>
+    String(left.facet??left.partId).localeCompare(
+      String(right.facet??right.partId),undefined,{numeric:true}));
+  return {selectedCandidateIds:chosen,
+    ...(inserted.length?{diversityInserted:inserted}:{}),
+    ...(deferred.length?{diversityDeferred:deferred}:{}),
+    selectionDroppedFacets};
+}
+
 export function orderPacketForPacking(selectedCandidateIds,parts,packetFloorLinks=[]){
   const selected=[...new Set(Array.isArray(selectedCandidateIds)?selectedCandidateIds:[])];
   const planParts=Array.isArray(parts)?parts:[];
