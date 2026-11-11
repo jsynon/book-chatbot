@@ -10021,45 +10021,610 @@ test('batch 31 B31-2: a positive-contradiction mismatch stands regardless of ant
 });
 
 // ---------------------------------------------------------------------------
-// Batch 31 (B31-3): compound quote-speaker guard. The claim and the
-// accepted span texts in pilot (i) are the exact production texts
-// of the batch-30 shipped misattribution (Dostoevsky selected-pass
-// P1-C10 × S1, verdict file phase2-batch30-run/VERDICT.md).
+// Batch 32 (B32-6): the three batch-31 B31-3 pilots that stood here
+// (the Dostoevsky compound quote-speaker catch and its two controls)
+// are REMOVED with the guard they piloted. Retirement rationale,
+// recorded per the batch-32 design: across 64 production cases
+// (batch-31 validation + phase-3 baseline) the guard produced 0 true
+// positives and 2 false positives — its only firings beyond these
+// pilots matched a single shared verb ("endure") and a wrong-page
+// pairing, demoting sound pairs, while the batch-30 misattribution
+// shape it was built for re-entered through the context-claim
+// channel instead. That channel is closed by B32-5's demotion
+// inheritance (pilots below), and the sourced shape remains covered
+// by the ordinary attribution-mismatch gate. The Karamazov fixture
+// constants (b31KaramazovText/Source/Plan/Catalog,
+// b31KaramazovReview, b31RescueNotSupported) were used only by the
+// retired pilots and are removed with them.
 // ---------------------------------------------------------------------------
 
-const b31KaramazovText=[
- '“Even this must have a preface—that is, a literary preface,” laughed Ivan, “and I am a poor hand at making one.”',
- '“Why should an author forego even one listener?” smiled Ivan. “Shall I tell it to you?”',
- '“I am all attention,” said Alyosha.',
- '“My poem is called ‘The Grand Inquisitor’; it’s a ridiculous thing, but I want to tell it to you.”'
-].join('\n\n\n');
-const b31KaramazovSource={id:'S1',bookId:'103',
- title:'The Brothers Karamazov — Fyodor Dostoevsky',page:309,
- url:'https://example.test/karamazov#page=309',
- text:b31KaramazovText,
- preview:'“My poem is called ‘The Grand Inquisitor’; it’s a ridiculous thing.”'};
-const b31KaramazovPlan={version:'reader-evidence-v2',intent:'explain',
- sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['103']}],
- parts:[{id:'P1',question:'How does Ivan present his poem to Alyosha?',
-  sourceBookIds:['103'],searchQueries:['Grand Inquisitor poem Alyosha'],
-  candidateSourceIds:['S1']}],queries:['Grand Inquisitor poem Alyosha']};
-const b31KaramazovCatalog={...catalog,
- '103':'The Brothers Karamazov — Fyodor Dostoevsky'};
-function b31KaramazovReview(spanIds,attributedSubject){
- return ({messages})=>{
+// ---------------------------------------------------------------------------
+// Batch 32 (B32-7): the uncited-part label must reach the answer text.
+// ---------------------------------------------------------------------------
+
+test('batch 32 B32-7: the uncited-part label appears in the final answer text of an answer-level ship',async()=>{
+ // The batch-31 Smith shape: the build shipped, the B11-5 label was
+ // computed, and it landed only in the result's `missing` field —
+ // the reader of the answer itself never saw it (batch-31 verdict
+ // and phase-3 baseline both traced the label in
+ // uncitedPartsWithPacket while the answer text carried no such
+ // notice, twice in a row). This pilot asserts the label string
+ // inside the FINAL ANSWER TEXT, positioned with the uncited part.
+ const refuseRepair=({messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:payload.parts[0].partId,
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'A changed but still uncited statement about the worker and his understanding.'})),
+   additions:[]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder:b30SmithReviewResponder,
+  repairResponder:refuseRepair,draftText:b30SmithDraft});
+ const result=await composeEvidenceAnswer(
+  'How does the division of labour affect productivity and the workers who perform it?',
+  b30SmithSources({S1:[{partId:'P1',support:'direct'}],
+   S2:[{partId:'P2',support:'direct'}]}),
+  ai,[],{plan:b30SmithPlan,
+   catalog:{...catalog,'260':'The Wealth of Nations — Adam Smith'},selectedBookId:'260',trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,
+  /Retrieved passages could not be verified as supporting this part of the question: How does the division of labour affect the workers who perform it\?/,
+  'the label string is inside the final answer text, not only in missing');
+ assert.deepEqual(result.trace.final.uncitedPartLabelsInAnswer,['P2'],
+  'the label delivery is traced per part');
+ // The label rides with the uncited part's own text: it appears
+ // after P2's shipped sentence, not appended to the cited part.
+ const p2TextAt=result.answer.indexOf('A worker who spends his whole life');
+ const labelAt=result.answer.indexOf('Retrieved passages could not be verified');
+ assert.ok(p2TextAt>=0&&labelAt>p2TextAt,
+  'the label follows the uncited part it names');
+ assert.match(result.missing,
+  /Retrieved passages could not be verified as supporting this part of the question/,
+  'the B11-5 missing-segment record is preserved alongside');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 32 (B32-8): gate/veto calibration bundle.
+// ---------------------------------------------------------------------------
+
+test('batch 32 B32-8 (iii): a sentence-initial function word is not a claim subject (the "From" extraction)',async()=>{
+ // Phase-3 Death AP2, P1-C9: the claim opens "From this view, …"
+ // and the subject extractor registered the preposition 'From' as
+ // the claim's subject. Everything downstream inherited the error:
+ // the gate demoted the pair for a subject-attribution mismatch
+ // against a name nobody claimed, and the rescue's anchor —
+ // extracted from the same candidates — was 'From', grounding an
+ // attribution hold on a function word. Function words are not
+ // person references, at extraction or at the anchor.
+ assert.deepEqual(claimPersonSubjects(
+  'From this view, death is akin to sleep and a release from the cares of life.'),[],
+  'the preposition no longer registers as a subject');
+ assert.deepEqual(claimPersonSubjects(
+  'By this reading, the authorship\u2019s writings are presented as upbuilding discourses.'),[],
+  'the batch-31 Kierkegaard false target is gone too');
+ const source={id:'S1',bookId:'18',title:'Meditations — Marcus Aurelius',
+  page:64,url:'https://example.test/aurelius#page=64',
+  text:'From this view, death is akin to sleep and a release from the cares of life, for what is dissolved into the elements suffers nothing and fears nothing.',
+  preview:'From this view, death is akin to sleep.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Marcus Aurelius',role:'primary',bookIds:['18']}],
+  parts:[{id:'P1',question:'How does Marcus Aurelius present death?',
+   sourceBookIds:['18'],searchQueries:['Aurelius death sleep'],
+   candidateSourceIds:['S1']}],queries:['Aurelius death sleep']};
+ const reviewResponder=({messages})=>{
   const payload=parsePayload(messages);
   const claim=payload.claims[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
    answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
    retainedContextClaimIds:[]}],
    claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds,
-     attributionStatus:'supported',attributedSpeaker:attributedSubject,
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+     attributionStatus:'supported',
+     subjectAttributionStatus:'supported',attributedSubject:'true inner being'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,
+  draftText:'PART P1\nFrom this view, death is akin to sleep and a release from the cares of life. [S1]'});
+ const result=await composeEvidenceAnswer('How does Marcus Aurelius present death?',
+  [source],ai,[],{plan,catalog:{...catalog,'18':'Meditations — Marcus Aurelius'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true,
+  'no subject ground is manufactured from a function word');
+ assert.equal(result.trace.rescueReview,undefined,
+  'the pair never reaches the rescue on a vacuous finding');
+ assert.match(result.answer,/death is akin to sleep/);
+});
+
+test('batch 32 B32-8 (iii): a function-word anchor cannot ground a hold — the two-key check runs on the claim\u2019s own names',async()=>{
+ // The possessive-only Marlow packet (the B31-2 backstop shape),
+ // with the reviewer returning NO subject verdict: the gate demotes
+ // on source-subject-attribution-missing (and subject-not-named),
+ // the rescue judges the pair supported but fills the anchor slot
+ // with the function word 'From'. Before this batch the verdict
+ // was held: the anchor matched no candidate, and the two-key
+ // restoration — which keys on the anchor — never ran. A
+ // function-word anchor is not an anchor at all; the restoration
+ // key runs on the claim's own candidate names instead. The flip
+ // then carries no anchor write, so at re-normalization the
+ // subject-attribution ground recomputes — and B32-8 (ii)'s
+ // neutralization, not the anchor, is what answers it (before this
+ // batch the gateRestoration neutralization covered the voice and
+ // subject-not-named grounds only, and this flip was vetoed).
+ const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:44,url:'https://example.test/conrad#page=44',
+  text:['He ordered the helmsman to steer the steamer toward the shore, and the crew, who had been waiting in silence for the signal, moved at once to their stations along the rail.',
+   'The helmsman kept the steamer steady as the shore came into view, holding the vessel against the current that pressed her toward the bank.',
+   'The officers of the company spoke often of Marlow\u2019s reputation for steadiness, and the crew trusted his judgment in the difficult reaches of the river above the station.',
+   'The helmsman watched the shore while the steamer slowed in the current, and the mate stood ready with the anchor as the light began to fail.',
+   'An order from the bridge sent the steamer closer to the shore before dusk, and the leadsman began to call the depths as the water shoaled.'].join(' '),
+  preview:'He ordered the helmsman to steer the steamer toward the shore.'};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,
+  rescueResponder:b30RescueResponder('From'),
+  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.equal(rescueClaim.anchorFunctionWordDiscarded,true,
+  'the function-word anchor is recorded as discarded');
+ assert.equal(rescueClaim.restoredByAntecedent,true,
+  'the antecedent key ran on the claim\u2019s own candidate name');
+ assert.equal(rescueClaim.flipOutcome,'accepted');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.ok((result.trace.reviewContract.gateRestorations||[])
+  .some(entry=>entry.claimId==='P1-C1'&&entry.kind==='antecedent'&&
+   entry.reason==='source-subject-attribution-missing'),
+  'B32-8 (ii): the antecedent restoration neutralizes the subject-attribution ground at re-normalization');
+ assert.match(result.answer,/Marlow orders the helmsman/);
+});
+
+test('batch 32 B32-8 (i): the batch-31 Kierkegaard P2-C6 pair is accepted — no manufactured contradiction, voice ground suppressed',async()=>{
+ // Production shape (batch-31 SP2, P2-C6 × S5): the pair carried
+ // two grounds — the pseudonymous-voice form requirement and a
+ // subject-attribution mismatch. The mismatch's "positive
+ // contradiction" was manufactured by the extractor registering
+ // the sentence-initial preposition 'By' as the claim's subject;
+ // the reviewer's attribution (supported, to the work's
+ // pseudonymous voice) was never the contradiction the gate
+ // recorded. With function words out of the extraction, the only
+ // ground is the voice form requirement, and it is suppressed
+ // because the reviewer names the provenance voice.
+ const source={id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',
+  page:21,url:'https://example.test/kierkegaard#page=21',
+  text:'The upbuilding discourses are not sermons, since the author has no authority to preach; they are offered to the single individual, who reads them not for entertainment or aesthetic diversion but for edification in a spiritual sense, and their religious and existential writings edify the reader who receives them in faith.',
+  preview:'The upbuilding discourses are not sermons.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
+  parts:[{id:'P1',question:'How are the upbuilding discourses presented?',
+   sourceBookIds:['140'],searchQueries:['upbuilding discourses sermons'],
+   candidateSourceIds:['S1']}],queries:['upbuilding discourses sermons']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+     attributionStatus:'supported',
      subjectAttributionStatus:'supported',
-     attributedSubject}]}]})};
+     attributedSubject:'Johannes de Silentio'}]}]})};
+ };
+ const claim='By this reading, the authorship\u2019s religious and existential writings are presented as upbuilding discourses meant to edify the reader in a spiritual sense rather than as entertainment or aesthetic diversion, though de Silentio refrains from calling them sermons.';
+ const ai=batch25RouterAI({reviewResponder,
+  draftText:'PART P1\n'+claim+' [S1]'});
+ const result=await composeEvidenceAnswer(
+  'How are the upbuilding discourses presented?',
+  [source],ai,[],{plan,catalog:{...catalog,
+   '140':'Fear and Trembling — Søren Kierkegaard'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.ok((result.trace.reviewContract.gateDemotionsSuppressed||[])
+  .some(entry=>entry.reason==='pseudonymous-voice-unidentified'),
+  'the voice ground is suppressed at the gate, as in production');
+ assert.ok(!(result.trace.reviewContract.supportIssues||[])
+  .some(issue=>issue.claimId==='P1-C1'&&
+   issue.reason==='source-subject-attribution-mismatch'),
+  'no mismatch ground is manufactured from the preposition');
+ assert.match(result.answer,/upbuilding discourses meant to edify the reader/);
+});
+
+test('batch 32 B32-8 (i): a two-ground pair is suppressed as a set (the Wuthering P2-C12 shape)',async()=>{
+ // Production shape (phase-3 SP2, P2-C12 × S2): the pair carried
+ // subject-not-named (suppressed — the packet names Nelly Dean as
+ // narration subject) and a subject-attribution mismatch that
+ // STOOD, because the suppression's antecedent test never included
+ // the reviewer's attributed subject among its test names and the
+ // extractor's mention-position names (Linton, Catherine) made the
+ // mismatch read as a positive contradiction. The reviewer's
+ // 'Nelly' is the claim's own lead subject under a shorter name
+ // form — a shared name token, not a contradiction — and the same
+ // packet antecedent answers both grounds.
+ const pageText=[
+  'Catherine told me she was engaged to Edgar Linton, and she laughed when she said his fortune would raise her above the Heights and everyone in it.',
+  'She described her feelings about Heathcliff and Edgar with a strange, fierce calm, while the wind pressed hard against the windows of the sitting room.',
+  'The household settled into its evening routine, the servants banked the fires, and the dogs were chained in the yard before the light had fully gone.',
+  'Nelly Dean had kept the house at Wuthering Heights for twenty years before the new tenant arrived, and she knew every room and every habit of the family by heart.',
+  'The rain came on again before supper, drumming on the flagged roof while the cattle shifted in the byre below the hill.'].join(' ');
+ const source={id:'S1',bookId:'362',title:'Wuthering Heights — Emily Brontë',
+  page:58,url:'https://example.test/wuthering#page=58',text:pageText,
+  preview:'Catherine told me she was engaged to Edgar Linton.'};
+ const spans=buildReviewSpans('S1',pageText);
+ const acceptedSpan=spans.find(span=>span.text.includes('Catherine told me'));
+ assert.ok(acceptedSpan,'the accepted span is Nelly\u2019s unnamed narration');
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Emily Brontë',role:'primary',bookIds:['362']}],
+  parts:[{id:'P1',question:'What does Nelly Dean recount about Catherine?',
+   sourceBookIds:['362'],searchQueries:['Nelly Catherine Linton feelings'],
+   candidateSourceIds:['S1']}],queries:['Nelly Catherine Linton feelings']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[acceptedSpan.spanId],
+     attributionStatus:'supported',
+     subjectAttributionStatus:'supported',attributedSubject:'Nelly'}]}]})};
+ };
+ const claim='Nelly Dean recounts a conversation with Mr. Linton, during which Catherine describes her feelings about Heathcliff and Edgar.';
+ const ai=batch25RouterAI({reviewResponder,
+  draftText:'PART P1\n'+claim+' [S1]'});
+ const result=await composeEvidenceAnswer(
+  'What does Nelly Dean recount about Catherine?',
+  [source],ai,[],{plan,catalog:{...catalog,
+   '362':'Wuthering Heights — Emily Brontë'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true,
+  'both grounds are answered by the packet antecedent; the pair ships');
+ const suppressed=result.trace.reviewContract.gateDemotionsSuppressed||[];
+ assert.ok(suppressed.some(entry=>entry.reason==='subject-not-named-in-span'),
+  'the subject-not-named ground is suppressed');
+ assert.ok(suppressed.some(entry=>entry.reason==='source-subject-attribution-mismatch'),
+  'the mismatch ground is suppressed by the same antecedent');
+ assert.match(result.answer,/Nelly Dean recounts a conversation/);
+});
+
+test('batch 32 B32-8 (ii): a rescue flip on a subject-attribution ground is not vetoed at re-normalization (the C&P P2-C2 shape)',async()=>{
+ // Production shape (phase-3 SP2, C&P P2-C2 × S2, and the batch-31
+ // census behind it): the gate demotes on a subject-attribution
+ // ground; the rescue restores the pair (its antecedent key reads
+ // the packet's possessive narration, which the gate's stricter
+ // test cannot use); at re-normalization the SAME subject ground
+ // recomputes and vetoes the flip — the gateRestoration
+ // neutralization covered the voice and subject-not-named grounds
+ // but not this family. Batch 32 closes the parity gap.
+ const pageText=[
+  'He questioned the student about the article with a quiet, persistent curiosity, returning again and again to the theory of extraordinary men, while the student sat silent and pale before him in the small, close office.',
+  'The clerk in the corridor carried the files to the archive, and the porter swept the steps of the department as the afternoon light failed over the square.',
+  'Porfiry\u2019s questions had unsettled the student for days beforehand, and his method of quiet, persistent inquiry was known throughout the department.'].join(' ');
+ const source={id:'S1',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',
+  page:210,url:'https://example.test/crime#page=210',text:pageText,
+  preview:'He questioned the student about the article.'};
+ const spans=buildReviewSpans('S1',pageText);
+ const citedSpan=spans.find(span=>span.text.includes('He questioned the student'));
+ assert.ok(citedSpan,'the cited span presents the interrogator as "he"');
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['114']}],
+  parts:[{id:'P1',question:'In Crime and Punishment, how does Porfiry question Raskolnikov about the article?',
+   sourceBookIds:['114'],searchQueries:['Porfiry questions article'],
+   candidateSourceIds:['S1']}],queries:['Porfiry questions article']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[citedSpan.spanId]}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,
+  rescueResponder:b30RescueResponder('Porfiry'),
+  draftText:'PART P1\nPorfiry questions Raskolnikov about the article he published. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Crime and Punishment, how does Porfiry question Raskolnikov about the article?',
+  [source],ai,[],{plan,catalog:{...catalog,
+   '114':'Crime and Punishment — Fyodor Dostoevsky'},trace:true});
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.equal(rescueClaim.flipOutcome,'accepted',
+  'the restored flip survives re-normalization');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ // Path note: in this fixture the anchor validates outright (the
+ // possessive packet span names Porfiry where the rescue packet
+ // can see it), so the flip is carried by the B26-2 anchor write.
+ // The discriminating case for B32-8 (ii)'s neutralization — a
+ // restored flip carrying NO anchor write, vetoed at
+ // re-normalization by the recomputed subject-attribution ground
+ // before this batch — is the Marlow pilot above.
+ assert.match(result.answer,/Porfiry questions Raskolnikov/);
+});
+
+test('batch 32 B32-8 (iv): presence as addressee is an antecedent (the Lockwood shape)',async()=>{
+ // Production shape (phase-3 SP2, Wuthering P1): every Lockwood
+ // claim demoted subject-not-named — Lockwood is the frame
+ // narrator, named inside the packet spans only where Nelly
+ // ADDRESSES him ("Mr. Lockwood, …"), inside quoted speech the
+ // narration antecedent test strips away. Being spoken TO by name
+ // in the passage's own dialogue is presence in the evidence: the
+ // antecedent test now registers a subject named in address
+ // position (vocative / dialogue-tag addressee) as well.
+ const pageText=[
+  'I had scarcely settled in the kitchen when he appeared at the stairhead and ordered the dogs to be chained, and the housekeeper set a candle on the table and withdrew without a word to either of us.',
+  '\u201CMr. Lockwood, you must not wander on the moors after dark,\u201D said Nelly, setting down the tea; \u201Cthe mist comes on quick, and strangers lose the path before they know it.\u201D',
+  'The wind had risen by supper time, and the whole household gathered close around the fire while the rain beat steadily against the small windows of the house.'].join(' ');
+ const source={id:'S1',bookId:'362',title:'Wuthering Heights — Emily Brontë',
+  page:12,url:'https://example.test/wuthering#page=12',text:pageText,
+  preview:'I had scarcely settled in the kitchen.'};
+ const spans=buildReviewSpans('S1',pageText);
+ const acceptedSpan=spans.find(span=>span.text.includes('scarcely settled'));
+ assert.ok(acceptedSpan,'the accepted span is Lockwood\u2019s own unnamed narration');
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Emily Brontë',role:'primary',bookIds:['362']}],
+  parts:[{id:'P1',question:'What does Lockwood decide after his first evening at the Heights?',
+   sourceBookIds:['362'],searchQueries:['Lockwood evening Heights decide'],
+   candidateSourceIds:['S1']}],queries:['Lockwood evening Heights decide']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[acceptedSpan.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Lockwood'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,
+  draftText:'PART P1\nLockwood decides to leave the Heights and return to the Grange. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'What does Lockwood decide after his first evening at the Heights?',
+  [source],ai,[],{plan,catalog:{...catalog,
+   '362':'Wuthering Heights — Emily Brontë'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true,
+  'the addressee antecedent suppresses the subject-not-named demotion');
+ const suppressed=(result.trace.reviewContract.gateDemotionsSuppressed||[])
+  .find(entry=>entry.claimId==='P1-C1');
+ assert.equal(suppressed?.reason,'subject-not-named-in-span');
+ assert.equal(suppressed?.antecedentVia,'addressee',
+  'the suppression records that the antecedent was an address');
+ assert.match(result.answer,/Lockwood decides to leave the Heights/);
+});
+
+// ---------------------------------------------------------------------------
+// Batch 32 (B32-5): context-claim demotion inheritance.
+// ---------------------------------------------------------------------------
+
+const b32KaramazovSource={id:'S4',bookId:'103',
+ title:'The Brothers Karamazov — Fyodor Dostoevsky',page:311,
+ url:'https://example.test/karamazov#page=311',
+ text:'The old Inquisitor told him that the Church had corrected the work, that they were keepers of the mystery who had taken some curse upon themselves for the happiness of mankind, and that freedom had been replaced by bread and authority. "It is nothing but a lust of power, of filthy earthly gain, of domination," he said, "and the weak will bless us, for we alone can feed them and still their consciences for ever."',
+ preview:'The old Inquisitor told him that the Church had corrected the work.'};
+const b32KaramazovPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['103']}],
+ parts:[{id:'P1',question:'In The Brothers Karamazov, how does the Grand Inquisitor episode challenge Alyosha\u2019s faith?',
+  sourceBookIds:['103'],searchQueries:['Grand Inquisitor challenge faith'],
+  candidateSourceIds:['S4']}],queries:['Grand Inquisitor challenge faith']};
+const b32KaramazovCatalog={...catalog,
+ '103':'The Brothers Karamazov — Fyodor Dostoevsky'};
+// The exact production claim texts (batch-31 Dostoevsky SP2, P1):
+const b32C9Text='While Alyosha might view religious figures as conduits of grace, the Inquisitor represents a version of the Church that has taken some curse upon themselves for the happiness of mankind by replacing divine freedom with earthly domination.';
+const b32C10Text='This poses a challenge to Alyosha\u2019s monastic identity by suggesting that the institutions of faith may operate on principles of control and "lust of power" rather than pure spiritual communion.';
+// The production C5 is three sentences; the harness's draft
+// segmentation splits multi-sentence context claims per sentence,
+// and per-sentence fragments are already B7-2 rejection
+// containment's domain (its 0.5 overlap coefficient catches them —
+// verified in this fixture). The production escape was the FUSED
+// claim: one claim restating two demoted claims plus framing,
+// measuring 0.364/0.235 per-claim — under B7-2's bar. The fixture
+// therefore joins the same content into a single sentence, which
+// reproduces the production claim configuration and its measured
+// coverage (0.36 against C9).
+const b32C5Text='The challenge also touches upon the nature of those who guard the faith: Ivan questions whether the Inquisitors are keepers of the mystery who have taken a curse upon themselves for the happiness of mankind, and he asks if the Inquisitors stand for nothing more than a lust of power, of filthy earthly gain, of domination.';
+const b32C4Text='The philosophical challenge is centered on the tension between spiritual freedom and human security. The narrative suggests that because man has ceased to see signs from heaven, there is nothing left but faith in what the heart doth say.';
+function b32DostoevskyReview({acceptedCitedMarker,demotedMarkers}){
+ return ({messages})=>{
+  const payload=parsePayload(messages);
+  const byText=marker=>payload.claims.find(claim=>claim.text.includes(marker));
+  const accepted=byText(acceptedCitedMarker);
+  const contextIds=(payload.parts[0].contextClaims||[]).map(claim=>claim.claimId);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[accepted.claimId],
+   retainedContextClaimIds:contextIds}],
+   claims:payload.claims.map(claim=>demotedMarkers.some(marker=>
+     claim.text.includes(marker))?
+    {claimId:claim.claimId,status:'partial',
+     sources:[{sourceId:'S4',status:'partial',spanIds:['S4-Q1']}]}:
+    {claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S4',status:'answered',spanIds:['S4-Q1'],
+      subjectAttributionStatus:'supported',attributedSubject:'Ivan'}]})})};
  };
 }
-const b31RescueNotSupported=({messages})=>{
+
+test('batch 32 B32-5: a context claim restating gate-demoted content inherits the demotion (the batch-31 Dostoevsky shape)',async()=>{
+ // The gate demotes the sourced claims C9/C10; the context claim
+ // C5 — retained without pair audit — restates exactly their
+ // content (the keepers-of-the-mystery curse, the lust of power)
+ // and shipped it in batch 31, laundering a verified
+ // misattribution into the answer. Inheritance drops it. The two
+ // controls are the same part's other context claims: C4 (topical
+ // neighbor, measured coverage 0.045–0.176 of the demoted claims)
+ // and a restatement of the ACCEPTED claim — both ship.
+ const draft='PART P1\n'+
+  'Ivan\u2019s narrative posits that for fifteen centuries, humanity has lived without "signs from heaven," leaving nothing but faith in what the heart says. [S4]\n'+
+  b32C9Text+' [S4]\n'+b32C10Text+' [S4]\n'+b32C5Text+'\n'+b32C4Text+'\n'+
+  'Ivan\u2019s narrative adds that humanity has lived for fifteen centuries without signs from heaven, sustained only by faith in what the heart says.';
+ const ai=batch25RouterAI({
+  reviewResponder:b32DostoevskyReview({acceptedCitedMarker:'fifteen centuries, humanity has lived',
+   demotedMarkers:['conduits of grace','monastic identity']}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In The Brothers Karamazov, how does the Grand Inquisitor episode challenge Alyosha\u2019s faith?',
+  [b32KaramazovSource],ai,[],{plan:b32KaramazovPlan,
+   catalog:b32KaramazovCatalog,trace:true});
+ assert.match(result.answer,/fifteen centuries/,
+  'the accepted cited claim ships');
+ assert.doesNotMatch(result.answer,/keepers of the mystery/,
+  'the laundering context claim is dropped with its demoted content');
+ assert.match(result.answer,/ceased to see signs from heaven/,
+  'control: the low-overlap context claim ships');
+ assert.match(result.answer,/adds that humanity has lived/,
+  'control: the context claim overlapping an ACCEPTED claim ships');
+ const inherited=result.trace.contextClaimInheritsDemotion||[];
+ assert.equal(inherited.length,1);
+ assert.equal(inherited[0].partId,'P1');
+ assert.ok(inherited[0].similarity>=0.3,
+  'the recorded similarity is the C9 coverage (production: 0.364)');
+ const contextIds=result.trace.reviewContract.reviewDecisions
+  .filter(d=>d.contextOnly).map(d=>d.claimId);
+ assert.ok(contextIds.includes(inherited[0].contextClaimId),
+  'the dropped claim is the shipped context claim');
+});
+
+test('batch 32 B32-5: the coverage exception — demoted content independently covered by an accepted sourced claim keeps the context claim',async()=>{
+ // Same laundering overlap (C5 covers 0.235 of the demoted C10),
+ // but here an ACCEPTED sourced claim independently states the
+ // demoted content (the institutions-of-faith passage, cited and
+ // pair-audited): the substance ships cited, so the context
+ // restatement is redundant rather than laundering, and it stays.
+ const draft='PART P1\n'+
+  'The institutions of faith may operate on principles of control and a lust of power rather than pure spiritual communion, whatever their keepers profess. [S4]\n'+
+  b32C10Text+' [S4]\n'+b32C5Text;
+ const ai=batch25RouterAI({
+  reviewResponder:b32DostoevskyReview({acceptedCitedMarker:'whatever their keepers profess',
+   demotedMarkers:['monastic identity']}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In The Brothers Karamazov, how does the Grand Inquisitor episode challenge Alyosha\u2019s faith?',
+  [b32KaramazovSource],ai,[],{plan:b32KaramazovPlan,
+   catalog:b32KaramazovCatalog,trace:true});
+ assert.match(result.answer,/keepers of the mystery/,
+  'the context claim ships under the coverage exception');
+ assert.equal(result.trace.contextClaimInheritsDemotion,undefined,
+  'no inheritance is recorded when the exception applies');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 32 (B32-9): review-contract degradation.
+// ---------------------------------------------------------------------------
+
+test('batch 32 B32-9: a contract-incomplete part degrades instead of suppressing the whole answer (the Solitude AP1 shape)',async()=>{
+ // Phase-3 baseline, Solitude AP1: two parts; P2's review returned
+ // but its contract was incomplete (invalid-status +
+ // missing-part-decision in the production trace), and the whole
+ // build — including P1's sound, fully reviewed draft — was
+ // suppressed ('suppressed-not-strict-minority'). The degraded
+ // part now ships nothing and is named; the reviewed part ships.
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant treats causality as a category of relation and a pure conception of the understanding. [S2]';
+ const dispatchReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  if(payload.parts[0].partId==='P2')
+   // The production defect verbatim in shape: P2's entry is
+   // SUPPLIED but its status is not a recognized one ('answers'),
+   // so normalizeReview records 'invalid-status' and the part's
+   // contract never engages. (B8-5's different shape — a valid
+   // entry with SOME claim decisions supplied, a partially
+   // fulfilled contract — is deliberately NOT degraded; in a tie
+   // it keeps the batch-8 suppression.)
+   return {response:JSON.stringify({parts:[{partId:'P2',status:'answers',
+    answerStatus:'answered',directAnswerClaimIds:[],retainedContextClaimIds:[]}],
+    claims:[]})};
+  return review([['P1','answered'],['P2','answered']])(_model,{messages});
+ };
+ const ai=makeAI([answer(draft),dispatchReviewer,dispatchReviewer]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant explain causality?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:{...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)},
+   catalog,trace:true});
+ assert.notEqual(result.outcome,'generation-failed',
+  'the build ships on the reviewed part');
+ assert.match(result.answer,/Hume explains causal expectation through custom/,
+  'the reviewed part\u2019s cited text ships');
+ assert.doesNotMatch(result.answer,/Kant treats causality as a category/,
+  'no claims ship from the degraded part');
+ assert.deepEqual(result.trace.reviewContractDegradedParts,['P2'],
+  'the degradation is traced');
+ assert.deepEqual(result.trace.reviewCompletion,
+  {totalParts:2,unvalidatedPartIds:['P2'],disposition:'degraded-parts'});
+ assert.deepEqual(result.trace.reviewContract.failedParts,
+  [{partId:'P2',code:'review-contract-incomplete'}]);
+ assert.match(result.missing,/Kant/,
+  'the degraded part is named in the missing segments');
+ const kantPart=result.questionParts.find(part=>part.partId==='P2');
+ assert.equal(kantPart.answerStatus,'unanswered');
+ assert.deepEqual(kantPart.claimIds,[]);
+});
+
+test('batch 32 B32-9: when every part\u2019s contract is incomplete the build still fails',async()=>{
+ // Degradation never manufactures an answer from nothing
+ // reviewed: with no validated part, the review failure stands
+ // exactly as before.
+ const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
+  'PART P2\nKant treats causality as a category of relation and a pure conception of the understanding. [S2]';
+ const dispatchReviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const partId=payload.parts[0].partId;
+  return {response:JSON.stringify({parts:[{partId,status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[],retainedContextClaimIds:[]}],
+   claims:[]})};
+ };
+ const ai=makeAI([answer(draft),dispatchReviewer,dispatchReviewer]);
+ const result=await composeEvidenceAnswer('How do Hume and Kant explain causality?',
+  [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
+  {plan:{...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)},
+   catalog,trace:true});
+ assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.failureCode,'review-contract-incomplete');
+ assert.equal(result.trace.reviewContractDegradedParts,undefined,
+  'no degradation is recorded when nothing validated');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 32 (B32-10): letter-byline direction + quote rebind.
+// ---------------------------------------------------------------------------
+
+const b32LetterSource={id:'S5',bookId:'45',
+ title:'Letters — Marcus Tullius Cicero',page:112,
+ url:'https://example.test/cicero#page=112',
+ text:'Servius Sulpicius To Cicero (At Astura, 5 March). My dear Cicero, I was as much grieved as you could be at the death of Tullia, and I write to urge that the magnitude of a loss should be measured by what it deprives someone of, not merely by its objective importance, for time itself consoles what reason cannot.',
+ preview:'Servius Sulpicius To Cicero (At Astura, 5 March).'};
+const b32LetterPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Marcus Tullius Cicero',role:'primary',bookIds:['45']}],
+ parts:[{id:'P1',question:'How is the magnitude of a loss presented in the letter?',
+  sourceBookIds:['45'],searchQueries:['letter magnitude of a loss'],
+  candidateSourceIds:['S5']}],queries:['letter magnitude of a loss']};
+function b32LetterReview(attributedSubject){
+ return ({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  const spans=buildReviewSpans('S5',b32LetterSource.text);
+  const spanId=spans.find(span=>span.text.includes('magnitude of a loss')).spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S5',status:'answered',spanIds:[spanId],
+     attributionStatus:'supported',
+     subjectAttributionStatus:'supported',attributedSubject}]}]})};
+ };
+}
+const b32RescueNotSupported=({messages})=>{
  const payload=JSON.parse(messages[1].content);
  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
@@ -10067,92 +10632,105 @@ const b31RescueNotSupported=({messages})=>{
   elements:[{element:item.claimText,stated:false}]}))})};
 };
 
-test('batch 31 B31-3: the batch-30 Dostoevsky claim is demoted — its quoted judgments are Ivan\u2019s dialogue, not Alyosha\u2019s',async()=>{
- // Pilot (i), the pre-registered catch. The claim credits Alyosha
- // with viewing the poem as "senseless" or "ridiculous"; in the
- // accepted spans "ridiculous" occurs inside Ivan's dialogue, Ivan
- // is dialogue-tagged twice ("laughed Ivan", "smiled Ivan"), and
- // Alyosha is dialogue-tagged nowhere in the accepted set (the
- // page's "said Alyosha" line is a span the reviewer did NOT
- // accept, exactly as in production). Ordinary review accepted
- // this pair in batch 30 and the misattribution shipped.
- const spans=buildReviewSpans('S1',b31KaramazovText);
- const acceptedSpanIds=spans
-  .filter(span=>span.text.includes('laughed Ivan')||
-   span.text.includes('smiled Ivan')||span.text.includes('ridiculous'))
-  .map(span=>span.spanId);
- assert.equal(acceptedSpanIds.length,3,
-  'the accepted set is the production trio: two Ivan-tagged spans and the quoted judgment');
- assert.ok(!spans.find(span=>span.text.includes('said Alyosha')&&
-  acceptedSpanIds.includes(span.spanId)),
-  'the Alyosha-tagged span is not accepted, as in production');
- const claim='While Alyosha views the poem as a "senseless" or "ridiculous" literary creation, he is visibly moved and "mournfully" affected by its heavy implications.';
+test('batch 32 B32-10 (a): a claim crediting the letter\u2019s recipient with its content demotes (the Sulpicius\u2192Cicero shape)',async()=>{
+ // Phase-3 Death AP2: the answer credited Cicero with the content
+ // of Sulpicius's letter TO him, and shipped — the reviewer's own
+ // boundary named the true direction and no layer read the page's
+ // byline. The byline is deterministic: sender Servius Sulpicius,
+ // recipient Cicero. A claim framing Cicero as the writing/
+ // suggesting author of the letter's content demotes.
+ const claim='Marcus Tullius Cicero, writing to a grieving friend, suggests that the magnitude of a loss should be measured by what it deprives someone of, not merely by its objective importance.';
  const ai=batch25RouterAI({
-  reviewResponder:b31KaramazovReview(acceptedSpanIds,'Alyosha'),
-  rescueResponder:b31RescueNotSupported,
-  draftText:'PART P1\n'+claim+' [S1]'});
+  reviewResponder:b32LetterReview('Marcus Tullius Cicero'),
+  rescueResponder:b32RescueNotSupported,
+  draftText:'PART P1\n'+claim+' [S5]'});
  const result=await composeEvidenceAnswer(
-  'How does the Grand Inquisitor episode challenge faith?',
-  [b31KaramazovSource],ai,[],{plan:b31KaramazovPlan,
-   catalog:b31KaramazovCatalog,trace:true});
+  'How is the magnitude of a loss presented in the letter?',
+  [b32LetterSource],ai,[],{plan:b32LetterPlan,
+   catalog:{...catalog,'45':'Letters — Marcus Tullius Cicero'},trace:true});
  const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,false);
- assert.equal(decision.validationReason,
-  'quoted-speech-attributed-to-other-speaker');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.claimId==='P1-C1'&&issue.sourceId==='S1'&&
-  issue.reason==='quoted-speech-attributed-to-other-speaker'));
- assert.doesNotMatch(result.answer,/visibly moved/,
-  'the compound claim no longer ships on this pair');
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S5');
+ assert.equal(decision.accepted,false,
+  'the recipient-as-author claim is demoted');
+ assert.equal(decision.validationReason,'source-attribution-speaker-mismatch');
+ const issue=result.trace.reviewContract.supportIssues
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S5'&&
+   entry.letterBylineDirection);
+ assert.deepEqual(issue?.letterBylineDirection,
+  {sender:'Servius Sulpicius',recipient:'Cicero'},
+  'the demotion records the byline direction it read');
+ assert.doesNotMatch(result.answer,/magnitude of a loss should be measured/);
 });
 
-test('batch 31 B31-3 control: a claim quoting its true subject\u2019s words, with that subject\u2019s dialogue tag in the accepted spans, is untouched',async()=>{
- // Pilot (ii): the same "ridiculous" quotation, now claimed as
- // Ivan's — and Ivan IS dialogue-tagged in the accepted spans, so
- // the guard acquits the pair and ordinary review decides it.
- const spans=buildReviewSpans('S1',b31KaramazovText);
- const acceptedSpanIds=spans
-  .filter(span=>span.text.includes('laughed Ivan')||
-   span.text.includes('ridiculous'))
-  .map(span=>span.spanId);
+test('batch 32 B32-10 (a) control: a claim crediting the letter\u2019s sender ships',async()=>{
+ const claim='Servius Sulpicius, writing to Cicero, suggests that the magnitude of a loss should be measured by what it deprives someone of, not merely by its objective importance.';
  const ai=batch25RouterAI({
-  reviewResponder:b31KaramazovReview(acceptedSpanIds,'Ivan'),
-  draftText:'PART P1\nIvan calls his poem a "ridiculous" thing, but he insists on telling it to Alyosha. [S1]'});
+  reviewResponder:b32LetterReview('Servius Sulpicius'),
+  draftText:'PART P1\n'+claim+' [S5]'});
  const result=await composeEvidenceAnswer(
-  'How does Ivan present his poem to Alyosha?',
-  [b31KaramazovSource],ai,[],{plan:b31KaramazovPlan,
-   catalog:b31KaramazovCatalog,trace:true});
+  'How is the magnitude of a loss presented in the letter?',
+  [b32LetterSource],ai,[],{plan:b32LetterPlan,
+   catalog:{...catalog,'45':'Letters — Marcus Tullius Cicero'},trace:true});
  const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='quoted-speech-attributed-to-other-speaker'));
- assert.match(result.answer,/ridiculous/);
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S5');
+ assert.equal(decision.accepted,true,
+  'crediting the sender is the letter\u2019s true direction');
+ assert.match(result.answer,/magnitude of a loss should be measured/);
 });
 
-test('batch 31 B31-3 control: a quoted phrase with no dialogue attribution in the accepted spans is untouched',async()=>{
- // Pilot (iii): fail-closed means positive evidence only. The
- // accepted set here is the single "ridiculous" span, which
- // carries no dialogue tag at all, so the guard has nothing to
- // fire on and the reviewer's acceptance stands — the guard adds
- // a catch, it does not widen absence-based demotion.
- const spans=buildReviewSpans('S1',b31KaramazovText);
- const acceptedSpanIds=spans
-  .filter(span=>span.text.includes('ridiculous'))
-  .map(span=>span.spanId);
- assert.equal(acceptedSpanIds.length,1);
- const ai=batch25RouterAI({
-  reviewResponder:b31KaramazovReview(acceptedSpanIds,'Alyosha'),
-  draftText:'PART P1\nAlyosha views the poem as a "ridiculous" literary creation and is visibly moved by it. [S1]'});
+test('batch 32 B32-10 (b): a quote bound to the wrong source is rebound to the source that holds it verbatim (the "evils and vices" shape)',async()=>{
+ // Batch-31 Suffering AP1 died whole (answer-final-integrity-
+ // failed) over this configuration: the claim quotes "evils and
+ // vices" and cites S3, whose text does not contain the phrase;
+ // S1 — an accepted source of the same part — holds it verbatim.
+ // The rebind moves the citation group to the holding source and
+ // the answer ships instead of suppressing.
+ const s1={id:'S1',bookId:'50',title:'On the Shortness of Life — Seneca',
+  page:9,url:'https://example.test/seneca#page=9',
+  text:'The soul\u2019s proper dignity is diminished by the evils and vices that corrupt it, and a man who guards his time keeps that dignity whole against the theft of empty business.',
+  preview:'The soul\u2019s proper dignity is diminished by the evils and vices.'};
+ const s3={id:'S3',bookId:'51',title:'Letters — Seneca',
+  page:31,url:'https://example.test/seneca-letters#page=31',
+  text:'A man who guards his time keeps his dignity whole, and the theft of empty business is the basest of all thefts, for it takes what can never be restored to him.',
+  preview:'A man who guards his time keeps his dignity whole.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Seneca',role:'primary',bookIds:['50','51']}],
+  parts:[{id:'P1',question:'How does Seneca describe what corrupts the soul?',
+   sourceBookIds:['50','51'],searchQueries:['Seneca evils vices soul'],
+   candidateSourceIds:['S1','S3']}],queries:['Seneca evils vices soul']};
+ // The production configuration: the DRAFT cites both sources
+ // (the check-stage audit passes — S1 holds the quote), and the
+ // review accepts only S3's pair, so the rendered citation group
+ // narrows to [S3] and the final audit is the first layer to see
+ // the mis-binding.
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>{
+     if(claim.text.includes('evils and vices')&&sourceId==='S1')
+      return {sourceId,status:'partial',spanIds:['S1-Q1']};
+     return {sourceId,status:'answered',spanIds:[sourceId+'-Q1'],
+      subjectAttributionStatus:'supported',attributedSubject:'Seneca'};
+    })}))})};
+ };
+ const draft='PART P1\nSeneca describes the soul\u2019s proper dignity at length. [S1]\n'+
+  'The passage calls them "evils and vices" that corrupt the soul. [S1, S3]';
+ const ai=batch25RouterAI({reviewResponder,draftText:draft});
  const result=await composeEvidenceAnswer(
-  'How does Ivan present his poem to Alyosha?',
-  [b31KaramazovSource],ai,[],{plan:b31KaramazovPlan,
-   catalog:b31KaramazovCatalog,trace:true});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='quoted-speech-attributed-to-other-speaker'));
- assert.match(result.answer,/visibly moved by it/);
+  'How does Seneca describe what corrupts the soul?',
+  [s1,s3],ai,[],{plan,catalog:{...catalog,'50':'On the Shortness of Life — Seneca',
+   '51':'Letters — Seneca'},trace:true});
+ assert.notEqual(result.outcome,'generation-failed',
+  'the answer ships after the rebind instead of suppressing whole');
+ assert.match(result.answer,/"evils and vices" that corrupt the soul\. \[S1\]/,
+  'the quote\u2019s citation group now names the holding source');
+ const rebinds=result.trace.final.quoteRebinds||[];
+ assert.equal(rebinds.length,1);
+ assert.equal(rebinds[0].toSourceId,'S1');
+ assert.deepEqual(rebinds[0].fromSourceIds,['S3']);
+ assert.equal(rebinds[0].mode,'replace');
 });
