@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimPersonSubjects,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,normalizeClaimClauseDecisions,claimPossessiveOnlySubjects} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,derivePartContract,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimPersonSubjects,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,normalizeClaimClauseDecisions,claimPossessiveOnlySubjects} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
 import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims} from './evidence-answer.mjs';
@@ -9082,4 +9082,544 @@ test('batch 29 B29-4: a streaming compose deadline suppression is counted on the
  assert.equal(result.trace.composeRetry,undefined,
   'the suppression itself is unchanged: no in-build compose retry ran');
  assert.equal(calls,2,'one compose call per whole-build attempt, no in-build retry');
+});
+
+test('batch 30 split-on-timeout: a timed-out monolithic review retries as two claim halves',async()=>{
+ const sentences=Array.from({length:6},(_,index)=>
+  `Hume point ${index+1} links necessity to custom and regular conjunction. [S1]`);
+ const calls=[];
+ let reviewAttempts=0;
+ const ai={calls,run:async(model,request)=>{
+  calls.push({model,request});
+  const system=String(request?.messages?.[0]?.content||'');
+  if(system.startsWith('Answer the reader'))
+   return answer('PART P1\n'+sentences.join(' '));
+  if(system.startsWith('Review the complete answer')){
+   reviewAttempts++;
+   if(reviewAttempts===1)throw Object.assign(new Error('Inference deadline exceeded'),
+    {code:'inference-deadline-exceeded',stage:'review'});
+   const payload=parsePayload(request.messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:[payload.claims[0].claimId],retainedContextClaimIds:[]}],
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
+      subjectAttributionStatus:'supported',attributedSubject:'Hume'}))}))})};
+  }
+  throw new Error('unexpected stage in split-on-timeout fixture: '+system.slice(0,40));
+ }};
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft',
+  'the part completes through the split retry and the answer ships');
+ const reviewCalls=calls.filter(call=>
+  String(call.request.messages[0].content).startsWith('Review the complete answer'));
+ assert.equal(reviewCalls.length,3,'the timed-out attempt plus two half reviews');
+ const halfClaimSets=reviewCalls.slice(1).map(call=>
+  JSON.parse(call.request.messages[1].content).claims.map(claim=>claim.claimId));
+ assert.deepEqual(halfClaimSets.map(set=>set.length),[3,3]);
+ assert.deepEqual(new Set(halfClaimSets.flat()).size,6,
+  'the halves are disjoint and together cover every claim of the part');
+ const accepted=result.trace.reviewContract.reviewDecisions
+  .filter(decision=>decision.accepted===true);
+ assert.equal(accepted.length,6,'merged half verdicts cover every claim');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,mode:'review-only',
+  reason:'inference-deadline-exceeded',applied:true,outcome:'recovered',
+  parts:[{partId:'P1',reason:'inference-deadline-exceeded',applied:true,
+   mode:'review-only',samePacket:false,splitRetry:true,outcome:'recovered'}]},
+  'the retry is recorded as a split retry, not a same-packet resend');
+});
+
+test('batch 30 split-on-timeout halves partition an odd claim set without loss or duplication',async()=>{
+ const sentences=Array.from({length:7},(_,index)=>
+  `Hume point ${index+1} links necessity to custom and regular conjunction. [S1]`);
+ const calls=[];
+ let reviewAttempts=0;
+ const ai={calls,run:async(model,request)=>{
+  calls.push({model,request});
+  const system=String(request?.messages?.[0]?.content||'');
+  if(system.startsWith('Answer the reader'))
+   return answer('PART P1\n'+sentences.join(' '));
+  if(system.startsWith('Review the complete answer')){
+   reviewAttempts++;
+   if(reviewAttempts===1)throw Object.assign(new Error('Inference deadline exceeded'),
+    {code:'inference-deadline-exceeded',stage:'review'});
+   const payload=parsePayload(request.messages);
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:[payload.claims[0].claimId],retainedContextClaimIds:[]}],
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
+      subjectAttributionStatus:'supported',attributedSubject:'Hume'}))}))})};
+  }
+  throw new Error('unexpected stage in split partition fixture: '+system.slice(0,40));
+ }};
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ const reviewCalls=calls.filter(call=>
+  String(call.request.messages[0].content).startsWith('Review the complete answer'));
+ const firstPayload=JSON.parse(reviewCalls[0].request.messages[1].content);
+ const allClaimIds=firstPayload.claims.map(claim=>claim.claimId);
+ assert.equal(allClaimIds.length,7);
+ const halfClaimSets=reviewCalls.slice(1).map(call=>
+  JSON.parse(call.request.messages[1].content).claims.map(claim=>claim.claimId));
+ assert.deepEqual(halfClaimSets.map(set=>set.length),[4,3],
+  'the split takes the ceiling half first');
+ assert.deepEqual([...halfClaimSets.flat()].sort(),[...allClaimIds].sort(),
+  'the halves partition the part\u2019s claims exactly');
+ assert.equal(result.outcome,'verified-source-draft');
+});
+
+test('batch 30 inference call records carry kind and claimCount',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true,transportDiagnostics:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.ok(Array.isArray(result.trace.inferenceCalls)&&result.trace.inferenceCalls.length>=2);
+ for(const call of result.trace.inferenceCalls){
+  assert.ok('kind' in call,'every call record names its kind');
+  assert.ok('claimCount' in call,'every call record carries a claimCount field');
+ }
+ const composeCall=result.trace.inferenceCalls.find(call=>call.stage==='compose');
+ assert.equal(composeCall.kind,'initial');
+ assert.equal(composeCall.claimCount,null,'composition judges no claim list');
+ const reviewCall=result.trace.inferenceCalls.find(call=>call.stage==='review');
+ assert.equal(reviewCall.kind,'initial');
+ assert.equal(reviewCall.claimCount,1,'the review record counts the claims it judged');
+});
+
+test('batch 30 B30-2: two flipped parts in one build both ship after per-part re-normalization',async()=>{
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
+    searchQueries:['Hume necessity custom'],candidateSourceIds:['S1'],
+    requirements:[{id:'P1-R1',text:'Explain the role of custom in causal inference.'}]},
+   {id:'P2',question:'How does Kant explain causality?',sourceBookIds:['40'],
+    searchQueries:['Kant causality category'],candidateSourceIds:['S2'],
+    requirements:[{id:'P2-R1',text:'Explain causality as a category of the understanding.'}]}],
+  queries:['Hume necessity custom','Kant causality category']};
+ const draftText='PART P1\nHume says custom operates on the imagination. [S1]\n'+
+  'PART P2\nKant says causality is a category of the understanding. [S2]';
+ const subjects={P1:'Hume',P2:'Kant'};
+ const reviewResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  const part=payload.parts[0];
+  const requirement=part.requirements[0];
+  return {response:JSON.stringify({parts:[{partId:part.partId,
+    status:'partial',answerStatus:'partial',
+    directAnswerClaimIds:[payload.claims[0].claimId],retainedContextClaimIds:[],
+    requirementCoverage:[{requirementId:requirement.id,status:'partial',
+     answerClaimIds:[payload.claims[0].claimId]}]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'partial',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'partial',
+     spanIds:[sourceId+'-Q1'],subjectAttributionStatus:'supported',
+     attributedSubject:subjects[part.partId]}))}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:rescueSupportedResponder,
+  draftText});
+ const sources=[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}];
+ const result=await composeEvidenceAnswer(
+  'How do Hume and Kant each explain causal necessity?',sources,ai,[],
+  {plan,catalog,trace:true});
+ assert.equal(result.trace.rescueReview.parts.length,2,
+  'both source-required parts entered the rescue');
+ assert.deepEqual(result.trace.rescueReview.parts.map(entry=>entry.flipped),[1,1],
+  'each part flipped one claim through its own rescue iteration');
+ assert.match(result.answer,/custom operates on the imagination/,
+  'the first part\u2019s flip survived the second part\u2019s re-normalization');
+ assert.match(result.answer,/category of the understanding/,
+  'the second part\u2019s flip shipped too');
+ assert.match(result.answer,/\[S1\]/);
+ assert.match(result.answer,/\[S2\]/);
+ assert.deepEqual(result.trace.contractRecompute.parts.map(entry=>entry.partId),
+  ['P1','P2'],'both rescued contracts were recomputed');
+ for(const partId of ['P1','P2']){
+  const decision=result.trace.reviewContract.reviewDecisions
+   .find(item=>item.partId===partId);
+  assert.equal(decision.accepted,true,partId+' ends accepted in the merged review');
+ }
+});
+
+test('batch 30 B30-2: derivePartContract composes coverage and status derivation',()=>{
+ const answered=derivePartContract({reviewerStatus:'answered',
+  reviewerAnswerStatus:'answered',directAnswerIds:['P1-C1'],
+  invalidDirectAnswerClaimIds:[],acceptedClaimIds:['P1-C1','P1-C2'],
+  acceptedCount:2,requirementCoverage:[{requirementId:'P1-R1',
+   status:'answered',answerClaimIds:['P1-C1']}],comparisonComplete:true});
+ assert.equal(answered.directAnswerCovered,true);
+ assert.deepEqual(answered.acceptedDirectAnswerIds,['P1-C1']);
+ assert.equal(answered.requirementsComplete,true);
+ assert.equal(answered.status,'answered');
+ assert.equal(answered.answerStatus,'answered');
+ const stranded=derivePartContract({reviewerStatus:'answered',
+  reviewerAnswerStatus:'answered',directAnswerIds:['P1-C1'],
+  invalidDirectAnswerClaimIds:[],acceptedClaimIds:['P1-C2'],
+  acceptedCount:1,requirementCoverage:[{requirementId:'P1-R1',
+   status:'partial',answerClaimIds:[]}],comparisonComplete:true});
+ assert.equal(stranded.directAnswerCovered,false,
+  'a direct-answer claim that did not survive is not covered');
+ assert.equal(stranded.status,'partial');
+ assert.equal(stranded.answerStatus,'partial');
+ const noRequirements=derivePartContract({reviewerStatus:'answered',
+  reviewerAnswerStatus:'answered',directAnswerIds:['P1-C1'],
+  invalidDirectAnswerClaimIds:[],acceptedClaimIds:['P1-C1'],acceptedCount:1});
+ assert.equal(noRequirements.requirementsComplete,undefined,
+  'no coverage supplied, no completeness verdict recorded');
+ assert.equal(noRequirements.status,'answered',
+  'absent requirements never demote the part');
+});
+
+test('batch 30 B30-3: nested attribution registers both the reporter and the reported subject',()=>{
+ // The two exact batch-29 Ambition claims whose F3 vetoes were false.
+ assert.deepEqual(claimPersonSubjects(
+  'For example, Emerson observes that the writer Bulwer is an industrious author whose romances "tend to fan" the "worldly ambition of the student" by treating intellect as a mere tool for temporal success.'),
+  ['Emerson','Bulwer']);
+ assert.deepEqual(claimPersonSubjects(
+  'Emerson points out that in some literary universes, such as those explored by Thackeray, there is no "allowance" for ideals; instead, characters and readers must "renounce ideals, and accept London".'),
+  ['Emerson','Thackeray']);
+ // Other reporting-frame shapes: subordinate subject behind a verb of
+ // saying, a possessive report noun, and an according-to frame.
+ assert.deepEqual(claimPersonSubjects(
+  'Emerson describes how the writer Carlyle sees history as the biography of great men.'),
+  ['Emerson','Carlyle']);
+ assert.deepEqual(claimPersonSubjects(
+  'Emerson\u2019s account of Bulwer presents the novelist as a warning about worldly ambition.'),
+  ['Emerson','Bulwer']);
+ assert.deepEqual(claimPersonSubjects(
+  'According to Emerson, Bulwer treats intellect as a tool for temporal success.'),
+  ['Bulwer','Emerson']);
+ // No reporting link, no registration: the second name is a plain
+ // object of the first name's action and stays unregistered, exactly
+ // as before this batch.
+ assert.deepEqual(claimPersonSubjects('Marlow met Kurtz at the outer station and spoke with him.'),
+  ['Marlow']);
+ assert.deepEqual(claimPersonSubjects('Emerson wrote essays about nature and the conduct of life.'),
+  ['Emerson']);
+ // Batch-27/29 baselines are unchanged.
+ assert.deepEqual(claimPersonSubjects('Kurtz sat at the head of an immense round table.'),
+  ['Kurtz']);
+ assert.deepEqual(claimPossessiveOnlySubjects(
+  'The glamour of his approach seems to envelop Kurtz\u2019s destitution and loneliness.'),
+  ['Kurtz']);
+ assert.deepEqual(claimPersonSubjects(
+  'Hamlet\u2019s conscience weakens resolution and turns enterprise sickly.'),[]);
+});
+
+test('batch 30 B30-3: a claim attributed by the reviewer to the reported subject is accepted',async()=>{
+ const emerson={id:'S1',bookId:'77',title:'Essays — Ralph Waldo Emerson',page:12,
+  url:'https://example.test/emerson#page=12',
+  text:'The writer Bulwer is an industrious author whose romances tend to fan the worldly ambition of the student, treating intellect as a mere tool for temporal success.',
+  preview:'The writer Bulwer is an industrious author whose romances tend to fan worldly ambition.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Ralph Waldo Emerson',role:'primary',bookIds:['77']}],
+  parts:[{id:'P1',question:'How is ambition portrayed in the library\u2019s novels?',
+   sourceBookIds:['77'],searchQueries:['ambition novels portrayal'],candidateSourceIds:['S1']}],
+  queries:['ambition novels portrayal']};
+ const claimText='For example, Emerson observes that the writer Bulwer is an industrious author whose romances "tend to fan" the "worldly ambition of the student" by treating intellect as a mere tool for temporal success.';
+ const ai={calls:[],run:async(_model,{messages})=>{
+  const system=String(messages[0].content);
+  if(system.startsWith('Answer the reader'))
+   return answer('PART P1\n'+claimText+' [S1]');
+  if(system.startsWith('Review the complete answer')){
+   const payload=parsePayload(messages);
+   const claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+    retainedContextClaimIds:[]}],
+    claims:[{claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+      subjectAttributionStatus:'supported',attributedSubject:'Bulwer',
+      attributionStatus:'supported',attributedSpeaker:'Emerson'}]}]})};
+  }
+  throw new Error('unexpected stage in nested-attribution fixture');
+ }};
+ const result=await composeEvidenceAnswer(
+  'How is ambition portrayed in the library\u2019s novels?',[emerson],ai,[],
+  {plan,catalog:{'77':'Essays — Ralph Waldo Emerson'},trace:true});
+ assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='source-subject-attribution-mismatch'),
+  'no F3 mismatch: the reported subject is now a registered claim target');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/Bulwer is an industrious author/);
+});
+
+// ---------------------------------------------------------------------------
+// Batch 30 (B30-4): two-key restoration at re-normalization.
+// ---------------------------------------------------------------------------
+
+const b30ConradPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Joseph Conrad',role:'primary',bookIds:['315']}],
+ parts:[{id:'P1',question:'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
+  sourceBookIds:['315'],searchQueries:['Marlow steamer shore'],candidateSourceIds:['S1']}],
+ queries:['Marlow steamer shore']};
+const b30ConradCatalog={...catalog,'315':'Heart of Darkness — Joseph Conrad'};
+
+function b30ReviewResponder({attributedSubject,spanId}) {
+ return ({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
+     subjectAttributionStatus:'supported',attributedSubject}]}]})};
+ };
+}
+function b30RescueResponder(anchor){
+ return ({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
+   fragment:item.spans[0].text,
+   elements:[{element:item.claimText,stated:true}],anchor}))})};
+ };
+}
+
+test('batch 30 B30-4: a narration antecedent in the packet restores a pronoun-span claim',async()=>{
+ // Marlow shape (batch 29's dominant false-demotion family): the
+ // cited span presents the actor only as "He"; the packet's own
+ // narration names Marlow as subject in another span of the same
+ // source — outside the pair's hint spans, so the B26-2 anchor
+ // validation cannot see it, but the antecedent key can.
+ const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:44,url:'https://example.test/conrad#page=44',
+  text:['He ordered the helmsman to steer the steamer toward the shore, and the crew, who had been waiting in silence for the signal, moved at once to their stations along the rail.',
+   'The helmsman kept the steamer steady as the shore came into view, holding the vessel against the current that pressed her toward the bank.',
+   'An order from the bridge sent the steamer closer to the shore before dusk, and the leadsman began to call the depths as the water shoaled.',
+   'The helmsman watched the shore while the steamer slowed in the current, and the mate stood ready with the anchor as the light began to fail.',
+   'Marlow had taken command of the steamer only that morning, after the manager\u2019s sudden illness left the vessel without a captain for the voyage upriver.'].join(' '),
+  preview:'He ordered the helmsman to steer the steamer toward the shore.'};
+ const ai=batch25RouterAI({
+  reviewResponder:b30ReviewResponder({attributedSubject:'Marlow',spanId:'S1-Q1'}),
+  rescueResponder:b30RescueResponder('Marlow'),
+  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.equal(rescueClaim.restoredByAntecedent,true,
+  'the rescue verdict records the antecedent restoration');
+ assert.equal(rescueClaim.flipOutcome,'accepted');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.equal(decision.gateRestoration,'antecedent');
+ assert.deepEqual(result.trace.reviewContract.gateRestorations,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',kind:'antecedent',
+   reason:'subject-not-named-in-span'}]);
+ assert.match(result.answer,/Marlow orders the helmsman/);
+});
+
+test('batch 30 B30-4: a subject named only inside quoted speech is not an antecedent',async()=>{
+ // Trait shape (batch 28's shipped misattribution): the packet names
+ // Kurtz only inside quoted speech in the source's spans. Stripping
+ // the quotations leaves no narration antecedent, so the pair stays
+ // held even though the rescue judges it supported.
+ const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:87,url:'https://example.test/conrad#page=87',
+  text:['He swayed the men around him with an unreflecting audacity, and even the oldest hands on the station found themselves listening for his step in the corridor outside.',
+   'The men around the station repeated the story of his audacity for weeks, telling it in the evenings when the work was done and the lamps were lit in the mess room.',
+   'His audacity impressed the men who traded at the post, though none of them could have said what it was about the man that held their attention so completely.',
+   'The men said his audacity had swayed the whole camp by winter, and the story grew with every telling until it bore little resemblance to the thing itself.',
+   'The manager read the letter aloud to the assembled clerks: \u201CKurtz has arrived at the inner station, and Kurtz will take charge of the ivory trade from this season onward.\u201D',
+   'A clerk copied the note into the station log that same evening: "Kurtz remains at the inner station, where Kurtz directs the collection of ivory for the company."'].join(' '),
+  preview:'He swayed the men around him with an unreflecting audacity.'};
+ const ai=batch25RouterAI({
+  reviewResponder:b30ReviewResponder({attributedSubject:'Kurtz',spanId:'S1-Q1'}),
+  rescueResponder:b30RescueResponder('Kurtz'),
+  draftText:'PART P1\nKurtz swayed the men around him with an unreflecting audacity. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, how does Kurtz influence the men around him?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.equal(rescueClaim.attributionHeld,true,
+  'no narration antecedent: the pair stays held');
+ assert.equal(rescueClaim.restoredByAntecedent,undefined);
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,false);
+ assert.equal(result.trace.reviewContract.gateRestorations,undefined);
+ assert.doesNotMatch(result.answer,/Kurtz swayed the men/);
+});
+
+test('batch 30 B30-4: the provenance voice restores a pseudonymous-voice demotion',async()=>{
+ // Voice shape (batch 29, Kierkegaard SP1): the claim names no one,
+ // the packet spans name no one, and the reviewer-side demotion is
+ // the pseudonymous-voice form requirement. The rescue attributes
+ // the pair to the work's provenance voice — the voice key.
+ const source={id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',
+  page:32,url:'https://example.test/kierkegaard#page=32',
+  text:'Faith is a relation to God that rests on the absurd. It cannot be mediated by the universal, and the single individual stands higher than the universal.',
+  preview:'Faith is a relation to God that rests on the absurd.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
+  parts:[{id:'P1',question:'What does Fear and Trembling say about faith?',
+   sourceBookIds:['140'],searchQueries:['Fear and Trembling faith'],
+   candidateSourceIds:['S1']}],queries:['Fear and Trembling faith']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,
+  rescueResponder:b30RescueResponder('Johannes de Silentio'),
+  draftText:'PART P1\nThe speaker describes faith as a relation to God that rests on the absurd. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'What does Fear and Trembling say about faith?',
+  [source],ai,[],{plan,catalog:{...catalog,
+   '140':'Fear and Trembling \u2014 S\u00f8ren Kierkegaard'},trace:true});
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.equal(rescueClaim.restoredByVoiceAnchor,true,
+  'the rescue verdict records the voice-anchor restoration');
+ assert.equal(rescueClaim.flipOutcome,'accepted');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.equal(decision.gateRestoration,'voice-anchor');
+ assert.deepEqual(result.trace.reviewContract.gateRestorations,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',kind:'voice-anchor',
+   reason:'pseudonymous-voice-unidentified'}]);
+ assert.match(result.answer,/faith as a relation to God/);
+});
+
+// ---------------------------------------------------------------------------
+// Batch 30 (B30-5): source-required requires per-part selected linkage.
+// ---------------------------------------------------------------------------
+
+test('batch 30 B30-5: a plan-level candidate list alone does not make a part source-required when selection is recorded',()=>{
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Adam Smith',role:'primary',bookIds:['260']}],
+  parts:[{id:'P1',question:'How does the division of labour increase productivity?',
+   sourceBookIds:null,searchQueries:['division of labour productivity']},
+   {id:'P2',question:'How does the division of labour affect the workers who perform it?',
+   sourceBookIds:null,searchQueries:['division of labour workers']}],
+  queries:['division of labour']};
+ const sourceWith=support=>({id:'S1',bookId:'260',
+  title:'The Wealth of Nations — Adam Smith',
+  candidatePartIds:['P1','P2'],
+  ...(support?{candidatePartSupport:support}:{})});
+ // Selection recorded, direct support only for P1: P2's only linkage
+ // is the plan-level candidate list, which no longer confers
+ // source-required status.
+ let linked=linkEvidenceToParts(plan,[sourceWith([{partId:'P1',support:'direct'}])]);
+ assert.equal(linked.parts[0].sourceRequired,true);
+ assert.equal(linked.parts[1].sourceRequired,false);
+ assert.equal(linked.parts[1].answerMode,'general-context');
+ // Context-only support for P2 does not confer it either.
+ linked=linkEvidenceToParts(plan,[sourceWith([{partId:'P2',support:'context'}])]);
+ assert.equal(linked.parts[1].sourceRequired,false);
+ // No selection signal anywhere (fallback builds, older packets):
+ // the candidate list counts exactly as it did before this batch.
+ linked=linkEvidenceToParts(plan,[sourceWith(null)]);
+ assert.equal(linked.parts[0].sourceRequired,true);
+ assert.equal(linked.parts[1].sourceRequired,true);
+ // Per-part book scoping still confers it when the signal is present:
+ // scoping is the plan's own per-part statement, not the candidate
+ // list.
+ const scopedPlan={...plan,parts:plan.parts.map(part=>({...part,sourceBookIds:['260']}))};
+ linked=linkEvidenceToParts(scopedPlan,[sourceWith([{partId:'P1',support:'direct'}])]);
+ assert.equal(linked.parts[1].sourceRequired,true);
+});
+
+const b30SmithSources=supportBySource=>[
+ {id:'S1',bookId:'260',title:'The Wealth of Nations — Adam Smith',page:18,
+  url:'https://example.test/smith#page=18',
+  text:'The division of labour increases productivity because each worker gains dexterity, time is saved in passing between tasks, and machinery is more readily invented.',
+  preview:'The division of labour increases productivity through dexterity and machinery.',
+  candidatePartIds:['P1','P2'],candidatePartSupport:supportBySource.S1},
+ {id:'S2',bookId:'260',title:'The Wealth of Nations — Adam Smith',page:781,
+  url:'https://example.test/smith#page=781',
+  text:'In the progress of the division of labour, the employment of the far greater part of those who live by labour is confined to a few very simple operations.',
+  preview:'The employment of the far greater part of those who live by labour is confined to a few simple operations.',
+  candidatePartIds:['P1','P2'],candidatePartSupport:supportBySource.S2}];
+const b30SmithPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Adam Smith',role:'primary',bookIds:['260']}],
+ parts:[{id:'P1',question:'How does the division of labour increase productivity?',
+  sourceBookIds:['260'],searchQueries:['division of labour productivity'],
+  candidateSourceIds:['S1','S2']},
+  {id:'P2',question:'How does the division of labour affect the workers who perform it?',
+  sourceBookIds:['260'],searchQueries:['division of labour workers'],
+  candidateSourceIds:['S1','S2']}],
+ queries:['division of labour productivity','division of labour workers']};
+const b30SmithDraft='PART P1\nThe division of labour increases productivity by dexterity, saving transition time, and encouraging machinery. [S1]\n\n'+
+ 'PART P2\nA worker who spends his whole life performing a few simple operations has no occasion to exert his understanding and becomes as stupid and ignorant as it is possible for a human creature to become.';
+function b30SmithReviewResponder({messages}){
+ const payload=parsePayload(messages);
+ const parts=payload.parts.map(part=>{
+  const contextIds=(part.contextClaims||[]).map(claim=>claim.claimId);
+  const claimIds=payload.claims.filter(claim=>claim.partId===part.partId)
+   .map(claim=>claim.claimId);
+  return {partId:part.partId,status:'answered',answerStatus:'answered',
+   directAnswerClaimIds:[...claimIds,...contextIds],
+   retainedContextClaimIds:contextIds};
+ });
+ return {response:JSON.stringify({parts,claims:payload.claims.map(claim=>({
+  claimId:claim.claimId,status:'answered',
+  sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+   spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+}
+
+test('batch 30 B30-5: the Smith shape ships — an unselected part stays general-context instead of containing the answer',async()=>{
+ // Batch-29 Smith SP1's linkage shape, with the selection signal
+ // present: every source lists both parts as candidates, but
+ // selection recorded direct support only for P1. P2's draft claim
+ // is uncited; before this batch P2 was source-required on the
+ // candidate list alone and its uncited state contained the whole
+ // answer at the 2-part cliff.
+ const ai=batch25RouterAI({reviewResponder:b30SmithReviewResponder,
+  draftText:b30SmithDraft});
+ const result=await composeEvidenceAnswer(
+  'How does the division of labour affect productivity and the workers who perform it?',
+  b30SmithSources({S1:[{partId:'P1',support:'direct'}],
+   S2:[{partId:'P1',support:'direct'}]}),
+  ai,[],{plan:b30SmithPlan,
+   catalog:{...catalog,'260':'The Wealth of Nations — Adam Smith'},trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/increases productivity by dexterity/);
+ assert.match(result.answer,/as stupid and ignorant as it is possible/,
+  'the unselected part ships through the general-context channel');
+ assert.ok(!(result.trace.sourceRequiredContainment?.uncitedPartIds||[]).length,
+  'no source-required part is uncited, so containment never engages');
+ const p2=result.questionParts.find(part=>part.partId==='P2');
+ assert.notEqual(p2.status,'unsupported');
+});
+
+test('batch 30 B30-5: a per-part selected source keeps the part source-required and containment still fires',async()=>{
+ // Converse: selection recorded direct support for P2 as well, so
+ // P2 IS source-required; its uncited claim fails the citation gate,
+ // the repair stays uncited, and the 2-part containment suppresses
+ // the whole answer exactly as before this batch.
+ const refuseRepair=({messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:payload.parts[0].partId,
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'A changed but still uncited statement about the worker and his understanding.'})),
+   additions:[]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder:b30SmithReviewResponder,
+  repairResponder:refuseRepair,draftText:b30SmithDraft});
+ const result=await composeEvidenceAnswer(
+  'How does the division of labour affect productivity and the workers who perform it?',
+  b30SmithSources({S1:[{partId:'P1',support:'direct'}],
+   S2:[{partId:'P2',support:'direct'}]}),
+  ai,[],{plan:b30SmithPlan,
+   catalog:{...catalog,'260':'The Wealth of Nations — Adam Smith'},trace:true});
+ assert.equal(result.trace.sourceRequiredContainment.disposition,
+  'suppressed-not-strict-minority');
+ assert.deepEqual(result.trace.sourceRequiredContainment.uncitedPartIds,['P2']);
+ assert.equal(result.outcome,'generation-failed');
+ assert.doesNotMatch(result.answer,/increases productivity by dexterity/,
+  'the cited part is contained with the uncited source-required part');
 });
