@@ -370,6 +370,134 @@ function spanNamesSubjectInNarration(text,name){
     .some(entry=>personNamesMatch(entry.name,name));
 }
 
+// Batch 31 (B31-2): the gate-time antecedent test — B30-4's second
+// key promoted from the rescue site into normalizeReview itself.
+// Returns the first packet span whose quote-stripped narration names
+// one of the given subjects in an agent/subject position, or null.
+// Deliberately STRICTER than spanNamesSubjectInNarration above: a
+// possessive-only registration does not qualify. At the rescue site a
+// possessive narration mention could support a restoration because a
+// model verdict also stood behind it; at the gate the suppression
+// releases a demotion on this test alone, so the antecedent must be
+// the passage's own subject, not a possessor — the trait shape's
+// habitat is exactly the possessive mention, and it must not release
+// its own demotion. (The rescue helper keeps its wider reading, so a
+// possessive-only antecedent can still restore through B30-4.)
+function findSubjectAntecedentSpan(spans,names){
+  const targets=(names||[]).filter(Boolean);
+  if(!targets.length)return null;
+  for(const span of spans||[]){
+    const narration=stripQuotedSpeechRegions(span?.text);
+    if(!narration.trim())continue;
+    for(const entry of personSubjectMatches(narration)){
+      if(entry.possessiveOnly)continue;
+      const matched=targets.find(name=>personNamesMatch(entry.name,name));
+      if(matched)return {spanId:String(span?.spanId||''),name:matched};
+    }
+  }
+  return null;
+}
+
+// Batch 31 (B31-3): the compound quote-speaker guard's evidence
+// extractors. The batch-30 run shipped a claim crediting Alyosha
+// with judgments ("senseless", "ridiculous") that the cited span's
+// own dialogue gives to Ivan: the claim is COMPOUND — part of it
+// (Alyosha's reaction) is genuinely in the evidence, so ordinary
+// support review accepted the pair, and no single-span check ever
+// asked whose words the quoted phrases were. The guard fires only
+// on POSITIVE dialogue evidence assembled from the pair's ACCEPTED
+// spans: a claim-quoted phrase occurs inside a quoted region of an
+// accepted span, the accepted spans dialogue-tag a speaker, that
+// speaker is not the claim subject the phrase is predicated of, and
+// the claim subject is dialogue-tagged NOWHERE in the accepted
+// spans. No dialogue evidence, no demotion — the guard adds a
+// catch; it never widens absence-based demotion.
+//
+// Operationalization note (the honesty constraint this item was
+// built under): the decisive production span itself — the
+// "ridiculous thing" quotation — carries NO dialogue tag; the
+// nearest tag on the page ("said Alyosha", the intervening line)
+// names the claim's own subject and would acquit the pair under a
+// naive nearest-tag rule. What the evidence actually shows is at
+// the level of the pair's accepted span SET: Ivan is dialogue-
+// tagged twice within it ("laughed Ivan", "smiled Ivan"), Alyosha
+// never, and the phrase sits inside a dialogue block. The guard
+// therefore reads dialogue attribution across the accepted set,
+// not within a character window of the occurrence.
+const QUOTE_SPEECH_VERBS='said|says|asked|replied|answered|cried|laughed|smiled|'+
+  'whispered|murmured|exclaimed|declared|remarked|observed|continued|added';
+function dialogueAttributionSpeakers(text){
+  const name=`[\\p{Lu}][\\p{L}\\p{M}'’.-]*(?:\\s+[\\p{Lu}][\\p{L}\\p{M}'’.-]*){0,2}`;
+  const speakers=[];
+  const patterns=[new RegExp(`\\b(?:${QUOTE_SPEECH_VERBS})\\s+(${name})`,'gu'),
+    new RegExp(`\\b(${name})\\s+(?:${QUOTE_SPEECH_VERBS})\\b`,'gu')];
+  for(const pattern of patterns)
+    for(const match of String(text||'').matchAll(pattern)){
+      const speaker=match[1].trim();
+      const first=normalizedPersonName(speaker).split(' ').filter(Boolean)[0];
+      if(first&&!NON_SPECIFIC_SPEAKERS.has(first))speakers.push(speaker);
+    }
+  return speakers;
+}
+function normalizeQuoteSurface(value){
+  return String(value||'').normalize('NFKC').toLocaleLowerCase()
+    .replace(/\s+/gu,' ').trim();
+}
+function quotedRegionTexts(text){
+  const regions=[];
+  for(const match of String(text||'').matchAll(/“([^”]{3,})”/gu))
+    regions.push(match[1]);
+  for(const match of String(text||'').matchAll(/"([^"\n]{3,})"/gu))
+    regions.push(match[1]);
+  return regions;
+}
+function claimQuotedPhrases(text){
+  const phrases=[];
+  for(const match of String(text||'').matchAll(/"([^"\n]{3,})"/gu))
+    phrases.push(match[1]);
+  for(const match of String(text||'').matchAll(/“([^”]{3,})”/gu))
+    phrases.push(match[1]);
+  return phrases;
+}
+// Returns the demotion reason when the guard fires, '' otherwise.
+// subjects: the claim's extracted subjects (subjectTargets, which
+// already includes the named-speaker fallback). selected: the
+// pair's accepted spans ({quote}).
+function quoteSpeakerGuardIssue(claimText,subjects,selected){
+  const phrases=claimQuotedPhrases(claimText);
+  if(!phrases.length||!(subjects||[]).length||!(selected||[]).length)return '';
+  const spanTexts=(selected||[]).map(item=>String(item?.quote||''));
+  const taggedSpeakers=[...new Set(spanTexts.flatMap(dialogueAttributionSpeakers))];
+  if(!taggedSpeakers.length)return '';
+  const regions=spanTexts.flatMap(quotedRegionTexts).map(normalizeQuoteSurface);
+  if(!regions.length)return '';
+  const sentences=String(claimText||'').split(/(?<=[.!?…])\s+/u);
+  for(const phrase of phrases){
+    const needle=normalizeQuoteSurface(phrase);
+    if(!needle||!regions.some(region=>region.includes(needle)))continue;
+    const sentence=sentences.find(item=>normalizeQuoteSurface(item)
+      .includes(needle))||'';
+    if(!sentence)continue;
+    for(const subject of subjects){
+      // The claim frames the phrase as this subject's words/view:
+      // the subject is named in the same claim sentence as the
+      // quoted phrase (as an extracted subject of that sentence, or
+      // by name).
+      const framed=claimPersonSubjects(sentence)
+        .some(name=>personNamesMatch(name,subject))||
+        spanTextNamesSpeaker(sentence,subject);
+      if(!framed)continue;
+      // The subject's own dialogue tag anywhere in the accepted
+      // spans acquits the pair for this subject — the words may
+      // genuinely be theirs.
+      if(taggedSpeakers.some(name=>personNamesMatch(name,subject)))continue;
+      if(taggedSpeakers.some(name=>!personNamesMatch(name,subject)))
+        return 'quoted-speech-attributed-to-other-speaker';
+    }
+  }
+  return '';
+}
+
 function parseRescueDecisions(rescue,requested){
   if(!Array.isArray(rescue?.decisions)||rescue.decisions.length!==requested.length)
     return {ok:false,reason:'decision-count-mismatch'};
@@ -2196,6 +2324,12 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
   // path (antecedent / voice-anchor), recorded as the demotions are
   // neutralized below and surfaced on the merged review contract.
   const gateRestorations=[];
+  // Batch 31 (B31-2): the demotions this pass suppressed at the gate
+  // itself via the antecedent / voice test, recorded as they are
+  // suppressed below and surfaced alongside gateRestorations, so
+  // validation can census demotions that stood against demotions
+  // suppressed and audit each direction.
+  const gateDemotionsSuppressed=[];
   const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
     String(claim?.claimId||''),new Map((Array.isArray(claim?.sourceEvidence)?claim.sourceEvidence:[])
       .map(item=>[String(item?.sourceId||''),Array.isArray(item?.spanIds)?item.spanIds:[]]))
@@ -2357,6 +2491,10 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       for(const sourceId of citedIds){
         let sourceDecision=sourceDecisions.get(sourceId);
         const selected=selectedBySource.get(sourceId)||[];
+        // Batch 31 (B31-2): this source's full review-packet span set
+        // for the part — the same set B30-4's antecedent key read at
+        // the rescue site — for the gate-time antecedent test below.
+        const packetSpans=[...(reviewSpanMaps.get(part.id)?.get(sourceId)?.values()||[])];
         const rawDecision=decision.sources.find(item=>String(item?.sourceId||'')===sourceId);
         // An omitted source decision is not evidence of support. Synthesize an
         // explicit rejection so this citation fails closed while other complete
@@ -2393,7 +2531,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // blind spot — counted, never gated on.
         if(!subjectTargets.length&&hasCapitalizedNameCandidate(candidateText))
           subjectExtractionBlindSpots++;
-        const subjectAttributionIssue=subjectTargets.length&&subjectStatus==='missing'?
+        let subjectAttributionIssue=subjectTargets.length&&subjectStatus==='missing'?
           'source-subject-attribution-missing':
           subjectTargets.length&&subjectStatus!=='not_applicable'&&
           (subjectStatus!=='supported'||!attributedSubject||
@@ -2407,6 +2545,45 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             (subjectStatus==='conflict'?'source-subject-attribution-conflict':
              subjectStatus==='unclear'?'source-subject-attribution-unclear':
              'source-subject-attribution-mismatch'):'';
+        // Batch 31 (B31-2): gate-time antecedent suppression of the
+        // subject family. Batch 30's census: 60 of 61 gate-demoted
+        // pairs carried reviewer attributionStatus 'supported', and
+        // the independent audit judged none of them misattributed —
+        // the extractor's silence about a subject was treated as a
+        // contradiction of the reviewer. When the demotion is
+        // ABSENCE-shaped — the reviewer returned no subject verdict
+        // ('missing'), or a 'mismatch' that names no positively
+        // identified different subject — the antecedent test decides:
+        // if the packet's own narration for this source names the
+        // subject in an agent/subject position (quoted speech
+        // stripped), the reviewer's decision stands and the demotion
+        // is suppressed and recorded. A POSITIVE contradiction still
+        // demotes untouched: the extractor positively identified a
+        // different subject for the claim's predication (the claim's
+        // own extracted subjects where the reviewer's attributed
+        // subject is not among them), or the claim positively names
+        // its speaker (the claimSpeaker fallback branch) and the
+        // reviewer attributed the words to someone else. The
+        // reviewer's own conflict/unclear verdicts likewise stand.
+        if(subjectAttributionIssue==='source-subject-attribution-missing'||
+           subjectAttributionIssue==='source-subject-attribution-mismatch'){
+          const positiveContradiction=
+            subjectAttributionIssue==='source-subject-attribution-mismatch'&&
+            ((personSubjects.length>0&&attributedSubject&&
+              !subjectTargets.some(name=>personNamesMatch(name,attributedSubject)))||
+             (personSubjects.length===0&&Boolean(claimSpeaker)));
+          if(!positiveContradiction){
+            const testNames=subjectTargets.length?subjectTargets:
+              attributedSubject?[attributedSubject]:[];
+            const antecedent=findSubjectAntecedentSpan(packetSpans,testNames);
+            if(antecedent){
+              gateDemotionsSuppressed.push({partId:part.id,
+                claimId:answer.claimId,sourceId,reason:subjectAttributionIssue,
+                antecedentSpanId:antecedent.spanId});
+              subjectAttributionIssue='';
+            }
+          }
+        }
         // A speaker who is the author of this source's own work is anchored
         // by the byline itself (author narration), so no speech cue is
         // required for that source; every other speaker still needs one.
@@ -2447,6 +2624,31 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
               ...(claimSpeaker?[claimSpeaker]:[])]
               .filter(name=>!personNamesMatch(name,speaker));
             if(!namedOthers.length)provenanceAttributionIssue='';
+          }
+        }
+        // Batch 31 (B31-2): gate-time suppression of the voice
+        // family — B30-4's voice key at the gate. When the demotion
+        // is the pseudonymous-voice form requirement and the
+        // attribution on record NAMES the source's provenance voice
+        // — the reviewer's attributed subject, or a subject the claim
+        // itself names — the voice is identified by the book's own
+        // provenance and the reviewer's decision stands. This
+        // mirrors the rescue key exactly (a named attribution to the
+        // voice plus provenance naming it); a claim that names no one
+        // and a reviewer that attributes no one keep the demotion,
+        // and the rescue backstop remains for them.
+        if(provenanceAttributionIssue==='pseudonymous-voice-unidentified'){
+          const workVoice=sourceProvenance(sourceById.get(sourceId),plan,
+            cueSourceText)?.workVoice;
+          const voiceName=workVoice?.kind==='pseudonymous-author'?
+            String(workVoice.name||'').trim():'';
+          const namesVoice=voiceName&&[attributedSubject,...subjectTargets]
+            .some(name=>name&&personNamesMatch(name,voiceName));
+          if(namesVoice){
+            gateDemotionsSuppressed.push({partId:part.id,
+              claimId:answer.claimId,sourceId,
+              reason:'pseudonymous-voice-unidentified',voice:voiceName});
+            provenanceAttributionIssue='';
           }
         }
         let attributionIssue=modelAttributionIssue||speakerMismatchIssue||subjectAttributionIssue||
@@ -2490,6 +2692,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // anchor machinery (B26-2) is the relief valve for demotions:
         // this reason rides the rescue attribution set, and a packet
         // span naming the person restores the pair with evidence.
+        // Batch 31 (B31-2): the gate IIFE below records the targets
+        // it found unnamed in the accepted spans, so the antecedent
+        // suppression after it tests exactly the names the demotion
+        // is about.
+        let subjectGateUnnamedTargets=[];
         let subjectNameIssue=(()=>{
           if(sourceDecision.status!=='answered'||!selected.length||!subjectTargets.length)
             return '';
@@ -2513,6 +2720,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           const unnamedTargets=targetsToName.filter(target=>
             !selected.some(item=>spanNamesPerson(item.quote,target)));
           if(!unnamedTargets.length)return '';
+          subjectGateUnnamedTargets=unnamedTargets;
           // No accepted span names the subject. The demotion applies
           // only when a span actually presents an unnamed actor — a
           // third-person subject pronoun (he/she/they) whose referent
@@ -2555,6 +2763,31 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             kind:'antecedent',reason:subjectNameIssue});
           subjectNameIssue='';
         }
+        // Batch 31 (B31-2): gate-time antecedent suppression. The
+        // B27-2/B29-3 conjunctions are NOT relaxed — this block runs
+        // the same antecedent test B30-4 applied at the rescue site,
+        // over the same packet spans, with the stricter
+        // subject-position requirement: the demotion is suppressed
+        // only when the packet's own narration names an unnamed
+        // target as a subject outside quoted speech. The round-table
+        // shape has no such antecedent (its packet mentions are
+        // possessive, topical, or quoted) and the trait shape's are
+        // quoted or possessive-only, so both demotions stand exactly
+        // as before; the Conrad false-positive shape — the subject
+        // named as narration subject in another packet span of the
+        // same source — is the one released, without waiting for a
+        // rescue verdict the batch-30 run showed rarely comes.
+        if(subjectNameIssue){
+          const antecedent=findSubjectAntecedentSpan(packetSpans,
+            subjectGateUnnamedTargets.length?subjectGateUnnamedTargets:
+            subjectTargets);
+          if(antecedent){
+            gateDemotionsSuppressed.push({partId:part.id,
+              claimId:answer.claimId,sourceId,reason:subjectNameIssue,
+              antecedentSpanId:antecedent.spanId});
+            subjectNameIssue='';
+          }
+        }
         const selectedQuote=selected.map(item=>item.quote).join(' ');
         const polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
           hasDirectPolarityContradiction(candidateText,selectedQuote)?
@@ -2562,6 +2795,14 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const negationScopeIssue=sourceDecision?.status==='answered'&&selected.length&&
           hasNegationScopeMismatch(candidateText,selectedQuote)?
           'source-negation-scope-mismatch':'';
+        // Batch 31 (B31-3): the compound quote-speaker guard. Runs
+        // on the same conditions as the polarity/negation guards (an
+        // answered decision with accepted spans) and demotes only on
+        // the positive dialogue evidence quoteSpeakerGuardIssue
+        // assembles — see its comment for the operationalization and
+        // why the evidence is read across the accepted span set.
+        const quoteSpeakerIssue=sourceDecision?.status==='answered'&&selected.length?
+          quoteSpeakerGuardIssue(candidateText,subjectTargets,selected):'';
         if(attributionIssue){
           sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
@@ -2581,6 +2822,15 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:subjectNameIssue});
+        }
+        // Batch 31 (B31-3): the compound quote-speaker guard's
+        // demotion (its computation sits with the polarity/negation
+        // computations above, before any issue block mutates the
+        // decision's status).
+        if(quoteSpeakerIssue){
+          sourceDecision.status='partial';
+          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
+            reason:quoteSpeakerIssue});
         }
         // A claim-level "answered" label cannot override an explicit partial
         // clause finding. A validated narrower sentence may keep the supported
@@ -2632,7 +2882,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         }else{
           supportedSourceIds.add(sourceId);
         }
-        const validationReason=attributionIssue||subjectNameIssue||polarityIssue||negationScopeIssue||
+        const validationReason=attributionIssue||subjectNameIssue||polarityIssue||negationScopeIssue||quoteSpeakerIssue||
           (sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
           sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan?'missing-claim-source-span':
           sourceDecision.status!=='answered'?'claim-source-not-supported':
@@ -2661,7 +2911,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             sources:clause.sources.filter(item=>item.sourceId===sourceId)
               .map(item=>({sourceId:item.sourceId,status:item.status,spanIds:item.spanIds}))
           }))}:{}),
-          accepted:supportedSourceIds.has(sourceId)&&!attributionIssue&&!subjectNameIssue,
+          accepted:supportedSourceIds.has(sourceId)&&!attributionIssue&&!subjectNameIssue&&!quoteSpeakerIssue,
           ...(sourceDecision?.rescueAccepted===true?{rescueAccepted:true}:{}),
           ...(sourceDecision?.gateRestoration?{gateRestoration:sourceDecision.gateRestoration}:{}),
           recoveredMissingDecision:sourceDecision.recoveredMissingDecision===true,
@@ -2864,7 +3114,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       directAnswerCovered,...(reviewerPart?.repairable===true?{repairable:true}:{}),reason:''};
   });
   return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions,
-    clauseFindings,subjectExtractionBlindSpots,gateRestorations};
+    clauseFindings,subjectExtractionBlindSpots,gateRestorations,gateDemotionsSuppressed};
 }
 
 // Batch 30 (B30-1): the split-review threshold and half-merge live at
@@ -4437,7 +4687,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       const mergeSingles=()=>{
         const merged={parts:[],issues:[],warnings:[],supportIssues:[],recovered:[],
           reviewDecisions:[],partDecisions:[],clauseFindings:[],
-          subjectExtractionBlindSpots:0,gateRestorations:[]};
+          subjectExtractionBlindSpots:0,gateRestorations:[],gateDemotionsSuppressed:[]};
         for(const part of plan.parts){
           if(issueExcludedPartIds.has(part.id))continue;
           const single=singlesByPart.get(part.id);
@@ -4470,6 +4720,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // review the rescue packet and the trace read.
           merged.clauseFindings.push(...(single.clauseFindings||[]));
           merged.gateRestorations.push(...(single.gateRestorations||[]));
+          merged.gateDemotionsSuppressed.push(...(single.gateDemotionsSuppressed||[]));
           merged.subjectExtractionBlindSpots+=single.subjectExtractionBlindSpots||0;
         }
         return merged;
@@ -5629,6 +5880,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // them (kind, pair, and the demotion reason neutralized).
           ...(review.gateRestorations?.length?
             {gateRestorations:review.gateRestorations}:{}),
+          // Batch 31 (B31-2): the demotions this build's gate
+          // suppressed via the antecedent / voice test, so validation
+          // can census suppressed against stood demotions and audit
+          // each direction.
+          ...(review.gateDemotionsSuppressed?.length?
+            {gateDemotionsSuppressed:review.gateDemotionsSuppressed}:{}),
           ...(failedReviewParts.length?{failedParts:failedReviewParts
             .map(item=>({partId:item.partId,code:item.code}))}:{})};
         // Per-part contract problems fail only their own part (recorded in
@@ -7545,30 +7802,68 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       if(!linkedIds.size)sourceRequiredUncited.push(item);
     }
     if(sourceRequiredUncited.length){
-      const strictMinority=sourceRequiredUncited.length*2<plan.parts.length;
-      if(strictMinority){
-        for(const item of sourceRequiredUncited){
-          item.status='unanswered';item.answerStatus='unanswered';
-          item.answers=[];item.evidence=[];
-        }
-      }else{
-        for(const item of parts||[]){
-          item.status='unanswered';item.answerStatus='unanswered';
-          item.answers=[];item.evidence=[];
-        }
-        failure={stage:'source-required-containment',
-          code:'source-required-uncited-parts-not-strict-minority',
-          message:'Uncited source-required parts were not a strict minority of the answer.'};
+      // Batch 31 (B31-1): book-scoped plans evaluate containment at
+      // the ANSWER level. A plan is book-scoped when every part's
+      // book scope resolves to the same single book: on the selected
+      // route options.selectedBookId names that book and any part
+      // scoped outside it (or scoped to several books) disqualifies
+      // the plan; without a selected book, every part must carry a
+      // singleton scope and all singletons must agree. Mixed or
+      // absent scope is NOT book-scoped and keeps the per-part rule
+      // below byte-for-byte. At answer level the answer ships when
+      // at least one source-required part is cited; uncited parts
+      // keep their reviewed answers and are labeled downstream by
+      // the B11-5 uncited-with-packet treatment (trace +
+      // missing-segment wording), not by a parallel label system.
+      // Zero cited parts suppresses exactly as the per-part rule.
+      const selectedBookId=String(options.selectedBookId||'').trim();
+      const partScopes=(plan.parts||[]).map(part=>new Set(
+        (Array.isArray(part.sourceBookIds)?part.sourceBookIds:[]).map(String)));
+      let bookScoped=false;
+      if(selectedBookId){
+        bookScoped=partScopes.length>0&&partScopes.every(scope=>
+          [...scope].every(id=>id===selectedBookId));
+      }else if(partScopes.length&&partScopes.every(scope=>scope.size===1)){
+        bookScoped=new Set(partScopes.map(scope=>[...scope][0])).size===1;
       }
-      trace.sourceRequiredContainment={totalParts:plan.parts.length,
-        sourceRequiredPartIds:plan.parts.filter(part=>part.sourceRequired===true).map(part=>part.id),
-        uncitedPartIds:sourceRequiredUncited.map(item=>item.part.id),
-        droppedPartIds:strictMinority?sourceRequiredUncited.map(item=>item.part.id):[],
-        disposition:strictMinority?'dropped-strict-minority':'suppressed-not-strict-minority'};
+      const citedSourceRequired=(parts||[]).filter(item=>
+        item.part.sourceRequired===true&&item.answerStatus!=='unanswered'&&
+        item.answers.length&&!sourceRequiredUncited.includes(item));
+      if(bookScoped&&citedSourceRequired.length){
+        trace.sourceRequiredContainment={totalParts:plan.parts.length,
+          sourceRequiredPartIds:plan.parts.filter(part=>part.sourceRequired===true).map(part=>part.id),
+          uncitedPartIds:sourceRequiredUncited.map(item=>item.part.id),
+          droppedPartIds:[],disposition:'answer-level-shipped-with-uncited-parts',
+          level:'answer',
+          uncitedBookScopedPartIds:sourceRequiredUncited.map(item=>item.part.id)};
+      }else{
+        const strictMinority=sourceRequiredUncited.length*2<plan.parts.length;
+        if(strictMinority){
+          for(const item of sourceRequiredUncited){
+            item.status='unanswered';item.answerStatus='unanswered';
+            item.answers=[];item.evidence=[];
+          }
+        }else{
+          for(const item of parts||[]){
+            item.status='unanswered';item.answerStatus='unanswered';
+            item.answers=[];item.evidence=[];
+          }
+          failure={stage:'source-required-containment',
+            code:'source-required-uncited-parts-not-strict-minority',
+            message:'Uncited source-required parts were not a strict minority of the answer.'};
+        }
+        trace.sourceRequiredContainment={totalParts:plan.parts.length,
+          sourceRequiredPartIds:plan.parts.filter(part=>part.sourceRequired===true).map(part=>part.id),
+          uncitedPartIds:sourceRequiredUncited.map(item=>item.part.id),
+          droppedPartIds:strictMinority?sourceRequiredUncited.map(item=>item.part.id):[],
+          disposition:strictMinority?'dropped-strict-minority':'suppressed-not-strict-minority',
+          level:'per-part',uncitedBookScopedPartIds:[]};
+      }
     }else{
       trace.sourceRequiredContainment={totalParts:plan.parts.length,
         sourceRequiredPartIds:plan.parts.filter(part=>part.sourceRequired===true).map(part=>part.id),
-        uncitedPartIds:[],droppedPartIds:[],disposition:'all-shipped-source-parts-cited'};
+        uncitedPartIds:[],droppedPartIds:[],disposition:'all-shipped-source-parts-cited',
+        level:'per-part',uncitedBookScopedPartIds:[]};
     }
     if(options.postReviewAuditPartId&&!postReviewAuditFaultInjected){
       const targetIds=new Set(Array.isArray(options.postReviewAuditPartId)?

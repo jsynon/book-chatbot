@@ -4520,7 +4520,8 @@ test('citation gate traces duplicate-key patch failure and containment prevents 
   {adopted:0,repairRefused:1,repairThrew:0,reReviewRefused:0});
  assert.deepEqual(result.trace.sourceRequiredContainment,
   {totalParts:1,sourceRequiredPartIds:['P1'],uncitedPartIds:['P1'],
-   droppedPartIds:[],disposition:'suppressed-not-strict-minority'});
+   droppedPartIds:[],disposition:'suppressed-not-strict-minority',
+   level:'per-part',uncitedBookScopedPartIds:[]});
 });
 
 test('citation gate records a forbidden repair field as schema refusal rather than a blind throw (batch 22)',async()=>{
@@ -9383,12 +9384,20 @@ function b30RescueResponder(anchor){
  };
 }
 
-test('batch 30 B30-4: a narration antecedent in the packet restores a pronoun-span claim',async()=>{
+test('batch 31 B31-2: a narration antecedent suppresses the pronoun-span demotion at the gate (batch-30 B30-4 shape)',async()=>{
  // Marlow shape (batch 29's dominant false-demotion family): the
  // cited span presents the actor only as "He"; the packet's own
  // narration names Marlow as subject in another span of the same
- // source — outside the pair's hint spans, so the B26-2 anchor
- // validation cannot see it, but the antecedent key can.
+ // source. In batch 30 this pair survived only through the rescue:
+ // demoted at the gate, flipped by the rescue, restored at
+ // re-normalization via B30-4's antecedent key (this test asserted
+ // exactly that flow). Batch 31 promotes the key to the gate
+ // itself, so the pair is now accepted in the FIRST review contract
+ // and the rescue never runs — the router carries no rescue
+ // responder, and would throw if one were called. The B30-4
+ // rescue-site restoration remains as a backstop for pairs the
+ // gate's stricter test cannot release (see the possessive-only
+ // backstop test below).
  const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
   page:44,url:'https://example.test/conrad#page=44',
   text:['He ordered the helmsman to steer the steamer toward the shore, and the crew, who had been waiting in silence for the signal, moved at once to their stations along the rail.',
@@ -9399,11 +9408,53 @@ test('batch 30 B30-4: a narration antecedent in the packet restores a pronoun-sp
   preview:'He ordered the helmsman to steer the steamer toward the shore.'};
  const ai=batch25RouterAI({
   reviewResponder:b30ReviewResponder({attributedSubject:'Marlow',spanId:'S1-Q1'}),
+  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ assert.equal(result.trace.rescueReview,undefined,
+  'the gate resolved the pair; no rescue round was needed');
+ const antecedentSpan=buildReviewSpans('S1',source.text)
+  .find(span=>span.text.includes('Marlow had taken command'));
+ assert.ok(antecedentSpan,'the fixture packet names Marlow as narration subject');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.equal(decision.gateRestoration,undefined,
+  'no rescue restoration was involved');
+ assert.equal(result.trace.reviewContract.gateRestorations,undefined);
+ assert.deepEqual(result.trace.reviewContract.gateDemotionsSuppressed,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
+   reason:'subject-not-named-in-span',antecedentSpanId:antecedentSpan.spanId}],
+  'the suppressed demotion is traced with its antecedent span');
+ assert.match(result.answer,/Marlow orders the helmsman/);
+});
+
+test('batch 31 B31-2 backstop: a possessive-only narration antecedent does not suppress at the gate, and B30-4 still restores at the rescue',async()=>{
+ // The gate test requires an agent/subject-position antecedent; a
+ // narration POSSESSIVE ("Marlow's reputation…") does not qualify,
+ // so this pair is demoted at the gate exactly as in batch 30 —
+ // and B30-4's rescue-site key, whose helper counts possessive
+ // registrations, still restores it there. The two readings are
+ // deliberately different: the gate releases on its own authority,
+ // the rescue restoration stands behind a model verdict.
+ const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:44,url:'https://example.test/conrad#page=44',
+  text:['He ordered the helmsman to steer the steamer toward the shore, and the crew, who had been waiting in silence for the signal, moved at once to their stations along the rail.',
+   'The helmsman kept the steamer steady as the shore came into view, holding the vessel against the current that pressed her toward the bank.',
+   'The officers of the company spoke often of Marlow\u2019s reputation for steadiness, and the crew trusted his judgment in the difficult reaches of the river above the station.',
+   'The helmsman watched the shore while the steamer slowed in the current, and the mate stood ready with the anchor as the light began to fail.',
+   'An order from the bridge sent the steamer closer to the shore before dusk, and the leadsman began to call the depths as the water shoaled.'].join(' '),
+  preview:'He ordered the helmsman to steer the steamer toward the shore.'};
+ const ai=batch25RouterAI({
+  reviewResponder:b30ReviewResponder({attributedSubject:'Marlow',spanId:'S1-Q1'}),
   rescueResponder:b30RescueResponder('Marlow'),
   draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
  const result=await composeEvidenceAnswer(
   'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
   [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ assert.equal(result.trace.reviewContract.gateDemotionsSuppressed,undefined,
+  'a possessive-only antecedent never suppresses at the gate');
  const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
  assert.equal(rescueClaim.restoredByAntecedent,true,
   'the rescue verdict records the antecedent restoration');
@@ -9622,4 +9673,486 @@ test('batch 30 B30-5: a per-part selected source keeps the part source-required 
  assert.equal(result.outcome,'generation-failed');
  assert.doesNotMatch(result.answer,/increases productivity by dexterity/,
   'the cited part is contained with the uncited source-required part');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 31 (B31-1): answer-level containment for book-scoped plans.
+// ---------------------------------------------------------------------------
+
+test('batch 31 B31-1: the Smith shape ships — a book-scoped answer with one cited part carries its uncited part, labeled',async()=>{
+ // The batch-30 Smith SP2 shape under the new rule: both parts are
+ // source-required (selection recorded direct support for each),
+ // P2's claim is uncited and the citation-gate repair stays
+ // uncited. Before this batch the 2-part cliff suppressed the whole
+ // answer (the B30-5 converse test above asserts that history);
+ // the plan is book-scoped, so containment now evaluates at
+ // answer level: P1 is cited, the answer ships, and P2 ships with
+ // the B11-5 uncited-with-packet label rather than a parallel
+ // invention. The fixture carries the production selected-route
+ // signal — options.selectedBookId, which the public gateway
+ // passes on every selected-book build — and normalization scopes
+ // every part to that book; the raw plan's own sourceBookIds
+ // alone would NOT survive normalization (part scope there is
+ // re-derived from question phrasing), which is why the B30-5
+ // converse fixture above, carrying no selectedBookId, still
+ // suppresses under the per-part rule.
+ const refuseRepair=({messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:payload.parts[0].partId,
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'A changed but still uncited statement about the worker and his understanding.'})),
+   additions:[]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder:b30SmithReviewResponder,
+  repairResponder:refuseRepair,draftText:b30SmithDraft});
+ const result=await composeEvidenceAnswer(
+  'How does the division of labour affect productivity and the workers who perform it?',
+  b30SmithSources({S1:[{partId:'P1',support:'direct'}],
+   S2:[{partId:'P2',support:'direct'}]}),
+  ai,[],{plan:b30SmithPlan,
+   catalog:{...catalog,'260':'The Wealth of Nations — Adam Smith'},selectedBookId:'260',trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/increases productivity by dexterity/,
+  'the cited part ships');
+ assert.match(result.answer,/A worker who spends his whole life performing a few simple operations/,
+  'the uncited part ships with its reviewed draft text intact');
+ const containment=result.trace.sourceRequiredContainment;
+ assert.equal(containment.level,'answer');
+ assert.equal(containment.disposition,'answer-level-shipped-with-uncited-parts');
+ assert.deepEqual(containment.uncitedPartIds,['P2']);
+ assert.deepEqual(containment.uncitedBookScopedPartIds,['P2'],
+  'the shipped-labeled census names the uncited book-scoped part');
+ assert.deepEqual(containment.droppedPartIds,[]);
+ assert.deepEqual(result.trace.uncitedPartsWithPacket,['P2']);
+ assert.match(result.missing,
+  /Retrieved passages could not be verified as supporting this part of the question: How does the division of labour affect the workers who perform it\?/,
+  'the uncited part carries the existing B11-5 label in the missing segment');
+});
+
+test('batch 31 B31-1: a book-scoped plan with zero cited parts still suppresses',async()=>{
+ // The answer-level floor: book scope relaxes WHICH parts must be
+ // cited, not WHETHER any must. With no cited source-required part
+ // the per-part suppression applies exactly as before.
+ const refuseRepair=({messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:payload.parts[0].partId,
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'A changed but still uncited statement.'})),additions:[]}]})};
+ };
+ const draft='PART P1\nThe division of labour increases productivity by dexterity, saving transition time, and encouraging machinery.\n\n'+
+  'PART P2\nA worker who spends his whole life performing a few simple operations has no occasion to exert his understanding.';
+ const ai=batch25RouterAI({reviewResponder:b30SmithReviewResponder,
+  repairResponder:refuseRepair,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How does the division of labour affect productivity and the workers who perform it?',
+  b30SmithSources({S1:[{partId:'P1',support:'direct'}],
+   S2:[{partId:'P2',support:'direct'}]}),
+  ai,[],{plan:b30SmithPlan,
+   catalog:{...catalog,'260':'The Wealth of Nations — Adam Smith'},selectedBookId:'260',trace:true});
+ assert.equal(result.outcome,'generation-failed');
+ const containment=result.trace.sourceRequiredContainment;
+ assert.equal(containment.disposition,'suppressed-not-strict-minority');
+ assert.equal(containment.level,'per-part',
+  'the fall-through to the per-part rule is recorded as such');
+ assert.deepEqual(containment.uncitedBookScopedPartIds,[]);
+ assert.doesNotMatch(result.answer,/increases productivity by dexterity/);
+});
+
+test('batch 31 B31-1: an all-books two-part plan keeps per-part containment (one uncited part still suppresses)',async()=>{
+ // Pilot (iii): the two parts are scoped to DIFFERENT books, so
+ // the plan is not book-scoped; one uncited source-required part
+ // of two is not a strict minority and the whole answer is
+ // contained exactly as before this batch. (A two-book explain
+ // plan: normalization adds no synthetic comparison part, so the
+ // plan that reaches containment is exactly these two parts.)
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',
+   sourceBookIds:['35'],searchQueries:['Hume necessity custom'],
+   candidateSourceIds:['S1']},
+   {id:'P2',question:'How does Kant explain causal necessity?',
+   sourceBookIds:['40'],searchQueries:['Kant causality a priori'],
+   candidateSourceIds:['S2']}],
+  queries:['Hume necessity custom','Kant causality a priori']};
+ const reviewAll=({messages})=>{
+  const payload=parsePayload(messages);
+  const reviewParts=payload.parts.map(part=>{
+   const contextIds=(part.contextClaims||[]).map(claim=>claim.claimId);
+   const claimIds=payload.claims.filter(claim=>claim.partId===part.partId)
+    .map(claim=>claim.claimId);
+   return {partId:part.partId,status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[...claimIds,...contextIds],
+    retainedContextClaimIds:contextIds};
+  });
+  return {response:JSON.stringify({parts:reviewParts,
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[sourceId+'-Q1']}))}))})};
+ };
+ const refuseRepair=({messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:payload.parts[0].partId,
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'A changed but still uncited statement about Kant and causality.'})),
+   additions:[]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder:reviewAll,
+  repairResponder:refuseRepair,
+  draftText:'PART P1\nHume connects necessity to custom through repeated experience. [S1]\n\n'+
+   'PART P2\nKant presents causal order through the structure of human understanding.'});
+ const result=await composeEvidenceAnswer(
+  'How does Hume explain causal necessity and how does Kant explain it?',
+  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],
+  ai,[],{plan,catalog,trace:true});
+ assert.equal(result.outcome,'generation-failed');
+ const containment=result.trace.sourceRequiredContainment;
+ assert.equal(containment.level,'per-part');
+ assert.equal(containment.disposition,'suppressed-not-strict-minority');
+ assert.deepEqual(containment.uncitedPartIds,['P2']);
+ assert.deepEqual(containment.uncitedBookScopedPartIds,[]);
+ assert.doesNotMatch(result.answer,/Hume connects necessity to custom/,
+  'the cited sibling is contained with the uncited part, as before');
+});
+
+test('batch 31 B31-1: a book-scoped three-part plan ships with two uncited parts labeled (no minority arithmetic at answer level)',async()=>{
+ // Pilot (iv): beyond the ≥1-cited floor there is no minority
+ // arithmetic at answer level — two of three parts uncited still
+ // ship, each labeled.
+ const sources=[
+  {id:'S1',bookId:'260',title:'The Wealth of Nations — Adam Smith',page:18,
+   url:'https://example.test/smith#page=18',
+   text:'The division of labour increases productivity because each worker gains dexterity, time is saved in passing between tasks, and machinery is more readily invented.',
+   preview:'The division of labour increases productivity through dexterity and machinery.',
+   candidatePartIds:['P1','P2','P3'],
+   candidatePartSupport:[{partId:'P1',support:'direct'},
+    {partId:'P2',support:'direct'},{partId:'P3',support:'direct'}]},
+  {id:'S2',bookId:'260',title:'The Wealth of Nations — Adam Smith',page:781,
+   url:'https://example.test/smith#page=781',
+   text:'In the progress of the division of labour, the employment of the far greater part of those who live by labour is confined to a few very simple operations.',
+   preview:'The employment of the far greater part of those who live by labour is confined to a few simple operations.',
+   candidatePartIds:['P1','P2','P3'],
+   candidatePartSupport:[{partId:'P1',support:'direct'},
+    {partId:'P2',support:'direct'},{partId:'P3',support:'direct'}]}];
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Adam Smith',role:'primary',bookIds:['260']}],
+  parts:[{id:'P1',question:'How does the division of labour increase productivity?',
+   sourceBookIds:['260'],searchQueries:['division of labour productivity'],
+   candidateSourceIds:['S1','S2']},
+   {id:'P2',question:'How does the division of labour affect the workers who perform it?',
+   sourceBookIds:['260'],searchQueries:['division of labour workers'],
+   candidateSourceIds:['S1','S2']},
+   {id:'P3',question:'How does the division of labour affect invention?',
+   sourceBookIds:['260'],searchQueries:['division of labour invention'],
+   candidateSourceIds:['S1','S2']}],
+  queries:['division of labour productivity','division of labour workers',
+   'division of labour invention']};
+ const draft='PART P1\nThe division of labour increases productivity by dexterity, saving transition time, and encouraging machinery. [S1]\n\n'+
+  'PART P2\nA worker who spends his whole life performing a few simple operations has no occasion to exert his understanding.\n\n'+
+  'PART P3\nInvention is encouraged when a worker\u2019s attention is fixed on a single simple operation.';
+ const refuseRepair=({messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:payload.parts[0].partId,
+   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
+    text:'A changed but still uncited statement.'})),additions:[]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder:b30SmithReviewResponder,
+  repairResponder:refuseRepair,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How does the division of labour affect productivity, workers, and invention?',
+  sources,ai,[],{plan,
+   catalog:{...catalog,'260':'The Wealth of Nations — Adam Smith'},selectedBookId:'260',trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/increases productivity by dexterity/);
+ const containment=result.trace.sourceRequiredContainment;
+ assert.equal(containment.level,'answer');
+ assert.deepEqual(containment.uncitedBookScopedPartIds,['P2','P3']);
+ assert.deepEqual(result.trace.uncitedPartsWithPacket,['P2','P3']);
+ const labels=result.missing.match(
+  /Retrieved passages could not be verified as supporting this part of the question:/g)||[];
+ assert.equal(labels.length,2,'both uncited parts carry the label');
+});
+
+// ---------------------------------------------------------------------------
+// Batch 31 (B31-2): gate-time antecedent suppression — remaining pilots.
+// (Pilot (i), the Conrad false-positive shape, is the rewritten
+// B30-4 antecedent test above; the possessive-only backstop test
+// sits beside it.)
+// ---------------------------------------------------------------------------
+
+test('batch 31 B31-2: the round-table shape keeps its demotion (no narration antecedent for the reviewer-resolved name)',async()=>{
+ // Pilot (ii): the span's actor is the pronoun "he" (the Outer
+ // Station manager); the reviewer resolves it to Kurtz. No packet
+ // span names Kurtz as a narration subject — he is not named in
+ // the passage at all — so the antecedent test finds nothing and
+ // the B27-2 demotion stands exactly as before.
+ const spans=buildReviewSpans('S1',conradPronounText);
+ const pronounSpan=spans.find(span=>span.text.includes('he ordered an immense round table'));
+ assert.ok(pronounSpan,'the fixture span carries the pronoun actor');
+ const ai=batch26RouterAI({
+  draft:'PART P1\nKurtz sat at the head of an immense round table in the station\u2019s mess-room. [S1]',
+  review:conradReview([pronounSpan.spanId]),
+  rescue:rescueNotSupported});
+ const result=await composeEvidenceAnswer('In Heart of Darkness, who sat at the head of the round table in the station mess-room?',
+  [conradSource],ai,[],{plan:conradPlan,
+   catalog:{77:'Heart of Darkness — Joseph Conrad'},trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
+ assert.equal(decision.accepted,false);
+ assert.equal(decision.validationReason,'subject-not-named-in-span');
+ assert.equal(result.trace.reviewContract.gateDemotionsSuppressed,undefined,
+  'no suppression is recorded for a demotion that stood');
+ assert.doesNotMatch(result.answer,/Kurtz sat at the head/);
+});
+
+test('batch 31 B31-2: the trait shape keeps its demotion (the only antecedents are quoted speech)',async()=>{
+ // Pilot (iv): the batch-28 shipped-misattribution shape. Kurtz
+ // is named in the packet only inside quoted speech; stripping the
+ // quotations leaves no narration antecedent, so neither the gate
+ // suppression nor the B30-4 rescue key releases the pair.
+ const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:87,url:'https://example.test/conrad#page=87',
+  text:['He swayed the men around him with an unreflecting audacity, and even the oldest hands on the station found themselves listening for his step in the corridor outside.',
+   'The men around the station repeated the story of his audacity for weeks, telling it in the evenings when the work was done and the lamps were lit in the mess room.',
+   'His audacity impressed the men who traded at the post, though none of them could have said what it was about the man that held their attention so completely.',
+   'The men said his audacity had swayed the whole camp by winter, and the story grew with every telling until it bore little resemblance to the thing itself.',
+   'The manager read the letter aloud to the assembled clerks: \u201CKurtz has arrived at the inner station, and Kurtz will take charge of the ivory trade from this season onward.\u201D',
+   'A clerk copied the note into the station log that same evening: "Kurtz remains at the inner station, where Kurtz directs the collection of ivory for the company."'].join(' '),
+  preview:'He swayed the men around him with an unreflecting audacity.'};
+ const ai=batch25RouterAI({
+  reviewResponder:b30ReviewResponder({attributedSubject:'Kurtz',spanId:'S1-Q1'}),
+  rescueResponder:b30RescueResponder('Kurtz'),
+  draftText:'PART P1\nKurtz swayed the men around him with an unreflecting audacity. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, how does Kurtz influence the men around him?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ assert.equal(result.trace.reviewContract.gateDemotionsSuppressed,undefined,
+  'quoted-speech mentions never suppress at the gate');
+ const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
+ assert.equal(rescueClaim.attributionHeld,true,
+  'the pair stays held at the rescue as well');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,false);
+ assert.doesNotMatch(result.answer,/Kurtz swayed the men/);
+});
+
+test('batch 31 B31-2: the Kierkegaard voice shape is not demoted when the reviewer names the provenance voice',async()=>{
+ // Pilot (iii): the claim names no one; the reviewer attributes
+ // the pair to the work's pseudonymous voice. In batch 30 this
+ // pair needed the rescue's voice-anchor restoration; with the
+ // reviewer naming the voice, the gate-time voice key suppresses
+ // the pseudonymous-voice demotion and no rescue runs (the router
+ // carries no rescue responder and would throw).
+ const source={id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',
+  page:32,url:'https://example.test/kierkegaard#page=32',
+  text:'Faith is a relation to God that rests on the absurd. It cannot be mediated by the universal, and the single individual stands higher than the universal.',
+  preview:'Faith is a relation to God that rests on the absurd.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
+  parts:[{id:'P1',question:'What does Fear and Trembling say about faith?',
+   sourceBookIds:['140'],searchQueries:['Fear and Trembling faith'],
+   candidateSourceIds:['S1']}],queries:['Fear and Trembling faith']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+     subjectAttributionStatus:'supported',
+     attributedSubject:'Johannes de Silentio'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,
+  draftText:'PART P1\nThe speaker describes faith as a relation to God that rests on the absurd. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'What does Fear and Trembling say about faith?',
+  [source],ai,[],{plan,catalog:{...catalog,
+   '140':'Fear and Trembling — Søren Kierkegaard'},trace:true});
+ assert.equal(result.trace.rescueReview,undefined,
+  'the gate resolved the pair; no rescue round was needed');
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.deepEqual(result.trace.reviewContract.gateDemotionsSuppressed,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
+   reason:'pseudonymous-voice-unidentified',voice:'Johannes de Silentio'}]);
+ assert.match(result.answer,/faith as a relation to God/);
+});
+
+test('batch 31 B31-2: a positive-contradiction mismatch stands regardless of antecedents',async()=>{
+ // Pilot (v): the claim names Hume as its subject; the reviewer
+ // attributes the pair to Kant. The extractor positively
+ // identifies a different subject for the claim's predication, so
+ // the mismatch is a positive contradiction — the antecedent test
+ // does not apply (the packet DOES name Hume as subject, in the
+ // accepted span itself; the demotion stands anyway).
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Kant'}]}]})};
+ };
+ const rescueResponder=({messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
+   fragment:item.spans?.[0]?.text||'no support',
+   elements:[{element:item.claimText,stated:false}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder,
+  draftText:'PART P1\nHume explains causal necessity through custom and repeated experience. [S1]'});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,false);
+ assert.equal(decision.validationReason,'source-subject-attribution-mismatch');
+ assert.ok(!(result.trace.reviewContract.gateDemotionsSuppressed||[])
+  .some(entry=>entry.reason==='source-subject-attribution-mismatch'),
+  'a positive contradiction is never suppressed');
+ assert.doesNotMatch(result.answer,/Hume explains causal necessity through custom/);
+});
+
+// ---------------------------------------------------------------------------
+// Batch 31 (B31-3): compound quote-speaker guard. The claim and the
+// accepted span texts in pilot (i) are the exact production texts
+// of the batch-30 shipped misattribution (Dostoevsky selected-pass
+// P1-C10 × S1, verdict file phase2-batch30-run/VERDICT.md).
+// ---------------------------------------------------------------------------
+
+const b31KaramazovText=[
+ '“Even this must have a preface—that is, a literary preface,” laughed Ivan, “and I am a poor hand at making one.”',
+ '“Why should an author forego even one listener?” smiled Ivan. “Shall I tell it to you?”',
+ '“I am all attention,” said Alyosha.',
+ '“My poem is called ‘The Grand Inquisitor’; it’s a ridiculous thing, but I want to tell it to you.”'
+].join('\n\n\n');
+const b31KaramazovSource={id:'S1',bookId:'103',
+ title:'The Brothers Karamazov — Fyodor Dostoevsky',page:309,
+ url:'https://example.test/karamazov#page=309',
+ text:b31KaramazovText,
+ preview:'“My poem is called ‘The Grand Inquisitor’; it’s a ridiculous thing.”'};
+const b31KaramazovPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['103']}],
+ parts:[{id:'P1',question:'How does Ivan present his poem to Alyosha?',
+  sourceBookIds:['103'],searchQueries:['Grand Inquisitor poem Alyosha'],
+  candidateSourceIds:['S1']}],queries:['Grand Inquisitor poem Alyosha']};
+const b31KaramazovCatalog={...catalog,
+ '103':'The Brothers Karamazov — Fyodor Dostoevsky'};
+function b31KaramazovReview(spanIds,attributedSubject){
+ return ({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+   retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds,
+     attributionStatus:'supported',attributedSpeaker:attributedSubject,
+     subjectAttributionStatus:'supported',
+     attributedSubject}]}]})};
+ };
+}
+const b31RescueNotSupported=({messages})=>{
+ const payload=JSON.parse(messages[1].content);
+ return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
+  claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
+  fragment:item.spans?.[0]?.text||'no support',
+  elements:[{element:item.claimText,stated:false}]}))})};
+};
+
+test('batch 31 B31-3: the batch-30 Dostoevsky claim is demoted — its quoted judgments are Ivan\u2019s dialogue, not Alyosha\u2019s',async()=>{
+ // Pilot (i), the pre-registered catch. The claim credits Alyosha
+ // with viewing the poem as "senseless" or "ridiculous"; in the
+ // accepted spans "ridiculous" occurs inside Ivan's dialogue, Ivan
+ // is dialogue-tagged twice ("laughed Ivan", "smiled Ivan"), and
+ // Alyosha is dialogue-tagged nowhere in the accepted set (the
+ // page's "said Alyosha" line is a span the reviewer did NOT
+ // accept, exactly as in production). Ordinary review accepted
+ // this pair in batch 30 and the misattribution shipped.
+ const spans=buildReviewSpans('S1',b31KaramazovText);
+ const acceptedSpanIds=spans
+  .filter(span=>span.text.includes('laughed Ivan')||
+   span.text.includes('smiled Ivan')||span.text.includes('ridiculous'))
+  .map(span=>span.spanId);
+ assert.equal(acceptedSpanIds.length,3,
+  'the accepted set is the production trio: two Ivan-tagged spans and the quoted judgment');
+ assert.ok(!spans.find(span=>span.text.includes('said Alyosha')&&
+  acceptedSpanIds.includes(span.spanId)),
+  'the Alyosha-tagged span is not accepted, as in production');
+ const claim='While Alyosha views the poem as a "senseless" or "ridiculous" literary creation, he is visibly moved and "mournfully" affected by its heavy implications.';
+ const ai=batch25RouterAI({
+  reviewResponder:b31KaramazovReview(acceptedSpanIds,'Alyosha'),
+  rescueResponder:b31RescueNotSupported,
+  draftText:'PART P1\n'+claim+' [S1]'});
+ const result=await composeEvidenceAnswer(
+  'How does the Grand Inquisitor episode challenge faith?',
+  [b31KaramazovSource],ai,[],{plan:b31KaramazovPlan,
+   catalog:b31KaramazovCatalog,trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,false);
+ assert.equal(decision.validationReason,
+  'quoted-speech-attributed-to-other-speaker');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+  issue.claimId==='P1-C1'&&issue.sourceId==='S1'&&
+  issue.reason==='quoted-speech-attributed-to-other-speaker'));
+ assert.doesNotMatch(result.answer,/visibly moved/,
+  'the compound claim no longer ships on this pair');
+});
+
+test('batch 31 B31-3 control: a claim quoting its true subject\u2019s words, with that subject\u2019s dialogue tag in the accepted spans, is untouched',async()=>{
+ // Pilot (ii): the same "ridiculous" quotation, now claimed as
+ // Ivan's — and Ivan IS dialogue-tagged in the accepted spans, so
+ // the guard acquits the pair and ordinary review decides it.
+ const spans=buildReviewSpans('S1',b31KaramazovText);
+ const acceptedSpanIds=spans
+  .filter(span=>span.text.includes('laughed Ivan')||
+   span.text.includes('ridiculous'))
+  .map(span=>span.spanId);
+ const ai=batch25RouterAI({
+  reviewResponder:b31KaramazovReview(acceptedSpanIds,'Ivan'),
+  draftText:'PART P1\nIvan calls his poem a "ridiculous" thing, but he insists on telling it to Alyosha. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'How does Ivan present his poem to Alyosha?',
+  [b31KaramazovSource],ai,[],{plan:b31KaramazovPlan,
+   catalog:b31KaramazovCatalog,trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='quoted-speech-attributed-to-other-speaker'));
+ assert.match(result.answer,/ridiculous/);
+});
+
+test('batch 31 B31-3 control: a quoted phrase with no dialogue attribution in the accepted spans is untouched',async()=>{
+ // Pilot (iii): fail-closed means positive evidence only. The
+ // accepted set here is the single "ridiculous" span, which
+ // carries no dialogue tag at all, so the guard has nothing to
+ // fire on and the reviewer's acceptance stands — the guard adds
+ // a catch, it does not widen absence-based demotion.
+ const spans=buildReviewSpans('S1',b31KaramazovText);
+ const acceptedSpanIds=spans
+  .filter(span=>span.text.includes('ridiculous'))
+  .map(span=>span.spanId);
+ assert.equal(acceptedSpanIds.length,1);
+ const ai=batch25RouterAI({
+  reviewResponder:b31KaramazovReview(acceptedSpanIds,'Alyosha'),
+  draftText:'PART P1\nAlyosha views the poem as a "ridiculous" literary creation and is visibly moved by it. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'How does Ivan present his poem to Alyosha?',
+  [b31KaramazovSource],ai,[],{plan:b31KaramazovPlan,
+   catalog:b31KaramazovCatalog,trace:true});
+ const decision=result.trace.reviewContract.reviewDecisions
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision.accepted,true);
+ assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
+  issue.reason==='quoted-speech-attributed-to-other-speaker'));
+ assert.match(result.answer,/visibly moved by it/);
 });
