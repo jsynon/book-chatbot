@@ -140,7 +140,7 @@ export const COMPOSER_PROMPT=`Answer the reader's exact question with a clear, u
 // Review source-derived claims against exact spans, while uncited context is
 // judged collectively at the part level. The reviewer names the direct claim
 // IDs so coverage is not tied to the first sentence or extra context rows.
-export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode and a requirements list with stable requirement IDs and verbatim questionAnchor fields. Use each anchor to preserve the exact requested subject and relation while judging the answer; matching its words is not enough to mark it answered. For every listed requirement, decide whether the complete answer addresses it directly; map it to the smallest set of answer claim IDs that fulfills it. Mark it partial or unanswered when the relevant claim is merely topical or leaves the requested relation unexplained. Qualified general-knowledge claims may fulfill a requirement even without library evidence, but source-derived claims must still pass the ordinary exact-span review. Each part/source evidence entry lists the spanIds allowed for that part and source; exact span text appears once in the top-level spanCatalog. Read a span's text from spanCatalog, and use it only when its ID is listed in the current part's evidence entry. Source title, page, provenance, and source group are stored once in sourceCatalog; look them up using sourceDetailsId when present, otherwise use the evidence entry's id. A claim's sourceEvidence lists cited source IDs and likely span hints; source-group identity is not repeated there. If sourceContexts contains an entry whose sourceId matches an evidence entry's id, read that background text as context, not exact claim evidence. Never borrow a span from another part merely because the same span ID is listed there. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. Distinguish a work's own position from a reported view, narrative voice, or editorial context. For each cited source decision, return an evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary that states what the accepted span establishes and the relevant limit; these are review findings, not substitutes for exact-span validation. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Check that the response gives the kind of concrete, question-specific explanation the reader asked for; broad generalities that could fit unrelated topics are not a complete answer when the question calls for specific examples, perspectives, mechanisms, or contrasts. Apply this to relevance and usefulness without demanding citations for independent background or every factual sentence. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. When a claim says how one thing affects or relates to another, the span must support that connection; merely mentioning both things or a related consequence is not enough. A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means. Do not infer an author-wide theory from a character's line, isolated example, or passing theme unless the supplied span supports that broader scope. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author, speaker, or other person. For every source-derived claim that assigns an action, belief, motive, state, or trait to a named person, verify that the cited span and its supplied source context identify that person as the subject; do not transfer a statement or action from another or unidentified person merely because both appear in the same work. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
+export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode and a requirements list with stable requirement IDs and verbatim questionAnchor fields. Use each anchor to preserve the exact requested subject and relation while judging the answer; matching its words is not enough to mark it answered. For every listed requirement, decide whether the complete answer addresses it directly; map it to the smallest set of answer claim IDs that fulfills it. Mark it partial or unanswered when the relevant claim is merely topical or leaves the requested relation unexplained. Qualified general-knowledge claims may fulfill a requirement even without library evidence, but source-derived claims must still pass the ordinary exact-span review. Each part/source evidence entry lists the spanIds allowed for that part and source; exact span text appears once in the top-level spanCatalog. Read a span's text from spanCatalog, and use it only when its ID is listed in the current part's evidence entry. A spanCatalog entry may also carry a head: the passage text immediately before that span. Read the head as context that can identify the span's subject; it is not citable evidence and cannot by itself support a claim. Source title, page, provenance, and source group are stored once in sourceCatalog; look them up using sourceDetailsId when present, otherwise use the evidence entry's id. A claim's sourceEvidence lists cited source IDs and likely span hints; source-group identity is not repeated there. If sourceContexts contains an entry whose sourceId matches an evidence entry's id, read that background text as context, not exact claim evidence. Never borrow a span from another part merely because the same span ID is listed there. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. Distinguish a work's own position from a reported view, narrative voice, or editorial context. For each cited source decision, return an evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary that states what the accepted span establishes and the relevant limit; these are review findings, not substitutes for exact-span validation. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Check that the response gives the kind of concrete, question-specific explanation the reader asked for; broad generalities that could fit unrelated topics are not a complete answer when the question calls for specific examples, perspectives, mechanisms, or contrasts. Apply this to relevance and usefulness without demanding citations for independent background or every factual sentence. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. When a claim says how one thing affects or relates to another, the span must support that connection; merely mentioning both things or a related consequence is not enough. A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means. Do not infer an author-wide theory from a character's line, isolated example, or passing theme unless the supplied span supports that broader scope. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author, speaker, or other person. For every source-derived claim that assigns an action, belief, motive, state, or trait to a named person, verify that the cited span and its supplied source context identify that person as the subject; do not transfer a statement or action from another or unidentified person merely because both appear in the same work. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
 
 Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context. If a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim, it needs a source ID and exact span support. Merely mentioning a work or person in independent background does not require a citation. Mark uncited source-derived claims partial or unanswered; independent background and synthesis may remain uncited. Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness; the supplied passages cannot establish its truth, so do not treat their silence as disproof.
 
@@ -326,7 +326,7 @@ function mergeReviewRepairs(rawReview,requested,repair){
 // support standard the rubric grades, and genuine overreach — added
 // framing, a second side, a causal step, a stronger verb — still
 // fails it, so Dostoevsky-pattern parts die honestly.
-const RESCUE_REVIEW_PROMPT=`Judge only the listed claim and source pairs. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether the supplied span text states the claim in substance: return "supported" when a reasonable reader would say the span says what the claim says, and "not-supported" when the claim adds anything the span does not state — an interpretive framing, a second side or position, an unstated causal step, or a stronger verb than the span uses. Distinguish a work's own position from a reported view, narrative voice, or editorial context. In fragment, quote the decisive span text your verdict rests on, copied exactly from one of the pair's supplied spans. Do not infer support from a citation alone. Batch 25 (B25-Q2): break the claim into its distinct elements — each fact, relation, or qualification it asserts — and list them in elements, marking each element stated:true only when the supplied spans state that element; a "supported" verdict requires every element of the claim to be stated. Batch 26 (B26-1): when a pair lists outstandingClauses — clause findings from the original review that were not answered — judge each listed clause on its own against the pair's spans and return one clauses entry per listed clause, copying its text exactly, with stated:true only when the spans state that clause and a fragment quoting the decisive span text for that clause exactly. Batch 26 (B26-2): when a pair carries an attributionFinding, also name in anchor the speaker or subject the span itself anchors the claim to, copied as the name appears in the span text (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Batch 27 (B27-4): clause entries are required, not optional — a "supported" verdict for a pair listing outstandingClauses that omits any listed clause is invalid, is re-asked once, and is then recorded not-supported. Batch 29 (B29-2): presence is not clearance — a clauses entry marking its clause stated:false, or whose fragment is not text from the pair's own spans, does not clear the clause, and a "supported" verdict leaving any listed clause uncleared is invalid on the same terms as an omitted entry. Return exactly one decision for every listed pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
+const RESCUE_REVIEW_PROMPT=`Judge only the listed claim and source pairs. Do not reconsider other claims or the answer as a whole. A supplied span may carry a head — the passage text immediately before the span; read it as context that can identify the span's subject, never as evidence that states the claim. For each exact claimId/sourceId pair, decide whether the supplied span text states the claim in substance: return "supported" when a reasonable reader would say the span says what the claim says, and "not-supported" when the claim adds anything the span does not state — an interpretive framing, a second side or position, an unstated causal step, or a stronger verb than the span uses. Distinguish a work's own position from a reported view, narrative voice, or editorial context. In fragment, quote the decisive span text your verdict rests on, copied exactly from one of the pair's supplied spans. Do not infer support from a citation alone. Batch 25 (B25-Q2): break the claim into its distinct elements — each fact, relation, or qualification it asserts — and list them in elements, marking each element stated:true only when the supplied spans state that element; a "supported" verdict requires every element of the claim to be stated. Batch 26 (B26-1): when a pair lists outstandingClauses — clause findings from the original review that were not answered — judge each listed clause on its own against the pair's spans and return one clauses entry per listed clause, copying its text exactly, with stated:true only when the spans state that clause and a fragment quoting the decisive span text for that clause exactly. Batch 26 (B26-2): when a pair carries an attributionFinding, also name in anchor the speaker or subject the span itself anchors the claim to, copied as the name appears in the span text (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Batch 27 (B27-4): clause entries are required, not optional — a "supported" verdict for a pair listing outstandingClauses that omits any listed clause is invalid, is re-asked once, and is then recorded not-supported. Batch 29 (B29-2): presence is not clearance — a clauses entry marking its clause stated:false, or whose fragment is not text from the pair's own spans, does not clear the clause, and a "supported" verdict leaving any listed clause uncleared is invalid on the same terms as an omitted entry. Return exactly one decision for every listed pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
 // Batch 27 (B27-5): the rescue retry's compact instruction. The
 // batch-25 compact retry compacted the EVIDENCE (spans capped at two
 // per pair), which made two production retries structurally incapable
@@ -336,7 +336,7 @@ const RESCUE_REVIEW_PROMPT=`Judge only the listed claim and source pairs. Do not
 // with their full span sets, under this shorter form of the same
 // contract (same verdict standard, same element/clause/anchor fields,
 // same exact-fragment rule).
-const RESCUE_REVIEW_RETRY_PROMPT=`Judge only the listed claim and source pairs — a previous response for these pairs failed validation, and this re-ask carries their full span sets. For each pair, decide whether the supplied span text states the claim in substance: "supported" when a reasonable reader would say the span says what the claim says, "not-supported" when the claim adds anything the span does not state. In fragment, copy the decisive span text exactly from one of the pair's supplied spans. List the claim's elements in elements, each marked stated:true only when the spans state it; "supported" requires every element stated. When a pair lists outstandingClauses, return one clauses entry per listed clause, copying its text exactly, stated:true only when the spans state that clause, with a fragment quoting its decisive span text exactly — a supported verdict omitting any listed clause is invalid, and so is one whose clauses entries do not clear every listed clause (stated:true with a fragment from the pair's own spans). When a pair carries an attributionFinding, name in anchor the speaker or subject the span itself anchors the claim to (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Return exactly one decision per listed pair as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
+const RESCUE_REVIEW_RETRY_PROMPT=`Judge only the listed claim and source pairs — a previous response for these pairs failed validation, and this re-ask carries their full span sets. A supplied span may carry a head — the passage text immediately before the span; read it as context that can identify the span's subject, never as evidence that states the claim. For each pair, decide whether the supplied span text states the claim in substance: "supported" when a reasonable reader would say the span says what the claim says, "not-supported" when the claim adds anything the span does not state. In fragment, copy the decisive span text exactly from one of the pair's supplied spans. List the claim's elements in elements, each marked stated:true only when the spans state it; "supported" requires every element stated. When a pair lists outstandingClauses, return one clauses entry per listed clause, copying its text exactly, stated:true only when the spans state that clause, with a fragment quoting its decisive span text exactly — a supported verdict omitting any listed clause is invalid, and so is one whose clauses entries do not clear every listed clause (stated:true with a fragment from the pair's own spans). When a pair carries an attributionFinding, name in anchor the speaker or subject the span itself anchors the claim to (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Return exactly one decision per listed pair as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
 // Batch 24 (B24-1): strict validation of a rescue response. Any
 // deviation — wrong count, an unrequested or duplicated pair, an
 // unrecognized verdict, a missing fragment, or a "supported" verdict
@@ -370,6 +370,56 @@ function spanNamesSubjectInNarration(text,name){
     .some(entry=>personNamesMatch(entry.name,name));
 }
 
+// Batch 33 (B33-1): the span head — the deterministic preceding
+// narration for a packet span. Spans are contiguous slices of their
+// source page's text (buildReviewSpans carries start/end offsets
+// into scopeText||page.text, both of which the Worker holds in full),
+// so the head is the page text immediately before the span window,
+// capped at 400 characters; when the cap cuts into a sentence, the
+// partial opening sentence is dropped at the first sentence
+// boundary. The head may
+// IDENTIFY the subject of the span's content — the Conrad class,
+// where the passage's subject is fixed by narration before the span
+// window opens — but it is never evidence: it is carried as a
+// separate `head` field, never concatenated into `text`, and every
+// support/coverage measurement reads `text` only, so head content
+// cannot support a claim by construction.
+const SPAN_HEAD_MAX_CHARACTERS=400;
+function spanHeadFor(sourceText,span){
+  const text=String(sourceText||'');
+  const start=Number.isInteger(span?.start)?span.start:0;
+  if(!text||start<=0)return '';
+  const windowStart=Math.max(0,start-SPAN_HEAD_MAX_CHARACTERS);
+  let head=text.slice(windowStart,start);
+  if(windowStart>0){
+    // The window opened mid-sentence: drop the partial opening
+    // sentence at the first sentence boundary, provided a
+    // substantial remainder survives the cut.
+    for(const match of head.matchAll(/[.!?…]+["'”’)\]]*\s+/gu)){
+      const boundary=match.index+match[0].length;
+      if(head.length-boundary>=120){head=head.slice(boundary);break;}
+    }
+  }
+  return head.trim();
+}
+
+// Batch 33 (B33-1): a head is continuous prose, not a window — the
+// subject patterns register a name at a sentence start (or after a
+// clause lead), and a head's subject-fixing sentence can sit
+// anywhere inside it. The head is therefore read sentence by
+// sentence: each sentence is tested as its own narration unit,
+// exactly as it would be read had the span window fallen one
+// sentence earlier. Every other rule (quote-stripping, the
+// non-possessive bar, the subject patterns themselves) is unchanged.
+function headSentenceUnits(head){
+  return String(head||'').split(/(?<=[.!?…])\s+/u).filter(Boolean);
+}
+function spanHeadNamesSubjectInNarration(head,name){
+  if(!name||!head)return false;
+  return headSentenceUnits(head)
+    .some(unit=>spanNamesSubjectInNarration(unit,name));
+}
+
 // Batch 31 (B31-2): the gate-time antecedent test — B30-4's second
 // key promoted from the rescue site into normalizeReview itself.
 // Returns the first packet span whose quote-stripped narration names
@@ -383,16 +433,29 @@ function spanNamesSubjectInNarration(text,name){
 // habitat is exactly the possessive mention, and it must not release
 // its own demotion. (The rescue helper keeps its wider reading, so a
 // possessive-only antecedent can still restore through B30-4.)
+// Batch 33 (B33-1): the test reads each span's head under exactly the
+// same rules as its text (quote-stripped narration pass, then the
+// addressee pass over unstripped text); a match inside a head is
+// reported with inHead so the trace shows where the antecedent sat.
+// A head that names a DIFFERENT person than the claim's subject does
+// not by itself demote — it only supplies antecedents to the tests
+// that already consume them.
 function findSubjectAntecedentSpan(spans,names){
   const targets=(names||[]).filter(Boolean);
   if(!targets.length)return null;
   for(const span of spans||[]){
-    const narration=stripQuotedSpeechRegions(span?.text);
-    if(!narration.trim())continue;
-    for(const entry of personSubjectMatches(narration)){
-      if(entry.possessiveOnly)continue;
-      const matched=targets.find(name=>personNamesMatch(entry.name,name));
-      if(matched)return {spanId:String(span?.spanId||''),name:matched};
+    for(const [text,inHead] of [[span?.text,false],[span?.head,true]]){
+      const units=inHead?headSentenceUnits(text):[text];
+      for(const unit of units){
+        const narration=stripQuotedSpeechRegions(unit);
+        if(!narration.trim())continue;
+        for(const entry of personSubjectMatches(narration)){
+          if(entry.possessiveOnly)continue;
+          const matched=targets.find(name=>personNamesMatch(entry.name,name));
+          if(matched)return {spanId:String(span?.spanId||''),name:matched,
+            ...(inHead?{inHead:true}:{})};
+        }
+      }
     }
   }
   // Batch 32 (B32-8 (iv)): presence as ADDRESSEE. A frame narrator
@@ -411,9 +474,11 @@ function findSubjectAntecedentSpan(spans,names){
   // shape's habitat, "Kurtz has arrived… Kurtz will take charge" —
   // matches neither pattern and still releases nothing.
   for(const span of spans||[]){
-    const matched=spanNamesSubjectAsAddressee(span?.text,targets);
-    if(matched)return {spanId:String(span?.spanId||''),name:matched,
-      via:'addressee'};
+    for(const [text,inHead] of [[span?.text,false],[span?.head,true]]){
+      const matched=spanNamesSubjectAsAddressee(text,targets);
+      if(matched)return {spanId:String(span?.spanId||''),name:matched,
+        via:'addressee',...(inHead?{inHead:true}:{})};
+    }
   }
   return null;
 }
@@ -476,6 +541,42 @@ function contextOverlapTokens(text){
   return new Set((String(text||'').toLowerCase().match(/[a-z']+/gu)||[])
     .filter(token=>token.length>=3&&!CONTEXT_OVERLAP_STOPWORDS.has(token)));
 }
+function contextTokenSequence(text){
+  return (String(text||'').toLowerCase().match(/[a-z']+/gu)||[])
+    .filter(token=>token.length>=3&&!CONTEXT_OVERLAP_STOPWORDS.has(token));
+}
+// Batch 33 (B33-6): B32-5's threshold alone cannot tell restatement
+// from topical kinship — batch-32 production produced a false drop
+// at similarity 0.217 (Narrators: the context claim and the demoted
+// claim share only entity/topic nouns — marlow, listeners, story,
+// darkness, experience) against a true drop at 0.258 (Hobbes: the
+// context claim restates the demoted claim's PREDICATE — shared
+// verb-form token "driven", shared content bigram "self
+// sufficient"). Measured on the two production pairs with the real
+// tokenizer: Hobbes shared verb-form tokens {driven} and shared
+// content bigrams {self sufficient}; Narrators shared verb-form
+// tokens {} and shared content bigrams {}. Inheritance therefore
+// additionally requires shared PREDICATE content: at least one
+// shared token carrying a verb-form suffix (-ed / -ing / -en — a
+// pure suffix rule, no verb list), or at least one shared adjacent
+// content-token bigram. Entity overlap alone no longer inherits a
+// demotion. The same predicate rule guards the independent-coverage
+// check at the application site, which consumes this function.
+function sharesPredicateContent(contextText,demotedText){
+  const context=contextOverlapTokens(contextText);
+  const demoted=contextOverlapTokens(demotedText);
+  for(const token of demoted)
+    if(context.has(token)&&/(?:ed|ing|en)$/u.test(token))return true;
+  const contextSequence=contextTokenSequence(contextText);
+  const contextBigrams=new Set();
+  for(let index=0;index+1<contextSequence.length;index++)
+    contextBigrams.add(contextSequence[index]+' '+contextSequence[index+1]);
+  const demotedSequence=contextTokenSequence(demotedText);
+  for(let index=0;index+1<demotedSequence.length;index++)
+    if(contextBigrams.has(demotedSequence[index]+' '+demotedSequence[index+1]))
+      return true;
+  return false;
+}
 function demotedContentCoverage(contextText,demotedText){
   const demoted=contextOverlapTokens(demotedText);
   if(demoted.size<8)return null;
@@ -484,7 +585,10 @@ function demotedContentCoverage(contextText,demotedText){
   for(const token of demoted)if(context.has(token))shared++;
   if(shared<4)return null;
   const similarity=Math.round((shared/demoted.size)*1000)/1000;
-  return similarity>=CONTEXT_INHERITANCE_THRESHOLD?similarity:null;
+  if(similarity<CONTEXT_INHERITANCE_THRESHOLD)return null;
+  // Batch 33 (B33-6): topical kinship is not restatement.
+  if(!sharesPredicateContent(contextText,demotedText))return null;
+  return similarity;
 }
 
 // Batch 32 (B32-10 (a)): letter-byline direction. Collected-works
@@ -702,7 +806,8 @@ function parseRescueDecisions(rescue,requested){
         if((findingReason==='subject-not-named-in-span'||
             findingReason==='source-subject-attribution-missing')&&
            (request.packetSourceSpans||[]).some(span=>
-            spanNamesSubjectInNarration(span?.text,anchor))){
+            spanNamesSubjectInNarration(span?.text,anchor)||
+            spanHeadNamesSubjectInNarration(span?.head,anchor))){
           valid=true;restoredByAntecedent=true;
         }else if(findingReason==='pseudonymous-voice-unidentified'){
           const voice=String(request.provenanceVoiceName||'').trim();
@@ -721,7 +826,8 @@ function parseRescueDecisions(rescue,requested){
           if((findingReason==='subject-not-named-in-span'||
               findingReason==='source-subject-attribution-missing')&&
              (request.packetSourceSpans||[]).some(span=>
-              spanNamesSubjectInNarration(span?.text,candidate))){
+              spanNamesSubjectInNarration(span?.text,candidate)||
+              spanHeadNamesSubjectInNarration(span?.head,candidate))){
             valid=true;restoredByAntecedent=true;break;
           }
           if(findingReason==='pseudonymous-voice-unidentified'){
@@ -1804,6 +1910,62 @@ function hasDirectPolarityContradiction(claimText,sourceText){
   }
   return false;
 }
+// Batch 33 (B33-5 (c)): polarity AGREEMENT — the mirror of the
+// contradiction test above, on the same machinery. A span agrees
+// with a claim's polarity when it carries the same polarity
+// construction over substantially the same terms: a shared negative
+// clause (cannot / could not / unable to …) whose term overlap is
+// at least the contradiction test's own 0.6 bar, or a shared
+// positive modal phrase at the same bar. The batch-32 Science
+// shape: the claim restates the source's "cannot completely
+// dissect" in the same construction, the reviewer's own boundary
+// agreed with the claim, and the deterministic test vetoed the
+// rescue flip anyway because ANOTHER selected span affirmed a
+// different clause.
+function polarityAgreement(claimText,spanText){
+  const sentenceParts=value=>String(value||'').split(/[.!?…]+/u).filter(Boolean);
+  const negativeClauseTerms=value=>sentenceParts(value).flatMap(sentence=>
+    [...sentence.matchAll(/\b(?:cannot|can't|could not|couldn't|unable to|not able to|impossible to)\b([^;]*)/giu)]
+      .map(match=>polarityTerms(match[1]
+        .split(/\b(?:because|since|while|whereas|although|but|and)\b/iu,1)[0])))
+    .filter(terms=>terms.size>=2);
+  const positivePhraseTerms=value=>sentenceParts(value).flatMap(sentence=>
+    [...sentence.matchAll(/\b(?:can|could|able to|ability to|capable of|possible to)\b([^;]*)/giu)]
+      .map(match=>polarityTerms(match[1]
+        .split(/\b(?:because|since|while|whereas|although|but|and)\b/iu,1)[0])))
+    .filter(terms=>terms.size>=3);
+  for(const claimTerms of negativeClauseTerms(claimText))
+    for(const spanTerms of negativeClauseTerms(spanText))
+      if(phraseOverlap(claimTerms,spanTerms)>=0.6)return true;
+  for(const claimTerms of positivePhraseTerms(claimText))
+    for(const spanTerms of positivePhraseTerms(spanText))
+      if(phraseOverlap(claimTerms,spanTerms)>=0.6)return true;
+  return false;
+}
+// Batch 33 (B33-5 (c)): the contradiction side of the agreement
+// test, measured on the claim's genuine positive assertions only.
+// The pooled contradiction test captures a claim's positive phrase
+// greedily, and the capture runs on into the claim's own "cannot"
+// clause (the splitter does not stop at "though it cannot …"), so
+// a span that mirrors the claim's negative construction is itself
+// scored as contradicting it — the very quirk that produced the
+// production veto. Stripping the claim's negative clauses before
+// the contradiction test measures what the claim actually affirms.
+function spanContradictsClaimPolarity(claimText,spanText){
+  const affirmationsOnly=String(claimText||'')
+    .replace(/\b(?:cannot|can't|could not|couldn't|unable to|not able to|impossible to)\b[^.;!?]*/giu,'');
+  return hasDirectPolarityContradiction(affirmationsOnly,spanText);
+}
+// Batch 33 (B33-5 (a)): the composer's bullet-label form — a bold
+// label ending in a colon, then the content sentence(s). The label
+// is the composer's own synthesis heading; the cited passages are
+// not expected to contain it. Returns {label, content} or null.
+function bulletLabelParts(text){
+  const match=String(text||'')
+    .match(/^\s*(?:[-*•]\s*)?\*\*([^*]{3,80}?):\*\*\s*(.+)$/su);
+  if(!match)return null;
+  return {label:match[1].trim(),content:match[2].trim()};
+}
 function hasNegationScopeMismatch(claimText,sourceText){
   // "Neither P nor Q may be asserted" is stronger than "P and Q are not both true".
   // Detect that narrow logical-scope mismatch without encoding any topic or author.
@@ -2412,6 +2574,97 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
   // validation can census demotions that stood against demotions
   // suppressed and audit each direction.
   const gateDemotionsSuppressed=[];
+  // Batch 33 (B33-8): parts whose context-support kills rested on
+  // an empty packet view (see the guard in the uncited-claim
+  // branch), surfaced on the contract so validation can census
+  // unmeasured refusals apart from measured ones.
+  const contextSupportUnmeasuredParts=[];
+  // Batch 33 (B33-4): the per-part packet name inventory for the
+  // same-family check — every "Firstname Surname" pair named in the
+  // part's packet spans and span heads, grouped by surname. A
+  // surname is SHARED in the packet when at least two distinct
+  // first names pair with it: the packet itself then attests two
+  // people the shared title+surname form ("Miss Bennet") could
+  // denote. Titles are not first names, so "Mr. Bennet" / "Mrs.
+  // Bennet" cannot manufacture a sibling pair on their own.
+  const NAME_INVENTORY_TITLES=new Set(['mr','mrs','miss','ms','dr',
+    'sir','lady','lord','captain','colonel','major','general',
+    'professor','reverend','st']);
+  const packetNameInventoryByPart=new Map();
+  const packetNameInventory=partId=>{
+    if(packetNameInventoryByPart.has(partId))
+      return packetNameInventoryByPart.get(partId);
+    const texts=[];
+    const partMap=reviewSpanMaps.get(partId);
+    if(partMap)for(const sourceMap of partMap.values())
+      for(const span of sourceMap.values()){
+        texts.push(String(span?.text||''));
+        if(span?.head)texts.push(String(span.head));
+      }
+    const bySurname=new Map();
+    for(const text of texts)
+      for(const match of text.matchAll(
+        /\b([\p{Lu}][\p{Ll}]{2,})\s+([\p{Lu}][\p{Ll}]{2,})\b/gu)){
+        const key=match[2].toLocaleLowerCase();
+        if(!bySurname.has(key))bySurname.set(key,
+          {surname:match[2],pairFirsts:new Set()});
+        bySurname.get(key).pairFirsts.add(match[1]);
+      }
+    const shared=new Map();
+    for(const [key,entry] of bySurname){
+      const firsts=new Set([...entry.pairFirsts]
+        .filter(first=>!NAME_INVENTORY_TITLES.has(first.toLocaleLowerCase())));
+      if(firsts.size>=2)shared.set(key,{surname:entry.surname,firsts});
+    }
+    const inventory={texts,shared};
+    packetNameInventoryByPart.set(partId,inventory);
+    return inventory;
+  };
+  // Batch 33 (B33-5 (b)): the companion-span test. A span in the
+  // same source's packet that the reviewer did NOT bind to this
+  // claim STATES the claim's proposition — clause-level content
+  // coverage at the gate's own 0.65 lexical bar — and anchors the
+  // claim's subject: the span (or its head) names one of the
+  // attributed names as a narration subject, or an attributed name
+  // is the source work's own author voice. The reviewer's per-span
+  // findings stand as recorded; this test only asks whether the
+  // packet as a whole states what the bound span was found not to
+  // state (the reviewer's own boundaries concede the shape: "the
+  // specific claim is better supported by other spans in the
+  // source"). The conjunction is the safety: coverage without an
+  // anchor, or an anchor without coverage, releases nothing — the
+  // round-table shape fails it (the Kurtz-naming span does not
+  // state the table proposition) and the trait shape fails it (no
+  // span names the credited person, who is not the work's author).
+  const companionSpanStatesClaim=(partId,sourceId,claimText,names,
+    excludedSpanIds)=>{
+
+    const sourceMap=reviewSpanMaps.get(partId)?.get(sourceId);
+    if(!sourceMap)return false;
+    const attributed=[...new Set((names||[]).map(name=>
+      String(name||'').trim()).filter(Boolean))];
+    if(!attributed.length)return false;
+    const source=sources.find(item=>String(item?.id||'')===String(sourceId));
+    const authorAnchored=attributed.some(name=>
+      speakerIsWorkAuthor(name,source));
+    for(const span of sourceMap.values()){
+      if(excludedSpanIds.has(String(span?.spanId||'')))continue;
+      const coverage=clauseContentCoverage(claimText,[span]);
+      if(!coverage.packetSpanIds.includes(String(span?.spanId||'')))continue;
+      if(authorAnchored)return true;
+      // The anchor reads narration the way the antecedent test
+      // does: quoted speech is stripped first, so a name that
+      // appears only inside quotation (the trait shape's letter
+      // and log entry) anchors nothing.
+      if(attributed.some(name=>
+        headSentenceUnits(span?.text).some(unit=>
+          spanNamesSubjectInNarration(stripQuotedSpeechRegions(unit),name))||
+        headSentenceUnits(span?.head).some(unit=>
+          spanNamesSubjectInNarration(stripQuotedSpeechRegions(unit),name))))
+        return true;
+    }
+    return false;
+  };
   const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
     String(claim?.claimId||''),new Map((Array.isArray(claim?.sourceEvidence)?claim.sourceEvidence:[])
       .map(item=>[String(item?.sourceId||''),Array.isArray(item?.spanIds)?item.spanIds:[]]))
@@ -2442,7 +2695,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // Accept that path only when the reviewer explicitly judged the
         // complete part answered; all cited claims still go through exact
         // source and span validation below.
-        const accepted=(reviewerPart?.retainedContextClaimIds||[]).includes(answer.claimId)||
+        let accepted=(reviewerPart?.retainedContextClaimIds||[]).includes(answer.claimId)||
           (reviewerPart?.answerStatus==='answered'&&
             (reviewerPart?.directAnswerClaimIds||[]).includes(answer.claimId))||
           // Batch 8 (B8-1): a scaffolding link is itself a retention
@@ -2451,18 +2704,47 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           // whose supports prove invalid degrades to plain retained
           // context, never to a fabricated citation.
           (reviewerPart?.scaffoldingLinks||[]).some(link=>link.claimId===answer.claimId);
+        // Batch 33 (B33-8): the empty-measurement guard. A
+        // context-support judgment is only a measurement when the
+        // part had packet-visible spans to judge against — in the
+        // review packet or in the composer's packet. With zero
+        // visible spans on both sides (the Smith SP2 shape), a
+        // non-retention is not evidence about the claim: record the
+        // part as unmeasured and fall back to the claim's own review
+        // outcome instead of demoting on an empty view.
+        let contextSupportUnmeasured=false;
+        if(!accepted){
+          const reviewVisible=reviewSpanMaps.get(part.id)?
+            [...reviewSpanMaps.get(part.id).values()]
+              .reduce((total,map)=>total+(map?.size||0),0):0;
+          const composerEntry=composerPacketSpansByPart?.get?.(part.id);
+          const composerVisible=!composerEntry?0:
+            typeof composerEntry.size==='number'?composerEntry.size:
+            Array.isArray(composerEntry)?composerEntry.length:0;
+          if(reviewVisible+composerVisible===0){
+            contextSupportUnmeasured=true;
+            if(!contextSupportUnmeasuredParts.includes(part.id))
+              contextSupportUnmeasuredParts.push(part.id);
+            if(decision&&normalizeStatus(decision.status)==='answered')
+              accepted=true;
+          }
+        }
         if(accepted){
           const retainedAnswer={...answer,sourceIds:[],
             renderedText:answer.renderedText||answer.text};
           acceptedAnswers.push(retainedAnswer);
           precedingAnswers.push(retainedAnswer);
         }else supportIssues.push({partId:part.id,claimId:answer.claimId,
-          reason:'part-level-context-not-supported'});
+          reason:contextSupportUnmeasured?'context-support-unmeasured':
+            'part-level-context-not-supported'});
         reviewDecisions.push({partId:part.id,claimId:answer.claimId,
           claimText:String(answer.text||'').slice(0,320),
           claimStatus:accepted?'answered':'omitted',contextOnly:true,
           reviewerPartStatus:partLevelStatus,reviewLevel:'explicit-context-selection',accepted,
-          validationReason:accepted?null:'context-claim-not-retained'});
+          ...(contextSupportUnmeasured?{contextSupportUnmeasured:true}:{}),
+          validationReason:accepted?null:
+            contextSupportUnmeasured?'context-support-unmeasured':
+            'context-claim-not-retained'});
         continue;
       }
       if(!decision){issues.push('missing-claim-decision');supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-decision'});continue;}
@@ -2742,7 +3024,8 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
               gateDemotionsSuppressed.push({partId:part.id,
                 claimId:answer.claimId,sourceId,reason:subjectAttributionIssue,
                 antecedentSpanId:antecedent.spanId,
-                ...(antecedent.via?{antecedentVia:antecedent.via}:{})});
+                ...(antecedent.via?{antecedentVia:antecedent.via}:{}),
+                ...(antecedent.inHead?{antecedentInHead:true}:{})});
               subjectAttributionIssue='';
             }else if(attributedSubject){
               const pairVoice=sourceProvenance(sourceById.get(sourceId),plan,
@@ -2770,7 +3053,8 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             // recorded as a restoration, not a suppression.
             if(subjectAttributionIssue&&sourceDecision.rescueAccepted===true&&
                testNames.some(name=>packetSpans.some(span=>
-                 spanNamesSubjectInNarration(span?.text,name)))){
+                 spanNamesSubjectInNarration(span?.text,name)||
+                 spanHeadNamesSubjectInNarration(span?.head,name)))){
               gateRestorations.push({partId:part.id,
                 claimId:answer.claimId,sourceId,kind:'antecedent',
                 reason:subjectAttributionIssue});
@@ -2787,10 +3071,142 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // verb somewhere and every attribution looked anchored.
         const cueSourceText=String(sourceById.get(sourceId)?.scopeText||
           sourceById.get(sourceId)?.text||sourceById.get(sourceId)?.preview||'');
-        const unanchoredSpeakerIssue=namedAttribution&&attributionStatus==='supported'&&claimedSpeaker&&
+        let unanchoredSpeakerIssue=namedAttribution&&attributionStatus==='supported'&&claimedSpeaker&&
           !speakerIsWorkAuthor(claimedSpeaker,sourceById.get(sourceId))&&
           !hasExplicitSpeakerCue(speakerCueContext(cueSourceText,selected),claimedSpeaker)?
           'source-attribution-unanchored':'';
+        // Batch 33 (B33-4): the same-family ground. When the packet
+        // itself attests two people sharing a surname (the name
+        // inventory above), a claim about one of them whose accepted
+        // spans name that person ONLY through the shared
+        // title+surname form ("Miss Bennet") cannot tell which of
+        // them the span denotes: the acceptance demotes as
+        // source-attribution-unanchored even when the reviewer
+        // records support — the phase-3 P&P shape, where Jane
+        // Bennet's words shipped credited to Elizabeth. The ground
+        // releases only on DISAMBIGUATION in the accepted spans or
+        // their heads: the full "Firstname Surname" form, an
+        // appositive tying the first name to the shared form, or a
+        // distinguishing descriptor the packet itself ties to that
+        // first name. A bare first-name mention does NOT
+        // disambiguate — the production head named Elizabeth as the
+        // hearer of the scene while the words were Jane's.
+        let familyNameIssue='',familyNameSurname='';
+        {
+          const inventory=packetNameInventory(part.id);
+          if(inventory.shared.size){
+            const packetSpanById=new Map(packetSpans.map(span=>[
+              String(span?.spanId||''),span]));
+            const acceptedTexts=[],acceptedHeads=[];
+            for(const item of selected){
+              acceptedTexts.push(String(item.quote||''));
+              const packetSpan=packetSpanById.get(String(item.spanId||''));
+              if(packetSpan?.head){
+                acceptedTexts.push(String(packetSpan.head));
+                acceptedHeads.push(String(packetSpan.head));
+              }
+            }
+            const esc=value=>value.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&');
+            const claimFullNames=new Set([...subjectTargets,
+              ...(claimSpeaker?[claimSpeaker]:[])]);
+            for(const [key,entry] of inventory.shared)
+              for(const first of entry.firsts)
+                if(new RegExp(`\\b${esc(first)}\\b`,'u').test(candidateText))
+                  claimFullNames.add(first+' '+entry.surname);
+            for(const fullName of claimFullNames){
+              const tokens=String(fullName||'').trim().split(/\s+/u);
+              if(tokens.length<2)continue;
+              const first=tokens[0],surname=tokens[tokens.length-1];
+              const entry=inventory.shared.get(surname.toLocaleLowerCase());
+              if(!entry||![...entry.firsts].some(name=>
+                name.toLocaleLowerCase()===first.toLocaleLowerCase()))continue;
+              const sharedForm=new RegExp(
+                `\\b(?:Miss|Mrs|Ms|Mr|Dr)\\.?\\s+${esc(entry.surname)}\\b`,'u');
+              if(!acceptedTexts.some(text=>sharedForm.test(text)))continue;
+              const fullForm=new RegExp(
+                `\\b${esc(first)}\\s+${esc(entry.surname)}\\b`,'u');
+              // The full form disambiguates in the span text itself.
+              // In a HEAD it must name the person as the actor of the
+              // span's content: a subject registration in the head's
+              // narration whose sentence shares distinctive content
+              // with the span. The production head named Elizabeth
+              // in full as the HEARER of Wickham's account — subject
+              // of hearing, not of the span's pleading — while the
+              // span's words were Jane's; a full-form mention in
+              // preceding narration about something else fixes
+              // nothing.
+              const HEAD_CONTENT_STOPWORDS=new Set(['there','their',
+                'these','those','where','which','while','about',
+                'would','could','should','after','before','being']);
+              const spanContentTokens=new Set(selected.flatMap(item=>
+                [...contextOverlapTokens(String(item.quote||''))]
+                  .filter(token=>token.length>=5&&
+                    !HEAD_CONTENT_STOPWORDS.has(token))));
+              let disambiguated=selected.some(item=>fullForm.test(
+                String(item.quote||'')))||acceptedHeads.some(head=>
+                headSentenceUnits(head).some(unit=>{
+                  const narration=stripQuotedSpeechRegions(unit);
+                  if(!personSubjectMatches(narration).some(match=>
+                    !match.possessiveOnly&&personNamesMatch(match.name,
+                      first+' '+entry.surname)))return false;
+                  // The actor tie needs at least two distinctive
+                  // content words shared with the span — one shared
+                  // function-length word ("there") is not a tie.
+                  return [...contextOverlapTokens(unit)]
+                    .filter(token=>token.length>=5&&
+                      !HEAD_CONTENT_STOPWORDS.has(token)&&
+                      spanContentTokens.has(token)).length>=2;
+                }));
+              if(!disambiguated)disambiguated=acceptedTexts.some(text=>
+                new RegExp(`${sharedForm.source}[^.!?\\n]{0,40}?(?:,\\s*|\\()` +
+                  `${esc(first)}\\b`,'u').test(text)||
+                new RegExp(`\\b${esc(first)}\\b[^.!?\\n]{0,40}?` +
+                  `(?:,\\s*the\\s+${sharedForm.source}|\\(the\\s+${sharedForm.source}\\))`,'u')
+                  .test(text));
+              if(!disambiguated){
+                const descriptor=new RegExp(
+                  `\\b(?:eldest|youngest|second|elder|younger|only)\\s+` +
+                  `${sharedForm.source}`,'u');
+                disambiguated=acceptedTexts.some(text=>descriptor.test(text))&&
+                  inventory.texts.some(text=>descriptor.test(text)&&
+                    new RegExp(`\\b${esc(first)}\\b`,'u').test(text));
+              }
+              if(!disambiguated){
+                familyNameIssue='source-attribution-unanchored';
+                familyNameSurname=entry.surname;
+                break;
+              }
+            }
+          }
+        }
+        // Batch 33 (B33-5 (b)): unanchored-veto parity. The
+        // speaker-cue ground is the one attribution ground the gate
+        // never held to the antecedent standard B31-2/B32-8 apply to
+        // subject grounds — and at a rescue re-normalization it
+        // vetoed a supported flip whose anchor the packet itself
+        // names as a narration subject elsewhere (the batch-32
+        // Wuthering shape: anchor "Catherine", vetoed unanchored,
+        // while the packet's narration names Catherine as a subject
+        // outside the bound span's cue window). At re-normalization
+        // only — the same scoping as B32-8 (ii) — the ground must
+        // first pass findSubjectAntecedentSpan over the packet spans
+        // and their heads (B33-1); a pass suppresses the veto and is
+        // recorded as a restoration. The same-family ground
+        // (B33-4), which shares the reason string, is deliberately
+        // NOT parried here: an antecedent naming the person as a
+        // subject somewhere does not disambiguate a shared form.
+        if(unanchoredSpeakerIssue&&sourceDecision?.rescueAccepted===true){
+          const antecedent=findSubjectAntecedentSpan(packetSpans,
+            [claimedSpeaker,...subjectTargets,attributedSubject]);
+          if(antecedent){
+            gateRestorations.push({partId:part.id,claimId:answer.claimId,
+              sourceId,kind:'antecedent-parity',
+              reason:unanchoredSpeakerIssue,
+              antecedentSpanId:antecedent.spanId,
+              ...(antecedent.inHead?{antecedentInHead:true}:{})});
+            unanchoredSpeakerIssue='';
+          }
+        }
         let provenanceAttributionIssue=sourceDecision?.status==='answered'?
           sourceVoiceAttributionIssue(candidateText,sourceById.get(sourceId),plan,
             precedingAnswers,sourceById):'';
@@ -2846,7 +3262,8 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           }
         }
         let attributionIssue=modelAttributionIssue||speakerMismatchIssue||subjectAttributionIssue||
-          letterBylineIssue||unanchoredSpeakerIssue||provenanceAttributionIssue;
+          letterBylineIssue||unanchoredSpeakerIssue||provenanceAttributionIssue||
+          familyNameIssue;
         // Batch 32 (B32-8 (ii)): an antecedent restoration
         // neutralizes the subject-attribution demotion it answered,
         // not only the subject-not-named one. B30-4's two-key path
@@ -2868,7 +3285,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           subjectAttributionIssue='';
           attributionIssue=modelAttributionIssue||speakerMismatchIssue||
             subjectAttributionIssue||letterBylineIssue||
-            unanchoredSpeakerIssue||provenanceAttributionIssue;
+            unanchoredSpeakerIssue||provenanceAttributionIssue||familyNameIssue;
         }
         // Batch 30 (B30-4): a voice-anchor restoration neutralizes the
         // pseudonymous-voice demotion only — the pair was restored
@@ -3002,7 +3419,8 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             gateDemotionsSuppressed.push({partId:part.id,
               claimId:answer.claimId,sourceId,reason:subjectNameIssue,
               antecedentSpanId:antecedent.spanId,
-              ...(antecedent.via?{antecedentVia:antecedent.via}:{})});
+              ...(antecedent.via?{antecedentVia:antecedent.via}:{}),
+              ...(antecedent.inHead?{antecedentInHead:true}:{})});
             subjectNameIssue='';
           }
         }
@@ -3018,17 +3436,93 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           const parityTargets=subjectGateUnnamedTargets.length?
             subjectGateUnnamedTargets:subjectTargets;
           if(parityTargets.some(name=>packetSpans.some(span=>
-            spanNamesSubjectInNarration(span?.text,name)))){
+            spanNamesSubjectInNarration(span?.text,name)||
+            spanHeadNamesSubjectInNarration(span?.head,name)))){
             gateRestorations.push({partId:part.id,
               claimId:answer.claimId,sourceId,kind:'antecedent',
               reason:subjectNameIssue});
             subjectNameIssue='';
           }
         }
+        // Batch 33 (B33-5 (b), site S1): the companion-span
+        // suppression for the span-mismatch family. After every
+        // antecedent test has had its say, a subject ground in the
+        // mismatch family (mismatch / missing / not-named) still
+        // demotes the pair for what the BOUND spans do not show.
+        // When another span of the same packet states the claim's
+        // proposition with the subject anchored (the
+        // companionSpanStatesClaim conjunction), the packet as a
+        // whole does show it, and the demotion is suppressed. The
+        // recorded reviewer finding stands in the trace; only the
+        // demotion is suppressed, exactly as B31-2 suppresses.
+        let companionCleared=false;
+        if(subjectNameIssue&&['subject-not-named-in-span',
+          'source-subject-attribution-missing',
+          'source-subject-attribution-mismatch'].includes(subjectNameIssue)&&
+          companionSpanStatesClaim(part.id,sourceId,candidateText,
+            [attributedSubject,...subjectTargets,claimSpeaker],
+            new Set(selected.map(item=>String(item.spanId||''))))){
+          gateDemotionsSuppressed.push({partId:part.id,
+            claimId:answer.claimId,sourceId,kind:'companion-span',
+            reason:subjectNameIssue});
+          subjectNameIssue='';
+          companionCleared=true;
+        }
+        // Batch 33 (B33-5 (b), site S1, second ground family): the
+        // reviewer-attribution grounds (missing / mismatch) live in
+        // subjectAttributionIssue, not the IIFE above. The same
+        // companion suppression applies when B31-2's antecedent test
+        // could not release the pair (its positive-contradiction
+        // carve-out stood) but a companion span states the claim
+        // with the REVIEWER's attributed subject anchored. One
+        // carve-out of my own, mirroring B32-8 (i): when the claim
+        // positively names its speaker and that speaker is not the
+        // attributed subject, the contradiction is the claim's own
+        // attribution, and no companion span can excuse it.
+        if(subjectAttributionIssue&&
+          ['source-subject-attribution-missing',
+           'source-subject-attribution-mismatch']
+            .includes(subjectAttributionIssue)&&
+          (!claimSpeaker||personNamesMatch(claimSpeaker,attributedSubject))&&
+          companionSpanStatesClaim(part.id,sourceId,candidateText,
+            [attributedSubject,...subjectTargets,claimSpeaker],
+            new Set(selected.map(item=>String(item.spanId||''))))){
+          gateDemotionsSuppressed.push({partId:part.id,
+            claimId:answer.claimId,sourceId,kind:'companion-span',
+            reason:subjectAttributionIssue});
+          subjectAttributionIssue='';
+          companionCleared=true;
+        }
+        // The attribution composition above already consumed
+        // subjectAttributionIssue; a companion clearing recomposes
+        // it, mirroring the B32-8 (ii) neutralization pattern.
+        if(companionCleared)
+          attributionIssue=modelAttributionIssue||speakerMismatchIssue||
+            subjectAttributionIssue||letterBylineIssue||
+            unanchoredSpeakerIssue||provenanceAttributionIssue||
+            familyNameIssue;
         const selectedQuote=selected.map(item=>item.quote).join(' ');
-        const polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
+        let polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
           hasDirectPolarityContradiction(candidateText,selectedQuote)?
           'source-contradicts-claim-polarity':'';
+        // Batch 33 (B33-5 (c)): polarity agreement suppression at a
+        // rescue re-normalization. The contradiction test reads the
+        // SELECTED spans pooled; a rescue flip the rescue judged
+        // supported can still be vetoed because one selected span
+        // affirms a different clause. When another packet span
+        // carries the claim's own polarity construction over the
+        // same terms (polarityAgreement) and does not itself
+        // contradict the claim, the veto is measuring a different
+        // clause than the claim's, and it is suppressed. Recorded
+        // as a gate restoration, kind 'polarity-agreement'.
+        if(polarityIssue&&sourceDecision?.rescueAccepted===true&&
+          packetSpans.some(span=>
+            !spanContradictsClaimPolarity(candidateText,span.text)&&
+            polarityAgreement(candidateText,span.text))){
+          gateRestorations.push({partId:part.id,claimId:answer.claimId,
+            sourceId,kind:'polarity-agreement',reason:polarityIssue});
+          polarityIssue='';
+        }
         const negationScopeIssue=sourceDecision?.status==='answered'&&selected.length&&
           hasNegationScopeMismatch(candidateText,selectedQuote)?
           'source-negation-scope-mismatch':'';
@@ -3045,7 +3539,13 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             // ground separately from reviewer speaker mismatches.
             ...(attributionIssue===letterBylineIssue&&letterByline?
               {letterBylineDirection:{sender:letterByline.sender,
-                recipient:letterByline.recipient}}:{})});
+                recipient:letterByline.recipient}}:{}),
+            // Batch 33 (B33-4): the same-family ground carries the
+            // shared surname, so validation can census it apart
+            // from speaker-cue unanchored demotions (same reason
+            // string, different producer).
+            ...(attributionIssue===familyNameIssue&&familyNameIssue?
+              {familyNameAmbiguity:{surname:familyNameSurname}}:{})});
         }
         if(polarityIssue){
           sourceDecision.status='partial';
@@ -3094,14 +3594,83 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
               composerPacketSpanIds:composerSpans.map(span=>span.spanId),
               reviewPacketSpanIds:reviewSpans.map(span=>span.spanId),
               boundSpanIds};
-          if(!validSupportedText)sourceDecision.status='partial';
+          // Batch 33 (B33-5 (a)): the clause finding against a
+          // bullet-label claim measures the label with the content.
+          // When the label-stripped content is covered by the
+          // selected spans at the same 0.65 union standard as the
+          // verdict-site exemption below, the clause demotion does
+          // not stand; the finding is recorded with the exemption
+          // disposition instead of a demotion.
+          const clauseBulletLabel=bulletLabelParts(candidateText);
+          const clauseBulletCoverage=clauseBulletLabel?
+            secondLookCoverage(clauseBulletLabel.content,
+              selected.map(item=>item.quote)):null;
+          const clauseBulletExempted=!!clauseBulletCoverage&&
+            clauseBulletCoverage.ratio>=0.65&&clauseBulletCoverage.claimTerms>=4;
+          if(clauseBulletExempted)
+            gateDemotionsSuppressed.push({partId:part.id,
+              claimId:answer.claimId,sourceId,kind:'bullet-label',
+              reason:'claim-clause-not-supported',
+              label:clauseBulletLabel.label});
+          if(!validSupportedText&&!clauseBulletExempted)
+            sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:'claim-clause-not-supported',issueCode:unsupportedClause.issueCode,
             clauseText:unsupportedClause.text.slice(0,320),packetCoverage,
-            disposition:validSupportedText?'narrowed-claim-retained':'claim-demoted'});
+            disposition:clauseBulletExempted?'bullet-label-exempted':
+              validSupportedText?'narrowed-claim-retained':'claim-demoted'});
         }
         const answeredWithoutSelectedSpan=sourceDecision.status==='answered'&&!selected.length;
-        if(sourceDecision.recoveredMissingDecision||sourceDecision.status!=='answered'||!selected.length){
+        // Batch 33 (B33-5 (b), site S2): the companion-span
+        // restoration for the reviewer's support verdict. The
+        // reviewer found this pair not-supported, but no gate ground
+        // fired and a companion span of the same packet states the
+        // claim with its subject anchored — the reviewer's own
+        // boundary class ("better supported by other spans in the
+        // source"). The pair is restored and recorded; the recorded
+        // reviewer verdict stands in the trace.
+        let companionRestored=false;
+        if(!sourceDecision.recoveredMissingDecision&&
+          sourceDecision.status!=='answered'&&selected.length&&
+          !attributionIssue&&!subjectNameIssue&&!polarityIssue&&
+          !negationScopeIssue&&
+          companionSpanStatesClaim(part.id,sourceId,candidateText,
+            [attributedSubject,...subjectTargets,claimSpeaker],
+            new Set(selected.map(item=>String(item.spanId||''))))){
+          companionRestored=true;
+          gateRestorations.push({partId:part.id,claimId:answer.claimId,
+            sourceId,kind:'companion-span',
+            reason:'claim-source-not-supported'});
+        }
+        // Batch 33 (B33-5 (a)): the bullet-label exemption. The
+        // claim wears the composer's bold synthesis label; the
+        // demotion grounds below measure the whole claim text,
+        // label included, against spans that were never expected to
+        // contain the label. When the label-stripped CONTENT is
+        // covered by the pair's selected spans at the second-look
+        // union standard (0.65 of its content terms), the
+        // not-supported demotion — reviewer verdict or clause
+        // finding — does not stand for this pair. Content that is
+        // genuinely unstated keeps its demotion: the exemption is
+        // keyed on the content's coverage, never on the label's
+        // presence alone.
+        const bulletLabel=bulletLabelParts(candidateText);
+        let bulletLabelExempted=false;
+        if(bulletLabel&&selected.length&&
+          sourceDecision.status!=='answered'){
+          const coverage=secondLookCoverage(bulletLabel.content,
+            selected.map(item=>item.quote));
+          if(coverage.ratio>=0.65&&coverage.claimTerms>=4){
+            bulletLabelExempted=true;
+            gateDemotionsSuppressed.push({partId:part.id,
+              claimId:answer.claimId,sourceId,kind:'bullet-label',
+              reason:'claim-source-not-supported',
+              label:bulletLabel.label});
+          }
+        }
+        if(companionRestored||bulletLabelExempted){
+          supportedSourceIds.add(sourceId);
+        }else if(sourceDecision.recoveredMissingDecision||sourceDecision.status!=='answered'||!selected.length){
           if(answeredWithoutSelectedSpan)sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
@@ -3113,7 +3682,8 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           supportedSourceIds.add(sourceId);
         }
         const validationReason=attributionIssue||subjectNameIssue||polarityIssue||negationScopeIssue||
-          (sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
+          (companionRestored||bulletLabelExempted?'':
+          sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
           sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan?'missing-claim-source-span':
           sourceDecision.status!=='answered'?'claim-source-not-supported':
           !selected.length?'missing-claim-source-span':'');
@@ -3343,8 +3913,30 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
       directAnswerCovered,...(reviewerPart?.repairable===true?{repairable:true}:{}),reason:''};
   });
+  // Batch 33 (B33-5 (c)): the unified veto census for this
+  // normalization — every gate suppression and restoration derived
+  // from the records above, plus the polarity demotions that stood
+  // (support issues carrying the polarity ground for pairs that
+  // were not accepted). Flip vetoes happen after normalization and
+  // are mirrored onto the trace at contract assembly.
+  const vetoCensus=[
+    ...gateDemotionsSuppressed.map(entry=>({partId:entry.partId,
+      claimId:entry.claimId,sourceId:entry.sourceId,layer:'gate',
+      ground:entry.reason,outcome:'suppressed',
+      ...(entry.kind?{kind:entry.kind}:{})})),
+    ...gateRestorations.map(entry=>({partId:entry.partId,
+      claimId:entry.claimId,sourceId:entry.sourceId,
+      layer:entry.kind==='polarity-agreement'?'polarity':'gate',
+      ground:entry.reason,outcome:'restored',
+      ...(entry.kind?{kind:entry.kind}:{})})),
+    ...supportIssues.filter(issue=>
+      issue.reason==='source-contradicts-claim-polarity').map(issue=>({
+      partId:issue.partId,claimId:issue.claimId,sourceId:issue.sourceId,
+      layer:'polarity',ground:issue.reason,outcome:'demoted'}))];
   return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions,
-    clauseFindings,subjectExtractionBlindSpots,gateRestorations,gateDemotionsSuppressed};
+    clauseFindings,subjectExtractionBlindSpots,gateRestorations,gateDemotionsSuppressed,
+    ...(vetoCensus.length?{vetoCensus}:{}),
+    ...(contextSupportUnmeasuredParts.length?{contextSupportUnmeasured:contextSupportUnmeasuredParts}:{})};
 }
 
 // Batch 30 (B30-1): the split-review threshold and half-merge live at
@@ -3459,7 +4051,11 @@ function compactReviewPayload(question,parts,claims){
     }
     sourceCatalog.set(sourceDetailsId,descriptor);
     for(const span of spans||[])if(!spanCatalog.has(span.spanId))
-      spanCatalog.set(span.spanId,{spanId:span.spanId,text:span.text});
+      spanCatalog.set(span.spanId,{spanId:span.spanId,text:span.text,
+        // Batch 33 (B33-1): the span's head rides the catalog as
+        // context for identifying the span's subject; it is not a
+        // citable span and cannot support a claim.
+        ...(span.head?{head:span.head}:{})});
     if(typeof contextText==='string'&&contextText)
       sourceContexts.set(evidence.id,{sourceId:evidence.id,text:contextText});
     return {...metadata,...(sourceDetailsId!==sourceId?{sourceDetailsId}:{}),
@@ -3508,13 +4104,34 @@ function reviewPayloadMetrics(payload,serializedPayload,systemPrompt){
     (Array.isArray(item?.spanIds)?item.spanIds.length:Array.isArray(item?.spans)?item.spans.length:0),0);
   const systemPromptCharacters=typeof systemPrompt==='string'?systemPrompt.length:0;
   const userPayloadCharacters=typeof serializedPayload==='string'?serializedPayload.length:0;
+  const spanCharacters=Array.isArray(payload?.spanCatalog)?
+    payload.spanCatalog.reduce((total,span)=>total+String(span?.text||'').length,0):0;
   return {partCount:parts.length,claimCount:Array.isArray(payload?.claims)?payload.claims.length:0,
     sourceCount:new Set(evidence.map(item=>item?.id).filter(id=>typeof id==='string')).size,
     sourceMetadataCount:Object.keys(payload?.sourceCatalog||{}).length,
     spanCount:Array.isArray(payload?.spanCatalog)?payload.spanCatalog.length:spanReferences,
-    spanReferenceCount:spanReferences,
+    spanReferenceCount:spanReferences,spanCharacters,
     serializedCharacters:userPayloadCharacters,systemPromptCharacters,
     requestCharacters:userPayloadCharacters+systemPromptCharacters};
+}
+
+// Batch 33 (B33-9): adaptive review deadline. Batch 32 ran 5 + 5
+// initial-review timeouts per suite against the flat 60 s deadline;
+// every one recovered through a split retry at the cost of a second
+// round trip, and a single call that would finish at ~70 s is cheaper
+// in wall time than a 60 s timeout plus the retry. The deadline for a
+// review-shaped call now scales with the packet it carries: the size
+// measure is the packet's span text (span count × span words, with
+// words estimated at 6 characters per word from spanCharacters).
+// Floor 60000 ms — the pre-batch-33 flat value, so no call ever gets
+// less time than it had; +15000 ms per full 6000 packet words above
+// the first 6000; cap 120000 ms. Split retries remain for true
+// overruns, and each retry's own (smaller) packet is measured by the
+// same rule. Non-review stages keep their existing deadline.
+export function reviewDeadlineMsForPacket({spanCharacters=0}={}){
+  const packetWords=Number(spanCharacters||0)/6;
+  const steps=Math.max(0,Math.floor((packetWords-6000)/6000));
+  return Math.min(120000,60000+steps*15000);
 }
 
 function buildReviewPacket(answerParts,{sources,pageById,plan,question,
@@ -3525,7 +4142,25 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question,
     // The packet carries exactly the sources the draft cited. (Batch 5's
     // R1 extension to linked-but-uncited sources was removed in batch 6:
     // the reviewer never used it — see B6-3.)
-    const packetIds=citedIds;
+    let packetIds=citedIds;
+    if(!packetIds.size){
+      // Batch 33 (B33-8): a part whose draft claims are ALL uncited
+      // otherwise receives a review packet with zero sources and
+      // zero spans. That is the Smith SP2 shape: every citation
+      // group in the draft failed draft-side citation validation,
+      // so the wiring above hands the reviewer an empty view of a
+      // part the composer had filled with candidates — and the
+      // reviewer's context-support judgment for the part is then
+      // unmeasured, though normalization treated it as measured and
+      // refused the whole answer. When (and only when) the cited
+      // set is empty, the packet falls back to the part's candidate
+      // sources — the composer's own linked set — so the reviewer
+      // judges the part against the evidence the composer saw.
+      // Batch 6's rule stands whenever the draft cited anything.
+      packetIds=new Set(sources.filter(source=>
+        (source.candidatePartIds||[]).includes(part.partId)&&
+        pageById.has(source.id)).map(source=>source.id));
+    }
     const partSpanMaps=new Map();
     const evidence=[...pageById.values()].filter(page=>packetIds.has(page.id)).map(page=>{
       const source=sources.find(item=>item.id===page.id);
@@ -3538,9 +4173,18 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question,
         // Filtering here — after IDs are assigned, so every remaining
         // span keeps its stable ID — covers the packet and the span
         // validation map together.
+        // Batch 33 (B33-1): each span also carries its head — the
+        // page text immediately before the span window (spanHeadFor)
+        // — attached here, where the span's own source text is in
+        // scope, so the packet serialization, the gate's packet span
+        // sets, and the rescue packet all read the same field.
         new Map(buildReviewSpans(page.id,spanText)
           .filter(span=>!isHeadingOnlySpan(span.text))
-          .map(span=>[span.spanId,span])));
+          .map(span=>{
+            const head=spanHeadFor(spanText,span);
+            if(head)span.head=head;
+            return [span.spanId,span];
+          })));
       const citedAnswers=part.answers.filter(answer=>answer.sourceIds.includes(page.id));
       const citedAnswerText=citedAnswers.map(answer=>answer.text).join(' ');
       const requiredAnswer=citedAnswers.find(answer=>answer.claimId===part.requiredAnswerClaimId);
@@ -3553,7 +4197,8 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question,
       const provenance=sourceProvenance(source,plan,spanText);
       return {id:page.id,title:page.title,page:page.page,provenance,
         ...(sourceVoiceGuidance(provenance)?{attributionRequirement:sourceVoiceGuidance(provenance)}:{}),
-        spans:orderedSpans.map(({spanId,text})=>({spanId,text})),
+        spans:orderedSpans.map(({spanId,text,head})=>({spanId,text,
+          ...(head?{head}:{})})),
         ...(selectionSupport.length?{selectionSupport}:{}),
         ...(source?.scopeText?{contextText:compactSourceContext(page.text,source.scopeText)}:{})};
     });
@@ -4215,7 +4860,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // the review token budget, but 'answer-re-review'.startsWith('review')
     // is false, so it silently got the 45 s compose-class timeout — a
     // latent deadline-failure source. It gets the review timeout too.
-    const timeoutMs=stage.startsWith('review')||stage==='answer-re-review'?60000:45000;
+    // Batch 33 (B33-9): the review timeout is the packet-scaled
+    // deadline (floor = the former flat 60000); payloadMetrics is
+    // computed for exactly the review-shaped stages above.
+    const timeoutMs=stage.startsWith('review')||stage==='answer-re-review'?
+      reviewDeadlineMsForPacket(payloadMetrics||{}):45000;
     // Batch 5 (L6): structured stages are deterministic extraction and
     // judgment tasks, so they run at temperature 0; only the creative
     // stages (compose, expand) omit the parameter and keep the provider
@@ -4917,7 +5566,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       const mergeSingles=()=>{
         const merged={parts:[],issues:[],warnings:[],supportIssues:[],recovered:[],
           reviewDecisions:[],partDecisions:[],clauseFindings:[],
-          subjectExtractionBlindSpots:0,gateRestorations:[],gateDemotionsSuppressed:[]};
+          subjectExtractionBlindSpots:0,gateRestorations:[],gateDemotionsSuppressed:[],
+          contextSupportUnmeasured:[],vetoCensus:[]};
         for(const part of plan.parts){
           if(issueExcludedPartIds.has(part.id))continue;
           const single=singlesByPart.get(part.id);
@@ -4960,6 +5610,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           merged.clauseFindings.push(...(single.clauseFindings||[]));
           merged.gateRestorations.push(...(single.gateRestorations||[]));
           merged.gateDemotionsSuppressed.push(...(single.gateDemotionsSuppressed||[]));
+          merged.contextSupportUnmeasured.push(...(single.contextSupportUnmeasured||[]));
+          merged.vetoCensus.push(...(single.vetoCensus||[]));
           merged.subjectExtractionBlindSpots+=single.subjectExtractionBlindSpots||0;
         }
         return merged;
@@ -5247,7 +5899,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               spans=spans.slice(0,MAX_REVIEW_SPANS_PER_SOURCE);
               if(!claimText||!spans.length)continue;
               const requestedEntry={claimId:decision.claimId,sourceId:decision.sourceId,
-                claimText,spans:spans.map(({spanId,text})=>({spanId,text}))};
+                claimText,spans:spans.map(({spanId,text,head})=>({spanId,text,
+                  // Batch 33 (B33-1): the pair's spans carry their
+                  // heads to the rescue reviewer as subject context,
+                  // exactly as in the review packet.
+                  ...(head?{head}:{})}))};
               // Batch 27 (B27-4): the pair's outstanding clause
               // findings join the packet from the FIRST
               // normalization's own records — the clause findings that
@@ -5322,7 +5978,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                    decision.validationReason==='source-subject-attribution-missing')
                   Object.defineProperty(requestedEntry,'packetSourceSpans',{
                     value:(evidenceEntry?.spans||[])
-                      .map(span=>({spanId:span.spanId,text:span.text}))});
+                      .map(span=>({spanId:span.spanId,text:span.text,
+                        ...(span.head?{head:span.head}:{})}))});
                 if(provenanceVoice)
                   Object.defineProperty(requestedEntry,'provenanceVoiceName',{
                     value:provenanceVoice.name});
@@ -5650,8 +6307,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 claim.flipOutcome='vetoed';
                 claim.flipVeto={reason,
                   layer:clauseVeto?'clause':
+                    reason==='source-contradicts-claim-polarity'?'polarity':
                     /attribution|pseudonymous|editorial-source/.test(reason)?
                       'attribution':'other'};
+                // Batch 33 (B33-5 (c)): the flip veto joins the
+                // unified veto census mirrored onto the trace below.
+                (review.flipVetoCensus||(review.flipVetoCensus=[]))
+                  .push({partId:entry.partId,claimId:claim.claimId,
+                    sourceId:claim.sourceId,layer:claim.flipVeto.layer,
+                    ground:reason,outcome:'vetoed'});
               }
             }
           }
@@ -6127,6 +6791,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // each direction.
           ...(review.gateDemotionsSuppressed?.length?
             {gateDemotionsSuppressed:review.gateDemotionsSuppressed}:{}),
+          ...(review.contextSupportUnmeasured?.length?
+            {contextSupportUnmeasured:review.contextSupportUnmeasured}:{}),
+          // Batch 33 (B33-5 (c)): the unified veto census also
+          // lives at trace level, where the flip vetoes (recorded
+          // after the final normalization) join the contract's
+          // gate-side census.
+          ...((review.vetoCensus?.length||review.flipVetoCensus?.length)?
+            {vetoCensus:[...(review.vetoCensus||[]),
+              ...(review.flipVetoCensus||[])]}:{}),
           ...(failedReviewParts.length?{failedParts:failedReviewParts
             .map(item=>({partId:item.partId,code:item.code}))}:{})};
         // Per-part contract problems fail only their own part (recorded in
@@ -6142,6 +6815,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         trace.reviewContract={valid:false,issues:[reviewFailure.code]};
       }
     }
+    // Batch 33 (B33-5 (c)): the trace-level veto census — the final
+    // normalization's contract census plus any flip vetoes recorded
+    // against it during rescue processing.
+    if(review&&(review.vetoCensus?.length||review.flipVetoCensus?.length))
+      trace.vetoCensus=[...(review.vetoCensus||[]),
+        ...(review.flipVetoCensus||[])];
     trace.claimSpanFit||={method:'normalized-content-term-coverage-v1',threshold:0.65,
       rejectedClauseCount:0,composerPacketCovered:0,reviewPacketOnlyCovered:0,
       neitherPacketCovered:0,measurableClauseCount:0,unmeasurableClauseCount:0,
@@ -8344,9 +9023,17 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       });
       const failing=perPart.filter(value=>!value.audit.ok);
       // A part-local audit failure can be removed even when it is half
-      // (or most) of the answer. The strict-minority rule suppressed the
-      // clean half of two-part answers. Safety comes from independent
-      // per-part audits plus a final audit of the complete survivor text.
+      // (or most) of the answer. Batch 33 (B33-2): the strict-minority
+      // rule that used to gate this salvage (failing.length*2 <
+      // perPart.length) suppressed the clean half of two-part answers —
+      // phase-3 Gatsby SP1 computed P1 surviving with the whole-answer
+      // guard passed and still disposed the answer "suppressed" over
+      // P2's bad quote. The minority rule adds no verification the
+      // guard does not already perform: safety comes from independent
+      // per-part audits plus a final audit of the complete survivor
+      // text. The salvage therefore requires exactly a surviving part
+      // and a passing survivor re-audit. All-parts-failing still
+      // suppresses the whole answer, unchanged.
       if(failing.length>0){
         const droppedIds=new Set(failing.map(value=>value.item.part.id));
         const survivors=perPart.filter(value=>!droppedIds.has(value.item.part.id));
@@ -8360,8 +9047,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           failingPartIds:[...droppedIds],
           survivingPartIds:survivors.map(value=>value.item.part.id),
           perPartFailures,wholeAnswerGuardPassed:guard.ok,
-          disposition:survivors.length&&guard.ok&&failing.length*2<perPart.length?'salvaged':'suppressed'}};
-        if(survivors.length&&guard.ok&&failing.length*2<perPart.length){
+          disposition:survivors.length&&guard.ok?'salvaged':'suppressed'}};
+        if(survivors.length&&guard.ok){
           for(const value of failing){
             value.item.status='unanswered';value.item.answerStatus='unanswered';
             value.item.answers=[];value.item.evidence=[];
@@ -8414,16 +9101,43 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             labelByPartId.set(partId,item.part.question);
         }
       const labeledParts=included.filter(item=>labelByPartId.has(item.part.id));
-      if(labeledParts.length){
-        answer=sanitizeInternalAnswerIds(normalizeAnswerMarkdown(included.map(item=>{
-          const unwrapped=unwrapBoldWrappedParagraphs(renderAnswerParagraphs(item.answers));
-          if(!labelByPartId.has(item.part.id))return unwrapped.text;
-          return unwrapped.text+'\n\n'+
-            'Retrieved passages could not be verified as supporting this part of the question: '+
-            labelByPartId.get(item.part.id);
-        }).join('\n\n')));
+      // Batch 33 (B33-3): absent-part disclosure. The B11-5/B32-7
+      // label covers parts that ship UNCITED; it does not cover parts
+      // that ship NOTHING — dropped at final-integrity partition
+      // salvage (B33-2), emptied by B32-5 inheritance, context-dropped,
+      // containment-dropped, or degraded under B32-9. Phase-3 C&P SP2
+      // shipped a two-thirds answer whose Sonya part vanished without
+      // a word to the reader (the gap existed only in the harness
+      // `missing` field); phase-3 Solitude SP1 lost half the question
+      // the same way. A planned part that delivers no claims into a
+      // non-empty answer therefore carries a disclosure segment in
+      // plan position, built by the same machinery as the uncited
+      // label. A part that was never in the plan needs nothing, and
+      // an answer that ships nothing at all keeps its refusal text —
+      // the guard above (answer non-empty, not assembly-suppressed)
+      // is the same one the uncited label rides.
+      const includedIds=new Set(included.map(item=>item.part.id));
+      const absentParts=(parts||[]).filter(item=>!includedIds.has(item.part.id));
+      if(labeledParts.length||absentParts.length){
+        const includedById=new Map(included.map(item=>[item.part.id,item]));
+        answer=sanitizeInternalAnswerIds(normalizeAnswerMarkdown(
+          (parts||[]).map(item=>{
+            const shipped=includedById.get(item.part.id);
+            if(!shipped)
+              return 'This part of the question could not be answered '+
+                'from the library: '+item.part.question;
+            const unwrapped=unwrapBoldWrappedParagraphs(
+              renderAnswerParagraphs(shipped.answers));
+            if(!labelByPartId.has(item.part.id))return unwrapped.text;
+            return unwrapped.text+'\n\n'+
+              'Retrieved passages could not be verified as supporting this part of the question: '+
+              labelByPartId.get(item.part.id);
+          }).join('\n\n')));
         trace.final={...(trace.final||{}),
-          uncitedPartLabelsInAnswer:labeledParts.map(item=>item.part.id)};
+          ...(labeledParts.length?
+            {uncitedPartLabelsInAnswer:labeledParts.map(item=>item.part.id)}:{}),
+          ...(absentParts.length?
+            {absentPartLabelsInAnswer:absentParts.map(item=>item.part.id)}:{})};
       }
     }
     const includedPartIds=new Set(included.map(item=>item.part.id));
