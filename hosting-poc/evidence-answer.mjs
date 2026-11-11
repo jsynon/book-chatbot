@@ -343,6 +343,33 @@ const RESCUE_REVIEW_RETRY_PROMPT=`Judge only the listed claim and source pairs �
 // whose fragment does not appear in that pair's span texts — rejects
 // the whole rescue for the part, which then keeps its original review
 // decisions exactly. A malformed rescue can never make things worse.
+// Batch 30 (B30-4): strip quotation-mark-delimited regions from span
+// text before an antecedent check — a name that occurs only inside
+// quoted speech belongs to the quoted speaker's discourse, not to the
+// passage's own narration, and cannot anchor a claim to the narrator's
+// subject. Paired straight and curly double quotes are removed with
+// their contents; a quote left unpaired (the span begins or ends
+// mid-quotation) removes everything from that quote to the end of the
+// span — fail-closed, since the quoted region's extent is unknown.
+function stripQuotedSpeechRegions(text){
+  const stripped=String(text||'')
+    .replace(/"[^"]*"/gu,' ')
+    .replace(/“[^”]*”/gu,' ');
+  const unmatched=stripped.search(/["“”]/u);
+  return unmatched>=0?stripped.slice(0,unmatched):stripped;
+}
+
+// Batch 30 (B30-4): the antecedent key — the name registered in an
+// agent/subject position (the span subject-extraction machinery,
+// possessive registrations included: a narration possessive still
+// identifies the person in the passage's own voice) in the
+// quote-stripped text of a packet span.
+function spanNamesSubjectInNarration(text,name){
+  if(!name)return false;
+  return personSubjectMatches(stripQuotedSpeechRegions(text))
+    .some(entry=>personNamesMatch(entry.name,name));
+}
+
 function parseRescueDecisions(rescue,requested){
   if(!Array.isArray(rescue?.decisions)||rescue.decisions.length!==requested.length)
     return {ok:false,reason:'decision-count-mismatch'};
@@ -474,18 +501,51 @@ function parseRescueDecisions(rescue,requested){
     // (the byline anchoring the speaker gate already recognizes for
     // author narration). No valid anchor, no flip: the pair is held,
     // recorded as attributionHeld, and the original decision stands.
-    let anchor='',attributionHeld=false;
+    let anchor='',attributionHeld=false,restoredByAntecedent=false,
+      restoredByVoiceAnchor=false;
     if(verdict==='supported'&&request.attributionFinding){
       anchor=typeof item?.anchor==='string'?item.anchor.trim().slice(0,120):'';
       const candidates=Array.isArray(request.anchorCandidates)?
         request.anchorCandidates:[];
       const byline=Array.isArray(request.anchorBylineAuthors)?
         request.anchorBylineAuthors:[];
-      const valid=Boolean(anchor)&&
+      let valid=Boolean(anchor)&&
         candidates.some(name=>personNamesMatch(anchor,name))&&
         (spanTextNamesSpeaker(fragment,anchor)||
          request.spans.some(span=>spanTextNamesSpeaker(span.text,anchor))||
          byline.some(name=>personNamesMatch(anchor,name)));
+      // Batch 30 (B30-4): two-key restoration. For the two subject
+      // demotions whose complaint is that the pair's own spans never
+      // name the subject (subject-not-named-in-span,
+      // source-subject-attribution-missing), the anchor above fails
+      // structurally for narrative subjects — narration has no byline
+      // and the cited span presents the actor under a pronoun, which
+      // is the demotion itself. The second key is the antecedent: the
+      // subject named in an agent/subject position in the narration of
+      // ANY span of the same source in the review packet (quoted
+      // speech stripped — a name occurring only inside a quotation
+      // belongs to the quoted discourse and cannot anchor). A rescue
+      // "supported" verdict whose anchor matches a claim target (key
+      // one, checked above) plus that antecedent restores the pair;
+      // the restoration is recorded on the verdict and neutralizes
+      // only this demotion at re-normalization. For the
+      // pseudonymous-voice demotion the second key is the source's
+      // provenance voice naming the attributed subject.
+      if(!valid&&anchor&&
+         candidates.some(name=>personNamesMatch(anchor,name))){
+        const findingReason=request.attributionFinding.reason||'';
+        if((findingReason==='subject-not-named-in-span'||
+            findingReason==='source-subject-attribution-missing')&&
+           (request.packetSourceSpans||[]).some(span=>
+            spanNamesSubjectInNarration(span?.text,anchor))){
+          valid=true;restoredByAntecedent=true;
+        }else if(findingReason==='pseudonymous-voice-unidentified'){
+          const voice=String(request.provenanceVoiceName||'').trim();
+          if(voice&&personNamesMatch(anchor,voice)){
+            valid=true;restoredByVoiceAnchor=true;
+          }
+        }
+      }
       if(!valid){verdict='not-supported';attributionHeld=true;}
     }
     received.set(key,{verdict,fragment,
@@ -496,7 +556,9 @@ function parseRescueDecisions(rescue,requested){
       ...(clauseOutcomes.length?{clauseOutcomes}:{}),
       ...(clauseNotCleared?{clauseNotCleared:true}:{}),
       ...(anchor?{anchor}:{}),
-      ...(attributionHeld?{attributionHeld:true}:{})});
+      ...(attributionHeld?{attributionHeld:true}:{}),
+      ...(restoredByAntecedent?{restoredByAntecedent:true}:{}),
+      ...(restoredByVoiceAnchor?{restoredByVoiceAnchor:true}:{})});
   }
   if(clauseMissingPairs.length)return {ok:false,reason:'clause-verdicts-missing',
     failedPairs:[...new Set([...clauseMissingPairs,...clauseNotClearedPairs])],
@@ -549,6 +611,18 @@ function roundRobinMissingDecisions(decisions,limit){
 }
 
 function linkEvidenceToParts(plan,sources){
+  // Batch 30 (B30-5): the per-part selection signal the architecture
+  // records — candidatePartSupport entries are written by the
+  // selector/packing path per source PER PART ('direct' when the
+  // source was selected as answering that part, 'context' when it was
+  // packed as background). When any source in the build carries
+  // entries, selection happened and the signal is authoritative for
+  // the candidatePartIds question below; when no source carries any
+  // (deterministic-fallback builds, older packets), the signal is
+  // absent and today's determination stands unchanged.
+  const selectionSignalPresent=sources.some(source=>
+    Array.isArray(source?.candidatePartSupport)&&
+    source.candidatePartSupport.length>0);
   const groups=(plan.sources||[]).filter(source=>['primary','subject'].includes(source.role)&&
     Array.isArray(source.bookIds)&&source.bookIds.length).map((source,index)=>({index,
       bookIds:new Set(source.bookIds.map(String))}));
@@ -588,6 +662,18 @@ function linkEvidenceToParts(plan,sources){
         source.candidatePartIds.includes(part.id);
       const selectedSupport=Array.isArray(source?.candidatePartSupport)&&
         source.candidatePartSupport.some(item=>item.partId===part.id&&item.support==='direct');
+      // Batch 30 (B30-5): candidatePartIds is a plan-level candidate
+      // list — the gateway copies the plan's full part list onto
+      // packed sources, so it links every source to every part
+      // (the batch-29 Smith containment: P2 became source-required
+      // through sources listed for both parts although selection had
+      // packed nothing for it). When the build carries the per-part
+      // selection signal, that list alone no longer confers
+      // source-required status: the part must be book-scoped to the
+      // source (the plan's own per-part statement) or selected for
+      // the part with 'direct' support. With no signal anywhere,
+      // the link counts exactly as before.
+      if(selectionSignalPresent)return explicitPartScope||selectedSupport;
       return explicitPartScope||explicitPartLink||selectedSupport;
     });
     return {...part,candidateSourceIds,sourceRequired,
@@ -1653,6 +1739,54 @@ function personSubjectMatches(value){
     if(/^[\s"'“”‘’(\[]*$/u.test(text.slice(0,match.index)))continue;
     record(match[1].trim(),true);
   }
+  // Batch 30 (B30-3): nested attribution. A claim that reports another
+  // person's position — "Emerson observes that the writer Bulwer is…",
+  // "Emerson points out that … those explored by Thackeray …" — has
+  // TWO person subjects in different roles: the reporter, whom the
+  // patterns above capture, and the reported subject, whom they miss
+  // (a subordinate clause's subject behind a role noun, or a passive
+  // agent). F3 then demoted the claim when the reviewer attributed it
+  // to the reported subject — the person the claim's substance is
+  // about (batch 29's only two fiction claims, both vetoes false).
+  // When a sentence carries a reporting frame — a person name with a
+  // reporting verb, a possessive report noun ("A's account of B"), or
+  // "according to A" — the remainder of that sentence is the reported
+  // content, and person names appearing there in clause-subject
+  // position (optionally behind a role noun: "the writer Bulwer") or
+  // as a passive agent ("explored by Thackeray") register as subjects
+  // too. Without a reporting frame nothing here fires: two names with
+  // no reporting link keep exactly the extraction above.
+  const reportingVerb='points?\\s+out|observes?|observed|notes?|noted|remarks?|remarked|reports?|reported|says?|said|writes?|wrote|argues?|argued|claims?|claimed|describes?|described|recounts?|recounted|recalls?|recalled|maintains?|maintained|asserts?|asserted|states?|stated|tells?|told|explains?|explained';
+  const reportNoun='account|report|essay|study|treatment|portrait|depiction|reading|critique|analysis|interpretation';
+  const roleNoun='writer|author|novelist|poet|critic|historian|philosopher|thinker|essayist|dramatist|biographer';
+  const framePatterns=[new RegExp(`${name}\\s+(?:${reportingVerb})\\b`,'gu'),
+    new RegExp(`${name}['’]s\\s+(?:[\\p{Ll}][\\p{L}'’.-]*\\s+){0,2}(?:${reportNoun})\\s+of\\s+`,'gu'),
+    new RegExp(`\\b[Aa]ccording\\s+to\\s+${name}`,'gu')];
+  const segmentLead=`(?:^|[,:;!?—–()]\\s*|\\b(?:that|how|where|when|while|because|although|whereas|though|after|before|until|once|who|as|if)\\s+)`;
+  const segmentSubjectPattern=new RegExp(
+    `${segmentLead}(?:the\\s+(?:${roleNoun})\\s+)?${name}(?:['’]s)?\\s+${predicate}\\b`,'gu');
+  const segmentAgentPattern=new RegExp(
+    `[\\p{Ll}]{3,}(?:ed|en)\\s+by\\s+${name}`,'gu');
+  for(const sentence of text.split(/(?<=[.!?…])\s+/u)){
+    let segmentStart=Infinity;
+    const frameNames=[];
+    for(const framePattern of framePatterns)
+      for(const frame of sentence.matchAll(framePattern)){
+        segmentStart=Math.min(segmentStart,frame.index+frame[0].length);
+        frameNames.push(frame[1]);
+      }
+    if(!frameNames.length)continue;
+    // The frame's own name is the reporting subject: record it as a
+    // subject in its own right (the possessive-report frame's possessor
+    // and the according-to source are reporters the main patterns miss
+    // because neither stands in subject position).
+    for(const frameName of frameNames)record(frameName.trim(),false);
+    const segment=sentence.slice(segmentStart);
+    for(const match of segment.matchAll(segmentSubjectPattern))
+      record(match[1].trim(),false);
+    for(const match of segment.matchAll(segmentAgentPattern))
+      record(match[1].trim(),false);
+  }
   return matches;
 }
 export function claimPersonSubjects(value){
@@ -1866,6 +2000,38 @@ function derivePartStatuses({reviewerStatus,reviewerAnswerStatus,acceptedCount,
   if(status==='answered'&&comparisonComplete===false)status='partial';
   return {status,answerStatus,statusBeforeComparison};
 }
+// Batch 30 (B30-2): one part-contract derivation for the three sites
+// that assemble it — normalizeReview, the rescue contract recompute,
+// and the delta re-review merge. Each site keeps its own input rules
+// (how the direct-answer set is chosen, how requirement coverage is
+// mapped, which records the invalid nominations live in); those rules
+// arrive as explicit parameters. What is shared — and what batch 28
+// had to patch at multiple sites — is the derivation itself: filter
+// the direct-answer set to accepted claims, judge its coverage, and
+// derive the final statuses. Behavior-identical by construction: the
+// helper composes deriveDirectAnswerCovered and derivePartStatuses
+// with exactly the arguments each site passed before.
+export function derivePartContract({reviewerStatus,reviewerAnswerStatus,
+  directAnswerIds=[],invalidDirectAnswerClaimIds,acceptedClaimIds,
+  acceptedCount,requirementCoverage=null,comparisonComplete=true,
+  derivedDirectAnswer=false}){
+  const accepted=new Set(acceptedClaimIds||[]);
+  const acceptedDirectAnswerIds=directAnswerIds
+    .filter(id=>accepted.has(id));
+  const directAnswerCovered=deriveDirectAnswerCovered(directAnswerIds,
+    acceptedDirectAnswerIds,invalidDirectAnswerClaimIds,reviewerAnswerStatus);
+  const requirementsComplete=Array.isArray(requirementCoverage)?
+    requirementCoverage.every(item=>item.status==='answered'):undefined;
+  const derived=derivePartStatuses({reviewerStatus,reviewerAnswerStatus,
+    acceptedCount,directAnswerIds,directAnswerCovered,
+    requirementsComplete:requirementsComplete!==false,comparisonComplete,
+    derivedDirectAnswer});
+  return {directAnswerIds,acceptedDirectAnswerIds,directAnswerCovered,
+    ...(Array.isArray(requirementCoverage)?
+      {requirementCoverage,requirementsComplete}:{}),
+    status:derived.status,answerStatus:derived.answerStatus,
+    statusBeforeComparison:derived.statusBeforeComparison};
+}
 
 function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question,reviewClaims=[],initialAnswerContext=[],priorArchiveByPart=null,composerPacketSpansByPart=null){
   const suppliedParts=new Map(),suppliedClaims=new Map(),issues=[],warnings=[],recovered=[];
@@ -2026,6 +2192,10 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
   // them with divergent inputs.
   const clauseFindings=[];
   let subjectExtractionBlindSpots=0;
+  // Batch 30 (B30-4): the pairs this pass restored through the two-key
+  // path (antecedent / voice-anchor), recorded as the demotions are
+  // neutralized below and surfaced on the merged review contract.
+  const gateRestorations=[];
   const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
     String(claim?.claimId||''),new Map((Array.isArray(claim?.sourceEvidence)?claim.sourceEvidence:[])
       .map(item=>[String(item?.sourceId||''),Array.isArray(item?.spanIds)?item.spanIds:[]]))
@@ -2142,6 +2312,12 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           // the trace's claim decisions show which acceptances the
           // rescue produced.
           ...(sourceDecision.rescueAccepted===true?{rescueAccepted:true}:{}),
+          // Batch 30 (B30-4): the two-key restoration marker rides
+          // the same path, so the gates below can neutralize exactly
+          // the demotion the restoration answered.
+          ...(sourceDecision.gateRestoration==='antecedent'||
+              sourceDecision.gateRestoration==='voice-anchor'?
+              {gateRestoration:sourceDecision.gateRestoration}:{}),
           legacyMissingSpan:sourceDecision.legacyMissingSpan===true};
         const existing=sourceDecisions.get(sourceId);
         if(!existing){sourceDecisions.set(sourceId,normalizedDecision);continue;}
@@ -2273,8 +2449,20 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             if(!namedOthers.length)provenanceAttributionIssue='';
           }
         }
-        const attributionIssue=modelAttributionIssue||speakerMismatchIssue||subjectAttributionIssue||
+        let attributionIssue=modelAttributionIssue||speakerMismatchIssue||subjectAttributionIssue||
           unanchoredSpeakerIssue||provenanceAttributionIssue;
+        // Batch 30 (B30-4): a voice-anchor restoration neutralizes the
+        // pseudonymous-voice demotion only — the pair was restored
+        // because the source's provenance voice names the attributed
+        // subject and the rescue judged the pair supported. Any other
+        // component issue (a different reason composed into
+        // attributionIssue) keeps the demotion.
+        if(attributionIssue==='pseudonymous-voice-unidentified'&&
+           sourceDecision.gateRestoration==='voice-anchor'){
+          gateRestorations.push({partId:part.id,claimId:answer.claimId,sourceId,
+            kind:'voice-anchor',reason:'pseudonymous-voice-unidentified'});
+          attributionIssue='';
+        }
         // Batch 27 (B27-2): a person named as a claim's actor must be
         // named in the evidence — where the evidence presents an
         // actor under a pronoun. The checks above compare claim-side
@@ -2302,7 +2490,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // anchor machinery (B26-2) is the relief valve for demotions:
         // this reason rides the rescue attribution set, and a packet
         // span naming the person restores the pair with evidence.
-        const subjectNameIssue=(()=>{
+        let subjectNameIssue=(()=>{
           if(sourceDecision.status!=='answered'||!selected.length||!subjectTargets.length)
             return '';
           const gateTargets=attributedSubject&&
@@ -2355,6 +2543,18 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             possessiveOnlyTargets.some(name=>personNamesMatch(name,target)))?
             'subject-not-named-in-span':'';
         })();
+        // Batch 30 (B30-4): an antecedent restoration neutralizes
+        // this demotion only — the pair was restored because the
+        // review packet's own narration for this source names the
+        // subject in an agent position (outside quoted speech) and
+        // the rescue judged the pair supported. The demotion's other
+        // consumers (the support issue, the validation reason) see
+        // the neutralized value; every other gate is untouched.
+        if(subjectNameIssue&&sourceDecision.gateRestoration==='antecedent'){
+          gateRestorations.push({partId:part.id,claimId:answer.claimId,sourceId,
+            kind:'antecedent',reason:subjectNameIssue});
+          subjectNameIssue='';
+        }
         const selectedQuote=selected.map(item=>item.quote).join(' ');
         const polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
           hasDirectPolarityContradiction(candidateText,selectedQuote)?
@@ -2463,6 +2663,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           }))}:{}),
           accepted:supportedSourceIds.has(sourceId)&&!attributionIssue&&!subjectNameIssue,
           ...(sourceDecision?.rescueAccepted===true?{rescueAccepted:true}:{}),
+          ...(sourceDecision?.gateRestoration?{gateRestoration:sourceDecision.gateRestoration}:{}),
           recoveredMissingDecision:sourceDecision.recoveredMissingDecision===true,
           validationReason:validationReason||null});
       }
@@ -2554,18 +2755,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         .flatMap(item=>item.answerClaimIds))];
       if(derivedIds.length){directAnswerIds=derivedIds;directAnswerDerived=true;}
     }
-    const acceptedDirectAnswerIds=directAnswerIds.filter(id=>acceptedClaimIds.has(id));
-    // The reviewer identifies which claim or claims answer this part
-    // (see deriveDirectAnswerCovered). This lets a sound later sentence
-    // answer the question when the opening sentence is weak, without
-    // relaxing evidence review.
-    const directAnswerCovered=deriveDirectAnswerCovered(directAnswerIds,
-      acceptedDirectAnswerIds,reviewerPart?.invalidDirectAnswerClaimIds,
-      reviewerPart?.answerStatus);
-    if(!directAnswerCovered&&acceptedAnswers.length){
-      const reason=directAnswerIds.length?'direct-answer-claim-not-supported':'direct-answer-claim-missing';
-      supportIssues.push({partId:part.id,reason});
-    }
     // Do not rely on the planner's intent label to decide whether a part is
     // a multi-source comparison. The trusted part scope and catalog groups
     // are authoritative: if a part names multiple primary/subject groups,
@@ -2573,10 +2762,28 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     // can be reported as full. Answer completeness remains independently
     // available through answerStatus and may still include qualified context.
     const comparisonComplete=comparisonReviewEvidenceComplete(part,plan,sources,evidence);
-    const derivedStatuses=derivePartStatuses({reviewerStatus:reviewerPart?.status,
+    // Batch 30 (B30-2): the contract derivation is shared with the
+    // rescue recompute and the delta re-review merge through
+    // derivePartContract; this site's input rules (reviewer nomination
+    // or the B28-2 derivation above, this site's coverage mapping) are
+    // unchanged. The reviewer identifies which claim or claims answer
+    // this part (see deriveDirectAnswerCovered). This lets a sound
+    // later sentence answer the question when the opening sentence is
+    // weak, without relaxing evidence review.
+    const contract=derivePartContract({reviewerStatus:reviewerPart?.status,
       reviewerAnswerStatus:reviewerPart?.answerStatus,
-      acceptedCount:acceptedAnswers.length,directAnswerIds,directAnswerCovered,
-      requirementsComplete,comparisonComplete,derivedDirectAnswer:directAnswerDerived});
+      directAnswerIds,
+      invalidDirectAnswerClaimIds:reviewerPart?.invalidDirectAnswerClaimIds,
+      acceptedClaimIds,acceptedCount:acceptedAnswers.length,
+      requirementCoverage,comparisonComplete,
+      derivedDirectAnswer:directAnswerDerived});
+    const acceptedDirectAnswerIds=contract.acceptedDirectAnswerIds;
+    const directAnswerCovered=contract.directAnswerCovered;
+    if(!directAnswerCovered&&acceptedAnswers.length){
+      const reason=directAnswerIds.length?'direct-answer-claim-not-supported':'direct-answer-claim-missing';
+      supportIssues.push({partId:part.id,reason});
+    }
+    const derivedStatuses=contract;
     let status=derivedStatuses.status,answerStatus=derivedStatuses.answerStatus;
     if(derivedStatuses.statusBeforeComparison==='answered'&&!comparisonComplete)
       supportIssues.push({partId:part.id,reason:'comparison-support-missing-source-group'});
@@ -2657,7 +2864,56 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       directAnswerCovered,...(reviewerPart?.repairable===true?{repairable:true}:{}),reason:''};
   });
   return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions,
-    clauseFindings,subjectExtractionBlindSpots};
+    clauseFindings,subjectExtractionBlindSpots,gateRestorations};
+}
+
+// Batch 30 (B30-1): the split-review threshold and half-merge live at
+// module level — batch 24 defined them inside the review block, but
+// the split-on-timeout fallback for answer-re-review (below) and the
+// review stage now share both.
+const REVIEW_SPLIT_CLAIM_THRESHOLD=10;
+function mergeSplitReviewHalves(first,second,partId){
+  const statusRank={unanswered:0,partial:1,answered:2};
+  const worseStatus=(left,right)=>{
+    const a=hasRecognizedStatus(left)?normalizeStatus(left):'partial';
+    const b=hasRecognizedStatus(right)?normalizeStatus(right):'partial';
+    return statusRank[a]<=statusRank[b]?a:b;
+  };
+  const firstPart=(first?.parts||[]).find(part=>part.partId===partId)||first?.parts?.[0];
+  const secondPart=(second?.parts||[]).find(part=>part.partId===partId)||second?.parts?.[0];
+  let mergedPart=null;
+  if(firstPart&&secondPart){
+    const coverage=new Map();
+    for(const entry of [...(firstPart.requirementCoverage||[]),
+                         ...(secondPart.requirementCoverage||[])]){
+      const existing=coverage.get(entry?.requirementId);
+      if(!existing){coverage.set(entry?.requirementId,entry);continue;}
+      coverage.set(entry.requirementId,{...existing,
+        status:existing.status==='answered'||entry.status==='answered'?'answered':
+          worseStatus(existing.status,entry.status)==='unanswered'&&
+          entry.status==='unanswered'?'unanswered':'partial',
+        answerClaimIds:[...new Set([...(existing.answerClaimIds||[]),
+          ...(entry.answerClaimIds||[])])]});
+    }
+    const scaffoldingByClaim=new Map();
+    for(const link of [...(firstPart.scaffoldingLinks||[]),
+                        ...(secondPart.scaffoldingLinks||[])])
+      if(link?.claimId&&!scaffoldingByClaim.has(link.claimId))
+        scaffoldingByClaim.set(link.claimId,link);
+    mergedPart={...firstPart,
+      status:worseStatus(firstPart.status,secondPart.status),
+      answerStatus:worseStatus(firstPart.answerStatus||firstPart.status,
+        secondPart.answerStatus||secondPart.status),
+      repairable:firstPart.repairable===true||secondPart.repairable===true,
+      requirementCoverage:[...coverage.values()],
+      directAnswerClaimIds:[...new Set([...(firstPart.directAnswerClaimIds||[]),
+        ...(secondPart.directAnswerClaimIds||[])])],
+      retainedContextClaimIds:[...new Set([...(firstPart.retainedContextClaimIds||[]),
+        ...(secondPart.retainedContextClaimIds||[])])],
+      scaffoldingLinks:[...scaffoldingByClaim.values()]};
+  }else mergedPart=firstPart||secondPart||null;
+  return {parts:mergedPart?[mergedPart]:[],
+    claims:[...(first?.claims||[]),...(second?.claims||[])]};
 }
 
 const VALIDATION_REASON_CODES=new Set([
@@ -3415,7 +3671,20 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   // so tests can force refusals from the first optional call.)
   const optionalStageBudgetMs=Number.isFinite(options.buildOptionalStageBudgetMs)?
     options.buildOptionalStageBudgetMs:BUILD_OPTIONAL_STAGE_BUDGET_MS;
-  async function run(stage,system,payload,parser,{partId,optional=false}={}){
+  async function run(stage,system,payload,parser,{partId,optional=false,kind,claimCount}={}){
+    // Batch 30 (B30-1): every inference call record carries its kind
+    // (what role this call plays in the build's call economy) and the
+    // claim/decision count it judged, so a validation run can attribute
+    // review cost exactly instead of inferring it from stage totals.
+    // Call sites pass kind where the stage name alone is ambiguous
+    // (split halves, retries, delta re-reviews); the stage defaults
+    // below cover the rest honestly.
+    const callKind=kind||
+      (stage==='review-repair'||stage==='answer-repair'||stage==='scaffolding-repair'?'repair':
+       stage==='review-rescue'?'rescue':'initial');
+    const callClaimCount=Number.isInteger(claimCount)?claimCount:
+      Array.isArray(payload?.claims)?payload.claims.length:
+      Array.isArray(payload?.decisions)?payload.decisions.length:null;
     // Batch 11 (B11-3): past the soft build-time budget, optional
     // stages are refused before they consume a call. The refusal is a
     // coded throw the callers already tolerate as a failed optional
@@ -3454,6 +3723,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       timingFinished=true;
     };
     let response,timer;
+    const pushCallRecord=()=>{
+      if(!transportCall||!Array.isArray(trace.inferenceCalls))return;
+      transportCall.kind=callKind;
+      transportCall.claimCount=callClaimCount;
+      trace.inferenceCalls.push(transportCall);
+    };
     const payloadMetrics=stage.startsWith('review')||stage==='answer-re-review'?
       reviewPayloadMetrics(payload,serializedPayload,system):null;
     // Batch 5 (L2): 'answer-re-review' produces review-shaped output with
@@ -3534,7 +3809,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         response=await Promise.race([ai.run(READER_MODEL,modelRequest),
           new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError),timeoutMs);})]);
       }
-      if(transportCall&&Array.isArray(trace.inferenceCalls))trace.inferenceCalls.push(transportCall);
+      pushCallRecord();
       if(timing)timing.providerWaitMs=Math.max(0,Math.round(performance.now()-providerStartedAt));
     }
     catch(error){
@@ -3543,7 +3818,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         finishTiming(null,'failed',typeof error?.code==='string'?error.code:'provider-request-failed');
       }
       transportCall=error?.streamDiagnostics||transportCall;
-      if(transportCall&&Array.isArray(trace.inferenceCalls))trace.inferenceCalls.push(transportCall);
+      pushCallRecord();
       if(transportCall&&error&&typeof error==='object')
         error.inferenceTransportDiagnostic=transportCall;
       if(payloadMetrics||stage==='answer-repair'){
@@ -3597,6 +3872,28 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       throw error;
     }
   }
+  // Batch 30 (B30-1): the answer-re-review stages keep their packets
+  // as they are (the gate-phase delta packets are small by
+  // construction), but a deadline failure on a packet that exceeds the
+  // split threshold gains the review stage's fallback: one retry as
+  // two claim halves, merged through the same split merge. Below the
+  // threshold the failure propagates exactly as before.
+  const runReReviewWithSplitFallback=async(packet,{partId,optional=false,kind='initial'}={})=>{
+    try{
+      return await run('answer-re-review',REVIEW_PROMPT,packet.reviewPayload,
+        parseReviewJson,{partId,optional,kind});
+    }catch(error){
+      if(error?.code!=='inference-deadline-exceeded'||
+         packet.reviewClaims.length<=REVIEW_SPLIT_CLAIM_THRESHOLD)throw error;
+      const claims=packet.reviewClaims,midpoint=Math.ceil(claims.length/2);
+      const halfPayloads=[claims.slice(0,midpoint),claims.slice(midpoint)]
+        .map(halfClaims=>compactReviewPayload(question,packet.reviewParts,halfClaims));
+      const halves=await Promise.all(halfPayloads.map(halfPayload=>
+        run('answer-re-review',REVIEW_PROMPT,halfPayload,parseReviewJson,
+          {partId,optional,kind:'split'})));
+      return mergeSplitReviewHalves(halves[0],halves[1],partId);
+    }
+  };
   const pageById=new Map(sources.map(source=>[source.id,{id:source.id,bookId:source.bookId,
     title:source.title,page:source.page,sha256:source.sha256,text:source.text??source.preview,
     ...(Array.isArray(source.candidatePartIds)?{candidatePartIds:source.candidatePartIds}:{}),
@@ -3814,7 +4111,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         // record of the attempt must still reach the trace.
         trace.composeRetry=composeRetry;
         const retried=await run('compose',COMPOSER_PROMPT,composePayload,
-          response=>parsePartAnswers(response,plan));
+          response=>parsePartAnswers(response,plan),{kind:'retry'});
         composeRetry.applied=true;
         return retried;
       }
@@ -3838,7 +4135,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       trace.composeRetry=composeRetry;
       try{
         const retried=await run('compose',COMPOSER_PROMPT,composePayload,
-          response=>parsePartAnswers(response,plan));
+          response=>parsePartAnswers(response,plan),{kind:'retry'});
         if(!retried.invalidPartHeadingSequence&&!retried.missingAllHeadings){
           composed=retried;
           composeRetry.applied=true;
@@ -3940,63 +4237,21 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // and direct-answer/retained/scaffolding lists union. A deadline
       // failure in a half follows the same review-only retry path for
       // that half; a half that still fails fails the part's review,
-      // exactly as an unsplit failure does today.
-      const REVIEW_SPLIT_CLAIM_THRESHOLD=10;
-      const mergeSplitReviewHalves=(first,second,partId)=>{
-        const statusRank={unanswered:0,partial:1,answered:2};
-        const worseStatus=(left,right)=>{
-          const a=hasRecognizedStatus(left)?normalizeStatus(left):'partial';
-          const b=hasRecognizedStatus(right)?normalizeStatus(right):'partial';
-          return statusRank[a]<=statusRank[b]?a:b;
-        };
-        const firstPart=(first?.parts||[]).find(part=>part.partId===partId)||first?.parts?.[0];
-        const secondPart=(second?.parts||[]).find(part=>part.partId===partId)||second?.parts?.[0];
-        let mergedPart=null;
-        if(firstPart&&secondPart){
-          const coverage=new Map();
-          for(const entry of [...(firstPart.requirementCoverage||[]),
-                               ...(secondPart.requirementCoverage||[])]){
-            const existing=coverage.get(entry?.requirementId);
-            if(!existing){coverage.set(entry?.requirementId,entry);continue;}
-            coverage.set(entry.requirementId,{...existing,
-              status:existing.status==='answered'||entry.status==='answered'?'answered':
-                worseStatus(existing.status,entry.status)==='unanswered'&&
-                entry.status==='unanswered'?'unanswered':'partial',
-              answerClaimIds:[...new Set([...(existing.answerClaimIds||[]),
-                ...(entry.answerClaimIds||[])])]});
-          }
-          const scaffoldingByClaim=new Map();
-          for(const link of [...(firstPart.scaffoldingLinks||[]),
-                              ...(secondPart.scaffoldingLinks||[])])
-            if(link?.claimId&&!scaffoldingByClaim.has(link.claimId))
-              scaffoldingByClaim.set(link.claimId,link);
-          mergedPart={...firstPart,
-            status:worseStatus(firstPart.status,secondPart.status),
-            answerStatus:worseStatus(firstPart.answerStatus||firstPart.status,
-              secondPart.answerStatus||secondPart.status),
-            repairable:firstPart.repairable===true||secondPart.repairable===true,
-            requirementCoverage:[...coverage.values()],
-            directAnswerClaimIds:[...new Set([...(firstPart.directAnswerClaimIds||[]),
-              ...(secondPart.directAnswerClaimIds||[])])],
-            retainedContextClaimIds:[...new Set([...(firstPart.retainedContextClaimIds||[]),
-              ...(secondPart.retainedContextClaimIds||[])])],
-            scaffoldingLinks:[...scaffoldingByClaim.values()]};
-        }else mergedPart=firstPart||secondPart||null;
-        return {parts:mergedPart?[mergedPart]:[],
-          claims:[...(first?.claims||[]),...(second?.claims||[])]};
-      };
+      // exactly as an unsplit failure does today. (Batch 30 (B30-1):
+      // the threshold and the merge now live at module level, shared
+      // with the answer-re-review split fallback.)
       const attemptPartReview=async(checkedPart)=>{
         const partId=checkedPart.partId;
         let packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question});
-        const runReviewCall=payload=>run('review',REVIEW_PROMPT,payload,
-          parseReviewJson,{partId});
-        const runSplitReview=async splitPacket=>{
+        const runReviewCall=(payload,kind)=>run('review',REVIEW_PROMPT,payload,
+          parseReviewJson,{partId,kind});
+        const runSplitReview=async(splitPacket,halfKind='split')=>{
           const claims=splitPacket.reviewClaims;
           const midpoint=Math.ceil(claims.length/2);
           const halfPayloads=[claims.slice(0,midpoint),claims.slice(midpoint)]
             .map(halfClaims=>compactReviewPayload(question,splitPacket.reviewParts,halfClaims));
           const halves=await Promise.all(halfPayloads.map(async(halfPayload,halfIndex)=>{
-            try{return await runReviewCall(halfPayload);}
+            try{return await runReviewCall(halfPayload,halfKind);}
             catch(halfError){
               if(reviewFailureCode(halfError)!=='inference-deadline-exceeded')
                 throw halfError;
@@ -4011,7 +4266,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 throw halfError;
               }
               try{
-                const retried=await runReviewCall(halfPayload);
+                const retried=await runReviewCall(halfPayload,'retry');
                 retryEntry.applied=true;
                 retryEntry.outcome='recovered';
                 return retried;
@@ -4026,9 +4281,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           }));
           return mergeSplitReviewHalves(halves[0],halves[1],partId);
         };
-        const runPacketReview=splitPacket=>
+        const runPacketReview=(splitPacket,{singleKind='initial',halfKind='split'}={})=>
           splitPacket.reviewClaims.length>REVIEW_SPLIT_CLAIM_THRESHOLD?
-            runSplitReview(splitPacket):runReviewCall(splitPacket.reviewPayload);
+            runSplitReview(splitPacket,halfKind):
+            runReviewCall(splitPacket.reviewPayload,singleKind);
         try{
           const rawReview=await runPacketReview(packet);
           return {packet,rawReview};
@@ -4056,8 +4312,23 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             failureCode==='inference-deadline-exceeded';
           if(failureCode==='inference-deadline-exceeded'&&
              !firstReviewError?.reviewOnlyRetryExhausted){
+            // Batch 30 (B30-1): split-on-timeout. Batch 29's profile
+            // showed timed-out monolithic reviews as the largest single
+            // waste pool (10 attempts ≈ 600 s of stage time): the retry
+            // resent the identical packet and died at the same wall.
+            // When the failed attempt was a single call over two or
+            // more claims, the retry instead reviews the part's claims
+            // as two halves through the split machinery — same spans,
+            // same claims, smaller calls — and merges the halves'
+            // verdicts. One split-retry level: a half that also times
+            // out follows the existing same-half retry inside the split
+            // path, and a part with fewer than two claims (nothing to
+            // split) keeps the same-packet retry unchanged.
+            const splitRetry=packet.reviewClaims.length>=2&&
+              packet.reviewClaims.length<=REVIEW_SPLIT_CLAIM_THRESHOLD;
             const retryEntry={partId,reason:failureCode,applied:false,
-              mode:'review-only',samePacket:true};
+              mode:'review-only',samePacket:!splitRetry,
+              ...(splitRetry?{splitRetry:true}:{})};
             reviewRetryParts.push(retryEntry);
             if(usage.calls>=callLimit){
               retryEntry.outcome='not-attempted-call-budget';
@@ -4068,7 +4339,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               // Reuse the original plan, composed claims, packet, and any
               // successful sibling reviews. A review deadline never restarts
               // composition or trims/rebuilds this part's evidence packet.
-              const retriedReview=await runPacketReview(packet);
+              const retriedReview=splitRetry?
+                await runSplitReview(packet,'split-retry'):
+                await runPacketReview(packet,{singleKind:'retry'});
               retryEntry.applied=true;
               retryEntry.outcome='recovered';
               return {packet,rawReview:retriedReview};
@@ -4102,7 +4375,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           reviewRetryParts.push(retryEntry);
           packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question,
             packetSpanLimit:4});
-          const rawReview=await runPacketReview(packet);
+          const rawReview=await runPacketReview(packet,{singleKind:'retry'});
           retryEntry.applied=true;
           return {packet,rawReview};
         }
@@ -4140,26 +4413,35 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         reviewClaims.push(...packet.reviewClaims);
       }
       const issueExcludedPartIds=new Set(),excludedIssues=[];
-      const normalizeAllParts=()=>{
+      // Batch 30 (B30-2): per-part normalization results are cached and
+      // the merged review is rebuilt from the cache, so the rescue loop
+      // can re-normalize ONLY the part a rescue iteration changed
+      // instead of every part on every flip (the audit's quadratic:
+      // normalizeReview ran once per part per flipped part). The full
+      // pass below remains for the initial normalization and the
+      // review-repair merge, whose raw reviews change across parts.
+      const singlesByPart=new Map();
+      const computePartSingle=(part,context)=>{
+        const packet=packetsByPart.get(part.id);
+        const checkedPart=checked.parts.find(item=>item.partId===part.id);
+        const single=normalizeReview(rawReviewByPart.get(part.id),
+          {...plan,parts:[part]},[checkedPart],sources,packet.reviewSpanMapsByPart,
+          question,packet.reviewClaims,context,null,composerPacketSpansByPart);
+        // Batch 8 (B8-2): every round's rejections enter the archive,
+        // including a contract-incomplete part's — its decisions are
+        // real round verdicts even though its part verdict is withheld
+        // from the merged review below.
+        archiveRoundRejections(single,[checkedPart]);
+        return single;
+      };
+      const mergeSingles=()=>{
         const merged={parts:[],issues:[],warnings:[],supportIssues:[],recovered:[],
           reviewDecisions:[],partDecisions:[],clauseFindings:[],
-          subjectExtractionBlindSpots:0};
-        // Normalization is deterministic CPU work; run it in plan order so
-        // each part still sees the accepted answers of the parts before it,
-        // exactly as the single-call review produced them.
-        let context=[];
+          subjectExtractionBlindSpots:0,gateRestorations:[]};
         for(const part of plan.parts){
-          if(!rawReviewByPart.has(part.id)||issueExcludedPartIds.has(part.id))continue;
-          const packet=packetsByPart.get(part.id);
-          const checkedPart=checked.parts.find(item=>item.partId===part.id);
-          const single=normalizeReview(rawReviewByPart.get(part.id),
-            {...plan,parts:[part]},[checkedPart],sources,packet.reviewSpanMapsByPart,
-            question,packet.reviewClaims,context,null,composerPacketSpansByPart);
-          // Batch 8 (B8-2): every round's rejections enter the archive,
-          // including a contract-incomplete part's — its decisions are
-          // real round verdicts even though its part verdict is withheld
-          // from the merged review below.
-          archiveRoundRejections(single,[checkedPart]);
+          if(issueExcludedPartIds.has(part.id))continue;
+          const single=singlesByPart.get(part.id);
+          if(!single)continue;
           if(single.issues.length){
             // A part whose own review contract is incomplete fails closed
             // for that part only; the other parts keep their verdicts. The
@@ -4187,10 +4469,48 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // clause findings and blind-spot count into the merged
           // review the rescue packet and the trace read.
           merged.clauseFindings.push(...(single.clauseFindings||[]));
+          merged.gateRestorations.push(...(single.gateRestorations||[]));
           merged.subjectExtractionBlindSpots+=single.subjectExtractionBlindSpots||0;
-          context.push(...(single.parts[0]?.answers||[]));
         }
         return merged;
+      };
+      const normalizeAllParts=()=>{
+        singlesByPart.clear();
+        // Normalization is deterministic CPU work; run it in plan order so
+        // each part still sees the accepted answers of the parts before it,
+        // exactly as the single-call review produced them.
+        let context=[];
+        for(const part of plan.parts){
+          if(!rawReviewByPart.has(part.id)||issueExcludedPartIds.has(part.id))continue;
+          const single=computePartSingle(part,context);
+          singlesByPart.set(part.id,single);
+          if(!single.issues.length)
+            context.push(...(single.parts[0]?.answers||[]));
+        }
+        return mergeSingles();
+      };
+      // Re-normalize one part after a rescue iteration changed its raw
+      // review, reusing the cached singles of every other part. The
+      // part's context is rebuilt from the CURRENT cached singles of
+      // the parts before it (their post-rescue state — the rescue loop
+      // walks plan order, so earlier parts are final by now), which is
+      // exactly the context a full pass would give it at this moment.
+      // Parts AFTER it keep their cached singles: their context input
+      // is the pre-flip state until their own rescue iteration (if
+      // any) re-normalizes them — the conservative reading recorded in
+      // the batch-30 checkpoint.
+      const renormalizePart=(partId)=>{
+        let context=[];
+        for(const part of plan.parts){
+          if(part.id===partId)break;
+          if(issueExcludedPartIds.has(part.id))continue;
+          const single=singlesByPart.get(part.id);
+          if(single&&!single.issues.length)
+            context.push(...(single.parts[0]?.answers||[]));
+        }
+        const part=plan.parts.find(item=>item.id===partId);
+        singlesByPart.set(partId,computePartSingle(part,context));
+        return mergeSingles();
       };
       try{
         if(!rawReviewByPart.size)throw failedReviewParts[0].error;
@@ -4310,11 +4630,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             mergedDecision.directAnswerClaimIds||[];
           const directAnswerDerived=!(rawPart?.directAnswerClaimIds?.length)&&
             mergedDecision.directAnswerDerived===true;
-          const acceptedDirectAnswerIds=directAnswerIds
-            .filter(id=>acceptedClaimIds.has(id));
-          const directAnswerCovered=deriveDirectAnswerCovered(directAnswerIds,
-            acceptedDirectAnswerIds,rawPart?.invalidDirectAnswerClaimIds,
-            rawPart?.answerStatus);
           const before={finalStatus:mergedDecision.finalStatus,
             requirements:Object.fromEntries((mergedDecision.requirementCoverage||[])
               .map(item=>[item.requirementId,item.status]))};
@@ -4345,14 +4660,24 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             requirementsComplete=requirementCoverage
               .every(item=>item.status==='answered');
           }
-          const derived=derivePartStatuses({reviewerStatus:rawPart?.status,
+          // Batch 30 (B30-2): the derivation itself is shared with
+          // normalizeReview and the delta merge through
+          // derivePartContract; this site's input rules (the raw-list
+          // preference above, the effective coverage mapping) are
+          // unchanged.
+          const contract=derivePartContract({reviewerStatus:rawPart?.status,
             reviewerAnswerStatus:rawPart?.answerStatus,
-            acceptedCount:acceptedClaimIds.size,directAnswerIds,
-            directAnswerCovered,derivedDirectAnswer:directAnswerDerived,
-            requirementsComplete:requirementsComplete!==false,
+            directAnswerIds,
+            invalidDirectAnswerClaimIds:rawPart?.invalidDirectAnswerClaimIds,
+            acceptedClaimIds,acceptedCount:acceptedClaimIds.size,
+            requirementCoverage,
             comparisonComplete:!review.supportIssues.some(issue=>
               issue.partId===partId&&
-              issue.reason==='comparison-support-missing-source-group')});
+              issue.reason==='comparison-support-missing-source-group'),
+            derivedDirectAnswer:directAnswerDerived});
+          const acceptedDirectAnswerIds=contract.acceptedDirectAnswerIds;
+          const directAnswerCovered=contract.directAnswerCovered;
+          const derived=contract;
           mergedPart.status=derived.status;
           mergedPart.answerStatus=derived.answerStatus;
           mergedPart.acceptedDirectAnswerClaimIds=acceptedDirectAnswerIds;
@@ -4483,15 +4808,34 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 const anchorCandidates=[...new Set([
                   specificClaimSpeaker(claimText),
                   ...claimPersonSubjects(claimText)].filter(Boolean))];
+                let provenanceVoice=null;
                 if(decision.validationReason==='pseudonymous-voice-unidentified'){
                   const voice=sourceProvenance(pairSource,plan,
                     pairSource?.scopeText||pairSource?.text||pairSource?.preview||'')
                     ?.workVoice;
-                  if(voice?.kind==='pseudonymous-author'&&voice.name&&
-                     !anchorCandidates.includes(voice.name))
-                    anchorCandidates.push(voice.name);
+                  if(voice?.kind==='pseudonymous-author'&&voice.name){
+                    provenanceVoice=voice;
+                    if(!anchorCandidates.includes(voice.name))
+                      anchorCandidates.push(voice.name);
+                  }
                 }
                 requestedEntry.anchorCandidates=anchorCandidates;
+                // Batch 30 (B30-4): the two-key restoration material,
+                // attached non-enumerably like the byline authors so
+                // it never reaches the model: the pair source's full
+                // packet span set (the antecedent key — the pair's own
+                // request spans above are hint-filtered and capped,
+                // the antecedent may live in any packet span of the
+                // source) and the provenance voice name (the voice
+                // key).
+                if(decision.validationReason==='subject-not-named-in-span'||
+                   decision.validationReason==='source-subject-attribution-missing')
+                  Object.defineProperty(requestedEntry,'packetSourceSpans',{
+                    value:(evidenceEntry?.spans||[])
+                      .map(span=>({spanId:span.spanId,text:span.text}))});
+                if(provenanceVoice)
+                  Object.defineProperty(requestedEntry,'provenanceVoiceName',{
+                    value:provenanceVoice.name});
                 Object.defineProperty(requestedEntry,'anchorBylineAuthors',{
                   value:catalogIdentity(pairSource?.title||'').authors||[]});
               }
@@ -4548,7 +4892,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 const retryStartedAt=Date.now();
                 const retryRescue=await run('review-rescue',RESCUE_REVIEW_RETRY_PROMPT,
                   {question,partId:part.id,decisions:retryRequested},
-                  parseReviewJson,{partId:part.id});
+                  parseReviewJson,{partId:part.id,kind:'retry'});
                 const retryLatencyMs=Date.now()-retryStartedAt;
                 entry.callLatencyMs+=retryLatencyMs;
                 const retryParsed=parseRescueDecisions(retryRescue,retryRequested);
@@ -4652,7 +4996,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                     {clauseVerdictsMissing:true,reason:'clause-verdicts-missing'}:{}),
                   ...(verdict.clearedClauses?{clearedClauses:verdict.clearedClauses}:{}),
                   ...(verdict.anchor?{anchor:verdict.anchor}:{}),
-                  ...(verdict.attributionHeld?{attributionHeld:true}:{})};
+                  ...(verdict.attributionHeld?{attributionHeld:true}:{}),
+                  // Batch 30 (B30-4): a pair restored by the two-key
+                  // path carries which key completed, so validation
+                  // can census restorations separately from ordinary
+                  // anchor-validated flips.
+                  ...(verdict.restoredByAntecedent?
+                    {restoredByAntecedent:true}:{}),
+                  ...(verdict.restoredByVoiceAnchor?
+                    {restoredByVoiceAnchor:true}:{})};
                 // Batch 26 (B26-4): an attribution-held pair never
                 // flips; its veto is known already, so record it here
                 // rather than in the post-normalization pass below.
@@ -4717,6 +5069,17 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                       sourceDecision.attributionStatus='supported';
                   }
                 }
+                // Batch 30 (B30-4): a two-key restoration is recorded
+                // on the raw decision, so re-normalization can
+                // neutralize exactly the demotion the restoration
+                // answers — the subject-not-named / subject-missing
+                // demotion for an antecedent restoration, the
+                // pseudonymous-voice demotion for a voice-anchor
+                // restoration — and no other gate.
+                if(verdict.restoredByAntecedent)
+                  sourceDecision.gateRestoration='antecedent';
+                if(verdict.restoredByVoiceAnchor)
+                  sourceDecision.gateRestoration='voice-anchor';
                 flippedClaimIds.add(item.claimId);
                 entry.flipped++;
               }
@@ -4735,7 +5098,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               }
               if(entry.flipped){
                 flippedPartIds.add(part.id);
-                review=normalizeAllParts();
+                // Batch 30 (B30-2): only this part's decisions changed
+                // in this iteration (the rescue judges one part's
+                // pairs), so only this part is re-normalized — the
+                // other parts' cached singles are reused as they are.
+                review=renormalizePart(part.id);
               }
             }catch(error){
               entry.callLatencyMs=Date.now()-rescueStartedAt;
@@ -4983,8 +5350,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 const packet=buildReviewPacket([repairedPart],
                   {sources,pageById,plan:targetPlan,question,
                    priorRejectionsByPart:priorRejectionsByPart()});
-                const rawReview=await run('answer-re-review',REVIEW_PROMPT,
-                  packet.reviewPayload,parseReviewJson,{partId:repairedPart.partId});
+                const rawReview=await runReReviewWithSplitFallback(packet,
+                  {partId:repairedPart.partId});
                 return {repairedPart,packet,rawReview};
               }));
               const repairedPackets=[],reReviewFailures=[];
@@ -5257,6 +5624,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // measurable trace number, not an anecdote.
           ...(review.subjectExtractionBlindSpots?
             {subjectExtractionBlindSpots:review.subjectExtractionBlindSpots}:{}),
+          // Batch 30 (B30-4): the two-key restorations this build's
+          // final normalization applied, so validation can census
+          // them (kind, pair, and the demotion reason neutralized).
+          ...(review.gateRestorations?.length?
+            {gateRestorations:review.gateRestorations}:{}),
           ...(failedReviewParts.length?{failedParts:failedReviewParts
             .map(item=>({partId:item.partId,code:item.code}))}:{})};
         // Per-part contract problems fail only their own part (recorded in
@@ -5748,8 +6120,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       if(!useDelta){
         const packet=buildReviewPacket([candidate],{sources,pageById,plan:singlePlan,question,
           priorRejectionsByPart:priorRejectionsByPart()});
-        const rawReview=await run('answer-re-review',REVIEW_PROMPT,packet.reviewPayload,
-          parseReviewJson,{partId:planPart.id,optional:true});
+        const rawReview=await runReReviewWithSplitFallback(packet,
+          {partId:planPart.id,optional:true});
         const reReview=normalizeReview(rawReview,singlePlan,[candidate],sources,
           packet.reviewSpanMapsByPart,question,packet.reviewClaims,[],archiveEntriesByPart(),
           composerPacketSpansByPart);
@@ -5766,8 +6138,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         answers:candidateAnswers.filter((_,index)=>changedIndexes.has(index))};
       const packet=buildReviewPacket([deltaCandidate],{sources,pageById,plan:singlePlan,question,
         priorRejectionsByPart:priorRejectionsByPart()});
-      const rawReview=await run('answer-re-review',REVIEW_PROMPT,packet.reviewPayload,
-        parseReviewJson,{partId:planPart.id,optional:true});
+      const rawReview=await runReReviewWithSplitFallback(packet,
+        {partId:planPart.id,optional:true,kind:'delta'});
       const deltaReview=normalizeReview(rawReview,singlePlan,[deltaCandidate],sources,
         packet.reviewSpanMapsByPart,question,packet.reviewClaims,[],archiveEntriesByPart(),
         composerPacketSpansByPart);
@@ -5854,9 +6226,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           .map(issue=>issue.claimId),
         ...(rawDeltaPart?.directAnswerClaimIds||[]).map(String)
           .filter(id=>!candidateClaimIds.has(id))])];
-      const directAnswerCovered=deriveDirectAnswerCovered(directAnswerIds,
-        acceptedDirectAnswerIds,invalidDirectAnswerClaimIds,
-        rawDeltaPart?.answerStatus||priorPartDecision?.reviewerAnswerStatus);
       let requirementCoverage,requirementsComplete;
       if((planPart.requirements||[]).length){
         requirementCoverage=planPart.requirements.map(requirement=>{
@@ -5898,12 +6267,19 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       }
       const comparisonComplete=comparisonReviewEvidenceComplete(planPart,plan,
         sources,mergedEvidence);
-      const derived=derivePartStatuses({
+      // Batch 30 (B30-2): the derivation itself is shared with
+      // normalizeReview and the rescue recompute through
+      // derivePartContract; this site's input rules (the prior/delta
+      // ID remapping above, its coverage status rule) are unchanged.
+      const contract=derivePartContract({
         reviewerStatus:rawDeltaPart?.status||priorPartDecision?.reviewerStatus,
         reviewerAnswerStatus:rawDeltaPart?.answerStatus||
           priorPartDecision?.reviewerAnswerStatus,
-        acceptedCount:mergedAnswers.length,directAnswerIds,directAnswerCovered,
-        requirementsComplete:requirementsComplete!==false,comparisonComplete});
+        directAnswerIds,invalidDirectAnswerClaimIds,
+        acceptedClaimIds,acceptedCount:mergedAnswers.length,
+        requirementCoverage:requirementCoverage||null,comparisonComplete});
+      const directAnswerCovered=contract.directAnswerCovered;
+      const derived=contract;
       const deltaScaffolding=deltaPart?.reviewScaffolding||[];
       const deltaScaffoldingIds=new Set(deltaScaffolding.map(entry=>entry.claimId));
       const mergedScaffolding=[
