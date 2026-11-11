@@ -4,7 +4,6 @@
 // linkage currently differ. Compare both copies before changing shared plan
 // or citation behavior; this Worker copy also owns server-side quote cleanup.
 export const CONTRACT_VERSION='reader-evidence-v2';
-export const RETRIEVAL_LIMIT=12;
 export function citationIds(text){
   return [...new Set([...String(text||'').matchAll(/\[([^\]]+)\]/g)]
     .flatMap(match=>match[1].match(/\bS\d+\b/g)||[]))];
@@ -453,13 +452,4 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   return {version:CONTRACT_VERSION,resolvedQuestion,intent,
     sources,parts:partsWithSources,scope:bounded(planInput.scope,200),
     clarification:bounded(planInput.clarification,240),queries};
-}
-export async function fetchWithDeadline(fetcher,url,options={},timeoutMs=30000){
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(new Error('Request deadline exceeded')),timeoutMs);
-  const onAbort=()=>controller.abort(options.signal.reason);
-  if(options.signal?.aborted)onAbort();
-  else options.signal?.addEventListener('abort',onAbort,{once:true});
-  try{return await fetcher(url,{...options,signal:controller.signal});}
-  finally{clearTimeout(timer);options.signal?.removeEventListener('abort',onAbort);}
 }
