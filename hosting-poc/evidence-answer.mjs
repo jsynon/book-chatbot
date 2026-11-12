@@ -1627,6 +1627,32 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
         }
         for(const {group,ids} of replacements.reverse())
           checkedUnit=checkedUnit.slice(0,group.start)+'['+ids.join(', ')+']'+checkedUnit.slice(group.end);
+        // Stage B.1: the composer sometimes folds the passage's
+        // printed page number into the citation group — [S2, 50] for
+        // source S2 on page 50. Under Stage A the phase-3 guilt case
+        // lost 13 sentences to it; in the Stage B validation the
+        // narrators case lost full drafts in BOTH passes (strong
+        // packets, every citation rejected, refusal shipped). A bare
+        // page element (50, p. 50, pp. 50-51) beside at least one
+        // well-formed source ID is unambiguous — strip the page
+        // element, keep the citation, and record the repair. Groups
+        // carrying any other malformed element still fail closed
+        // below, and a page-only group is not a citation at all
+        // (looksLikeCitation requires an S id).
+        const pageElement=/^\d{1,4}$|^pp?\.?\s*\d{1,4}(?:\s*[-–—]\s*\d{1,4})?$/i;
+        const pageRepairs=[];
+        for(const group of citationGroups(checkedUnit).filter(item=>item.looksLikeCitation)){
+          const kept=group.ids.filter(id=>/^S[1-9]\d*$/.test(id));
+          const dropped=group.ids.filter(id=>pageElement.test(id));
+          if(kept.length&&dropped.length&&kept.length+dropped.length===group.ids.length)
+            pageRepairs.push({group,kept});
+        }
+        for(const {group,kept} of [...pageRepairs].reverse())
+          checkedUnit=checkedUnit.slice(0,group.start)+'['+[...new Set(kept)].join(', ')+']'+
+            checkedUnit.slice(group.end);
+        for(const {group,kept} of pageRepairs)
+          citationFormatRepairs.push({partId:part.id,from:group.raw,
+            to:'['+[...new Set(kept)].join(', ')+']',kind:'page-element-stripped'});
         const malformedGroups=citationGroups(checkedUnit).filter(group=>group.looksLikeCitation)
           .filter(group=>!group.ids.length||group.ids.some(id=>!/^S[1-9]\d*$/.test(id)));
         if(malformedGroups.length){
@@ -5019,7 +5045,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // use). A second failure propagates exactly as the first would have
     // today, with the original codes.
     const retryableComposeCodes=['model-output-invalid-format','answer-output-truncated',
-      'inference-deadline-exceeded','answer-request-failed'];
+      'inference-deadline-exceeded','answer-request-failed','inference-cancel-unconfirmed'];
     // Match run()'s stage-trace normalization, as the review retry does:
     // a provider failure with no machine-readable code is a request
     // failure, not a reason to skip the retry.
@@ -5133,7 +5159,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // failed review discards only its own part's decisions, and the
       // compact retry rebuilds just that part's packet.
       const retryableReviewCodes=['model-output-invalid-format','review-output-truncated',
-        'review-response-invalid','inference-deadline-exceeded','review-request-failed'];
+        'review-response-invalid','inference-deadline-exceeded','review-request-failed',
+        'inference-cancel-unconfirmed'];
       // Match run()'s stage-trace normalization: a provider failure with no
       // machine-readable code is a review request failure (the run #44
       // case), not a reason to skip the retry.
@@ -5480,19 +5507,43 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // failedParts entry's suppliedDefective flag (set at the
       // exclusion site from the part's single-normalization
       // issues: 'invalid-status' present).
+      // Stage B.1: the degradation extends to CALL-LEVEL review
+      // failures (the review call threw, timed out, or returned
+      // unusable output — no review exists for the part at all).
+      // The Stage B validation lost three cases to the tie rule
+      // below (suffering, wealth, Kierkegaard): reviews died in a
+      // slow-provider window despite the retry, and the whole answer
+      // was suppressed even when a sibling part held a complete,
+      // validated review (Kierkegaard P1: 13 claims, mostly
+      // supported, discarded). A call-failed part is unverified in
+      // exactly B0's sense, so it gets B0's shape: it ships no
+      // claims, is disclosed, and the validated parts ship.
+      // Suppression still stands when NO part validated (the outer
+      // size check) and for the B8-5 shape — a partially fulfilled
+      // contract in a tie keeps its semantics, because its supplied
+      // decisions are individually recorded and are a different
+      // failure class from a review that never happened.
       const degradable=!reviewFailure&&failedReviewParts.length>0&&
         unvalidatedReviewPartIds.size<plan.parts.length&&
         [...unvalidatedReviewPartIds].every(partId=>
           failedReviewParts.some(item=>item.partId===partId&&
-            item.code==='review-contract-incomplete'&&
-            item.suppliedDefective));
+            (item.code!=='review-contract-incomplete'||
+             item.suppliedDefective)));
       if(degradable&&!strictMinority){
         unvalidatedPartsDropped=false;
         suppressForReviewCompletion=false;
+        // A retry-exhausted failure recorded on the way here names
+        // the same call-level failure being degraded; it must not
+        // outlive the degradation it triggered.
+        if(failure&&failure.stage==='review'&&
+           failure.code==='inference-deadline-exceeded')failure=null;
         trace.reviewContractDegradedParts=[...unvalidatedReviewPartIds];
         trace.reviewCompletion={totalParts:plan.parts.length,
           unvalidatedPartIds:[...unvalidatedReviewPartIds],
-          disposition:'degraded-parts'};
+          disposition:'degraded-parts',
+          degradedPartCauses:Object.fromEntries([...unvalidatedReviewPartIds]
+            .map(partId=>[partId,failedReviewParts
+              .find(item=>item.partId===partId)?.code||'unvalidated']))};
       }else{
         unvalidatedPartsDropped=strictMinority;
         suppressForReviewCompletion=!strictMinority;
@@ -7046,12 +7097,39 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             // answered because accepted claims did not survive
             // into it. Its subject names the affected requirement.
             const labelKind=labelKindByPartId.get(item.part.id)||'';
+            // Stage B.1 (B4 scoping): when every requirement of the
+            // part is answered by a shipped cited claim and none of
+            // the lost claims was answering a recorded requirement,
+            // the assembly loss is a supporting point, not a
+            // partially answered part — the Stage B progress AP1
+            // label claimed the whole part was only partially
+            // answered while the case's own coverage record said
+            // full. The label scopes itself to the lost point; the
+            // part-level wording stands whenever a requirement is
+            // genuinely unmet or a lost claim served one.
+            const lostClaimIds=assemblyLossClaimIdsByPart.get(item.part.id)||[];
+            const coverageEntries=item.requirementCoverage||[];
+            const requirementsAnswered=(item.part.requirements||[]).length>0&&
+              coverageEntries.length>0&&
+              coverageEntries.every(entry=>entry.status!=='unanswered'&&
+                (entry.answerClaimIds||[]).some(id=>{
+                  const a=(item.answers||[]).find(x=>x.claimId===id);
+                  return a&&citationIds(a.renderedText||'').length;}));
+            const lostServedRequirement=coverageEntries.some(entry=>
+              (entry.answerClaimIds||[]).some(id=>lostClaimIds.includes(id)));
+            const claimScopedLoss=labelKind==='assembly-loss'&&
+              requirementsAnswered&&!lostServedRequirement&&
+              !(assemblyLossRequirementTextsByPartId.get(item.part.id)?.length);
             const text=(labelKind==='assembly-loss'?
-              'This part of the question could only be partially answered: ':
+              (claimScopedLoss?
+                'A supporting point in this part of the question could not be included: ':
+                'This part of the question could only be partially answered: '):
               'Retrieved passages could not be verified as supporting this part of the question: ')+
               labelSubjectFor(item,{kind:labelKind});
             disclosureLabels.push({partId:item.part.id,
-              kind:labelKindByPartId.get(item.part.id)||'uncited-part',text});
+              kind:labelKindByPartId.get(item.part.id)||'uncited-part',text,
+              ...(labelKind==='assembly-loss'?
+                {scope:claimScopedLoss?'claim':'part'}:{})});
             return segment+'\n\n'+text;
           }).join('\n\n')));
         trace.final={...(trace.final||{}),
