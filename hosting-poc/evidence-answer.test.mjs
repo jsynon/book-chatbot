@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,derivePartContract,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimPersonSubjects,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,normalizeClaimClauseDecisions,claimPossessiveOnlySubjects} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
-import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims,applyAssemblyAntecedentGuard,reconcileAssemblyLoss,classifySpanRegion,finalizeVetoCensus} from './evidence-answer.mjs';
+import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims,applyAssemblyAntecedentGuard,reconcileAssemblyLoss,classifySpanRegion,finalizeVetoCensus,subjectNamesEquivalent,BATCH35_FIRING_FIELDS} from './evidence-answer.mjs';
 test('batch 34 (B34-5) retired B33-9 scaling: an oversized review packet gets the flat 60000 deadline',async()=>{
  // The packet below carries ~96,000 span characters (~16,000 packet
  // words): under B33-9's retired scaling its initial review call
@@ -13116,4 +13116,899 @@ test('batch 34 B34-8 pilot route: the census carries final dispositions in both 
   .find(entry=>entry.kind==='bullet-label');
  assert.equal(shippedContract?.finalDisposition,'suppressed-and-shipped',
   'run B: the contract-level census carries the same disposition');
+});
+
+test('batch 35 B35-1: subjectNamesEquivalent — containment and spelling variants match, distinct surnames do not',()=>{
+ assert.equal(subjectNamesEquivalent('Gibbon','Edward Gibbon'),true,
+  'containment: the short form is the long form’s surname');
+ assert.equal(subjectNamesEquivalent('Prince Andrew','Prince Andrei'),true,
+  'variant: Andrew/Andrei share the five-character stem');
+ assert.equal(subjectNamesEquivalent('Prince Andrei','Prince Andrew'),true,
+  'the variant rule is symmetric');
+ assert.equal(subjectNamesEquivalent('Andrew','Andrei'),true,
+  'single-token variants of sufficient length match');
+ assert.equal(subjectNamesEquivalent('John Smith','John Smyth'),false,
+  'a short shared prefix is not a variant');
+ assert.equal(subjectNamesEquivalent('Elizabeth Bennet','Jane Bennet'),false,
+  'a shared surname alone never makes two full names equivalent');
+ assert.equal(subjectNamesEquivalent('Marlow','Kurtz'),false);
+});
+
+test('batch 35 B35-1 pilot: a boundary-only swap finding is recorded with audit detail and the claim ships',async()=>{
+ // The reviewer ratifies the claim (Bernard weeps) while its own
+ // boundary records Alice weeping. The span attests Alice's name
+ // (she is mentioned) but never assigns the weeping to her: the
+ // sentence that carries the action opens on a pronoun. Batch 34
+ // demoted on the boundary's word alone; batch 35 records the
+ // finding — span IDs, both subjects, the verdict it would have
+ // produced — and the claim ships, because a boundary-only reading
+ // is measurement, not a gate.
+ const source={id:'S1',bookId:'77',title:'Letters — Alice Marchmain',
+  page:12,url:'https://example.test/letters#page=12',
+  text:'Alice kept a photograph of Bernard beside her desk for many years. She wept openly at the news of his leaving, and the letter shook in her hand as she read it again.',
+  preview:'Alice kept a photograph of Bernard beside her desk.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Alice Marchmain',role:'primary',bookIds:['77']}],
+  parts:[{id:'P1',question:'How does Bernard react to the news of the leaving?',
+   sourceBookIds:['77'],searchQueries:['Bernard news leaving'],
+   candidateSourceIds:['S1']}],queries:['Bernard leaving']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+    retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    attributedSubject:'Bernard',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Bernard',
+     supportBoundary:'The span describes Alice crying openly at the news.'}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:'PART P1\nBernard weeps openly at the news of his leaving. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'How does Bernard react to the news of the leaving?',
+  [source],ai,[],{plan,catalog:{77:'Letters — Alice Marchmain'},trace:true});
+ assert.match(result.answer,/Bernard weeps openly/,
+  'the claim ships: a boundary-only finding no longer demotes');
+ const records=result.trace.reviewContract?.boundarySubjectChecks||[];
+ assert.equal(records.length,1);
+ assert.equal(records[0].outcome,'recorded');
+ assert.equal(records[0].wouldBeOutcome,'demoted');
+ assert.equal(records[0].wouldBeGround,'source-subject-attribution-mismatch');
+ assert.equal(records[0].boundarySubject,'Alice');
+ assert.equal(records[0].claimSubject,'Bernard');
+ assert.ok(records[0].spanIds.length>=1,
+  'the record carries the cited span IDs for the precision audit');
+ assert.ok(!(result.trace.vetoCensus||[]).some(entry=>
+   entry.claimId===records[0].claimId&&entry.kind==='boundary-subject'),
+  'a recorded finding never enters the veto census as a demotion');
+});
+
+test('batch 35 B35-1 pilot: an extracted subject absent from the evidence is silence, not a finding',async()=>{
+ // The Gatsby pilot-1 claim with a boundary naming Nick — a person
+ // the span never mentions. Batch 34 harvested the name from the
+ // boundary prose and demoted; batch 35’s attestation rule treats
+ // an unevidenced extraction as no subject recorded: the check
+ // stays silent and the claim ships exactly as a silent boundary
+ // leaves it.
+ const ai=batch25RouterAI({reviewResponder:b34GatsbyReview({
+   c2Boundary:'The span describes Nick crying over the beautiful shirts, which is part of the witnessed scene.'}),
+  rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:'PART P1\n'+
+   'Gatsby throws shirt after shirt before his guests, shirts of sheer linen and thick silk and fine flannel. [S1]\n\n'+
+   'He also witnesses the overwhelming impact of Gatsby’s luxury, such as the “beautiful shirts” that move Gatsby to tears. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In The Great Gatsby, how does Daisy react to the display of wealth?',
+  [b34GatsbySource],ai,[],{plan:b34GatsbyPlan,catalog:b34GatsbyCatalog,trace:true});
+ assert.match(result.answer,/move Gatsby to tears/,
+  'the claim ships: the unevidenced extraction demotes nothing');
+ assert.deepEqual(result.trace.reviewContract?.boundarySubjectChecks||[],[],
+  'no finding is recorded for an unattested subject');
+});
+
+test('batch 35 B35-1 pilot: a spelling variant of the claim’s subject is a match, not a mismatch (W&P shape)',async()=>{
+ // Production shape: the span (and the reviewer’s boundary) name
+ // “Prince Andrew”; the claim names “Prince Andrei”. Batch 34’s
+ // strict matching read the variant as an alias miss and demoted.
+ // Under the maintained equivalence rule the boundary records the
+ // claim’s own subject — parity — and the claim ships.
+ const source={id:'S1',bookId:'258',title:'War and Peace — Leo Tolstoy',
+  page:311,url:'https://example.test/warpeace#page=311',
+  text:'Prince Andrew had long ceased to believe in the plans drawn up by the staff at headquarters. He despairs of the council’s plan and of every disposition made far from the smoke of the field.',
+  preview:'Prince Andrew had long ceased to believe in the plans.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Leo Tolstoy',role:'primary',bookIds:['258']}],
+  parts:[{id:'P1',question:'How does Prince Andrei judge the council’s plan?',
+   sourceBookIds:['258'],searchQueries:['Andrei council plan'],
+   candidateSourceIds:['S1']}],queries:['Andrei plan']};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog.find(entry=>entry.text.includes('despairs'));
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+    retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    attributedSubject:'Prince Andrei',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Prince Andrei',
+     supportBoundary:'The span describes Prince Andrew despairing of the council’s plan.'}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:'PART P1\nPrince Andrei despairs of the council’s plan. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'How does Prince Andrei judge the council’s plan?',
+  [source],ai,[],{plan,catalog:{258:'War and Peace — Leo Tolstoy'},trace:true});
+ assert.match(result.answer,/Prince Andrei despairs/,
+  'the claim ships: the variant is the same person');
+ assert.deepEqual(result.trace.reviewContract?.boundarySubjectChecks||[],[],
+  'no swap is recorded against a variant-matched subject');
+});
+
+test('batch 35 B35-3 pilot (Magwitch): the span’s attested speaker demotes an accepted claim crediting another speaker',async()=>{
+ // Great Expectations shape: the reviewer ACCEPTS a claim
+ // crediting Pip with words the span attributes to Magwitch.
+ // Batch 35 verifies shipping claims against the span’s own
+ // speech attribution — the speaker channel names Magwitch from
+ // the span text itself — and the claim demotes. The control
+ // credits Magwitch and ships.
+ const source={id:'S1',bookId:'312',title:'Great Expectations — Charles Dickens',
+  page:402,url:'https://example.test/greatexpectations#page=402',
+  text:'Pip said, “I am grateful for everything,” earlier that day, though his voice shook as he spoke. “I made my fortune by my own effort and owe it to no one,” said Magwitch, turning to Pip with a fierce pride.',
+  preview:'Pip said, “I am grateful for everything,” earlier that day.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Charles Dickens',role:'primary',bookIds:['312']}],
+  parts:[{id:'P1',question:'Who claims to have made a fortune by his own effort?',
+   sourceBookIds:['312'],searchQueries:['fortune own effort'],
+   candidateSourceIds:['S1']}],queries:['fortune effort']};
+ const makeAI=speaker=>batch25RouterAI({
+  reviewResponder:({messages})=>{
+   const payload=parsePayload(messages);
+   const span=payload.spanCatalog.find(entry=>entry.text.includes('made my fortune'));
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+     answerStatus:'answered',
+     directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+     retainedContextClaimIds:[]}],
+    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+     attributedSubject:speaker,attributedSpeaker:speaker,
+     sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+      subjectAttributionStatus:'supported',attributedSubject:speaker,
+      attributedSpeaker:speaker,
+      supportBoundary:'The span shows the speaker telling of the fortune made by his own effort.'}]}))})};
+  },
+  rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:'PART P1\n'+speaker+' says, “I made my fortune by my own effort and owe it to no one.” [S1]'});
+ const wrong=await composeEvidenceAnswer(
+  'Who claims to have made a fortune by his own effort?',
+  [source],makeAI('Pip'),[],{plan,
+   catalog:{312:'Great Expectations — Charles Dickens'},trace:true});
+ assert.doesNotMatch(wrong.answer,/made my fortune/,
+  'the misattributed claim is demoted by the span’s attested speaker');
+ const demoted=(wrong.trace.reviewContract?.boundarySubjectChecks||[])
+  .find(entry=>entry.outcome==='demoted');
+ assert.ok(demoted,'the verified demotion is recorded');
+ assert.equal(demoted.via,'span-speech');
+ assert.equal(demoted.boundarySubject,'Magwitch');
+ assert.equal(demoted.verified,true);
+ const right=await composeEvidenceAnswer(
+  'Who claims to have made a fortune by his own effort?',
+  [source],makeAI('Magwitch'),[],{plan,
+   catalog:{312:'Great Expectations — Charles Dickens'},trace:true});
+ assert.match(right.answer,/made my fortune/,
+  'control: the correctly credited claim ships');
+});
+
+test('batch 35 B35-3 pilot (Conrad): a neighboring segment’s head naming the subject does not suppress the subject-not-named demotion',async()=>{
+ // The batch-34 Conrad door, rebuilt: the claim credits Kurtz with
+ // the manager’s smile passage. A packet span the claim does NOT
+ // cite carries Kurtz’s naming sentence in its head (the manager
+ // span’s lead-in reaches back to it). Batch 34’s suppression read
+ // that head and released the demotion; batch 35 qualifies an
+ // in-head antecedent only when the head belongs to a segment the
+ // pair cites — a same-page neighbor’s head names the subject as
+ // someone else’s actor, not this passage’s.
+ // Ranking engineering (review-spans scores draft terms +3,
+ // question terms +1, ties by page order): each filler carries
+ // answer/question terms the naming sentence lacks, so the naming
+ // span ranks below the eight packet slots while the manager and
+ // smile spans rank in. The manager scene runs three sentences so
+ // the smile span’s own 400-character head covers only the scene
+ // itself — the naming sentence sits in the MANAGER span’s head,
+ // exactly the production geometry.
+ const fillers=[
+  'The steamer lay off the station through the long afternoon while her crew watched the darkness gather over the river and the far shore, and the mate kept his silent watch until the lamps were lit along the bank.',
+  'All morning the steamer had waited below the station landing, his boats lowered and raised again at his order, while the darkness of the forest stood unmoving beyond the shore and the current carried branches past her hull.',
+  'The clerks at the station kept his ledgers through the heat, entering figures in a fair round hand, while the steamer swung at her anchor and the shore lay white and still under the haze until darkness came down.',
+  'Bales and cases were stacked along the station yard in long rows, and porters moved among them at his signal without haste, as the steamer’s bell sounded across the water and the shore faded slowly into the early darkness.',
+  'The steamer’s funnel trailed a thin smoke over the station roofs, and his flag hung limp above the yard, and from the shore there came no sound at all but the river slipping past the piles into the gathering darkness.',
+  'An agent walked the station path with a bundle of papers under his arm, pausing to watch the steamer warp herself closer to the bank, where the shore shelved gently and the darkness lay already among the trees.',
+  'The station store was shuttered early, his tins and cloth counted and locked away, while the steamer rode quiet at her moorings and the opposite shore dissolved by degrees into a darkness without a single light.',
+  'Rivets, oil, and spare cordage filled the steamer’s manifest, checked twice by his engineer, while the station bell tolled once and the shore birds settled, and darkness thickened over the anchorage like a held breath.'];
+ const naming='Kurtz had come down from the interior only the week before, and by the time the steamer reached the station the whole company spoke of little but his illness, his ivory, and the strange ascendancy he held over the men of the interior.';
+ const manager='The manager of the Outer Station, his face sealed and composed in the gathering darkness, betrayed nothing as the words reached him from the veranda.';
+ const managerScene2='He listened with his head inclined, his hands folded upon the table before him, and he gave no sign that the report had moved him in any way at all.';
+ const managerScene3='When the speaker had finished, the manager rose without hurry, adjusted his sleeve, and looked out over the water as if the matter were already closed.';
+ const smile='He sealed the utterance with that smile of his, as though it had been a door opening into a darkness he had in his keeping.';
+ const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:34,url:'https://example.test/conrad#page=34',
+  text:[...fillers,naming,manager,managerScene2,managerScene3,smile].join(' '),
+  preview:'He sealed the utterance with that smile of his.'};
+ const captured={};
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const claim=payload.claims[0];
+  const smileSpan=payload.spanCatalog.find(entry=>
+   entry.text.includes('smile of his'));
+  const managerSpan=payload.spanCatalog.find(entry=>
+   entry.text.includes('face sealed and composed'));
+  captured.smileId=smileSpan?.spanId;
+  captured.managerHead=managerSpan?.head;
+  captured.packetSpanIds=payload.parts[0].evidence[0].spanIds;
+  const namingSpan=payload.spanCatalog.find(entry=>
+   entry.text.includes('strange ascendancy'));
+  captured.namingInPacket=Boolean(namingSpan)&&
+   captured.packetSpanIds.includes(namingSpan.spanId);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
+    retainedContextClaimIds:[]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    attributedSubject:'Kurtz',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[smileSpan.spanId],
+     subjectAttributionStatus:'supported',attributedSubject:'Kurtz',
+     supportBoundary:'The span shows a smile sealing the utterance like a door into darkness.'}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:'PART P1\nKurtz sealed the utterance with that smile of his, as though it had been a door opening into a darkness he had in his keeping. [S1]'});
+ const result=await composeEvidenceAnswer(
+  'In Heart of Darkness, what does the smile at the Outer Station suggest?',
+  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
+ assert.ok(captured.managerHead?.includes('strange ascendancy'),
+  'precondition: the manager span’s head carries the Kurtz naming sentence');
+ assert.equal(captured.namingInPacket,false,
+  'precondition: the naming sentence is not itself a packet span');
+ const suppressed=(result.trace.reviewContract?.gateDemotionsSuppressed||[])
+  .filter(entry=>entry.claimId==='P1-C1');
+ assert.deepEqual(suppressed,[],
+  'the neighboring head does not suppress the demotion');
+ const decision=(result.trace.reviewContract?.reviewDecisions||[])
+  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
+ assert.equal(decision?.accepted,false,
+  'the subject-not-named demotion stands');
+ assert.doesNotMatch(result.answer,/door opening into a darkness/,
+  'the manager’s smile is not shipped as Kurtz’s');
+});
+
+test('batch 35 B35-2 pilot (C&P): the guard names Sonya from the draft part’s first claim — never the possessive inside the orphan’s own text',async()=>{
+ // Production shape (phase-3 C&P SP1, claim texts verbatim): the
+ // Sonya part’s records are ALL subject-less; the orphan “Her
+ // presence serves…” itself mentions “Raskolnikov’s theory”.
+ // Batch 34’s guard harvested that possessive as the claim’s
+ // subject and shipped “Raskolnikov’s presence…”. Batch 35 takes
+ // the referent from the draft part’s first claim — Sonya — whose
+ // text establishes her as the part’s subject.
+ const source={id:'S1',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',
+  page:310,url:'https://example.test/crime#page=310',
+  text:'Raskolnikov’s theory of extraordinary men holds that the extraordinary man has the right to transgress the moral law in pursuit of a higher idea. Sonya, meanwhile, answers Raskolnikov directly: where Raskolnikov preaches transgression, she answers with a life of sacrifice, endurance, and faith in a higher spiritual truth.',
+  preview:'Raskolnikov’s theory of extraordinary men holds that the extraordinary man has the right.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['114']}],
+  parts:[{id:'P1',question:'What does Raskolnikov’s theory claim?',
+   sourceBookIds:['114'],searchQueries:['Raskolnikov theory extraordinary'],
+   candidateSourceIds:['S1']},
+   {id:'P2',question:'How does Sonya answer Raskolnikov’s theory?',
+   sourceBookIds:['114'],searchQueries:['Sonya challenges theory'],
+   candidateSourceIds:['S1']}],queries:['Raskolnikov Sonya theory']};
+ const draft='PART P1\n'+
+  'Raskolnikov’s theory divides humanity into the ordinary and the extraordinary, and grants the extraordinary man a right to transgress. [S1]\n\n'+
+  'PART P2\n'+
+  'Sonya challenges Raskolnikov’s theory through a mechanism of spiritual and moral presence, standing as a living contradiction to his cold, rationalistic worldview. [S1]\n\n'+
+  'Her presence serves as a constant reminder of the human and emotional dimensions that Raskolnikov’s theory attempts to ignore or override.';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const spanFor=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  return {response:JSON.stringify({parts:payload.parts.map(part=>({
+    partId:part.partId,status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:payload.claims
+     .filter(claim=>claim.claimId.startsWith(part.partId+'-'))
+     .map(claim=>claim.claimId),
+    retainedContextClaimIds:part.partId==='P2'?['P2-C2']:[]})),
+   claims:payload.claims.map(claim=>claim.claimId==='P1-C1'?
+    {claimId:claim.claimId,status:'answered',attributedSubject:'Raskolnikov',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanFor('theory of extraordinary men')],
+      subjectAttributionStatus:'supported',attributedSubject:'Raskolnikov'}]}:
+    {claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanFor('answers Raskolnikov directly')]}]})})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In Crime and Punishment, how does Sonya answer Raskolnikov’s theory of extraordinary men?',
+  [source],ai,[],{plan,catalog:{114:'Crime and Punishment — Fyodor Dostoevsky'},trace:true});
+ assert.match(result.answer,/Sonya’s presence serves as a constant reminder/,
+  'the orphan is re-anchored to Sonya, the draft part’s established subject');
+ assert.doesNotMatch(result.answer,/Raskolnikov’s presence serves/,
+  'the guard never manufactures the Raskolnikov possessive');
+ assert.doesNotMatch(result.answer,/Her presence serves as a constant reminder/,
+  'the bare-Her orphan does not ship');
+ const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
+ assert.ok(rewritten.some(entry=>entry.subject==='Sonya'),
+  'the rewrite is recorded with Sonya as its subject');
+});
+
+test('batch 35 B35-2 pilot (Kierkegaard): an impersonal “It matters…” opener is never rewritten into a person',async()=>{
+ // Production shape (phase-2 Kierkegaard SP2): batch 34’s guard
+ // rewrote a non-referential “It” into a recorded subject from
+ // another part, manufacturing a person-shaped claim. The
+ // impersonal exemption leaves the opener byte-unchanged.
+ const sourceA={id:'S1',bookId:'140',title:'Concluding Unscientific Postscript — Søren Kierkegaard',
+  page:201,url:'https://example.test/postscript#page=201',
+  text:'Kierkegaard argues that truth for an existing individual is subjectivity: the passion of inwardness with which a person holds fast to an objective uncertainty is the highest truth attainable for such a person.',
+  preview:'Kierkegaard argues that truth for an existing individual is subjectivity.'};
+ const sourceB={id:'S2',bookId:'140',title:'Concluding Unscientific Postscript — Søren Kierkegaard',
+  page:244,url:'https://example.test/postscript#page=244',
+  text:'Under the name Johannes Climacus, the book insists that what counts is the individual’s own appropriation: the reader must exist in the truth rather than merely assent to a result, and no system can exist on the reader’s behalf.',
+  preview:'Under the name Johannes Climacus, the book insists that what counts is appropriation.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
+  parts:[{id:'P1',question:'What does Kierkegaard claim truth is for an existing individual?',
+   sourceBookIds:['140'],searchQueries:['Kierkegaard truth subjectivity'],
+   candidateSourceIds:['S1']},
+   {id:'P2',question:'What does Climacus require of the reader?',
+   sourceBookIds:['140'],searchQueries:['Climacus reader appropriation'],
+   candidateSourceIds:['S2']}],queries:['Kierkegaard Climacus']};
+ const draft='PART P1\n'+
+  'Kierkegaard argues that truth for an existing individual is subjectivity, held fast with the passion of inwardness. [S1]\n\n'+
+  'PART P2\n'+
+  'It matters, as Climacus insists, that the single individual appropriate the truth himself rather than assent to a finished system. [S2]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const subjects={'P1-C1':'Kierkegaard','P2-C1':'Johannes Climacus'};
+  return {response:JSON.stringify({parts:payload.parts.map(part=>({
+    partId:part.partId,status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:payload.claims
+     .filter(claim=>claim.claimId.startsWith(part.partId+'-'))
+     .map(claim=>claim.claimId),retainedContextClaimIds:[]})),
+   claims:payload.claims.map(claim=>{const span=payload.spanCatalog
+     .find(entry=>entry.sourceId===(claim.claimId==='P1-C1'?'S1':'S2'))||
+     payload.spanCatalog[0];
+    return {claimId:claim.claimId,status:'answered',
+     attributedSubject:subjects[claim.claimId],
+     sources:[{sourceId:claim.claimId==='P1-C1'?'S1':'S2',status:'answered',
+      spanIds:[span.spanId],subjectAttributionStatus:'supported',
+      attributedSubject:subjects[claim.claimId]}]};})})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'What do Kierkegaard and his pseudonym Climacus each require of the reader?',
+  [sourceA,sourceB],ai,[],{plan,
+   catalog:{140:'Concluding Unscientific Postscript — Søren Kierkegaard'},trace:true});
+ assert.match(result.answer,/It matters, as Climacus insists, that the single individual appropriate the truth himself/,
+  'the impersonal opener ships unchanged');
+ assert.doesNotMatch(result.answer,/Johannes Climacus matters/,
+  'no person is manufactured out of the impersonal pronoun');
+ assert.equal(result.trace.assemblyAntecedentGuard,undefined,
+  'the guard does not fire at all on this answer');
+});
+
+test('batch 35 B35-2 pilot (Narrators): a post-demotion survivor in a subject-absent part is named from the draft part’s first claim',async()=>{
+ // The Narrators subject-absent shape: the part’s first claim —
+ // the one naming the Underground Man — is demoted at review; the
+ // surviving cited claim opens with a bare “He” and records no
+ // subject. The part ships no recorded subject at all, so the
+ // guard restores the subject from the draft part’s first claim
+ // instead of leaving the orphan to read as the previous part’s
+ // Marlow.
+ const sourceUM={id:'S1',bookId:'184',title:'Notes from the Underground — Fyodor Dostoevsky',
+  page:22,url:'https://example.test/underground#page=22',
+  text:'I am a sick man. I am a spiteful man. To be excessively conscious is an illness, a real, thorough illness; I have intentionally turned every feeling into its opposite, taking refuge in irony and spite, in the inertia of a man who cannot become even an insect.',
+  preview:'I am a sick man. I am a spiteful man.'};
+ const sourceMarlow={id:'S2',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:43,url:'https://example.test/conrad#page=43',
+  text:'It seems to me that I am trying to tell you a dream, making a vain attempt, because no relation of a dream can convey the dream-sensation, that commingling of absurdity, surprise, and bewilderment which is of the very essence of dreams.',
+  preview:'It seems to me that I am trying to tell you a dream.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['184']},
+   {label:'Joseph Conrad',role:'primary',bookIds:['315']}],
+  parts:[{id:'P1',question:'How does Marlow shape what the reader can conclude?',
+   sourceBookIds:['315'],searchQueries:['Marlow dream sensation'],
+   candidateSourceIds:['S2']},
+   {id:'P2',question:'How does the Underground Man shape what the reader can conclude?',
+   sourceBookIds:['184'],searchQueries:['Underground Man consciousness'],
+   candidateSourceIds:['S1']}],queries:['narrators contrast']};
+ const draft='PART P1\n'+
+  'Marlow shapes his tale as a dream he cannot fully convey, warning his listeners that the sensation of the events escapes language. [S2]\n\n'+
+  'PART P2\n'+
+  'The Underground Man shapes his narrative from inside a distorted and spiteful consciousness. [S1]\n\n'+
+  'He shapes the narrative by intentionally distorting his own psyche, using his “consciousness” to create complexity and doubt. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const spanFor=sourceId=>payload.spanCatalog
+   .find(entry=>entry.spanId.startsWith(sourceId+'-'))?.spanId;
+  return {response:JSON.stringify({parts:payload.parts.map(part=>({
+    partId:part.partId,status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:payload.claims
+     .filter(claim=>claim.claimId.startsWith(part.partId+'-')&&
+      claim.claimId!=='P2-C1').map(claim=>claim.claimId),
+    retainedContextClaimIds:[]})),
+   claims:payload.claims.map(claim=>{
+    if(claim.claimId==='P1-C1')return {claimId:claim.claimId,status:'answered',
+     attributedSubject:'Marlow',
+     sources:[{sourceId:'S2',status:'answered',spanIds:[spanFor('S2')],
+      subjectAttributionStatus:'supported',attributedSubject:'Marlow'}]};
+    if(claim.claimId==='P2-C1')return {claimId:claim.claimId,
+     status:'unsupported',
+     sources:[{sourceId:'S1',status:'unsupported',spanIds:[spanFor('S1')],
+      subjectAttributionStatus:'supported'}]};
+    return {claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[spanFor('S1')]}]};
+   })})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How do Marlow and the Underground Man each shape what the reader can conclude?',
+  [sourceUM,sourceMarlow],ai,[],{plan,catalog:b34NarratorsCatalog,trace:true});
+ assert.match(result.answer,/Underground Man shapes the narrative by intentionally distorting/,
+  'the survivor is re-anchored to the Underground Man from the draft');
+ assert.doesNotMatch(result.answer,/He shapes the narrative by intentionally distorting/,
+  'the bare-He survivor does not ship under Marlow’s sequence');
+ const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
+ assert.ok(rewritten.some(entry=>entry.subject==='Underground Man'));
+});
+
+test('batch 35 B35-2 pilot (Wuthering): the Lockwood framing geometry still re-anchors — via the draft’s named subject, not a text harvest of the orphan',async()=>{
+ // Production geometry (phase-3 Wuthering SP1, claim texts from
+ // the artifact): within ONE part, a Nelly section (a claim
+ // recording Heathcliff) gives way to a Lockwood section — heading,
+ // framing claim, then the orphan “His initial impressions of
+ // Heathcliff are filtered…” whose record names no one. Batch 34
+ // rewrote it correctly only by harvesting “Heathcliff” out of the
+ // orphan’s own text and comparing it to the running antecedent;
+ // batch 35 takes the referent from the nearest preceding DRAFT
+ // claim’s named subject — the framing claim’s Lockwood.
+ const source={id:'S1',bookId:'362',title:'Wuthering Heights — Emily Brontë',
+  page:31,url:'https://example.test/wuthering#page=31',
+  text:'Nelly Dean describes Heathcliff’s temperament in blunt, almost colloquial terms, characterizing him as rough as a saw-edge, and hard as whinstone. Lockwood serves as the initial framing device, providing an outsider’s view of the characters, and his initial impressions of Heathcliff are filtered through his own romanticized or misunderstood perceptions of the household.',
+  preview:'Nelly Dean describes Heathcliff’s temperament in blunt terms.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Emily Brontë',role:'primary',bookIds:['362']}],
+  parts:[{id:'P1',question:'How do Nelly Dean and Lockwood each mediate the portrayal of Heathcliff?',
+   sourceBookIds:['362'],searchQueries:['Nelly Lockwood Heathcliff portrayal'],
+   candidateSourceIds:['S1']}],queries:['Wuthering narration']};
+ const draft='PART P1\n'+
+  'For example, she describes Heathcliff’s temperament in blunt, almost colloquial terms, characterizing him as rough as a saw-edge. [S1]\n\n'+
+  '**Lockwood’s Framing**\n\n'+
+  'Lockwood serves as the initial framing device, providing an outsider’s view of the characters. [S1]\n\n'+
+  'His initial impressions of Heathcliff are filtered through his own romanticized or misunderstood perceptions. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+    retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>{
+    if(claim.text.includes('saw-edge'))return {claimId:claim.claimId,
+     status:'answered',attributedSubject:'Heathcliff',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+      subjectAttributionStatus:'supported',attributedSubject:'Heathcliff'}]};
+    return {claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId]}]};
+   })})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'In Wuthering Heights, how do Nelly Dean and Lockwood each mediate the portrayal of Heathcliff?',
+  [source],ai,[],{plan,catalog:{362:'Wuthering Heights — Emily Brontë'},trace:true});
+ assert.match(result.answer,/Lockwood’s initial impressions of Heathcliff are filtered/,
+  'the orphan is re-anchored to Lockwood, the draft’s framing subject');
+ assert.doesNotMatch(result.answer,/His initial impressions of Heathcliff are filtered/,
+  'the bare-His orphan does not ship after the Heathcliff sequence');
+ assert.doesNotMatch(result.answer,/Heathcliff’s initial impressions/,
+  'the orphan’s own text harvest (Heathcliff) is never the referent');
+ const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
+ assert.ok(rewritten.some(entry=>entry.subject==='Lockwood'));
+});
+
+test('batch 35 B35-4: the region census lands in the trace for every packet span, gate trip or not',async()=>{
+ // Batch 34 shipped B34-7's classifier with records only on
+ // demotion: all 64 production traces carried zero region keys
+ // and the mechanism read as inert. Batch 35 records a
+ // classification for every packet span of every reviewed part.
+ const preface={id:'S1',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
+  page:38,url:'https://example.test/quixote#page=38',
+  text:'TRANSLATOR’S PREFACE | | I: ABOUT THIS TRANSLATION | IT WAS with considerable reluctance that I abandoned in favour of the present undertaking what had long been my intention. The work had occupied my thoughts for many years before I resolved to attempt it.',
+  preview:'TRANSLATOR’S PREFACE'};
+ const novel={id:'S2',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
+  page:118,url:'https://example.test/quixote#page=118',
+  text:'CHAPTER I | WHICH TREATS OF THE CHARACTER AND PURSUITS OF THE FAMOUS GENTLEMAN DON QUIXOTE OF LA MANCHA | IN a village of La Mancha, the name of which I have no desire to call to mind, there lived not long since one of those gentlemen that keep a lance in the lance-rack, an old buckler, a lean hack, and a greyhound for coursing. An olla of rather more beef than mutton, a salad on most nights, scraps on Saturdays, lentils on Fridays, and a pigeon or so extra on Sundays, made away with three-quarters of his income.',
+  preview:'CHAPTER I'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Miguel de Cervantes',role:'primary',bookIds:['124']}],
+  parts:[{id:'P1',question:'How does the opening of Don Quixote present its hero?',
+   sourceBookIds:['124'],searchQueries:['Don Quixote opening hero'],
+   candidateSourceIds:['S1','S2']}],queries:['Don Quixote opening']};
+ const draft='PART P1\n'+
+  '**The Translator’s Preface:** the translator opens by explaining his reluctance to abandon his earlier undertaking for the present one. [S1]\n\n'+
+  'In a village of La Mancha, a country gentleman lives keeping a lance in the lance-rack and a greyhound for coursing. [S2]\n\n'+
+  'The novel opens by introducing its hero as a gentleman of La Mancha whose name the narrator declines to call to mind. [S2]';
+ let packetSpanIds=[];
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  packetSpanIds=payload.spanCatalog.map(entry=>entry.spanId);
+  const spanByFragment=fragment=>payload.spanCatalog
+   .find(entry=>entry.text.includes(fragment))?.spanId;
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+    retainedContextClaimIds:[]}],
+   claims:payload.claims.map(claim=>{
+    if(claim.text.includes('reluctance'))return {claimId:claim.claimId,
+     status:'answered',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[spanByFragment('reluctance')],
+      subjectAttributionStatus:'supported'}]};
+    return {claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S2',status:'answered',
+      spanIds:[spanByFragment(claim.text.includes('village')?
+       'village of La Mancha':'call to mind')],
+      subjectAttributionStatus:'supported'}]};})})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How does the opening of Don Quixote present its hero?',
+  [preface,novel],ai,[],{plan,
+   catalog:{124:'Don Quixote — Miguel de Cervantes'},trace:true});
+ const census=result.trace.reviewContract?.spanRegionClassifications;
+ assert.ok(Array.isArray(census)&&census.length>=packetSpanIds.length,
+  'the census covers the packet spans');
+ for(const spanId of packetSpanIds)
+  assert.ok(census.some(entry=>entry.spanId===spanId&&entry.partId==='P1'),
+   'a classification record exists for packet span '+spanId);
+ assert.ok(census.some(entry=>entry.sourceId==='S1'&&entry.region==='apparatus'),
+  'the preface spans classify as apparatus');
+ assert.ok(census.some(entry=>entry.sourceId==='S2'&&entry.region==='text'),
+  'the chapter spans classify as text');
+ assert.ok(BATCH35_FIRING_FIELDS.includes('reviewContract.spanRegionClassifications'),
+  'the registry names the census field for the harness roll-up');
+});
+
+test('batch 35 B35-6 pilot (disclosure generation): a requirement ending unanswered in the final reconciliation labels its part and coverage stops reporting full',async()=>{
+ // The W&P SP1 production shape, in both phase-3 passes: the
+ // reconciliation recomputed P2-R1 partial → unanswered (its
+ // claims never shipped), yet no disclosure was generated and
+ // coverage reported "full". Batch 35 generates the disclosure
+ // from the reconciled record and makes "full" require complete
+ // requirements.
+ const source={id:'S1',bookId:'258',title:'War and Peace — Leo Tolstoy',
+  page:901,url:'https://example.test/warpeace#page=901',
+  text:'The movement of nations is the aggregate of individual lives; an army moves as a mass, and a regiment is one small part of a vast collective motion across the field, no single will directing the whole. What a commander orders and what the soldiers do are separated by the whole machinery of the army.',
+  preview:'The movement of nations is the aggregate of individual lives.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Leo Tolstoy',role:'primary',bookIds:['258']}],
+  parts:[{id:'P1',question:'What do Tolstoy’s passages describe of Prince Andrei’s battlefield experiences in the war?',
+   sourceBookIds:['258'],searchQueries:['Andrei battlefield experiences'],
+   candidateSourceIds:['S1'],sourceRequired:true,
+   requirements:[{id:'P1-R1',text:'Describe Prince Andrei’s battlefield experiences.'}]}],
+  queries:['Andrei battlefield']};
+ const draft='PART P1\n'+
+  'The movement of armies in the passages is the aggregate of innumerable individual acts rather than the expression of any single will. [S1]\n\n'+
+  'Andrei’s regiment moves with the army as one small part of a vast collective motion across the field. [S1]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+    retainedContextClaimIds:[],
+    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
+     answerClaimIds:['P1-C2']}]}],
+   claims:payload.claims.map(claim=>claim.claimId==='P1-C1'?
+    {claimId:claim.claimId,status:'answered',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+      subjectAttributionStatus:'supported'}]}:
+    {claimId:claim.claimId,status:'unsupported',
+     sources:[{sourceId:'S1',status:'unsupported',spanIds:[span.spanId],
+      subjectAttributionStatus:'supported'}]})})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'What do Tolstoy’s passages describe of Prince Andrei’s battlefield experiences in the war?',
+  [source],ai,[],{plan,catalog:{258:'War and Peace — Leo Tolstoy'},trace:true});
+ assert.match(result.answer,/aggregate of innumerable individual acts/,
+  'the supported claim still ships');
+ assert.match(result.answer,/Retrieved passages could not be verified as supporting this part of the question: What do Tolstoy’s passages describe of Prince Andrei’s battlefield experiences in the war\?/,
+  'the unanswered requirement generates the part’s disclosure label');
+ assert.deepEqual(result.trace.final?.unansweredRequirementLabels,
+  [{partId:'P1',requirementIds:['P1-R1']}],
+  'the generated disclosure is on the trace');
+ assert.notEqual(result.coverage,'full',
+  'coverage may not report full over an unanswered requirement');
+ assert.equal(result.coverage,'partial');
+});
+
+test('batch 35 B35-6 pilot (unit-side claim labels): the measurement reads shipped units — cited units and allowance context stay unlabeled',async()=>{
+ // The unit-side measurement (B35-6): the label population is
+ // the contract lists UNION the claims holding an accepted,
+ // source-carrying review decision, filtered to shipped units
+ // carrying no citation marker. This pilot pins the precision
+ // side on the W&P bullet geometry: the bullet-label claim is
+ // accepted against the source and ships WITH its marker (the
+ // invariant the measurement relies on — an accepted claim's
+ // unit carries its citation), and the retained context claim
+ // beside it is the standing allowance. Neither may be labeled.
+ // (The positive path — a contract-list claim shipping uncited —
+ // is the batch-34 Faust pilot above; the disclosure-generation
+ // pilot covers the reconciliation side. The context-classified
+ // breach class of phase 2 has no deterministic linkage: the
+ // reviewer's context classification is the only record and it
+ // asserts allowance, and scaffolding-linked restatements ship
+ // with evidence attached by design — see the checkpoint's
+ // determinism conclusion.)
+ const source={id:'S1',bookId:'258',title:'War and Peace — Leo Tolstoy',
+  page:955,url:'https://example.test/warpeace#page=955',
+  text:'Tolstoy posits that the life of nations is not contained within the lives of a few individuals, and he dismisses the theory that historical personages represent a transference of the collective will of the masses, calling it a hypothesis unconfirmed by experience, since a leader may always be said to have taken charge simply because events required one.',
+  preview:'Tolstoy posits that the life of nations is not contained within the lives of a few individuals.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Leo Tolstoy',role:'primary',bookIds:['258']}],
+  parts:[{id:'P1',question:'How does Tolstoy explain the movement of nations?',
+   sourceBookIds:['258'],searchQueries:['Tolstoy movement nations will'],
+   candidateSourceIds:['S1'],sourceRequired:true}],
+  queries:['Tolstoy nations']};
+ const draft='PART P1\n'+
+  'Tolstoy posits that the life of nations is not contained within the lives of a few individuals. [S1]\n\n'+
+  '* **Transference of Collective Will:** Another theory suggests that historical personages represent a transference of the collective will of the masses to the leader. [S1]\n\n'+
+  'Tolstoy wrote these chapters as a second epilogue, part treatise and part history.';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+    retainedContextClaimIds:['P1-C3']}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+     subjectAttributionStatus:'supported'}]}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
+   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'How does Tolstoy explain the movement of nations?',
+  [source],ai,[],{plan,catalog:{258:'War and Peace — Leo Tolstoy'},trace:true});
+ assert.match(result.answer,/life of nations is not contained/,
+  'the cited claim ships');
+ assert.match(result.answer,/Transference of Collective Will:[\s\S]*to the leader\. \[S1\]/,
+  'the accepted bullet claim ships WITH its citation marker');
+ assert.match(result.answer,/second epilogue/,
+  'the allowance context claim ships');
+ assert.equal(result.trace.final?.claimLevelUncitedLabels,undefined,
+  'no claim-level label: every sourced unit is cited, the rest is allowance');
+ assert.doesNotMatch(result.answer,/Retrieved passages could not be verified/,
+  'no label text enters the answer');
+});
+
+function b35SynthesisAI({draft,partialClaimId,synthesisId,supportId}){
+ return {run:async(_m,request)=>{
+  const system=String(request?.messages?.[0]?.content||'');
+  if(system.startsWith('Answer the reader'))return {response:draft};
+  if(system.startsWith('Review the complete answer')){
+   const payload=parsePayload(request.messages);
+   const span=payload.spanCatalog[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+     answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
+     retainedContextClaimIds:[synthesisId],
+     scaffoldingLinks:[{claimId:synthesisId,supportClaimIds:[supportId]}]}],
+    claims:payload.claims.filter(c=>c.sourceIds.length).map(claim=>({
+     claimId:claim.claimId,
+     status:claim.claimId===partialClaimId?'partial':'answered',
+     sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+      subjectAttributionStatus:'supported',
+      attributedSubject:claim.claimId==='P1-C1'?'Darcy':'Elizabeth'}],
+     clauses:[{text:claim.text,status:'answered',issueCode:'none',
+      sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId]}]}]}))})};
+  }
+  if(system.startsWith('Judge only the listed claim'))return b34RescueRefused(request);
+  if(system.startsWith('Patch only the requested claims'))
+   return {response:JSON.stringify({parts:[]})};
+  if(system.startsWith('Audit the assembled')){
+   const payload=parsePayload(request.messages);
+   return {response:JSON.stringify({parts:payload.parts.map(p=>({partId:p.partId,action:'none'}))})};
+  }
+  throw new Error('unexpected system: '+system.slice(0,60));
+ }};
+}
+const b35SynthesisSource={id:'S1',bookId:'341',title:'Pride and Prejudice — Jane Austen',
+ page:120,url:'https://example.test/pp#page=120',
+ text:'At the ball, Darcy offends Elizabeth with his proud manners and refuses to dance with her. Wickham later tells Elizabeth that Darcy treated him scandalously, cheating him of the living their fathers intended for him, and Elizabeth, already prejudiced against Darcy, believes the account readily.',
+ preview:'At the ball, Darcy offends Elizabeth with his proud manners.'};
+const b35SynthesisPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Jane Austen',role:'primary',bookIds:['341']}],
+ parts:[{id:'P1',question:'How does Elizabeth\u2019s view of Darcy evolve?',
+  sourceBookIds:['341'],searchQueries:['Elizabeth Darcy view'],
+  candidateSourceIds:['S1'],sourceRequired:true}],queries:['Elizabeth Darcy']};
+
+test('batch 35 B35-7 pilot (synthesis provenance): a synthesis unit restating a dropped cited claim is removed, not shipped on attached citations',async()=>{
+ const draft='PART P1\n'+
+  'Darcy offends Elizabeth with his proud manners at the ball. [S1]\n\n'+
+  'Elizabeth believes Wickham\u2019s account that Darcy behaved scandalously toward him. [S1]\n\n'+
+  'Elizabeth views Darcy as scandalous in his behavior toward Wickham. [S1]\n\n'+
+  'Elizabeth\u2019s perception of Darcy evolves from viewing his behavior toward Wickham as scandalous to doubting her own assumptions.';
+ const ai=b35SynthesisAI({draft,partialClaimId:'P1-C3',synthesisId:'P1-C4',supportId:'P1-C1'});
+ const result=await composeEvidenceAnswer('How does Elizabeth\u2019s view of Darcy evolve?',
+  [b35SynthesisSource],ai,[],{plan:b35SynthesisPlan,
+   catalog:{341:'Pride and Prejudice — Jane Austen'},trace:true});
+ assert.deepEqual(result.trace.assemblyLoss,
+  [{partId:'P1',claimId:'P1-C3',reason:'claim-partial-not-shipped',disposition:'traced'}],
+  'the source claim is accepted at review and dropped at assembly');
+ assert.deepEqual(result.trace.synthesisProvenanceDropped,
+  [{partId:'P1',claimId:'P1-C4',droppedClaimId:'P1-C3',basis:'containment',containment:1}],
+  'the synthesis unit inherits the dropped claim\u2019s disposition');
+ assert.doesNotMatch(result.answer,/perception of Darcy evolves/,
+  'the synthesis unit does not ship');
+ assert.match(result.answer,/proud manners at the ball\. \[S1\]/,'the anchor claim ships');
+ assert.match(result.answer,/behaved scandalously toward him\. \[S1\]/,
+  'a claim with its OWN accepted source ships even sharing the vocabulary');
+});
+
+test('batch 35 B35-7 pilot (synthesis provenance, production wording): the distinctive-term branch catches the low-overlap P&P shape',async()=>{
+ // The phase-3 P&P SP2 texts verbatim in shape: containment between
+ // the dropped claim and the synthesis unit measures 0.22 — under
+ // the containment bar — but the unit carries the dropped claim's
+ // distinctive term 'scandalous', which no surviving cited claim
+ // of the part establishes.
+ const draft='PART P1\n'+
+  'Darcy offends Elizabeth with his proud manners at the ball. [S1]\n\n'+
+  'Elizabeth initially trusts Wickham and believes his account of Darcy\u2019s conduct. [S1]\n\n'+
+  'She views his character through a lens of dislike, finding his behavior "scandalous" and his presence painful. [S1]\n\n'+
+  'Elizabeth\u2019s perception of Darcy evolves from viewing him as a disagreeable and scandalous individual to doubting her own negative assumptions about his temperament.';
+ const ai=b35SynthesisAI({draft,partialClaimId:'P1-C3',synthesisId:'P1-C4',supportId:'P1-C1'});
+ const result=await composeEvidenceAnswer('How does Elizabeth\u2019s view of Darcy evolve?',
+  [b35SynthesisSource],ai,[],{plan:b35SynthesisPlan,
+   catalog:{341:'Pride and Prejudice — Jane Austen'},trace:true});
+ assert.deepEqual(result.trace.synthesisProvenanceDropped,
+  [{partId:'P1',claimId:'P1-C4',droppedClaimId:'P1-C3',basis:'distinctive-term',
+   term:'scandalou',containment:0.222}],
+  'the distinctive-term branch records the production shape');
+ assert.doesNotMatch(result.answer,/disagreeable and scandalous individual/,
+  'the synthesis unit does not ship cited on attached evidence');
+ assert.match(result.answer,/proud manners at the ball\. \[S1\]/,'the anchor claim ships');
+});
+
+test('batch 35 B35-8 pilot (rebind-before-partition): a quote living in an unaccepted packet source is rebound there and the part survives with the rebound binding',async()=>{
+ // The C&P SP1 shape: the draft cites [S1, S2]; review accepts
+ // only the S1 pair, so the rendered group narrows to [S1] while
+ // the quoted words live verbatim in S2 — a packet source no
+ // part's evidence accepted. Through batch 34 the rebind searched
+ // only accepted sources (S2 unreachable) and repaired only the
+ // joined string, so the part died at partition on its own stale
+ // binding. Now the search covers the whole packet and the repair
+ // is mirrored into the owning answer.
+ const s1={id:'S1',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',
+  page:200,url:'https://example.test/cp#page=200',
+  text:'Raskolnikov comes to Sonya\u2019s room and lays his theory before her: that extraordinary men may step over certain obstacles when an idea requires it, and that he himself wished to prove he was not a trembling creature but a man with a right to act.',
+  preview:'Raskolnikov comes to Sonya\u2019s room and lays his theory before her.'};
+ const s2={id:'S2',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',
+  page:310,url:'https://example.test/cp#page=310',
+  text:'Sonya listens in silence, then answers him quietly: "You have suffered already; bow down and accept suffering, and you will live again." Raskolnikov stared at her, astonished by the simplicity of her faith and the firmness of her quiet voice.',
+  preview:'Sonya listens in silence, then answers him quietly.'};
+ const s3={id:'S3',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',
+  page:150,url:'https://example.test/cp#page=150',
+  text:'In his article Raskolnikov divides humanity into two categories: the ordinary, who must live in obedience and have no right to transgress the law, and the extraordinary, who may permit their conscience to step over certain obstacles.',
+  preview:'In his article Raskolnikov divides humanity into two categories.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['114']}],
+  parts:[{id:'P1',question:'What is Raskolnikov\u2019s theory of extraordinary men?',
+    sourceBookIds:['114'],searchQueries:['Raskolnikov theory extraordinary'],
+    candidateSourceIds:['S3'],sourceRequired:true},
+   {id:'P2',question:'How does Sonya answer Raskolnikov\u2019s theory?',
+    sourceBookIds:['114'],searchQueries:['Sonya answer suffering'],
+    candidateSourceIds:['S1','S2'],sourceRequired:true}],
+  queries:['Raskolnikov Sonya']};
+ const draft='PART P1\n'+
+  'Raskolnikov divides humanity into ordinary and extraordinary men. [S3]\n\n'+
+  'PART P2\n'+
+  'Raskolnikov lays his theory before Sonya in her room. [S1]\n'+
+  'Sonya answers him, "bow down and accept suffering," urging him toward redemption. [S1, S2]';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({
+   parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.filter(c=>c.partId===part.partId)
+     .map(c=>c.claimId),retainedContextClaimIds:[]})),
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>{
+     if(claim.claimId==='P2-C2'&&sourceId==='S2')
+      return {sourceId,status:'partial',spanIds:[]};
+     return {sourceId,status:'answered',
+      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
+      subjectAttributionStatus:'supported',
+      attributedSubject:claim.claimId==='P2-C2'?'Sonya':'Raskolnikov'};
+    })}))})};
+ };
+ const ai=batch25RouterAI({reviewResponder,
+  rescueResponder:b34RescueRefused,draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'What is Raskolnikov\u2019s theory, and how does Sonya answer it?',
+  [s1,s2,s3],ai,[],{plan,catalog:{114:'Crime and Punishment — Fyodor Dostoevsky'},trace:true});
+ assert.notEqual(result.outcome,'generation-failed','the answer ships');
+ assert.match(result.answer,/"bow down and accept suffering," urging him toward redemption\. \[S2\]/,
+  'the quote\u2019s group is rebound to the packet source that holds it verbatim');
+ const rebinds=result.trace.final.quoteRebinds||[];
+ assert.equal(rebinds.length,1);
+ assert.deepEqual(rebinds[0].fromSourceIds,['S1']);
+ assert.equal(rebinds[0].toSourceId,'S2');
+ assert.equal(rebinds[0].mode,'replace');
+ const p2=result.trace.final.questionParts.find(part=>part.partId==='P2');
+ assert.ok(p2.claimIds.includes('P2-C2'),'the rebound claim ships in its part');
+ assert.ok(p2.evidenceIds.includes('S2'),
+  'the part\u2019s own record carries the rebound binding (the mirror), not the stale S1 binding');
+ assert.equal(result.trace.final.auditPartition,undefined,
+  'no partition was needed: the rebind settled the audit before partition');
+});
+
+test('batch 35 B35-8 pilot (review retry deadline): a deadline retry records a 120000 ms deadline while the initial call keeps 60000',async()=>{
+ let reviews=0;
+ const deadline=Object.assign(new Error('deadline'),{code:'inference-deadline-exceeded',stage:'review'});
+ const retryReview=(_model,{messages})=>{
+  reviews++;
+  if(reviews===1)throw deadline;
+  return review([['P1','answered']])(_model,{messages});
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  retryReview,retryReview]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true,transportDiagnostics:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ const reviewCalls=result.trace.inferenceCalls.filter(call=>call.stage==='review');
+ assert.equal(reviewCalls.length,2,'the initial review and its retry are both recorded');
+ assert.equal(reviewCalls[0].kind,'initial');
+ assert.equal(reviewCalls[0].timeoutMs,60000,
+  'the initial review call keeps the flat 60000 deadline (B34-5 contract intact)');
+ assert.equal(reviewCalls[1].kind,'retry');
+ assert.equal(reviewCalls[1].timeoutMs,120000,
+  'the retry after the deadline death gets the raised deadline instead of a fresh flat 60 s');
 });
