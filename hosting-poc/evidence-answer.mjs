@@ -443,6 +443,12 @@ export const BATCH35_FIRING_FIELDS=[
   'final.disclosureLabels',
   'final.generalContextFraming',
   'final.namingSentenceRetentions',
+  // Stage B tranche 2: B1a's facet-anchor reservations on the
+  // gateway selection trace, and B3's first-class assembly-loss
+  // count (the per-loss records ride the existing assemblyLoss
+  // field; the summary is always emitted on the review path).
+  'selectionTrace.facetAnchorReservations',
+  'assemblyLossSummary',
 ];
 
 // Batch 33 (B33-1): a head is continuous prose, not a window — the
@@ -4356,6 +4362,29 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
     const list=archiveByPart.get(entry.partId)||[];
     list.push(entry);archiveByPart.set(entry.partId,list);
   }
+  // Stage B (B3): for a claim dropped as partial, record whether
+  // its per-source decisions unanimously accepted with 'answered'
+  // status. The phase-3 census showed this pattern on all 24
+  // partial losses (22 single-source), which makes it the class a
+  // future verdict-reconciliation proposal would act on; per the
+  // standing rule it is MEASURED here first (record-only) and
+  // earns any gate change only at >=80% audited precision — the
+  // claim-level 'partial' can encode a scope judgment the source
+  // decisions do not (the Wuthering Heights 'conflict of interest'
+  // fixture), so the gate itself does not move in this tranche.
+  const unanimousPartialIds=new Set();
+  {
+    const rowsByClaim=new Map();
+    for(const entry of reviewDecisions||[]){
+      if(!entry.sourceId)continue;
+      const key=entry.partId+'|'+entry.claimId;
+      const rows=rowsByClaim.get(key)||[];
+      rows.push(entry);rowsByClaim.set(key,rows);
+    }
+    for(const [key,rows] of rowsByClaim)
+      if(rows.length&&rows.every(row=>row.accepted===true&&
+        row.sourceStatus==='answered'))unanimousPartialIds.add(key);
+  }
   const restatesRejected=(partId,text)=>{
     const terms=fallbackEvidenceTerms(text);
     if(!terms.size)return false;
@@ -4430,7 +4459,9 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
           if(item.answerStatus==='answered')item.answerStatus='partial';
         }
       }
-      losses.push({partId,claimId,reason,disposition});
+      losses.push({partId,claimId,reason,disposition,
+        ...(reason==='claim-partial-not-shipped'&&
+          unanimousPartialIds.has(key)?{unanimousSourceSupport:true}:{})});
     }
   }
   return losses;
@@ -6427,6 +6458,20 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       reviewDecisions:review?.reviewDecisions||[],
       validatedAnswers,rejectionArchive,trace});
     if(assemblyLoss.length)trace.assemblyLoss=assemblyLoss;
+    // Stage B (B3): the loss count as a first-class trace number —
+    // always emitted on the review path (zero included), per part
+    // and per reason, so a validation run reads the loss rate
+    // without reconstructing it from the loss records.
+    {
+      const byReason={},byPart={};
+      for(const loss of assemblyLoss){
+        byReason[loss.reason]=(byReason[loss.reason]||0)+1;
+        byPart[loss.partId]=(byPart[loss.partId]||0)+1;
+      }
+      trace.assemblyLossSummary={total:assemblyLoss.length,
+        restored:assemblyLoss.filter(loss=>loss.disposition==='restored').length,
+        byReason,byPart};
+    }
     let included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
     let answer=sanitizeInternalAnswerIds(normalizeAnswerMarkdown(
       included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n')));
@@ -6754,15 +6799,67 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // answer with no notice. A part carrying an unexplained loss
       // now gets the same verified-passages label as an uncited
       // part, and the disclosure is recorded in the final trace.
+      // Stage B (B3): the disclosure now covers every loss that
+      // actually stayed lost in a shipping part — the phase-3
+      // census was dominated by explained losses (claim-partial),
+      // which the unexplained-only trigger never disclosed although
+      // the reader's answer was just as shortened. Restored claims
+      // ship (nothing to disclose) and withheld claims restated a
+      // rejected claim (their absence is the rejection's own
+      // disclosure); every other disposition is a real loss.
       const assemblyLossDisclosures=[];
+      const assemblyLossClaimIdsByPart=new Map();
       for(const loss of assemblyLoss){
-        if(loss.reason!=='unexplained')continue;
+        if(loss.disposition==='restored'||
+           loss.disposition==='withheld-rejection-overlap')continue;
         const item=included.find(candidate=>candidate.part.id===loss.partId);
         if(!item)continue;
         assemblyLossDisclosures.push({partId:loss.partId,claimId:loss.claimId});
+        const lostIds=assemblyLossClaimIdsByPart.get(loss.partId)||[];
+        lostIds.push(loss.claimId);
+        assemblyLossClaimIdsByPart.set(loss.partId,lostIds);
         if(!labelByPartId.has(loss.partId)){
           labelByPartId.set(loss.partId,item.part.question);
           labelKindByPartId.set(loss.partId,'assembly-loss');
+        }
+      }
+      // Stage B (B3): an assembly-loss label names the requirements
+      // the lost claims were answering. Two records carry the
+      // claim→requirement link: the final reconciliation's removed
+      // claim IDs (claims accepted into the part and dropped later)
+      // and the review's uncovered-requirement support issues,
+      // whose answerClaimIds are the reviewer's own list (claims
+      // dropped at the review gate itself, which never enter the
+      // reconciled coverage). A loss touching no requirement keeps
+      // the standard subject logic.
+      const assemblyLossRequirementTextsByPartId=new Map();
+      {
+        const requirementIdsByClaim=new Map();
+        const link=(partId,claimId,requirementId)=>{
+          if(!partId||!claimId||!requirementId)return;
+          const key=partId+'|'+claimId;
+          const set=requirementIdsByClaim.get(key)||new Set();
+          set.add(requirementId);requirementIdsByClaim.set(key,set);
+        };
+        for(const entry of trace.finalCoverageReconciliation||[])
+          for(const change of entry.requirements||[])
+            for(const claimId of change.removedClaimIds||[])
+              link(entry.partId,claimId,change.requirementId);
+        for(const issue of review?.supportIssues||[]){
+          if(issue.reason!=='required-answer-requirement-uncovered')continue;
+          for(const claimId of issue.answerClaimIds||[])
+            link(issue.partId,claimId,issue.requirementId);
+        }
+        for(const [partId,lostIds] of assemblyLossClaimIdsByPart){
+          const item=included.find(candidate=>candidate.part.id===partId);
+          if(!item)continue;
+          const affectedIds=new Set(lostIds.flatMap(claimId=>
+            [...(requirementIdsByClaim.get(partId+'|'+claimId)||[])]));
+          const texts=(item.part.requirements||[])
+            .filter(requirement=>affectedIds.has(requirement.id))
+            .map(requirement=>String(requirement.text||'')).filter(Boolean);
+          if(texts.length)
+            assemblyLossRequirementTextsByPartId.set(partId,texts);
         }
       }
       const labeledParts=included.filter(item=>labelByPartId.has(item.part.id));
@@ -6796,7 +6893,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         // remains the subject when the part records no requirements
         // or no requirement qualifies (a claim-level gap on a
         // direct-answer claim serving no requirement).
-        const labelSubjectFor=(item,{absent=false}={})=>{
+        const labelSubjectFor=(item,{absent=false,kind=''}={})=>{
+          // Stage B (B3): an assembly-loss label names the
+          // requirement(s) its lost claims were answering when the
+          // reconciliation recorded them as removed.
+          if(!absent&&kind==='assembly-loss'){
+            const texts=assemblyLossRequirementTextsByPartId
+              .get(item.part.id);
+            if(texts?.length)return texts.join('; ');
+          }
           const requirements=item.part.requirements||[];
           if(!requirements.length)return item.part.question;
           const coverageById=new Map((item.requirementCoverage||[])
@@ -6850,8 +6955,17 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               generalContextFraming.push({scope:'part',partId:item.part.id});
             }
             if(!labelByPartId.has(item.part.id))return segment;
-            const text='Retrieved passages could not be verified as supporting this part of the question: '+
-              labelSubjectFor(item);
+            // Stage B (B3): an assembly-loss label must not blame
+            // retrieval or verification for what assembly dropped
+            // (the phase-2/3 label defect in its purest form): the
+            // passages WERE verified; the part is partially
+            // answered because accepted claims did not survive
+            // into it. Its subject names the affected requirement.
+            const labelKind=labelKindByPartId.get(item.part.id)||'';
+            const text=(labelKind==='assembly-loss'?
+              'This part of the question could only be partially answered: ':
+              'Retrieved passages could not be verified as supporting this part of the question: ')+
+              labelSubjectFor(item,{kind:labelKind});
             disclosureLabels.push({partId:item.part.id,
               kind:labelKindByPartId.get(item.part.id)||'uncited-part',text});
             return segment+'\n\n'+text;

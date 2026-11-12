@@ -2241,3 +2241,58 @@ test('redesign Stage A: pilot selection makes zero model calls',async()=>{
  assert.equal(result.sourceSelection.usage.calls,0);
  assert.match(result.answer,/growth of Athenian power/);
 });
+
+test('stage B B1a pilot: facet-anchor pages are seeded before the round-robin fill and traced on the selection trace',async()=>{
+ const token='stage-b-tranche2-evaluation-token-0123456789';
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {response:'PART P1\nThe growth of Athenian power inspired fear in Sparta. [S1]'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return depthReview(JSON.parse(input.messages[1].content));
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token},model});
+ const first=pilot.fixture.body.sources[0];
+ const mk=(page,facetRanks)=>({...first,page,candidatePartIds:['P1'],
+  ...(facetRanks?{facetRanks}:{})});
+ const post=async sources=>{
+  const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+   question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
+   sources,
+   plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+    parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']}]}}});
+  assert.equal(response.status,200);
+  return response.json();
+ };
+ // Facet 0's rank-1 page is the pool's LAST row (page 43); facet 1's
+ // rank-1 page is the first row (page 38). Without the reservation
+ // the fill reaches page 43 last; with it, the anchors lead the
+ // decision's selected set.
+ const result=await post([mk(38,[{facet:0,rank:2},{facet:1,rank:1}]),
+  mk(39,[{facet:1,rank:2}]),mk(40),mk(41),mk(42),mk(43,[{facet:0,rank:1}])]);
+ const selectionStage=(result.trace.stages||[]).find(stage=>stage.stage==='evidence-selection');
+ assert.ok(selectionStage,'the selection stage is traced');
+ assert.equal(selectionStage.packingProvenance,'deterministic');
+ const anchors=selectionStage.facetAnchorReservations;
+ assert.equal(anchors.status,'reserved');
+ assert.deepEqual(anchors.seededCandidateIds,['C6','C1'],
+  'facet tops seed in facet order: facet 0’s anchor (C6) before facet 1’s (C1)');
+ assert.deepEqual(anchors.reservations.find(entry=>entry.facet===0),
+  {facet:0,candidateId:'C6',partIds:['P1'],status:'reserved',submitted:true});
+ assert.deepEqual(anchors.reservations.find(entry=>entry.facet===1),
+  {facet:1,candidateId:'C1',partIds:['P1'],status:'reserved',submitted:true});
+ assert.equal(selectionStage.decision.selectedCandidateIds[0],'C6',
+  'the seeded anchor leads the selected set, ahead of the round-robin fill');
+ // The same pool without facet ranks: the reservation records
+ // honestly that it had nothing to reserve from.
+ const bare=await post([mk(38),mk(39),mk(40)]);
+ const bareStage=(bare.trace.stages||[]).find(stage=>stage.stage==='evidence-selection');
+ assert.equal(bareStage.facetAnchorReservations.status,'no-facet-ranks',
+  'the current harness submissions carry no facet ranks — the record says so');
+ assert.deepEqual(bareStage.facetAnchorReservations.seededCandidateIds,[]);
+ assert.deepEqual(bareStage.facetAnchorReservations.reservations,[]);
+});

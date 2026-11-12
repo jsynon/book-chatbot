@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {enforcePartPacketFloor,enforceSubmittedBookDiversity,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
+import {enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
 
 test('selector fallback gives distinct works a page before taking second pages',()=>{
  const candidates=[
@@ -625,4 +625,42 @@ test('batch 34 B34-4 control: a dominant book with no facet rivals submits exact
  const result2=enforceSubmittedBookDiversity(chosen,distinct,{partIds:['P1','P2']});
  assert.deepEqual(result2.selectedCandidateIds,chosen);
  assert.equal(result2.diversityInserted,undefined);
+});
+
+// Stage B (B1a): facet-anchor reservation — the deterministic
+// packing seeds each facet's rank-1 page before round-robin
+// filling, ordered by facet multiplicity, then facet, then pool.
+test('stage B B1a facetAnchorReservations: facet tops seed in consensus order',()=>{
+ const rows=[
+  {id:'C1',candidatePartIds:['P1'],facetRanks:[{facet:0,rank:2},{facet:1,rank:1}]},
+  {id:'C2',candidatePartIds:['P1'],facetRanks:[{facet:0,rank:3}]},
+  {id:'C3',candidatePartIds:['P2'],facetRanks:[{facet:0,rank:1},{facet:2,rank:1}]},
+  {id:'C4',candidatePartIds:['P2'],facetRanks:[{facet:2,rank:2}]},
+  {id:'C5',candidatePartIds:['P1']}];
+ const result=facetAnchorReservations(rows);
+ assert.equal(result.hasFacetRanks,true);
+ // C3 tops two facets (consensus strongest) and seeds first;
+ // C1 tops facet 1 and seeds second. Facet 0's top is C3.
+ assert.deepEqual(result.seedCandidateIds,['C3','C1']);
+ assert.deepEqual(result.reservations,[
+  {facet:0,candidateId:'C3',partIds:['P2'],status:'reserved'},
+  {facet:1,candidateId:'C1',partIds:['P1'],status:'reserved'},
+  {facet:2,candidateId:'C3',partIds:['P2'],status:'reserved'}]);
+});
+
+test('stage B B1a facetAnchorReservations: the cap defers later anchors instead of displacing seeds',()=>{
+ const rows=[
+  {id:'C1',facetRanks:[{facet:0,rank:1}]},
+  {id:'C2',facetRanks:[{facet:1,rank:1}]},
+  {id:'C3',facetRanks:[{facet:2,rank:1}]}];
+ const result=facetAnchorReservations(rows,{limit:2});
+ assert.deepEqual(result.seedCandidateIds,['C1','C2']);
+ assert.deepEqual(result.reservations.map(entry=>entry.status),
+  ['reserved','reserved','cap-deferred']);
+});
+
+test('stage B B1a facetAnchorReservations: no facet ranks in the pool, no reservation — and it says so',()=>{
+ const result=facetAnchorReservations([
+  {id:'C1',candidatePartIds:['P1']},{id:'C2',candidatePartIds:['P1']}]);
+ assert.deepEqual(result,{hasFacetRanks:false,seedCandidateIds:[],reservations:[]});
 });

@@ -8283,8 +8283,12 @@ test('batch 34 B34-6 pilot (Wuthering): accepted claims lost to containment and 
   {partId:'P1',claimId:'P1-C10',reason:'rejection-containment',disposition:'traced'},
   'the disclosure loss is reconciled as containment');
  assert.deepEqual(lossFor('P1-C6'),
-  {partId:'P1',claimId:'P1-C6',reason:'claim-partial-not-shipped',disposition:'traced'},
-  'the partial-gated loss is reconciled as the ship-gate, not unexplained');
+  {partId:'P1',claimId:'P1-C6',reason:'claim-partial-not-shipped',disposition:'traced',
+   unanimousSourceSupport:true},
+  'the partial-gated loss is reconciled as the ship-gate, not unexplained; '+
+  'Stage B (B3) adds the record-only unanimity flag — this fixture is the '+
+  'ambiguous case it must not act on (the source decision accepted while '+
+  'the reviewer boundary denies the claim’s ‘conflict of interest’ framing)');
  assert.equal((result.trace.assemblyDisclosureRestored||[])
   .some(entry=>entry.claimId==='P1-C10'),false,
   'B34-2 does not restore a containment-dropped disclosure');
@@ -9399,4 +9403,95 @@ test('stage B B6 negative control: no pronoun opening, no retention — and a na
  assert.equal(result.trace.final.namingSentenceRetentions,undefined,
   'the part opens by naming its subject — nothing is orphaned, nothing retained');
  assert.match(result.answer,/^Tolstoy contends that the life of nations/);
+});
+
+// ---------------------------------------------------------------------------
+// Stage B tranche 2 (B3): pilot-route tests.
+// ---------------------------------------------------------------------------
+
+test('stage B B3: a partial-gated loss is disclosed in requirement terms, counted as a first-class trace number, and flagged for unanimity',async()=>{
+ // The phase-3 assembly-loss shape in miniature: P2's second
+ // claim is judged 'partial' at claim level although its only
+ // source decision accepts with a span — the dominant loss class
+ // of the phase-3 census (24 of 25). The gate does not move (the
+ // claim-level verdict is the audit's to give), but the loss is
+ // no longer silent: the part carries a partially-answered label
+ // naming the affected requirement, the disclosure is recorded,
+ // the loss count is a first-class trace number, and the loss
+ // record carries the record-only unanimity flag.
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',
+   sourceBookIds:['35'],searchQueries:['Hume necessity custom'],
+   candidateSourceIds:['S1']},
+   {id:'P2',question:'How do the categories structure experience?',
+   sourceBookIds:['40'],searchQueries:['Kant categories experience'],
+   candidateSourceIds:['S2'],
+   requirements:[{id:'P2-R1',text:'Explain how the categories structure experience.'}]}],
+  queries:['Hume necessity custom','Kant categories experience']};
+ const draft='PART P1\nHume links necessity to custom and regular conjunction. [S1]\n\n'+
+  'PART P2\nThe categories are pure conceptions of the understanding and are a priori. [S2]\n'+
+  'The categories guarantee the synthetic unity of experience across all appearances. [S2]';
+ const reviewResponder=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const spanFor=claim=>claim.sourceEvidence[0].spanIds[0];
+  const claims=payload.claims.map(claim=>{
+   const partial=claim.text.includes('synthetic unity');
+   return {claimId:claim.claimId,status:partial?'partial':'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[spanFor(claim)]}))};
+  });
+  const parts=payload.parts.map(part=>{
+   const cited=payload.claims.filter(claim=>claim.partId===part.partId);
+   return {partId:part.partId,status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:cited.map(claim=>claim.claimId),
+    retainedContextClaimIds:(part.contextClaims||[]).map(claim=>claim.claimId),
+    ...(part.partId==='P2'?{requirementCoverage:[{requirementId:'P2-R1',
+      status:'answered',answerClaimIds:cited.map(claim=>claim.claimId)}]}:{})};
+  });
+  return {response:JSON.stringify({parts,claims})};
+ };
+ const ai=makeAI([answer(draft),reviewResponder,answer(draft),reviewResponder],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer(
+  'How does Hume explain causal necessity, and how do the categories structure experience?',
+  [hume,kant],ai,[],{plan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/pure conceptions of the understanding/,
+  'the answered claim ships');
+ assert.doesNotMatch(result.answer,/synthetic unity/,
+  'the partial-gated claim still does not ship — the audit gate is unmoved');
+ const losses=result.trace.assemblyLoss||[];
+ assert.equal(losses.length,1,'exactly one loss is recorded');
+ assert.deepEqual(losses[0],{partId:'P2',claimId:'P2-C2',
+  reason:'claim-partial-not-shipped',disposition:'traced',
+  unanimousSourceSupport:true},
+  'the loss record names the gate and the unanimous source support');
+ assert.deepEqual(result.trace.assemblyLossSummary,
+  {total:1,restored:0,byReason:{'claim-partial-not-shipped':1},byPart:{P2:1}},
+  'the loss count is a first-class trace number');
+ assert.deepEqual(result.trace.final.assemblyLossDisclosures,
+  [{partId:'P2',claimId:'P2-C2'}],
+  'the explained loss is disclosed, not only the unexplained class');
+ assert.match(result.answer,
+  /This part of the question could only be partially answered: Explain how the categories structure experience\./,
+  'the label names the affected requirement and does not blame retrieval');
+ const labelRecord=(result.trace.final.disclosureLabels||[])
+  .find(entry=>entry.partId==='P2');
+ assert.equal(labelRecord?.kind,'assembly-loss');
+ assert.match(labelRecord?.text||'',/partially answered/);
+});
+
+test('stage B B3: a build with no assembly losses still reports the zero count',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.deepEqual(result.trace.assemblyLossSummary,
+  {total:0,restored:0,byReason:{},byPart:{}},
+  'the summary is emitted even when nothing was lost');
+ assert.equal(result.trace.final.assemblyLossDisclosures,undefined,
+  'no loss, no disclosure');
 });
