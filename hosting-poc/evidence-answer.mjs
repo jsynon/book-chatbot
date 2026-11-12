@@ -429,6 +429,15 @@ export const BATCH35_FIRING_FIELDS=[
   // precision).
   'final.bylineDirectionFlags',
   'final.pronounOrphanFlags',
+  // Stage C: the record-only bundle — passage-window subject
+  // presence, cross-work citations, and the widened orphan scan.
+  // The byline widening extends 'final.bylineDirectionFlags' above
+  // (entries now carry creditedRole, and the parser tolerates
+  // site furniture ahead of the letter header). All four checks
+  // earn any power only at >=80% measured precision.
+  'final.passageWindowSubjectFlags',
+  'final.crossWorkCitationFlags',
+  'final.pronounOrphanFlagsWide',
   // Redesign Stage A: raw span-ID tokens stripped from shipped
   // prose, and the disclosure-label verbatim verification record.
   'final.spanIdLeaksStripped',
@@ -1072,16 +1081,91 @@ function boundarySubjectCheck({claimText,boundaryText='',spanTexts=[],spanHeads=
 const LETTER_BYLINE_NON_SENDERS=new Set(['letters','letter','correspondence',
   'works','writings','memoirs','journal','history','life','story','essays',
   'poems','speeches','dialogues','treatise','works of','selected letters']);
+const LETTER_BYLINE_PATTERN=
+  /\b([\p{Lu}][\p{L}.]+(?:\s+[\p{Lu}][\p{L}.]+){0,3})\s+To\s+([\p{Lu}][\p{L}.]+(?:\s+[\p{Lu}][\p{L}.]+){0,2})\b/u;
+// Stage C (item 3): collected-works pages from digital libraries
+// carry site furniture ahead of the letter's own header — a banner
+// repeating the volume title, a bracketed table-of-contents link,
+// a roman-numeral letter number ("Online Library of Liberty:
+// Letters of Marcus Tullius Cicero [Back to Table of Contents]
+// LXXII Trajan To Pliny …"). The phase-3 Trajan letter sat behind
+// exactly that furniture, past the raw head window, so no byline
+// was found and the direction check never ran. The widened search
+// accepts a byline deeper in the head only when everything before
+// it is furniture: title tokens, bracketed-segment tokens,
+// roman-numeral/numbering tokens, or generic navigation words. A
+// single prose token before the match rejects it — body text that
+// merely mentions "X To Y" is not a byline.
+const LETTER_HEAD_FURNITURE_WORDS=new Set(['online','library','liberty',
+  'back','table','contents','home','previous','next','chapter','vol','no']);
+function letterHeadPrefixIsFurniture(prefix,title){
+  const titleTokens=new Set(normalizedPersonName(title)
+    .split(' ').filter(Boolean));
+  const unbracketed=String(prefix||'').replace(/\[[^\]]*\]/gu,' ');
+  for(const raw of unbracketed.split(/\s+/)){
+    const token=raw.replace(/[^\p{L}\p{N}]/gu,'').toLowerCase();
+    if(!token)continue;
+    if(titleTokens.has(token))continue;
+    if(LETTER_HEAD_FURNITURE_WORDS.has(token))continue;
+    if(/^\d+$/u.test(token))continue;
+    if(/^[ivxlcdm]+$/u.test(token))continue;
+    return false;
+  }
+  return true;
+}
 function letterBylineForSource(source){
-  const head=String(source?.scopeText||source?.text||source?.preview||'')
-    .slice(0,300);
-  const match=head.match(/\b([\p{Lu}][\p{L}.]+(?:\s+[\p{Lu}][\p{L}.]+){0,3})\s+To\s+([\p{Lu}][\p{L}.]+(?:\s+[\p{Lu}][\p{L}.]+){0,2})\b/u);
-  if(!match||match.index>80)return null;
-  const sender=match[1].trim(),recipient=match[2].trim();
+  const full=String(source?.scopeText||source?.text||source?.preview||'');
+  const head=full.slice(0,300);
+  let match=head.match(LETTER_BYLINE_PATTERN);
+  if(match&&match.index>80)match=null;
+  if(!match){
+    const wide=full.slice(0,600);
+    for(const candidate of wide.matchAll(new RegExp(LETTER_BYLINE_PATTERN.source,'gu'))){
+      if(candidate.index<=80||letterHeadPrefixIsFurniture(
+        wide.slice(0,candidate.index),source?.title||'')){match=candidate;break;}
+    }
+  }
+  if(!match)return null;
+  // A letter number can be captured as the sender's first token
+  // ("LXXII Trajan To Pliny" behind furniture): a leading
+  // roman-numeral token is numbering, never a name part.
+  const senderTokens=match[1].trim().split(/\s+/)
+    .filter(token=>!/^[IVXLCDM]{2,}$/u.test(token));
+  // The recipient group can absorb the body's first capitalized
+  // word ("Pliny  The question concerning…"): a trailing function
+  // word is prose, never a name part. (The sender is bounded by
+  // the " To " separator and needs no such trim.)
+  const recipientTokens=match[2].trim().split(/\s+/);
+  const TRAILING_NON_NAME=new Set(['the','a','an','and','or','but',
+    'in','on','of','to','at','by','for','with','from','as']);
+  while(recipientTokens.length>1&&
+    TRAILING_NON_NAME.has(recipientTokens[recipientTokens.length-1].toLowerCase()))
+    recipientTokens.pop();
+  const sender=senderTokens.join(' '),recipient=recipientTokens.join(' ');
   if(!sender||!recipient)return null;
   if(LETTER_BYLINE_NON_SENDERS.has(normalizedPersonName(sender)))return null;
   if(personNamesMatch(sender,recipient))return null;
   return {sender,recipient};
+}
+// Stage C (item 3): the author a source's TITLE names — the segment
+// after an em-dash separator ("Letters — Marcus Tullius Cicero"),
+// or the remainder after a leading genre phrase ("Letters of
+// Marcus Tullius Cicero", "The Works of Cicero"). Returns '' when
+// the title names no plausible person.
+function titleAuthorForSource(source){
+  const title=String(source?.title||'').trim();
+  if(!title)return '';
+  let candidate='';
+  if(title.includes(' — '))candidate=title.split(' — ').pop().trim();
+  else{
+    const genre=title.match(/^(?:The\s+)?(?:Selected\s+)?(?:Letters|Correspondence|Works|Writings|Memoirs|Journals?|Essays|Speeches|Poems|Dialogues)\s+(?:of|by)\s+(.+)$/iu);
+    if(genre)candidate=genre[1].trim();
+  }
+  candidate=candidate.replace(/\s*\([^)]*\)\s*$/u,'').trim();
+  if(!candidate||candidate.split(/\s+/).length>4)return '';
+  if(!/^\p{Lu}/u.test(candidate))return '';
+  if(!/^[\p{L}.'’ -]+$/u.test(candidate))return '';
+  return candidate;
 }
 
 // Batch 32 (B32-6): the batch-31 compound quote-speaker guard
@@ -7148,7 +7232,65 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         return new RegExp('\\b'+surname.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','iu')
           .test(String(text||''));
       };
+      // Stage C: shared record lookups for the record-only final
+      // checks — the review's recorded subjects per claim+source
+      // and per claim, from the merged review decisions.
+      const recordedSubjectsByClaimSource=new Map();
+      const recordedSubjectByClaim=new Map();
+      for(const decision of review?.reviewDecisions||[]){
+        if(!decision?.partId||!decision?.claimId)continue;
+        const subject=String(decision.attributedSubject||'').trim()||
+          String(decision.attributedSpeaker||'').trim();
+        if(!subject)continue;
+        const claimKey=decision.partId+'|'+decision.claimId;
+        if(!recordedSubjectByClaim.has(claimKey))
+          recordedSubjectByClaim.set(claimKey,subject);
+        if(decision.sourceId){
+          const key=claimKey+'|'+String(decision.sourceId);
+          if(!recordedSubjectsByClaimSource.has(key))
+            recordedSubjectsByClaimSource.set(key,subject);
+        }
+      }
+      const claimPersonsFor=(partId,ans,sourceId)=>{
+        const names=[],seen=new Set();
+        const NON_NAME_TRAILING=new Set(['the','a','an','and','or','but',
+          'in','on','of','to','at','by','for','with','from','as','is','was']);
+        const add=name=>{
+          const cleaned=String(name||'').trim();
+          if(!cleaned)return;
+          // Candidate hygiene: extraction over prose can absorb a
+          // trailing capitalized function word into a "name"
+          // ("Pliny The" from a span head); such a string is not a
+          // person and must not become a flag's credited name.
+          const tokens=cleaned.split(/\s+/);
+          if(tokens.length>1&&
+            NON_NAME_TRAILING.has(tokens[tokens.length-1].toLowerCase()))return;
+          const key=normalizedPersonName(cleaned);
+          if(!key||seen.has(key))return;
+          seen.add(key);names.push(cleaned);
+        };
+        if(sourceId!==undefined)
+          add(recordedSubjectsByClaimSource.get(partId+'|'+ans.claimId+'|'+String(sourceId)));
+        else add(recordedSubjectByClaim.get(partId+'|'+ans.claimId));
+        for(const name of claimPersonSubjects(String(ans.text||'')))add(name);
+        return names;
+      };
+      const surnameOf=name=>{
+        const tokens=String(name||'').split(/\s+/).filter(Boolean);
+        if(!tokens.length)return '';
+        return tokens[tokens.length-1].replace(/[^\p{L}'-]/gu,'').toLowerCase();
+      };
+      const splitSpanSentences=text=>{
+        const sentences=[];
+        const pattern=/[^.!?]+[.!?]+["'’”)\]]*\s*|[^.!?]+$/gu;
+        for(const m of String(text||'').matchAll(pattern)){
+          const sentence=m[0].trim();
+          if(sentence)sentences.push(sentence);
+        }
+        return sentences;
+      };
       const bylineDirectionFlags=[];
+      const bylineFlagSeen=new Set();
       for(const item of included){
         for(const ans of item.answers||[]){
           for(const sourceId of ans.sourceIds||[]){
@@ -7156,18 +7298,38 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             if(!source)continue;
             const byline=letterBylineForSource(source);
             if(!byline)continue;
-            const titleAuthor=String(source.title||'').split(' — ').pop().trim();
-            let creditedName=null;
-            if(nameInText(byline.recipient,ans.text))creditedName=byline.recipient;
-            else if(titleAuthor&&titleAuthor!==byline.sender&&
-              /^\p{Lu}/u.test(titleAuthor)&&titleAuthor.split(/\s+/).length>=2&&
-              nameInText(titleAuthor,ans.text)&&
-              !personNamesMatch(titleAuthor,byline.sender))
-              creditedName=titleAuthor;
-            if(creditedName&&!nameInText(byline.sender,ans.text))
+            // A claim that also names the letter's actual author
+            // is not misdirected, whatever else it names (the
+            // original check's claim-level guard, kept).
+            if(nameInText(byline.sender,ans.text))continue;
+            const titleAuthor=titleAuthorForSource(source);
+            // Stage C (item 3): the credited-name set is widened
+            // beyond the original recipient/title-author probes —
+            // the claim's recorded subject and its extracted
+            // subjects are candidates too, so a claim crediting
+            // the VOLUME author (the phase-3 Trajan shape: the
+            // letter is Trajan's, the answer credited Cicero, the
+            // volume's name) flags with its role recorded.
+            const candidates=claimPersonsFor(item.part.id,ans,sourceId);
+            if(nameInText(byline.recipient,ans.text)&&
+              !candidates.some(name=>personNamesMatch(name,byline.recipient)))
+              candidates.push(byline.recipient);
+            if(titleAuthor&&nameInText(titleAuthor,ans.text)&&
+              !candidates.some(name=>personNamesMatch(name,titleAuthor)))
+              candidates.push(titleAuthor);
+            for(const creditedName of candidates){
+              if(personNamesMatch(creditedName,byline.sender))continue;
+              const flagKey=item.part.id+'|'+ans.claimId+'|'+String(sourceId)+'|'+
+                normalizedPersonName(creditedName);
+              if(bylineFlagSeen.has(flagKey))continue;
+              bylineFlagSeen.add(flagKey);
+              const creditedRole=personNamesMatch(creditedName,byline.recipient)?
+                'recipient':(titleAuthor&&personNamesMatch(creditedName,titleAuthor))?
+                'volume-author':'other';
               bylineDirectionFlags.push({partId:item.part.id,
                 claimId:ans.claimId,sourceId:String(sourceId),
-                creditedName,bylineAuthor:byline.sender});
+                creditedName,bylineAuthor:byline.sender,creditedRole});
+            }
           }
         }
       }
@@ -7204,6 +7366,126 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         }
       }
       trace.final={...(trace.final||{}),apparatusCitations};
+      // Stage C (item 1): passage-window subject presence,
+      // RECORD-ONLY. A claim that names a person and cites a span
+      // flags when the name is absent from the local window around
+      // the passage the claim actually draws on — the Conrad shape,
+      // where the manager's words shipped as Kurtz's while Kurtz
+      // was named only elsewhere in the span (span-global presence
+      // proved too weak in phase-2 validation). The matched passage
+      // is found by the claim's own quoted phrases, else by best
+      // content-term overlap; the window is the matched sentences
+      // plus one neighbour each side. Spans that cannot localize
+      // (single sentence, or a window covering the whole span)
+      // record nothing.
+      const passageWindowSubjectFlags=[];
+      const normalizeQuoteSurface=value=>String(value||'').toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/gu,' ').trim();
+      for(const item of included){
+        for(const ans of item.answers||[]){
+          for(const support of item.evidence||[]){
+            if(support.claimId!==ans.claimId)continue;
+            const spanText=String(support.quote||'');
+            const sentences=splitSpanSentences(spanText);
+            if(sentences.length<2)continue;
+            const persons=claimPersonsFor(item.part.id,ans,support.sourceId);
+            if(!persons.length)continue;
+            const quotedPhrases=[];
+            for(const m of String(ans.text||'').matchAll(/["“]([^"”]{12,})["”]|['‘]([^'’]{12,})['’]/gu))
+              quotedPhrases.push(normalizeQuoteSurface(m[1]||m[2]));
+            let matchedIndexes=[];
+            if(quotedPhrases.length){
+              sentences.forEach((sentence,index)=>{
+                const normalized=normalizeQuoteSurface(sentence);
+                if(quotedPhrases.some(phrase=>phrase&&normalized.includes(phrase)))
+                  matchedIndexes.push(index);
+              });
+            }
+            if(!matchedIndexes.length){
+              const claimTerms=fallbackEvidenceTerms(String(ans.text||''));
+              let best=-1,bestOverlap=0;
+              sentences.forEach((sentence,index)=>{
+                const sentenceTerms=fallbackEvidenceTerms(sentence);
+                let overlap=0;
+                for(const term of claimTerms)if(sentenceTerms.has(term))overlap++;
+                if(overlap>bestOverlap){bestOverlap=overlap;best=index;}
+              });
+              if(best>=0&&bestOverlap>=2)matchedIndexes=[best];
+            }
+            if(!matchedIndexes.length)continue;
+            const windowIndexes=new Set();
+            for(const index of matchedIndexes){
+              windowIndexes.add(index);
+              if(index>0)windowIndexes.add(index-1);
+              if(index<sentences.length-1)windowIndexes.add(index+1);
+            }
+            if(windowIndexes.size>=sentences.length)continue;
+            const windowText=sentences
+              .filter((_,index)=>windowIndexes.has(index)).join(' ').slice(0,320);
+            const matchedSentence=sentences[matchedIndexes[0]].slice(0,200);
+            for(const name of persons){
+              if(nameInText(name,windowText))continue;
+              passageWindowSubjectFlags.push({partId:item.part.id,
+                claimId:ans.claimId,sourceId:String(support.sourceId),
+                spanId:String(support.spanId||''),name,
+                nameInSpan:nameInText(name,spanText),
+                windowText,matchedSentence});
+            }
+          }
+        }
+      }
+      trace.final={...(trace.final||{}),passageWindowSubjectFlags};
+      // Stage C (item 2): cross-work citation check, RECORD-ONLY.
+      // A shipped claim flags when its cited span's book is
+      // mechanically determinable as a different work from the one
+      // the claim is about — by the part's single-book scope
+      // ('part-scope'), or, for multi-book parts, by the claim's
+      // single named subject matching exactly one book's title
+      // author ('claim-subject': the Hobbes shape, a claim about
+      // Hobbes cited to a Rousseau span inside a compare part).
+      const crossWorkCitationFlags=[];
+      const authorByBookId=new Map();
+      for(const source of sources){
+        const author=titleAuthorForSource(source);
+        const bookId=String(source?.bookId||'');
+        if(!author||!bookId||authorByBookId.has(bookId))continue;
+        authorByBookId.set(bookId,author);
+      }
+      for(const item of included){
+        const partBookIds=[...new Set((item.part.sourceBookIds||[])
+          .map(String).filter(Boolean))];
+        for(const ans of item.answers||[]){
+          const supports=(item.evidence||[])
+            .filter(support=>support.claimId===ans.claimId);
+          const rows=supports.length?supports:
+            (ans.sourceIds||[]).map(sourceId=>({sourceId,spanId:''}));
+          if(!rows.length)continue;
+          const claimPersons=claimPersonsFor(item.part.id,ans);
+          let claimSubject='',subjectBookIds=null;
+          if(claimPersons.length===1){
+            const matched=new Set();
+            for(const [bookId,author] of authorByBookId)
+              if(personNamesMatch(claimPersons[0],author))matched.add(bookId);
+            if(matched.size){claimSubject=claimPersons[0];subjectBookIds=matched;}
+          }
+          for(const row of rows){
+            const source=sources.find(value=>String(value.id)===String(row.sourceId));
+            const spanBookId=String(source?.bookId||'');
+            if(!spanBookId)continue;
+            let basis='';
+            if(partBookIds.length===1&&spanBookId!==partBookIds[0])
+              basis='part-scope';
+            else if(subjectBookIds&&!subjectBookIds.has(spanBookId))
+              basis='claim-subject';
+            if(!basis)continue;
+            crossWorkCitationFlags.push({partId:item.part.id,
+              claimId:ans.claimId,sourceId:String(row.sourceId),
+              spanId:String(row.spanId||''),basis,spanBookId,
+              partBookIds,claimSubject});
+          }
+        }
+      }
+      trace.final={...(trace.final||{}),crossWorkCitationFlags};
       const pronounOrphanFlags=[];
       const partTextById=new Map(included.map(item=>[item.part.id,
         unwrapBoldWrappedParagraphs(renderAnswerParagraphs(item.answers)).text]));
@@ -7224,6 +7506,93 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         }
       });
       trace.final={...(trace.final||{}),pronounOrphanFlags};
+      // Stage C (item 4): the pronoun-orphan scan widened to EVERY
+      // sentence opening, RECORD-ONLY, in its own field — the
+      // original scan above keeps its exact semantics so old- and
+      // new-scope precision stay separately measurable. The shipped
+      // scan is paragraph-initial and answer-global; production
+      // misses were mid-part ("She observes…" with the antecedent's
+      // naming claim audit-omitted), possessive-led paragraph
+      // openings, and demonstrative openings ("In this view…").
+      // Here every sentence opening in a part is classified
+      // (pronoun / possessive / demonstrative) and checked against
+      // the names established earlier IN THE SAME PART: when the
+      // sentence's claim carries a recorded subject, the opening is
+      // anchored only if that subject's surname is established
+      // earlier in the part (or the sentence names it); with no
+      // recorded subject, any earlier established name anchors.
+      // The pipeline's own disclosure-label and framing sentences
+      // are excluded — a label opening "This part of the question…"
+      // is not an orphan.
+      const pronounOrphanFlagsWide=[];
+      const disclosureLabelTexts=new Set((trace.final?.disclosureLabels||[])
+        .map(entry=>String(entry.text||'')));
+      const LABEL_OPENING_PREFIXES=['This part of the question',
+        'Retrieved passages could not be verified',
+        'No library passages could be verified'];
+      for(const item of included){
+        const partId=item.part.id;
+        const establishedSurnames=new Set();
+        const establishedNames=[];
+        let sentenceIndex=0;
+        for(const ans of item.answers||[]){
+          if(isAnswerHeading(ans.text))continue;
+          const recordedSubject=recordedSubjectByClaim.get(partId+'|'+ans.claimId)||null;
+          const cleanText=String(ans.text||'').replace(/\s*\[[^\]]*\]/gu,' ');
+          for(const sentence of splitSpanSentences(cleanText)){
+            const index=sentenceIndex++;
+            const trimmed=sentence.replace(/^\s*(?:[-*•]\s*)?(?:\*\*[^*\n]{1,140}?\*\*:?\s*)?/u,'');
+            const isLabel=disclosureLabelTexts.has(sentence)||
+              LABEL_OPENING_PREFIXES.some(prefix=>trimmed.startsWith(prefix));
+            let openingType='',pronoun='';
+            if(!isLabel){
+              let m=trimmed.match(/^(He|She|It|They)\b/u);
+              if(m){
+                openingType='pronoun';pronoun=m[1];
+                if(pronoun==='It'){
+                  const next=(trimmed.slice(m[0].length).trimStart()
+                    .match(/^[\p{L}’'-]+/u)||[''])[0].toLowerCase();
+                  if(ASSEMBLY_IMPERSONAL_IT_FOLLOWERS.has(next))openingType='';
+                }
+              }else if((m=trimmed.match(/^(His|Her|Their|Its)\b/u))){
+                openingType='possessive';pronoun=m[1];
+              }else if((m=trimmed.match(/^(This|That|These|Those)\b/u))){
+                openingType='demonstrative';pronoun=m[1];
+              }else if((m=trimmed.match(/^In (this|that)\b/u))){
+                openingType='demonstrative';pronoun=m[1];
+              }
+            }
+            if(openingType){
+              const anchored=recordedSubject?
+                (nameInText(recordedSubject,sentence)||
+                 establishedSurnames.has(surnameOf(recordedSubject))):
+                establishedNames.length>0;
+              if(!anchored)
+                pronounOrphanFlagsWide.push({partId,claimId:ans.claimId,
+                  paragraphIndex:Number.isInteger(ans.paragraphIndex)?
+                    ans.paragraphIndex:0,
+                  sentenceIndex:index,openingType,
+                  opening:trimmed.slice(0,90),pronoun,recordedSubject,
+                  establishedNamesBefore:establishedNames.slice(0,6)});
+            }
+            for(const match of sentence.matchAll(/\b(\p{Lu}\p{Ll}+)\s+(\p{Lu}\p{Ll}+)\b/gu)){
+              const surname=match[2].toLowerCase();
+              if(!establishedSurnames.has(surname)){
+                establishedSurnames.add(surname);
+                establishedNames.push(match[0]);
+              }
+            }
+            for(const name of claimPersonSubjects(sentence)){
+              const surname=surnameOf(name);
+              if(surname&&!establishedSurnames.has(surname)){
+                establishedSurnames.add(surname);
+                establishedNames.push(name);
+              }
+            }
+          }
+        }
+      }
+      trace.final={...(trace.final||{}),pronounOrphanFlagsWide};
       // Stage B (B4): verification checks the label texts actually
       // recorded at application time (trace.final.disclosureLabels)
       // — since subjects became requirement-scoped, reconstruction
