@@ -5366,23 +5366,39 @@ test('a complete buffered review survives a missing stream terminal event after 
  assert.equal(ai.calls.length,2);
 });
 
-test('a timed-out part in a two-part answer suppresses the tie (Batch 21)',async()=>{
+test('a timed-out part in a two-part answer degrades instead of suppressing the tie (Stage B.1, supersedes Batch 21)',async()=>{
+ // Batch 21's rule suppressed the whole answer when one of two
+ // parts' reviews failed at the call level. Stage B.1 reverses it
+ // for call-level failures (this fixture's shape, and the Stage B
+ // validation's suffering/wealth/Kierkegaard losses): no review
+ // exists for the failed part at all, so the part is unverified in
+ // exactly B0's sense — it ships nothing and is disclosed, while
+ // the validated part ships. Suppression still stands when no part
+ // validated, and for partially fulfilled contracts (B8-5).
  const draft='PART P1\nHume explains causal expectation through custom. [S1]\n'+
   'PART P2\nKant says “a priori” knowledge guarantees both certainty and moral liberty. [S2]';
  const timeout=Object.assign(new Error('Review response was truncated'),{
   code:'review-output-truncated',stage:'review'});
  const dispatcher=(_model,{messages})=>parsePayload(messages).parts[0].partId==='P2'?
   (()=>{throw timeout;})():review([['P1','answered']])(_model,{messages});
- const ai=makeAI([answer(draft),dispatcher,dispatcher]);
+ const ai=makeAI([answer(draft),dispatcher,dispatcher,dispatcher]);
  const result=await composeEvidenceAnswer('How do Hume and Kant explain causality?',
   [hume,kant],ai,[],{plan:{...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)},
    catalog,trace:true});
  const second=result.questionParts.find(part=>part.partId==='P2');
- assert.equal(result.answer,'I could not complete a reliable answer this time. Please try again.');
+ assert.equal(result.outcome,'verified-source-draft',
+  'the build ships on the reviewed part');
+ assert.match(result.answer,/Hume explains causal expectation through custom/,
+  'the reviewed part\u2019s cited text ships');
+ assert.doesNotMatch(result.answer,/Kant says/,
+  'no claims ship from the unreviewed part');
  assert.equal(second.answerStatus,'unanswered');
- assert.equal(second.status,'unsupported');
- assert.equal(result.outcome,'generation-failed');
- assert.equal(result.trace.reviewCompletion.disposition,'suppressed-not-strict-minority');
+ assert.deepEqual(result.trace.reviewContractDegradedParts,['P2']);
+ assert.deepEqual(result.trace.reviewCompletion,
+  {totalParts:2,unvalidatedPartIds:['P2'],disposition:'degraded-parts',
+   degradedPartCauses:{P2:'review-output-truncated'}});
+ assert.match(result.missing,/Kant/,
+  'the degraded part is named in the missing segments');
 });
 
 test('a citation-validation failure is never retried (B8-7)',async()=>{
@@ -7626,7 +7642,8 @@ test('batch 32 B32-9: a contract-incomplete part degrades instead of suppressing
  assert.deepEqual(result.trace.reviewContractDegradedParts,['P2'],
   'the degradation is traced');
  assert.deepEqual(result.trace.reviewCompletion,
-  {totalParts:2,unvalidatedPartIds:['P2'],disposition:'degraded-parts'});
+  {totalParts:2,unvalidatedPartIds:['P2'],disposition:'degraded-parts',
+   degradedPartCauses:{P2:'review-contract-incomplete'}});
  assert.deepEqual(result.trace.reviewContract.failedParts,
   [{partId:'P2',code:'review-contract-incomplete'}]);
  assert.match(result.missing,/Kant/,
@@ -9191,6 +9208,108 @@ test('stage B B5: an invalid-citation-format rejection records the sentence text
  assert.deepEqual(record.failingElement.groups,['[S1, S2a]']);
  assert.match(result.answer,/great guide of human life/,
   'the well-formed sentence is untouched');
+});
+
+test('stage B.1: a citation group carrying a printed page element is repaired, not rejected (the narrators shape)',async()=>{
+ // Stage B validation, narrators in BOTH passes: the packet was
+ // strong and the draft complete, but the composer cited
+ // [S2, 50] — span plus printed page in one bracket — and every
+ // sentence was rejected as invalid-citation-format, collapsing
+ // the case into an insufficient-evidence refusal. (The same
+ // shape killed phase-3 guilt AP1 under Stage A.) A bare page
+ // element beside a well-formed source ID is unambiguous: strip
+ // the page element, keep the citation, record the repair.
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1, 12]\n'+
+   'Hume also treats custom as the great guide of human life. [S1, p. 12]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/Hume links necessity to custom/);
+ assert.match(result.answer,/great guide of human life/);
+ const repairs=(result.trace.citationFormatRepairs||[])
+  .filter(repair=>repair.kind==='page-element-stripped');
+ assert.deepEqual(repairs.map(repair=>repair.from),['[S1, 12]','[S1, p. 12]'],
+  'both page-element shapes are repaired and recorded');
+ assert.ok(repairs.every(repair=>repair.to==='[S1]'));
+ assert.ok(!(result.trace.rejected||[])
+  .some(item=>item.reason==='invalid-citation-format'),
+  'no sentence is rejected for the repaired format');
+});
+
+test('stage B.1: a compose call cancelled unconfirmed is retried once (the Conrad SP2 shape)',async()=>{
+ const cancel=Object.assign(new Error('Inference call cancelled before confirmation'),{
+  code:'inference-cancel-unconfirmed',stage:'compose'});
+ const ai=makeAI([cancel,
+  answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, its retry, then the review');
+ assert.deepEqual(result.trace.composeRetry,
+  {attempted:true,reason:'inference-cancel-unconfirmed',applied:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/custom and regular conjunction/);
+});
+
+test('stage B.1 B4 scoping: an assembly loss that touches no requirement is labeled as a lost supporting point, not a partially answered part',async()=>{
+ // Stage B progress AP1: every requirement of the part was
+ // answered by shipped cited claims, one further claim was lost
+ // at assembly, and the label still announced the whole part as
+ // only partially answered — contradicting the case's own full
+ // coverage record. When the lost claims served no recorded
+ // requirement and coverage is complete, the label scopes to the
+ // lost point. (The B3 fixture above is the counter-case: its
+ // lost claim served the part's requirement, and the part-level
+ // wording stands there.)
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How do the categories structure experience?',
+   sourceBookIds:['40'],searchQueries:['Kant categories experience'],
+   candidateSourceIds:['S2'],
+   requirements:[{id:'P1-R1',text:'Explain causality as a category of the understanding.'},
+    {id:'P1-R2',text:'Explain how the categories structure experience.'}]}],
+  queries:['Kant categories experience']};
+ const draft='PART P1\nCausality is a pure conception of the understanding and a category of relation. [S2]\n'+
+  'The categories structure experience by unifying the manifold of intuition. [S2]\n'+
+  'The categories guarantee the synthetic unity of every possible perception. [S2]';
+ const reviewResponder=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const spanFor=claim=>claim.sourceEvidence[0].spanIds[0];
+  const claims=payload.claims.map(claim=>{
+   const partial=claim.text.includes('synthetic unity of every possible perception');
+   return {claimId:claim.claimId,status:partial?'partial':'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[spanFor(claim)]}))};
+  });
+  const parts=payload.parts.map(part=>({partId:part.partId,status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
+   retainedContextClaimIds:[],
+   requirementCoverage:[
+    {requirementId:'P1-R1',status:'answered',answerClaimIds:[payload.claims[0].claimId]},
+    {requirementId:'P1-R2',status:'answered',answerClaimIds:[payload.claims[1].claimId]}]}));
+  return {response:JSON.stringify({parts,claims})};
+ };
+ const ai=makeAI([answer(draft),reviewResponder,answer(draft),reviewResponder],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer(
+  'How do the categories structure experience?',[kant],ai,[],{plan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/category of relation/);
+ assert.match(result.answer,/unifying the manifold of intuition/);
+ assert.doesNotMatch(result.answer,/synthetic unity of every possible perception/,
+  'the partial-gated claim still does not ship');
+ assert.equal(result.trace.assemblyLossSummary.total,1);
+ assert.match(result.answer,
+  /A supporting point in this part of the question could not be included: /,
+  'the label scopes to the lost point when coverage is complete');
+ assert.doesNotMatch(result.answer,/could only be partially answered/);
+ const labelRecord=(result.trace.final.disclosureLabels||[])
+  .find(entry=>entry.partId==='P1');
+ assert.equal(labelRecord?.kind,'assembly-loss');
+ assert.equal(labelRecord?.scope,'claim',
+  'the disclosure record carries the label scope');
 });
 
 test('stage B B2: a contents-page citation does not count as substantive support for containment',async()=>{
