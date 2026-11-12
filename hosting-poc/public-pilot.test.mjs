@@ -37,49 +37,6 @@ test('batch 15 pilot route preserves subtitles and canonical quotation repair th
  assert.ok(result.trace.finalCoverageReconciliation.length);
 });
 
-test('batch 22 citation gate repairs a realistic uncited source-required part through evidence-v2 pilot',async()=>{
- const token='batch22-citation-adoption-pilot-fixture-token';
- let composeCalls=0,reviewCalls=0,repairCalls=0;
- const model=async(_model,input)=>{
-  const system=input.messages[0].content;
-  const payload=JSON.parse(input.messages[1].content);
-  if(system.startsWith('Answer the reader\'s exact question')){
-   composeCalls++;
-   return {response:'PART P1\nThucydides identifies fear of Athens’ growing power as a cause of the war.'};
-  }
-  if(system.startsWith('Patch only the requested claims')){
-   repairCalls++;
-   return {response:JSON.stringify({parts:[{partId:'P1',
-    replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
-     text:'Thucydides identifies the growth of Athenian power and the fear it caused in Sparta as the underlying cause of the war. [S1]'})),
-    additions:[]}]})};
-  }
-  if(system.startsWith('Review the complete answer parts and claims')){
-   reviewCalls++;
-   if(!payload.claims.length){
-    const contextId=payload.parts[0].contextClaims[0].claimId;
-    return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-     directAnswerClaimIds:[contextId],retainedContextClaimIds:[contextId]}],claims:[]})};
-   }
-   return depthReview(payload);
-  }
-  return {response:'{}'};
- };
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
- const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
-  question:'What underlying cause of war does Thucydides identify?',answerVariant:'with-review',trace:true,
-  sources:[pilot.fixture.body.sources[0]],
-  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
-   parts:[{id:'P1',question:'What underlying cause of war does Thucydides identify?',sourceBookIds:['152']}]}}});
- assert.equal(response.status,200);const result=await response.json();
- assert.match(result.answer,/fear it caused in Sparta.*\[S1\]/);
- assert.equal(result.questionParts[0].sourceRequired,true);
- assert.ok(result.questionParts[0].evidenceIds.includes('S1'));
- assert.equal(result.trace.citationGateSummary.firings,1);
- assert.equal(result.trace.citationGateSummary.adoptions,1);
- assert.equal(composeCalls,1);assert.equal(repairCalls,1);assert.equal(reviewCalls,2);
-});
 
 test('v1.9.5 pilot status never reveals Turnstile secret or enables unless every guard exists',async()=>{
  const off=await handleRequest(new Request(HOST+'/api/pilot-status',{
@@ -570,14 +527,10 @@ test('stream transport is evaluation-authorized and records transport diagnostic
 });
 test('evaluation-only selection preparation returns a verified reusable snapshot without composing an answer',async()=>{
  const token='batch17-shared-selection-secret-'.repeat(2);
- const model=async(_model,input)=>{
-  const system=input.messages?.[0]?.content||'';
-  if(!system.startsWith('Choose pages that can help answer'))
-   throw new Error('selection-only request unexpectedly called the answer composer');
-  const payload=JSON.parse(input.messages[1].content);
-  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:payload.parts.map(part=>({
-   partId:part.partId,evidence:[{candidateId:payload.candidates[0].id,support:'direct'}]}))})}}],
-   usage:{neurons:1,prompt_tokens:2,completion_tokens:3}};
+ const model=async()=>{
+  // Redesign Stage A: selection is deterministic, so a
+  // selection-only request must not call the model at all.
+  throw new Error('selection-only request unexpectedly called the model');
  };
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
@@ -593,7 +546,7 @@ test('evaluation-only selection preparation returns a verified reusable snapshot
  assert.equal(result.selectionSnapshot[0].bookId,source.bookId);
  assert.equal(result.selectionSnapshot[0].page,source.page);
  assert.equal(result.sourceSelection.pages.length,1);
- assert.equal(pilot.stats().calls,1,'only the shared evidence-selection call runs');
+ assert.equal(pilot.stats().calls,0,'redesign Stage A: deterministic evidence selection runs without any model call, and composition is skipped');
 });
 test('evidence-v2 public route returns six reviewed highlights for six cited pages',async()=>{
  const token='six-reviewed-highlight-test-token';
@@ -632,64 +585,14 @@ test('evidence-v2 public route returns six reviewed highlights for six cited pag
  assert.deepEqual(result.evidenceHighlights.map(item=>item.source_id),
   ['S1','S2','S3','S4','S5','S6']);
  assert.ok(result.evidenceHighlights.every(item=>item.quoteLocated===undefined));
- assert.equal(pilot.stats().calls,3,'Worker evidence selection precedes the existing compose/review pair');
-});
-test('malformed selector JSON uses bounded deterministic fallback without retrying',async()=>{
- const token='malformed-selector-fallback-test-token';
- const model=async(_model,input)=>{
-  const system=input.messages?.[0]?.content||'';
-  const payload=JSON.parse(input.messages[1].content);
-  if(system.startsWith('Review the complete answer parts and claims')){
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-    parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'answered',
-     directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
-      .slice(0,1).map(claim=>claim.claimId)})),
-    claims:payload.claims.map(claim=>{
-     const sources=claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-      spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1),
-      attributionStatus:'supported',attributedSpeaker:'Thucydides',
-      subjectAttributionStatus:'supported',attributedSubject:'Thucydides'}));
-     return {claimId:claim.claimId,status:'answered',sources,
-      clauses:[{text:claim.text,status:'answered',issueCode:'none',
-       sources:sources.map(({sourceId,spanIds})=>({sourceId,status:'answered',spanIds}))}]};
-    })
-   })}}]};
-  }
-  return {choices:[{finish_reason:'stop',message:{content:
-   'PART P1\nThucydides identifies anxiety over political change as the deeper cause [S1].'
-  }}]};
- };
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model,
-  selector:async()=>({choices:[{finish_reason:'stop',message:{content:'{"parts":['}}]})});
- const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
-  question:'What does Thucydides identify as the deeper cause of the war?',
-  answerVariant:'with-review',
-  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
-   parts:[{id:'P1',question:'What does Thucydides identify as the deeper cause of the war?',
-    sourceBookIds:['152']}]}
- }});
- assert.equal(response.status,200);
- const result=await response.json();
- const selectorTrace=result.trace.stages.find(stage=>stage.stage==='evidence-selection');
- assert.equal(result.sourceSelection.status,'deterministic-fallback');
- assert.equal(selectorTrace.failureCode,'selector-invalid-response');
- assert.equal(selectorTrace.failureReason,'invalid-json');
- assert.ok(selectorTrace.selected.length<=6,'fallback retains the six-page evidence ceiling');
- assert.ok(result.answer.includes('[S1]'),'the selected verified source remains usable');
- assert.equal(pilot.stats().calls,3,
-  'malformed selector output is not retried; only selector, compose, and review calls run');
+ assert.equal(pilot.stats().calls,2,'redesign Stage A: Worker evidence selection is deterministic and makes no model call; only the compose/review pair runs');
 });
 test('a valid empty evidence selection can review a useful single-part answer without a heading',async()=>{
  const token='selector-empty-evidence-test-token';
+ // Redesign Stage A: there is no selector call to abstain; the
+ // empty selection is an empty submitted pool.
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
    PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
-  selector:async(_model,input)=>{
-   const selection=JSON.parse(input.messages[1].content);
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
-    selection.parts.map(part=>({partId:part.partId,evidence:[]}))})}}],
-    usage:{neurons:2,prompt_tokens:14,completion_tokens:8}};
-  },
   model:async(_model,input)=>{
    const payload=JSON.parse(input.messages[1].content);
    if(Array.isArray(payload.claims))return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
@@ -701,7 +604,16 @@ test('a valid empty evidence selection can review a useful single-part answer wi
     'There is no established evidence that we are living in a computer simulation. The idea remains a philosophical possibility, but imagining it or reasoning about simulated observers does not show that it is true.\n\nA serious version of the hypothesis would need observable predictions that distinguish a simulated universe from an ordinary physical one. At present, no confirmed observation settles that question, so the careful answer is that we do not know. Related ideas about virtual or socially shaped experience can offer context, but they do not establish a literal simulation.'}}]};
   }
  });
- const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{question:'Are we living in a simulation?'}});
+ // Redesign Stage A: the empty selection is a pool no part can
+ // claim — the question names Thucydides (so the part's scope is
+ // his book), while the one submitted page belongs to another
+ // book entirely, so the deterministic path abstains.
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What does Thucydides say about whether we are living in a simulation?',
+  sources:[{...pilot.fixture.body.sources[0],bookId:'114',title:PILOT_BOOKS['114']}],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What does Thucydides say about whether we are living in a simulation?',
+    sourceBookIds:['152']}]}}});
  const result=await response.json();
  assert.equal(response.status,200);
  assert.equal(result.outcome,'general-context-answer');
@@ -712,13 +624,13 @@ test('a valid empty evidence selection can review a useful single-part answer wi
  assert.deepEqual(result.sourceSelection.pages,[]);
  assert.equal(result.sourceSelection.status,'no-relevant-evidence');
  assert.equal(result.sourceSelectionStatus,'no-relevant-evidence');
- assert.equal(result.sourceSelection.usage.neurons,2);
+ assert.equal(result.sourceSelection.usage.neurons,0,'redesign Stage A: deterministic selection spends no neurons');
  assert.match(result.notice,/no library citations/i);
  assert.equal(result.reviewStatus,'general-context-review');
  assert.equal(result.trace.recovery.code,'missing-part-heading',
   'a one-part answer can be assigned and reviewed when its redundant heading is omitted');
- assert.equal(result.usage.calls,3,'the selector, composer, and reviewer calls are retained in usage');
- assert.equal(pilot.stats().calls,3,'an empty evidence selection still reaches composition and review');
+ assert.equal(result.usage.calls,2,'the composer and reviewer calls are retained in usage (selection is deterministic)');
+ assert.equal(pilot.stats().calls,2,'an empty evidence selection still reaches composition and review');
  assert.equal(result.trace.stages[0].status,'no-relevant-evidence');
  assert.deepEqual(result.trace.stages[0].decision.selectedCandidateIds,[]);
 });
@@ -752,94 +664,14 @@ test('an unmentioned catalog-valid planner source does not scope empty selection
  assert.equal(result.answerCompleteness,'full');
  assert.deepEqual(result.citations,[]);
  assert.deepEqual(result.evidenceHighlights,[]);
- assert.equal(result.sourceSelection.status,'no-relevant-evidence');
- assert.equal(pilot.stats().calls,3,'the existing selector, composer, and review calls remain the only calls');
-});
-test('selector provider errors retain a safe reason while the bounded fallback remains reviewable',async()=>{
- const token='selector-fallback-error-test-token';
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
-  selector:async()=>{throw Object.assign(new Error('PRIVATE provider body'),{status:503});}
- });
- const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
- const result=await response.json();
- assert.equal(response.status,200);
- assert.equal(result.sourceSelection.status,'deterministic-fallback');
- assert.equal(result.trace.stages[0].failureCode,'selector-provider-error');
- assert.ok(result.sourceSelection.pages.length>0);
- assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
-});
-test('repeated selector candidate IDs are normalized without retrieval-order fallback',async()=>{
- const token='selector-duplicate-evidence-test-token';
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
-  selector:async(_model,input)=>{
-   const payload=JSON.parse(input.messages[1].content);
-   const candidate=payload.candidates[0];
-   const cue={candidateId:candidate.id,support:'direct',excerpt:candidate.excerpt.slice(0,120)};
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
-    payload.parts.map(part=>({partId:part.partId,evidence:[cue,{...cue}]}))})}}]};
-  }
- });
- const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
- const result=await response.json();
- assert.equal(response.status,200);
- assert.equal(result.trace.stages[0].status,'selected');
+ // Redesign Stage A: normalizePlan dropped the unmentioned book's
+ // scope, so the part is unscoped and the deterministic path packs
+ // the submitted pages as context (status 'selected'); the answer
+ // still lands general-context because nothing citable supports
+ // the part — the planner source neither scopes the packet nor
+ // blocks general knowledge.
  assert.equal(result.sourceSelection.status,'selected');
- assert.equal(result.trace.stages[0].decision.duplicateEvidenceEntriesRemoved,1);
- assert.notEqual(result.sourceSelection.status,'deterministic-fallback');
-});
-test('planned part search facets reach Worker evidence selection',async()=>{
- const token='part-search-facets-selector-test-token';
- let selectorPayload=null;
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
-  selector:async(_model,input)=>{
-   selectorPayload=JSON.parse(input.messages[1].content);
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:
-    selectorPayload.parts.map(part=>({partId:part.partId,evidence:[{
-     candidateId:selectorPayload.candidates[0].id,support:'direct'}]}))})}}]};
-  }});
- const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
-  question:'How does Thucydides explain the deeper cause of the war?',answerVariant:'compose-only',
-  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
-   parts:[{id:'P1',question:'How does Thucydides explain the deeper cause of the war?',
-    sourceBookIds:['152'],searchQueries:['Thucydides deeper cause fear growth Athens Sparta']}]}
- }});
- assert.equal(response.status,200);
- assert.equal(selectorPayload.parts[0].searchQueries[0],
-  'Thucydides deeper cause fear growth Athens Sparta');
- assert.ok(selectorPayload.parts[0].searchQueries.includes(
-  'How does Thucydides explain the deeper cause of the war?'));
- assert.match(selectorPayload.candidates[0].excerpt,/Thucydides|cause|war/i);
-});
-test('selector fallback trace retains only an approved invalid-response subtype',async()=>{
- const token='selector-invalid-subtype-test-token';
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
-  selector:async()=>({choices:[{finish_reason:'stop',message:{content:
-   '{"parts":[{"partId":"P1","evidence":[{"candidateId":"C99","support":"direct","excerpt":"a verbatim source excerpt long enough"}]}]}'}}]})
- });
- const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
- const result=await response.json();
- assert.equal(response.status,200);
- assert.equal(result.trace.stages[0].failureCode,'selector-invalid-response');
- assert.equal(result.trace.stages[0].failureReason,'unknown-candidate-id');
- assert.equal(JSON.stringify(result).includes('PRIVATE'),false);
-});
-test('selector trace exposes the specific coverage-shape failure without model text',async()=>{
- const token='selector-coverage-shape-test-token';
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},
-  selector:async()=>({choices:[{finish_reason:'stop',message:{content:
-   '{"parts":[{"partId":"P1","evidence":[{"candidateId":"C1","support":"supported|partial|none","excerpt":"a verbatim source excerpt long enough"}]}],"privatePayload":"PRIVATE SELECTOR TEXT"}'}}]})
- });
- const response=await pilot.post({headers:{Authorization:'Bearer '+token}});
- const result=await response.json();
- assert.equal(response.status,200);
- assert.equal(result.trace.stages[0].failureCode,'selector-invalid-response');
- assert.equal(result.trace.stages[0].failureReason,'invalid-evidence-support');
- assert.equal(JSON.stringify(result).includes('PRIVATE SELECTOR TEXT'),false);
+ assert.equal(pilot.stats().calls,2,'the composer and review calls remain the only calls (selection is deterministic)');
 });
 test('planner and answer have separate visitor budgets and share the global budget',async()=>{
  const pilot=await pilotScenario({model:async(_model,input)=>{
@@ -2174,84 +2006,6 @@ test('a mapped point with an unverified quote still triggers the existing eviden
  assert.match(result.answer,/unknown possibility of dreams after death makes him pause/);
 });
 
-test('verification diet: a candidate discarded by selection is never fingerprint-fetched (batch 5)',async()=>{
- const textA='The public disputes were over a breached agreement, whereas growing power created fear among competing cities. The deeper cause of the war was stated to be anxiety over political change.';
- const textB='The shipwrights of the Piraeus laid down triremes each spring, and the treasury recorded every talent spent on timber, cordage, and oars for the fleet.';
- const packetFor=async(chunk,firstPage,page,text,globalPageId)=>{
-  const bytes=new TextEncoder().encode(text);
-  const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),
-   b=>b.toString(16).padStart(2,'0')).join('');
-  return {schema:'antilogicalism-reader-fingerprints-v2',hashAlgorithm:'SHA-256-utf8-exact',
-   libraryVersion:48,bookId:'152',chunk,firstPage,lastPage:firstPage+31,
-   title:'History of the Peloponnesian War — Thucydides',pdfDriveId:PDF,
-   pages:[{page,globalPageId,utf8Bytes:bytes.byteLength,sha256}]};
- };
- const packet1=await packetFor(1,33,38,textA,34403);
- const packet2=await packetFor(2,65,70,textB,34435);
- const fetchedUrls=[];
- const fetcher=async(url,init={})=>{
-  const value=String(url);
-  fetchedUrls.push(value);
-  if(value.includes('siteverify')){
-   const params=new URLSearchParams(init.body);
-   return Response.json({success:params.get('response')==='one-time-challenge',
-    hostname:'jsynon.github.io',action:'companion_ask'});
-  }
-  if(value.endsWith('books/152/1.json'))return Response.json(packet1);
-  if(value.endsWith('books/152/2.json'))return Response.json(packet2);
-  return new Response('missing',{status:404});
- };
- const ai={run:async(_model,input)=>{
-  const system=input.messages?.[0]?.content||'';
-  const payload=JSON.parse(input.messages[1].content);
-  if(input.max_completion_tokens===960){
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-    parts:payload.parts.map(part=>({partId:part.partId,
-     evidence:[{candidateId:payload.candidates[0].id,support:'direct'}]}))})}}],
-    usage:{neurons:1,prompt_tokens:10,completion_tokens:10}};
-  }
-  if(system.startsWith('Review the complete answer parts and claims')){
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
-    parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'answered',
-     directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
-      .slice(0,1).map(claim=>claim.claimId),
-     retainedContextClaimIds:(part.contextClaims||[]).map(claim=>claim.claimId)})),
-    claims:payload.claims.map(claim=>{
-     const sources=claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-      spanIds:[sourceId+'-Q1']}));
-     return {claimId:claim.claimId,status:'answered',sources,
-      clauses:[{text:claim.text,status:'answered',issueCode:'none',sources}]};
-    })})}}],usage:{neurons:1}};
-  }
-  if(system.startsWith('Answer the reader\'s exact question')){
-   return {choices:[{finish_reason:'stop',message:{content:
-    payload.parts.map(part=>'PART '+part.partId+'\nThe passage identifies the deeper cause as fear of growing power. [S1]').join('\n\n')}}],
-    usage:{neurons:1}};
-  }
-  throw new Error('Unexpected AI call in verification-diet scenario');
- }};
- const environment=env({PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
-  TURNSTILE_SITE_KEY:'0x4AAAAAA-test-public-pilot',
-  TURNSTILE_SECRET:'a-long-private-turnstile-test-secret',
-  READER_INFERENCE_TRANSPORT:'default',AI:ai});
- const request=new Request(HOST+'/api/pilot-answer',{method:'POST',
-  headers:{Origin:'https://jsynon.github.io','Content-Type':'application/json',
-   'CF-Connecting-IP':'198.51.100.42'},
-  body:JSON.stringify({question:'What caused the Peloponnesian War?',
-   turnstileToken:'one-time-challenge',
-   sources:[{bookId:'152',page:38,text:textA},{bookId:'152',page:70,text:textB}]})});
- const response=await handleRequest(request,environment,fetcher);
- assert.equal(response.status,200);
- const data=await response.json();
- assert.match(data.answer,/fear of growing power/);
- assert.ok(fetchedUrls.some(url=>url.endsWith('books/152/1.json')),
-  'the selected page’s packet is fetched for verification');
- assert.ok(!fetchedUrls.some(url=>url.endsWith('books/152/2.json')),
-  'the discarded candidate’s packet is never fetched');
- assert.deepEqual(data.sourceVerification,{candidatePages:2,pagesVerified:1,
-  packetsFetched:1,packetCacheHits:0});
- assert.equal(data.verifiedPages,1);
-});
 
 // ---------------------------------------------------------------------------
 // Batch 10 (B10-4): depth repair in the v2 pipeline, exercised through
@@ -2366,68 +2120,7 @@ test('evidence-v2 diagnostics separate provider wait, parsing, composition and c
  assert.ok(result.trace.timingSummary.buildWallMs>=result.trace.timingSummary.reviewWallMs);
 });
 
-test('evidence-v2 route fails closed on transferred person-action attribution (Batch 21 F3)',async()=>{
- const token='batch21-person-subject-route-test-token';
- const claim='Thucydides identifies fear about rival power as the deeper cause of the war.';
- const model=async(_model,input)=>{
-  const system=input.messages?.[0]?.content||'';
-  if(system.startsWith('Answer the reader\'s exact question'))
-   return {response:`PART P1\n${claim} [S1]`};
-  if(system.startsWith('Review the complete answer parts and claims')){
-   const payload=JSON.parse(input.messages[1].content);
-   return {response:JSON.stringify({parts:payload.parts.map(part=>({
-    partId:part.partId,status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.filter(item=>item.partId===part.partId)
-     .map(item=>item.claimId)})),claims:payload.claims.map(item=>({
-    claimId:item.claimId,status:'answered',sources:item.sourceIds.map(sourceId=>({
-     sourceId,status:'answered',
-     spanIds:item.sourceEvidence.find(entry=>entry.sourceId===sourceId)?.spanIds.slice(0,1)||[],
-     subjectAttributionStatus:'conflict',attributedSubject:'Marlow'
-    }))}))})};
-  }
-  return {response:'{}'};
- };
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2',
-  READER_INFERENCE_TRANSPORT:'default'},model});
- const source=pilot.fixture.body.sources[0];
- const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
-  question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
-  sources:[source],plan:{intent:'explain',
-   sources:[{label:'Thucydides',role:'primary',bookIds:[source.bookId]}],
-   parts:[{id:'P1',question:'What caused the Peloponnesian War?',
-    sourceBookIds:[source.bookId],candidateSourceIds:['S1']}]}
- }});
- assert.equal(response.status,200);
- const data=await response.json();
- assert.doesNotMatch(data.answer,/Thucydides identifies fear/);
- assert.equal(data.evidenceMap.length,0);
- assert.ok(data.trace.reviewContract.reviewDecisions.some(item=>
-  item.sourceId==='S1'&&item.subjectAttributionStatus==='conflict'&&
-  item.attributedSubject==='Marlow'&&item.accepted===false));
-});
 
-test('evidence-v2 route: a thin part inside an adequate answer is depth-repaired and adopted (batch 10 B10-4)',async()=>{
- const token='depth-repair-adopted-route-test-token';
- const {model,state}=depthScenarioModel({p2Text:depthThinSentence});
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
- const response=await depthPost(pilot,token);
- assert.equal(response.status,200);
- const result=await response.json();
- assert.deepEqual(result.depthRepair,
-  {triggered:true,reasons:['thin-part:P2'],applied:true,partIds:['P2']},
-  'depthRepair is produced by the v2 build and crosses the route');
- assert.equal(state.repairCalls,1,'exactly one targeted repair cycle runs');
- assert.ok((result.trace.reReviewDecisions||[]).some(decision=>decision.partId==='P2'),
-  'the adoption records the re-review’s decisions for the developed part');
- assert.deepEqual(result.trace.gateRepairCycles,
-  [{partId:'P2',gate:'depth-repair'}]);
- assert.match(result.answer,/multiplied its suffering/,
-  'the developed text ships in the answer');
- assert.doesNotMatch(result.answer,/faded from memory/,
-  'the thin original sentence is replaced');
-});
 
 test('evidence-v2 route: a part thick by the floor never triggers depth repair (batch 10 B10-4)',async()=>{
  const token='depth-repair-thick-route-test-token';
@@ -2447,48 +2140,6 @@ test('evidence-v2 route: a part thick by the floor never triggers depth repair (
  assert.equal(state.repairCalls,0,'no repair call is made');
 });
 
-test('evidence-v2 route: a depth repair that duplicates a paragraph is refused (batch 11 B11-8)',async()=>{
- const token='depth-repair-duplication-route-token';
- // The narrators shape from batch 10: the repair develops the thin
- // part by shipping the same developed paragraph twice — once as the
- // replacement, once as an addition — so the cited-words adoption
- // test passes while the reader would see the prose twice.
- const developedText='The war lasted for decades because the fear that had caused it did not end with the first campaigns: each side’s allies dragged their patrons back into fighting whenever a local quarrel reopened the larger question of Athenian power. [S1]';
- let repairCalls=0;
- const model=async(_model,input)=>{
-  const system=input.messages?.[0]?.content||'';
-  const payload=JSON.parse(input.messages[1].content);
-  if(system.startsWith('Review the complete answer parts and claims'))
-   return depthReview(payload);
-  if(system.startsWith('Patch only the requested claims')){
-   repairCalls++;
-   const part=payload.parts[0];
-   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({parts:[{
-    partId:part.partId,
-    replacements:part.repair.replaceClaimIds.map(claimId=>({claimId,text:developedText})),
-    additions:[developedText]}]})}}]};
-  }
-  if(system.startsWith('Answer the reader\'s exact question')){
-   return {choices:[{finish_reason:'stop',message:{content:
-    'PART P1\n'+depthThickPart+'\n\nPART P2\n'+depthThinSentence}}]};
-  }
-  return {choices:[{finish_reason:'stop',message:{content:'{}'}}]};
- };
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
- const response=await depthPost(pilot,token);
- assert.equal(response.status,200);
- const result=await response.json();
- assert.equal(repairCalls,1,'the repair was attempted');
- assert.deepEqual(result.depthRepair,
-  {triggered:true,reasons:['thin-part:P2'],applied:false,partIds:[],
-   refusals:[{partId:'P2',reason:'duplicate-paragraph'}]},
-  'the duplication guard refuses the adoption and records why');
- assert.match(result.answer,/faded from memory/,
-  'the original thin sentence still ships');
- assert.doesNotMatch(result.answer,/dragged their patrons/,
-  'the duplicated developed text does not ship');
-});
 
 test('evidence-v2 route: a build that returns a coded generation failure surfaces as 200 with the real code (batch 11 B11-1)',async()=>{
  // The route-level half of the salvage contract: when the build
@@ -2519,25 +2170,8 @@ test('evidence-v2 route: a build that returns a coded generation failure surface
   'and never the gateway catch-all');
 });
 
-test('evidence-v2 route: a failed depth re-review keeps the original thin part (batch 10 B10-4)',async()=>{
- const token='depth-repair-failed-rereview-route-token';
- const {model,state}=depthScenarioModel({p2Text:depthThinSentence,failReReview:true});
- const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
- const response=await depthPost(pilot,token);
- assert.equal(response.status,200);
- const result=await response.json();
- assert.equal(state.repairCalls,1,'the repair was attempted');
- assert.deepEqual(result.depthRepair,
-  {triggered:true,reasons:['thin-part:P2'],applied:false,partIds:[]},
-  'the trigger is recorded but nothing is adopted');
- assert.match(result.answer,/faded from memory/,
-  'the original thin sentence still ships');
- assert.doesNotMatch(result.answer,/multiplied its suffering/,
-  'the unreviewed developed text does not');
-});
 
-test('batch 35 B35-7 pilot: the selection trace carries a diversityFinal record on the fallback path instead of silence',async()=>{
+test('batch 35 B35-7 pilot: the selection trace carries a diversityFinal record on the deterministic path instead of silence',async()=>{
  const token='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
  const model=async(_model,input)=>{
   const system=input.messages[0].content;
@@ -2549,11 +2183,11 @@ test('batch 35 B35-7 pilot: the selection trace carries a diversityFinal record 
   }
   return {response:'{}'};
  };
- // A throwing selector forces the deterministic-fallback path —
- // batch 34's silent path.
+ // Redesign Stage A: the deterministic path is the only selection
+ // path — the route batch 34 knew as the silent fallback. The
+ // diversity verification must still record on it.
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
-  PILOT_EVALUATION_TOKEN: token},model,
-  selector:async()=>{throw new Error('selector down');}});
+  PILOT_EVALUATION_TOKEN: token},model});
  const first=pilot.fixture.body.sources[0];
  const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
   question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
@@ -2563,7 +2197,41 @@ test('batch 35 B35-7 pilot: the selection trace carries a diversityFinal record 
  assert.equal(response.status,200);const result=await response.json();
  const selectionStage=(result.trace.stages||[]).find(stage=>stage.stage==='evidence-selection');
  assert.ok(selectionStage,'the selection stage is traced');
- assert.equal(selectionStage.status,'deterministic-fallback');
+ assert.equal(selectionStage.status,'selected');
+ assert.equal(selectionStage.packingProvenance,'deterministic');
  assert.deepEqual(selectionStage.diversityFinal,{status:'not-run',reason:'single-book-pool'},
-  'the fallback path records why the bar did not run instead of staying silent');
+  'the deterministic path records why the bar did not run instead of staying silent');
+});
+
+test('redesign Stage A: pilot selection makes zero model calls',async()=>{
+ const token='stagea-deterministic-selection-test-token';
+ const selectorCalls=[];
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {response:'PART P1\nThe growth of Athenian power inspired fear in Sparta. [S1]'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return depthReview(JSON.parse(input.messages[1].content));
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model,
+  selector:async()=>{selectorCalls.push(1);
+   throw new Error('the model selector must not be called');}});
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
+  sources:[pilot.fixture.body.sources[0]],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);
+ const result=await response.json();
+ assert.equal(selectorCalls.length,0,'the model selector never runs on the pilot route');
+ assert.equal(pilot.stats().calls,2,'only the compose and review calls run');
+ const selectionStage=(result.trace.stages||[]).find(stage=>stage.stage==='evidence-selection');
+ assert.equal(selectionStage.packingProvenance,'deterministic');
+ assert.equal(selectionStage.decision.usage.calls,0);
+ assert.equal(result.sourceSelection.usage.calls,0);
+ assert.match(result.answer,/growth of Athenian power/);
 });

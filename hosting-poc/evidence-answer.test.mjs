@@ -411,95 +411,8 @@ test('curated provenance is title-guarded and distinguishes pseudonymous work vo
   'the introduction attribution does not spill over to Nagarjuna’s translated text');
 });
 
-test('editorial commentary cannot be surfaced as the credited author speaking without mediation',async()=>{
- const title='The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)';
- const source={...hume,id:'S1',bookId:'239',title,page:578,
-  text:'Kaufmann discusses Nietzsche’s view of the New Testament in this editorial passage.',
-  preview:'Kaufmann discusses Nietzsche’s view of the New Testament in this editorial passage.'};
- const plan={...onePartPlan,sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['239']}],
-  parts:[{...onePartPlan.parts[0],question:'What did Nietzsche say about Christianity?',sourceBookIds:['239'],candidateSourceIds:['S1']}]};
- const run=async(draft)=>{
-  const ai=makeAI([answer('PART P1\n'+draft),(_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0],sourceDecision=claim.sourceEvidence[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
-    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
-     spanIds:[sourceDecision.spanIds[0]]}]}]})};
-  }]);
-  return composeEvidenceAnswer('What did Nietzsche say about Christianity?',[source],ai,[],
-   {plan,catalog:{...catalog,239:title},trace:true});
- };
- const unqualified=await run('Nietzsche argued that the New Testament represented a decline. [S1]');
- assert.equal(unqualified.coverage,'none');
- assert.ok(unqualified.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='editorial-source-attribution-unqualified'));
- assert.doesNotMatch(unqualified.answer,/Nietzsche argued/);
- const mediated=await run('Kaufmann’s commentary presents Nietzsche as viewing the New Testament as a decline. [S1]');
- assert.equal(mediated.coverage,'full');
- assert.match(mediated.answer,/Kaufmann’s commentary/);
-});
 
-test('known Kalupahana commentary pages cannot be stated as Nagarjuna speaking directly',async()=>{
- const title='Mūlamadhyamakakārikā — Nāgārjuna';
- const source={id:'S1',bookId:'178',title,page:164,url:'https://example.test/nagarjuna#page=164',
-  text:'These two verses explain that the Madhyamikas have a positive thesis about the middle path.',
-  preview:'These two verses explain that the Madhyamikas have a positive thesis about the middle path.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Nāgārjuna',role:'primary',bookIds:['178']}],
-  parts:[{id:'P1',question:'What is sunyata?',sourceBookIds:['178'],searchQueries:['sunyata'],candidateSourceIds:['S1']}]};
- const ai=makeAI([answer('PART P1\nNagarjuna intended to establish a positive thesis about the middle path. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
-    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
-     spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
-  }]);
- const result=await composeEvidenceAnswer('What is sunyata?',[source],ai,[],
-  {plan,catalog:{178:title},trace:true});
- assert.equal(result.coverage,'none');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='editorial-source-attribution-unqualified'&&issue.sourceId==='S1'));
- assert.doesNotMatch(result.answer,/Nagarjuna intended/);
-});
 
-test('a pronoun-led claim preserves editorial mediation from the named-author antecedent',async()=>{
- const portableTitle='The Portable Nietzsche — Friedrich Nietzsche (edited by Walter Kaufmann)';
- const directTitle='On the Genealogy of Morals — Friedrich Nietzsche';
- const sources=[
-  {...hume,id:'S1',bookId:'54',title:directTitle,page:46,
-   text:'Nietzsche criticized the moral ideals of Christianity.',
-   preview:'Nietzsche criticized the moral ideals of Christianity.'},
-  {...hume,id:'S2',bookId:'239',title:portableTitle,page:578,
-   text:'Kaufmann discusses Nietzsche’s view of the New Testament. In The Antichrist itself, Nietzsche cites Luke 6:23, and Kaufmann comments on what that citation represents.',
-   preview:'Kaufmann discusses Nietzsche’s view of the New Testament. In The Antichrist itself, Nietzsche cites Luke 6:23, and Kaufmann comments on what that citation represents.'}
- ];
- const plan={...onePartPlan,
-  sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['54','239']}],
-  parts:[{...onePartPlan.parts[0],question:'What did Nietzsche think about Christianity?',
-   sourceBookIds:['54','239'],candidateSourceIds:['S1','S2']}]};
- const run=async(secondSentence)=>{
-  const ai=makeAI([answer('PART P1\nNietzsche argued that Christianity’s moral ideals were life-denying. [S1] '+secondSentence),
-   (_model,{messages})=>{
-    const payload=parsePayload(messages);
-    const unmediatedCommentary=payload.claims.some(claim=>claim.sourceIds.includes('S2')&&
-     !/According to Kaufmann’s commentary/.test(claim.text));
-    return {response:JSON.stringify({parts:[{partId:'P1',status:unmediatedCommentary?'partial':'answered'}],
-     claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-      sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-       spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
-   }]);
-  return composeEvidenceAnswer('What did Nietzsche think about Christianity?',sources,ai,[],{
-   plan,catalog:{...catalog,54:directTitle,239:portableTitle},trace:true
-  });
- };
- const unmediated=await run('He characterized the New Testament as representing the outcasts and sinners of Judaism rather than progress over the Old Testament. [S2]');
- assert.equal(unmediated.coverage,'partial');
- assert.ok(unmediated.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='editorial-source-attribution-unqualified'&&issue.sourceId==='S2'));
- assert.doesNotMatch(unmediated.answer,/He characterized/);
- const mediated=await run('According to Kaufmann’s commentary, he characterized the New Testament as representing the outcasts and sinners of Judaism rather than progress over the Old Testament. [S2]');
- assert.equal(mediated.coverage,'full');
- assert.match(mediated.answer,/According to Kaufmann’s commentary/);
-});
 
 test('review span IDs map only to exact contiguous source slices and stay within the prompt bound',()=>{
  const text='A first short sentence. '+('A long sentence contains a precise claim and supporting qualification. '.repeat(8))+
@@ -1018,101 +931,11 @@ test('claim review can retain a narrower supported sentence without another AI c
   item.claimId==='P1-C1'&&item.supportedTextApplied===true&&item.acceptedText===narrow));
 });
 
-test('clause review narrows a partially supported causal claim and records each clause',async()=>{
- const broad='Custom leads us to infer one event from another, and reason alone establishes necessary connection.';
- const narrow='The mind is determined by custom to infer one from the other.';
- const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
-  const payload=parsePayload(messages),claim=payload.claims[0];
-  const spanId=claim.sourceEvidence[0].spanIds[0];
-  return {response:JSON.stringify({
-   parts:[{partId:'P1',status:'answered',answerStatus:'answered',repairable:false,
-    directAnswerClaimIds:[claim.claimId],retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'partial',supportedText:narrow,sources:[{
-    sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
-   }],clauses:[
-    {text:'Custom leads us to infer one event from another, and',status:'answered',issueCode:'none',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]},
-    {text:'reason alone establishes necessary connection.',status:'partial',issueCode:'scope',
-     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}
-   ]}]
-  })};
- }]);
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  catalog,plan:onePartPlan,trace:true
- });
- assert.equal(ai.calls.length,2,'clause review reuses the existing composition and review calls');
- assert.match(result.answer,/The mind is determined by custom to infer one from the other\. \[S1\]/);
- assert.doesNotMatch(result.answer,/reason alone establishes necessary connection/);
- const decision=result.trace.reviewContract.reviewDecisions.find(item=>item.clauseDecisions);
- assert.ok(decision);
- assert.deepEqual(decision.clauseDecisions.map(item=>({text:item.text,status:item.status,issueCode:item.issueCode})),[
-  {text:'Custom leads us to infer one event from another, and',status:'answered',issueCode:'none'},
-  {text:'reason alone establishes necessary connection.',status:'partial',issueCode:'scope'}
- ]);
- assert.ok(result.trace.reviewContract.reviewDecisions.some(item=>
-  item.claimId==='P1-C1'&&item.supportedTextApplied===true));
-});
 
 
 
 
-test('an unsupported clause cannot pass on an answered claim-level verdict',async()=>{
- const broad='Custom leads us to infer one event from another, and reason alone establishes necessary connection.';
- const ai=makeAI([answer(`PART P1\n${broad} [S1]`),(_model,{messages})=>{
-  const payload=parsePayload(messages),claim=payload.claims[0];
-  const spanId=claim.sourceEvidence[0].spanIds[0];
-  return {response:JSON.stringify({
-   parts:[{partId:'P1',status:'answered',answerStatus:'answered',repairable:false,
-    directAnswerClaimIds:[],retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',sources:[{
-    sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
-   }],clauses:[
-    {text:'Custom leads us to infer one event from another, and',status:'answered',issueCode:'none',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]},
-    {text:'reason alone establishes necessary connection.',status:'unanswered',issueCode:'scope',sources:[]}
-   ]}]
-  })};
- }]);
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  catalog,plan:onePartPlan,trace:true
- });
- // Batch 24 (B24-1): the clause demotion leaves the part at zero
- // accepted claims, so the rescue re-review adds one call (its
- // verdicts cannot revive the claim: the clause gate still applies).
- assert.equal(ai.calls.length,3);
- assert.doesNotMatch(result.answer,/Custom leads us to infer|reason alone establishes/);
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='claim-clause-not-supported'&&issue.issueCode==='scope'));
-});
 
-test('an unresolved invalid clause range demotes its source decision through full review',async()=>{
- const claim='Custom shapes the mind’s inference from one event to another, and reason alone establishes necessary connection.';
- const splitAt=claim.indexOf('Custom')+2;
- const malformedClause=claim.slice(splitAt,claim.indexOf(' inference')+5);
- const ai=makeAI([answer(`PART P1\n${claim} [S1]`),(_model,{messages})=>{
-  const payload=parsePayload(messages),current=payload.claims[0];
-  const spanId=current.sourceEvidence[0].spanIds[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-   directAnswerClaimIds:[current.claimId]}],claims:[{claimId:current.claimId,status:'answered',sources:[{
-    sourceId:'S1',status:'answered',spanIds:[spanId],attributionStatus:'not_applicable',attributedSpeaker:''
-   }],clauses:[{start:splitAt,end:claim.indexOf(' inference')+5,text:malformedClause,
-    status:'answered',issueCode:'none',
-    sources:[{sourceId:'S1',spanIds:[spanId]}]}]}]})};
- }]);
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  catalog,plan:onePartPlan,trace:true
- });
- const decision=result.trace.reviewContract.reviewDecisions.find(item=>item.sourceId==='S1');
- assert.ok(decision);
- assert.equal(decision.accepted,false);
- assert.equal(decision.sourceStatus,'partial');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='claim-clause-not-supported'));
- const fit=result.trace.claimSpanFit.clauses.find(issue=>issue.claimId===decision.claimId);
- assert.equal(fit.coverage.measurement,'measured');
- assert.ok(fit.coverage.requiredTerms.length>0);
- assert.ok(result.trace.claimSpanFit.measurableClauseCount>=1);
-});
 
 test('claim-level source review does not require optional clause segmentation',async()=>{
  const context='Outside the cited text, repeated experience can also shape ordinary expectations.';
@@ -1429,30 +1252,6 @@ test('a failed author-side premise cannot be pruned from a hypothetical inferenc
   issue.partId==='P3'&&issue.sourceId==='S2'&&issue.reason==='claim-source-not-supported'));
 });
 
-test('claim review rejects a compound sentence when its quote supports only one factual clause',async()=>{
- const text='It seems that the church obstructs and hinders the progress of this poison.';
- const source={...hume,id:'S1',bookId:'239',title:'The Portable Nietzsche — Friedrich Nietzsche',text,preview:text};
- const ai=makeAI([
-  answer('PART P1\nNietzsche called the church vulgar and said that it hindered the spread of these values. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),part=payload.parts[0],claim=payload.claims.find(claim=>claim.partId===part.partId);
-   const span=part.evidence[0].spans[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],
-    claims:[{claimId:claim.claimId,status:'partial',spanIds:[span.spanId]}]})};
-  }
- ]);
- const result=await composeEvidenceAnswer('What did Nietzsche say about the church?',[source],ai,[],{
-  catalog:{239:'The Portable Nietzsche — Friedrich Nietzsche'},
-  plan:{intent:'explain',sources:[{label:'Friedrich Nietzsche',role:'primary',bookIds:['239']}],
-   parts:[{id:'P1',question:'What did Nietzsche say about the church?',sourceBookIds:['239']}],
-   queries:['Nietzsche church criticism']},trace:true
- });
- assert.equal(ai.calls.length,3,'a compound claim rejection without repairability adds no repair call (the third call is the batch 24 rescue re-review, which cannot revive a clause-demoted claim)');
- assert.equal(result.coverage,'none');
- assert.equal(result.outcome,'insufficient-evidence');
- assert.equal(result.evidenceMap.length,0);
- assert.doesNotMatch(result.answer,/vulgar|hinders/i);
-});
 const onePartPlan={version:'reader-evidence-v2',intent:'explain',
  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
  parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
@@ -1533,8 +1332,9 @@ test('comparison handoff preserves uncited context while dropping an unrequested
  assert.equal(comparisonDecision.finalStatus,'answered',
   'the trace preserves the reviewer-stage status after exact-span checks');
  assert.equal(comparisonDecision.outputStatus,'supported');
- assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:true,resolved:1});
- assert.equal(ai.calls.length,5,'one compose, one review call per part, and the batch-8 scaffolding decision round');
+ assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:false,resolved:0},
+  'redesign Stage A: no scaffolding repair round runs');
+ assert.equal(ai.calls.length,4,'one compose and one review call per part (redesign Stage A: no scaffolding decision round)');
 });
 
 test('an unsupported counterfactual-only comparison exposes its bounded validation reason',async()=>{
@@ -1586,65 +1386,6 @@ test('a cited interpretation claim can satisfy a phrase-meaning part',async()=>{
  }]);
 });
 
-test('uncovered within-part requirements use the existing bounded answer repair and remain traceable',async()=>{
- const question='How does Hume explain causal necessity, and what role does custom play?';
- const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,
-  requirements:[
-   {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.',
-    questionAnchor:'How does Hume explain causal necessity'},
-   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.',
-    questionAnchor:'what role does custom play'}
-  ]}]};
- let repairPayload;
- const reviewed=(payload,coverage)=>({response:JSON.stringify({
-  parts:[{partId:'P1',status:'answered',answerStatus:'answered',repairable:true,
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
-   requirementCoverage:coverage(payload)}],
-  claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-   sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-    spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
-    evidenceRole:'work-assertion',
-    supportBoundary:'The source explains its own account of necessity.'}))}))})});
- const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   assert.equal(payload.parts[0].requirements.length,2,'the existing reviewer receives all within-part requirements');
-   return reviewed(payload,()=>[
-    {requirementId:'P1-R1',status:'answered',answerClaimIds:[payload.claims[0].claimId]},
-    {requirementId:'P1-R2',status:'unanswered',answerClaimIds:[]}
-   ]);
-  },
-  (_model,{messages})=>{
-   repairPayload=JSON.parse(messages[1].content);
-   assert.deepEqual(repairPayload.parts[0].repair.missingRequirements,[{
-    requirementId:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.',
-    questionAnchor:'what role does custom play'
-   }]);
-   assert.equal(repairPayload.parts[0].requirements[1].questionAnchor,
-    'what role does custom play');
-   assert.equal(repairPayload.parts[0].claims[0].initialReview[0].evidenceRole,'work-assertion');
-   assert.match(repairPayload.parts[0].claims[0].initialReview[0].supportBoundary,/own account/);
-   assert.equal(repairPayload.parts[0].repair.addCoverage,true);
-   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[],
-    additions:['Custom trains the mind to infer one event after another from their repeated conjunction. [S1]']}]})};
-  },
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   return reviewed(payload,current=>[
-    {requirementId:'P1-R1',status:'answered',answerClaimIds:[current.claims[0].claimId]},
-    {requirementId:'P1-R2',status:'answered',answerClaimIds:[current.claims.at(-1).claimId]}
-   ]);
-  }]);
- const result=await composeEvidenceAnswer(question,[hume],ai,[],{
-  plan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'requirement tracking reuses the single bounded repair and re-review');
- assert.deepEqual(result.questionParts[0].requirementCoverage.map(item=>item.status),['answered','answered'],
-  JSON.stringify({outcome:result.outcome,trace:result.trace,questionParts:result.questionParts}));
- assert.equal(result.questionParts[0].requirementsComplete,true);
- assert.ok(result.evidenceMap.some(item=>item.requirementIds?.includes('P1-R2')),
-  'accepted evidence records which requirement the repaired claim satisfies');
- assert.match(result.answer,/Custom trains the mind/);
-});
 
 test('missing requirement decisions suppress a one-part answer without degrading source evidence review',async()=>{
  const question='How does Hume explain causal necessity, and what role does custom play?';
@@ -1682,12 +1423,12 @@ test('a retained direct synthesis remains complete when library evidence is part
     payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',sources:
      claim.sourceIds.map(sourceId=>({sourceId,spanIds:[spanId]}))}))})};
   },
-  // Batch 8 (B8-1): the synthesis opens the part uncited, so it is a
-  // retained frame claim; the scaffolding repair round decides it is
-  // genuine context (a direct synthesis, not a restatement of the one
-  // cited claim), and it ships exactly as before.
-  {response:JSON.stringify({decisions:[{partId:'P1',claimId:'P1-C1',
-   action:'context',supportClaimIds:[]}]})}],{decorateReview:false});
+  // Batch 8 (B8-1) shape, redesign Stage A form: the synthesis opens
+  // the part uncited, so it is a retained frame claim; the reviewer's
+  // own retention decision (retainedContextClaimIds above) keeps it as
+  // genuine context and it ships exactly as before — no scaffolding
+  // repair round runs.
+  ],{decorateReview:false});
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
  assert.equal(result.questionParts[0].status,'partial','library support remains visibly partial');
@@ -1696,8 +1437,9 @@ test('a retained direct synthesis remains complete when library evidence is part
  assert.equal(result.answerCompleteness,'full');
  assert.match(result.answer,/Causal necessity can be understood as an expectation/);
  assert.match(result.answer,/Hume locates that expectation.*\[S1\]/);
- assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:true,resolved:1});
- assert.equal(ai.calls.length,3,'composition, review, and the batch-8 scaffolding decision round for the frame claim');
+ assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:false,resolved:0},
+  'redesign Stage A: no scaffolding repair round runs; the reviewer retention decision alone keeps the frame claim');
+ assert.equal(ai.calls.length,2,'composition and the single review; the retained frame claim needs no further call');
 });
 
 test('known cited claims misplaced in context-retention IDs warn without invalidating source review',async()=>{
@@ -1892,284 +1634,19 @@ test('a rejected nominated direct-answer claim keeps the part partial despite an
  assert.match(result.answer,/Fear of death makes Hamlet hesitate to act/);
 });
 
-test('an unsupported nominated answer is repaired once and independently re-reviewed against selected evidence',async()=>{
- const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
-  },
-  // Batch 24 (B24-1): the zero-accept rescue runs before the answer
-  // repair and rejects every pair, leaving the repair flow untouched.
-  rescueRejection(),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),part=payload.parts[0];
-   assert.deepEqual(part.repair.replaceClaimIds,['P1-C1']);
-   assert.equal(part.claims[0].targeted,true);
-   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C1',text:
-    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]'}],additions:[]}]})};
-  },
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}));
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims})};
-  }
- ],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
-  {plan:onePartPlan,catalog,trace:true});
- assert.equal(result.questionParts[0].status,'supported');
- assert.equal(result.coverage,'full');
- assert.match(result.answer,/uniformity in nature.*custom leads the mind to infer/);
- assert.equal(result.evidenceMap.length,1);
- assert.equal(result.trace.answerRepair.applied,true);
- assert.deepEqual(result.trace.answerRepair.partIds,['P1']);
- assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
- assert.equal(result.usage.calls,5,'repair adds one answer rewrite and one independent review, plus the batch 24 rescue call');
-});
 
-test('claim-scoped repair replaces only rejected claims and preserves accepted neighboring claims verbatim',async()=>{
- const preserved='Hume explains causal necessity through custom formed by repeated conjunction. [S1]';
- const ai=makeAI([
-  answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]\n'+preserved),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    repairable:true,directAnswerClaimIds:['P1-C1']}],claims:payload.claims.map(claim=>{
-     const accepted=claim.claimId==='P1-C2';
-     const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
-     return {claimId:claim.claimId,status:accepted?'answered':'partial',
-      sources:[{sourceId:'S1',status:accepted?'answered':'partial',spanIds:accepted?[spanId]:[]}]};
-    })})};
-  },
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),part=payload.parts[0];
-   assert.deepEqual(part.repair.replaceClaimIds,['P1-C1']);
-   assert.equal(part.claims.find(claim=>claim.claimId==='P1-C1').targeted,true);
-   assert.equal(part.claims.find(claim=>claim.claimId==='P1-C2').targeted,false);
-   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C1',text:
-    'Hume explains necessity through repeated conjunction and the mind’s customary inference from it. [S1]'}],additions:[]}]})};
-  },
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}));
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims})};
-  }
- ],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(result.trace.answerRepair.applied,true);
- assert.deepEqual(result.trace.answerRepair.targetClaimIds,[{partId:'P1',claimIds:['P1-C1'],addCoverage:true}]);
- assert.match(result.answer,/Hume explains causal necessity through custom formed by repeated conjunction\. \[S1\]/);
- assert.equal((result.answer.match(/Hume explains causal necessity through custom formed by repeated conjunction/g)||[]).length,1);
- assert.match(result.answer,/the mind’s customary inference/);
- assert.equal(result.usage.calls,4);
-});
 
-test('a partial answer-completeness review triggers the existing bounded repair even when its direct claim is supported',async()=>{
- const ai=makeAI([
-  answer('PART P1\nHume explains necessity as a directly observed power connecting causes to effects. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'partial',repairable:true,
-    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
-  },
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),part=payload.parts[0];
-   assert.deepEqual(payload.directAnswerClaimIds,['P1-C1']);
-   assert.match(messages[0].content,/Patch only the requested claims/);
-   assert.deepEqual(part.repair.replaceClaimIds,[]);
-   assert.equal(part.repair.addCoverage,true);
-   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[],additions:[
-    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]']}]})};
-  },
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}));
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims})};
-  }
- ],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'the repair is conditional and reuses one rewrite plus its existing independent re-review');
- assert.equal(result.trace.answerRepair.attempted,true);
- assert.equal(result.trace.answerRepair.applied,true);
- assert.deepEqual(result.trace.answerRepair.triggerReasons,[{partId:'P1',
-  reasons:['repairable-answer-completeness-partial']}]);
- assert.equal(result.coverage,'full');
- assert.match(result.answer,/uniformity in nature.*custom leads the mind to infer/);
- assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-repair').length,1);
- assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
-});
 
-test('an unsupported direct claim without an explicit repairable finding skips answer repair',async()=>{
- const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    repairable:false,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
-  }],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,3,'a repairability-negative review ends after compose, review, and the batch 24 rescue re-review');
- assert.equal(result.trace.answerRepair.attempted,false);
- assert.equal(result.trace.answerRepair.reason,'reviewer-did-not-mark-repairable');
- assert.equal(result.questionParts[0].status,'unsupported');
-});
 
-test('an answer repair that leaves text and citations unchanged skips independent re-review',async()=>{
- const original='Hume says necessity is a directly observed power connecting causes to effects. [S1]';
- const ai=makeAI([answer('PART P1\n'+original),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
-  },
-  rescueRejection(),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[{
-    claimId:payload.parts[0].repair.replaceClaimIds[0],text:original}],additions:[]}]})};
-  }],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'an unchanged patch avoids the second review inference (compose, review, rescue, repair)');
- assert.equal(result.trace.answerRepair.reason,'answer-repair-no-material-change');
- assert.equal(result.trace.stages.some(stage=>stage.stage==='answer-re-review'),false);
- assert.equal(result.questionParts[0].status,'unsupported');
-});
 
-test('a repairable incomplete part is repaired when the reviewer has not nominated a direct claim',async()=>{
- const ai=makeAI([
-  answer('PART P1\nHume explains necessity as a directly observed power connecting causes to effects. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    repairable:true,directAnswerClaimIds:[]}],claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
-  },
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),part=payload.parts[0];
-   assert.deepEqual(payload.directAnswerClaimIds,[]);
-   assert.deepEqual(part.repair.replaceClaimIds,[]);
-   assert.equal(part.repair.addCoverage,true);
-   assert.match(messages[0].content,/addCoverage/);
-   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[],additions:[
-    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]']}]})};
-  },
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   const claims=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}));
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims})};
-  }
- ],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'uses one rewrite and one independent re-review within the existing bound');
- assert.equal(result.trace.answerRepair.applied,true);
- assert.deepEqual(result.trace.answerRepair.triggerReasons,[{partId:'P1',
-  reasons:['direct-answer-not-identified','repairable-answer-completeness-partial']}]);
- assert.equal(result.questionParts[0].answerStatus,'answered');
- assert.equal(result.coverage,'full');
- assert.match(result.answer,/uniformity in nature.*custom leads the mind to infer/);
- assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-repair').length,1);
- assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
-});
 
-test('malformed answer repair falls back to the original fail-closed review result',async()=>{
- const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
-  },rescueRejection(),answer('{not-json}')],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
-  {plan:onePartPlan,catalog,trace:true});
- assert.equal(result.questionParts[0].status,'unsupported');
- assert.equal(result.evidenceMap.length,0);
- assert.doesNotMatch(result.answer,/directly observed power/);
- assert.equal(result.trace.answerRepair.applied,false);
- assert.equal(result.trace.answerRepair.reason,'model-output-invalid-format');
- assert.equal(result.usage.calls,4,'invalid repair does not proceed to re-review (the extra call is the batch 24 rescue)');
-});
 
-test('answer repair recovers unescaped quotation marks before the existing validation and re-review',async()=>{
- const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[] }]}]})};
-  },
-  rescueRejection(),
-  (_model,{messages})=>{
-   const payload=JSON.parse(messages[1].content),claimId=payload.parts[0].repair.replaceClaimIds[0];
-   return {response:`{"parts":[{"partId":"P1","replacements":[{"claimId":"${claimId}","text":"Hume links the idea of "necessity" to repeated conjunction and custom. [S1]"}],"additions":[]}]}`};
-  },
-  (_model,{messages})=>{
-   const payload=parsePayload(messages);
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],claims:payload.claims.map(claim=>({
-     claimId:claim.claimId,status:'answered',sources:claim.sourceIds.map(sourceId=>({sourceId,
-      status:'answered',spanIds:claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds.slice(0,1)}))}))})};
-  }
- ],{decorateReview:false});
- const raw=`{"parts":[{"partId":"P1","replacements":[{"claimId":"P1-C1","text":"Hume describes an idea of "necessity" that arises through custom. [S1]"}],"additions":[]}]}`;
- const parsed=parseAnswerRepairJson({response:raw});
- assert.equal(parsed.parts[0].replacements[0].text,
-  'Hume describes an idea of "necessity" that arises through custom. [S1]');
- assert.equal(parsed[Object.getOwnPropertySymbols(parsed)[0]].code,'unescaped-inner-quotes');
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(result.trace.answerRepair.applied,true);
- assert.equal(result.trace.answerRepair.responseRecovery.code,'unescaped-inner-quotes');
- assert.match(result.answer,/idea of "necessity" to repeated conjunction and custom/);
- assert.equal(result.usage.calls,5,'syntax recovery uses the existing repair and re-review calls, plus the batch 24 rescue call');
- assert.equal(result.trace.stages.filter(stage=>stage.stage==='answer-re-review').length,1);
-});
 
 test('answer repair quote recovery leaves unrelated malformed JSON fail-closed',()=>{
  assert.throws(()=>parseAnswerRepairJson({response:'{"parts":[{"partId":"P1",}],}'}),
   /valid JSON/);
 });
 
-test('an answer repair that patches an unrequested claim fails closed without re-review',async()=>{
- const ai=makeAI([answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
-  },
-  rescueRejection(),
-  ()=>({response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C99',
-   text:'An unrequested claim is rewritten. [S1]'}],additions:[]}]})})],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(result.trace.answerRepair.applied,false);
- assert.equal(result.trace.answerRepair.reason,'answer-repair-invalid');
- assert.equal(result.questionParts[0].status,'unsupported');
- assert.equal(result.usage.calls,4);
- assert.equal(result.trace.stages.some(stage=>stage.stage==='answer-re-review'),false);
-});
 
 test('an overinclusive direct-answer set can retain a supported answer claim when the reviewer still judges the part complete',async()=>{
  const ai=makeAI([answer('PART P1\nHume explains causal necessity through custom formed by repeated conjunction. [S1]\n'+
@@ -2268,21 +1745,6 @@ test('a surviving later claim can answer the part when the opening claim is reje
  assert.equal(result.trace.reviewContract.partDecisions[0].directAnswerCovered,true);
 });
 
-test('the deterministic polarity guard rejects a reviewed positive claim that reverses an exact source negation',async()=>{
- const source={id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',page:40,
-  text:'I cannot plunge confidently into the absurd, for I who speak am not Abraham.',
-  preview:'I cannot plunge confidently into the absurd.'};
- const ai=makeAI([answer('PART P1\nJohannes de Silentio can plunge confidently into the absurd. [S1].'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer('What does Fear and Trembling say about plunging into the absurd?',
-  [source],ai,[],{catalog:{140:'Fear and Trembling — Søren Kierkegaard'},
-   plan:{intent:'explain',sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
-    parts:[{id:'P1',question:'What does the text say about the speaker’s ability?',sourceBookIds:['140']}]},trace:true});
- assert.equal(result.coverage,'none');
- assert.doesNotMatch(result.answer,/can plunge confidently/i);
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.sourceId==='S1'&&issue.reason==='source-contradicts-claim-polarity'));
-});
 
 test('the deterministic polarity guard accepts the Consolation paraphrase and does not mix unrelated modal clauses',async()=>{
  const source={id:'S1',bookId:'21',title:'The Consolation of Philosophy — Boethius',page:77,
@@ -2301,20 +1763,6 @@ test('the deterministic polarity guard accepts the Consolation paraphrase and do
   'the source agrees that what fortune can take away is not the highest good');
 });
 
-test('the logical-scope guard distinguishes neither-or from not-both paraphrases',async()=>{
- const source={id:'S1',bookId:'72',title:'Case Review',page:18,
-  text:'It is not right to state that a contract is valid nor invalid before the missing evidence is reviewed.',
-  preview:'It is not right to state that a contract is valid nor invalid before the missing evidence is reviewed.'};
- const ai=makeAI([answer('PART P1\nIt is incorrect to say the contract is both valid and invalid before the evidence is reviewed. [S1]'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer('What does the report say about the contract?',[source],ai,[],
-  {plan:{intent:'explain',sources:[{label:'Case Review',role:'primary',bookIds:['72']}],
-   parts:[{id:'P1',question:'What does the report say about the contract?',sourceBookIds:['72']}]},
-   catalog:{'72':'Case Review'},trace:true});
- assert.equal(result.coverage,'none');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.sourceId==='S1'&&issue.reason==='source-negation-scope-mismatch'));
-});
 
 test('the answer contract allows useful general context while keeping cited claims traceable',()=>{
  assert.match(COMPOSER_PROMPT,/use your broader knowledge/);
@@ -2640,7 +2088,7 @@ test('a broad hypothetical conclusion stays partial even when both premise sourc
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,5,'broad unsupported synthesis remains partial without a repairability signal (the fifth call is the batch 24 rescue for the zero-accept synthesis part)');
+ assert.equal(ai.calls.length,4,'broad unsupported synthesis remains partial on the reviewer verdict alone (redesign Stage A: no rescue call follows a zero-accept part)');
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.questionParts[1].status,'supported');
@@ -2721,7 +2169,7 @@ test('review sees a bounded per-source packet and cannot select an unsent full-s
   issue.partId==='P1'&&issue.reason==='missing-claim-source-span'));
  assert.equal(omitted.result.coverage,'none',
   'a valid full-source span cannot be selected when it was not sent to this part review');
- assert.equal(omitted.ai.calls.length,3,'a missing evidence packet cannot trigger repair (the third call is the batch 24 rescue, which has no valid span to flip)');
+ assert.equal(omitted.ai.calls.length,2,'a missing evidence packet fails closed in the single audit and triggers no further call (redesign Stage A)');
 });
 
 test('review deadline failure gets one in-place retry and stays fail-closed after both attempts',async()=>{
@@ -2814,185 +2262,16 @@ test('quoted-speaker conflicts are preserved as a source-attribution rejection',
  const result=await composeEvidenceAnswer(question,[source],ai,[],{
   plan,catalog:{80:'Buddha’s Teachings'},trace:true
  });
- assert.equal(ai.calls.length,3,'source-attribution conflicts are not repaired without an explicit repairability decision (the third call is the batch 24 rescue, which keeps the conflict demotion)');
+ assert.equal(ai.calls.length,2,'a reviewer source-attribution conflict removes the claim in the single audit and triggers no further call (redesign Stage A)');
  assert.equal(result.coverage,'none','the misattributed claim cannot survive review');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.sourceId==='S1'&&issue.reason==='source-attribution-conflict'));
  assert.equal(result.trace.reviewContract.reviewDecisions[0].attributedSpeaker,'Y. Chambers');
 });
 
-test('named-person action attribution rejects transfer, omission, and accepts the matching subject',async()=>{
- const question='What happened to the round table?';
- const run=async({claim,sourceText,subjectFields})=>{
-  const source={...hume,id:'S1',bookId:'80',title:'Heart of Darkness — Joseph Conrad',
-   text:sourceText,preview:sourceText};
-  const plan={...onePartPlan,sources:[{label:'Joseph Conrad',role:'primary',bookIds:['80']}],
-   parts:[{...onePartPlan.parts[0],question,sourceBookIds:['80'],candidateSourceIds:['S1']}]};
-  const ai=makeAI([answer(`PART P1\n${claim} [S1]`),(_model,{messages})=>{
-   const payload=parsePayload(messages),current=payload.claims[0];
-   const spanId=current.sourceEvidence[0].spanIds[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:[current.claimId]}],claims:[{claimId:current.claimId,status:'answered',sources:[{
-     sourceId:'S1',status:'answered',spanIds:[spanId],...subjectFields
-    }]}]})};
-  }],{decorateReview:false,decorateClauses:false,decorateSubject:false});
-  return composeEvidenceAnswer(question,[source],ai,[],{
-   catalog:{80:source.title},plan,trace:true
-  });
- };
- const transferred=await run({claim:'Kurtz ordered the immense round table into the station.',
-  sourceText:'Marlow ordered the men to carry the immense round table into the station.',
-  subjectFields:{subjectAttributionStatus:'conflict',attributedSubject:'Marlow'}});
- const transferredDecision=transferred.trace.reviewContract.reviewDecisions[0];
- assert.equal(transferredDecision.accepted,false);
- assert.equal(transferredDecision.subjectAttributionStatus,'conflict');
- assert.equal(transferredDecision.attributedSubject,'Marlow');
- assert.ok(transferred.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='source-subject-attribution-conflict'));
- assert.equal(transferred.coverage,'none');
 
- const omitted=await run({claim:'Kurtz’s unalterable conviction shaped his command.',
-  sourceText:'Marlow’s conviction shaped his command.',subjectFields:{}});
- const omittedDecision=omitted.trace.reviewContract.reviewDecisions[0];
- assert.equal(omittedDecision.accepted,false);
- assert.equal(omittedDecision.subjectAttributionStatus,'missing');
- assert.equal(omittedDecision.attributedSubject,'');
- assert.ok(omitted.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='source-subject-attribution-missing'));
 
- const matched=await run({claim:'Kurtz ordered the immense round table into the station.',
-  sourceText:'Kurtz ordered the immense round table into the station.',
-  subjectFields:{subjectAttributionStatus:'supported',attributedSubject:'Kurtz'}});
- const matchedDecision=matched.trace.reviewContract.reviewDecisions[0];
- assert.equal(matchedDecision.accepted,true);
- assert.equal(matchedDecision.subjectAttributionStatus,'supported');
- assert.equal(matched.coverage,'full');
-});
 
-test('a positive reviewer speaker label must be anchored in the supplied source',async()=>{
- const source={id:'S1',bookId:'81',title:'The Brothers Karamazov — Fyodor Dostoevsky',page:311,
-  text:'Ivan wonders whether the suffering of innocent children can be justified. The problem remains unresolved.',
-  preview:'Ivan wonders whether the suffering of innocent children can be justified.'};
- const question='What does Alyosha say about Ivan’s view?';
- const plan={...onePartPlan,intent:'explain',
-  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['81']}],
-  parts:[{id:'P1',question,sourceBookIds:['81'],candidateSourceIds:['S1']}]};
- const ai=makeAI([answer('PART P1\nAlyosha says Ivan asks whether the suffering of innocent children can be justified. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
-     attributionStatus:'supported',attributedSpeaker:'Alyosha'}]}]})};
-  }]);
- const result=await composeEvidenceAnswer(question,[source],ai,[],{
-  plan,catalog:{81:source.title},trace:true
- });
- assert.equal(ai.calls.length,2,'unanchored source attribution is not repaired without an explicit repairability decision');
- assert.equal(result.coverage,'none','an unanchored positive reviewer label cannot verify the claim');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.sourceId==='S1'&&issue.reason==='source-attribution-unanchored'));
-});
-
-test('known editorial and pseudonymous source voices must be named or mediated',async()=>{
- const run=async({source,title,bookId,question,draft,catalog,sourceLabel})=>{
-  let composePayload,reviewPayload;
-  const plan={...onePartPlan,sources:[{label:sourceLabel,role:'primary',bookIds:[bookId]}],
-   parts:[{...onePartPlan.parts[0],question,sourceBookIds:[bookId],candidateSourceIds:['S1']}]};
-  const ai=makeAI([(_model,{messages})=>{
-   composePayload=parsePayload(messages);
-   return answer('PART P1\n'+draft+' [S1]');
-  },(_model,{messages})=>{
-   reviewPayload=parsePayload(messages);
-   const claim=reviewPayload.claims[0],evidence=claim.sourceEvidence[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],claims:[{
-    claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:[evidence.spanIds[0]]}]
-   }]})};
-  }]);
-  const result=await composeEvidenceAnswer(question,[source],ai,[],{
-   plan,catalog:{...catalog,[bookId]:title},trace:true
-  });
-  return {result,composePayload,reviewPayload};
- };
- const introTitle='Last Writings: Nothingness and the Religious Worldview — Kitarō Nishida';
- const introSource={...hume,id:'S1',bookId:'185',title:introTitle,page:18,
-  text:'David A. Dilworth introduces Nishida’s discussion of religious nothingness.',
-  preview:'David A. Dilworth introduces Nishida’s discussion of religious nothingness.'};
- const editorial=await run({source:introSource,title:introTitle,bookId:'185',
-  question:'What is sunyata?',sourceLabel:'Kitarō Nishida',
-  draft:'Sunyata is the central concept in this discussion'});
- assert.equal(editorial.result.coverage,'none');
- assert.ok(editorial.result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='editorial-source-attribution-unqualified'));
- assert.match(editorial.composePayload.evidence[0].attributionRequirement,/David A\. Dilworth/);
- assert.match(editorial.reviewPayload.parts[0].evidence[0].attributionRequirement,/David A\. Dilworth/);
- const mediated=await run({source:introSource,title:introTitle,bookId:'185',
-  question:'What is sunyata?',sourceLabel:'Kitarō Nishida',
-  draft:'Dilworth’s introduction describes sunyata as the central concept in this discussion'});
- assert.equal(mediated.result.coverage,'full');
-
- const pseudonymTitle='Fear and Trembling — Søren Kierkegaard';
- const pseudonymSource={...hume,id:'S1',bookId:'140',title:pseudonymTitle,page:32,
-  text:'Johannes de Silentio describes faith as a relation to God.',
-  preview:'Johannes de Silentio describes faith as a relation to God.'};
- const unnamed=await run({source:pseudonymSource,title:pseudonymTitle,bookId:'140',
-  question:'What does Fear and Trembling say about faith?',sourceLabel:'Søren Kierkegaard',
-  draft:'Kierkegaard describes faith as a relation to God'});
- assert.equal(unnamed.result.coverage,'none');
- assert.ok(unnamed.result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='pseudonymous-voice-unidentified'));
- assert.match(unnamed.composePayload.evidence[0].attributionRequirement,/Johannes de Silentio/);
- const named=await run({source:pseudonymSource,title:pseudonymTitle,bookId:'140',
-  question:'What does Fear and Trembling say about faith?',sourceLabel:'Søren Kierkegaard',
-  draft:'Johannes de Silentio describes faith as a relation to God'});
- assert.equal(named.result.coverage,'full');
-});
-
-test('prior speaker attribution carries across accepted claims without crossing to another pseudonymous voice',async()=>{
- const silentioTitle='Fear and Trembling — Søren Kierkegaard';
- const climacusTitle='Philosophical Fragments — Søren Kierkegaard';
- const sources=[
-  {...hume,id:'S1',bookId:'140',title:silentioTitle,page:32,
-   text:'Johannes de Silentio describes faith as a relation to God.',
-   preview:'Johannes de Silentio describes faith as a relation to God.'},
-  {...hume,id:'S2',bookId:'192',title:climacusTitle,page:24,
-   text:'Johannes Climacus discusses a philosophical lesson about faith.',
-   preview:'Johannes Climacus discusses a philosophical lesson about faith.'}
- ];
- const question='What does Kierkegaard say about faith?';
- const plan={...onePartPlan,
-  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140','192']}],
-  parts:[{...onePartPlan.parts[0],question,sourceBookIds:['140','192'],
-   candidateSourceIds:['S1','S2']}]};
- const draft=[
-  'Johannes de Silentio describes faith as a relation to God. [S1]',
-  'He presents faith as an inward relation. [S1]',
-  'He distinguishes faith from ordinary belief. [S1]',
-  'He emphasizes the paradox of faith. [S1]',
-  'He frames faith as requiring an absolute relation to God. [S1]',
-  'Kierkegaard describes faith as a philosophical lesson. [S2]'
- ].join(' ');
- const ai=makeAI([answer('PART P1\n'+draft),(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  const unqualifiedSecondVoice=payload.claims.some(claim=>claim.sourceIds.includes('S2')&&
-   !/Johannes Climacus/.test(claim.text));
-  return {response:JSON.stringify({parts:[{partId:'P1',status:unqualifiedSecondVoice?'partial':'answered'}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- }]);
- const result=await composeEvidenceAnswer(question,sources,ai,[],{
-  plan,catalog:{...catalog,140:silentioTitle,192:climacusTitle},trace:true
- });
- assert.equal(ai.calls.length,2);
- assert.equal(result.coverage,'partial');
- assert.match(result.answer,/Johannes de Silentio describes faith/);
- assert.match(result.answer,/He frames faith as requiring an absolute relation to God/);
- assert.doesNotMatch(result.answer,/Kierkegaard describes faith as a philosophical lesson/);
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.sourceId==='S2'&&issue.reason==='pseudonymous-voice-unidentified'));
-});
 
 test('flat reviewer input keeps per-part claims linked once and duplicate claims keys fail closed',async()=>{
  let reviewPayload;
@@ -3687,7 +2966,7 @@ test('an unclear reviewer claim is normalized to partial and remains fail-closed
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
- assert.equal(ai.calls.length,3,'an unclear claim decision remains fail-closed without an explicit repairability decision (the third call is the batch 24 rescue)');
+ assert.equal(ai.calls.length,2,'an unclear claim decision remains fail-closed on the reviewer verdict alone (redesign Stage A: no rescue call follows)');
  assert.deepEqual(result.trace.reviewContract.issues,[],
   'a valid uncertainty label must not invalidate the review contract');
  assert.equal(result.trace.reviewContract.reviewDecisions[0].claimStatus,'partial');
@@ -3732,7 +3011,7 @@ test('invented and cross-source span IDs cannot enter the reviewed evidence map'
  assert.deepEqual(result.trace.reviewContract.supportIssues,[
   {partId:'P1',claimId:'P1-C1',sourceId:'S1',reason:'missing-claim-source-span'}]);
  assert.equal(result.evidenceMap.length,0);
- assert.equal(ai.calls.length,3,'invented span IDs do not trigger an unmarked repair (the third call is the batch 24 rescue, which has no valid span to flip)');
+ assert.equal(ai.calls.length,2,'invented span IDs are rejected by the single audit and trigger no further call (redesign Stage A: no rescue or repair follows)');
 });
 
 test('the active reviewer resolves a selected span to exact bounded source text',async()=>{
@@ -4403,228 +3682,13 @@ test('a review request failure is retried once per part like other review-output
  assert.equal(result.questionParts[0].status,'supported');
 });
 
-test('citation gate refusal contains a single uncited source-required part',async()=>{
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
- const uncitedRepair={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction in experience.'}],
-  additions:[]}]})};
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.'),
-  uncitedReview,uncitedRepair],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and exactly one targeted gate repair attempt');
- assert.equal(result.trace.citationGate[0].action,'repair-refused');
- assert.equal(result.trace.citationGate[0].repairFailure.failureStep,'citation-candidate-check');
- assert.deepEqual(result.trace.citationGate[0].repairFailure.candidateCheck,
-  {linkedSourceCount:1,candidateCitationCount:0,missingLinkedSourceIds:['S1']});
- assert.equal(result.outcome,'generation-failed',
-  'one source-required part is not a strict minority and cannot ship uncited');
- assert.equal(result.trace.sourceRequiredContainment.disposition,'suppressed-not-strict-minority');
- assert.doesNotMatch(result.answer,/custom and regular conjunction/);
-});
 
-test('citation gate keeps a source-based part supported when repair restores its citation',async()=>{
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
- const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction. [S1]'}],
-  additions:[]}]})};
- const citedReReview=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.'),
-  uncitedReview,citedRepair,citedReReview],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'compose, review, the gate repair, and its independent re-review');
- assert.deepEqual(result.trace.citationGate,
-  [{partId:'P1',action:'repair-applied',preGateStatus:'answered'}]);
- assert.equal(result.questionParts[0].status,'supported');
- assert.equal(result.coverage,'full');
- assert.match(result.answer,/custom and regular conjunction\. \[S1\]/);
- assert.ok(result.evidenceMap.some(item=>item.partId==='P1'&&item.id==='S1'),
-  'the restored citation carries reviewed evidence');
-});
 
-test('citation gate reaches a partial part whose citations review dropped (batch 11 B11-4)',async()=>{
- // The batch-10 field shape: the draft's cited claim is rejected at
- // review (claim-source-not-supported), the part's retained context
- // prose ships uncited, and the part is partial precisely because its
- // citations died. Before B11-4 the gate's answered-only trigger never
- // offered this part its repair.
- const rejectingReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-  answerStatus:'partial',directAnswerClaimIds:['P1-C2'],retainedContextClaimIds:['P1-C2']}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
-   clauses:[{text:'Hume links necessity to custom and regular conjunction.',
-    status:'partial',issueCode:'none',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
- const citedRepair=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
-    text:'Custom, for Hume, is the great guide of human life, since repeated conjunction determines the mind to infer one object from another. [S1]'})),
-   additions:[]}]})};
- };
- const acceptingReReview=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n'+
-   'Custom, for Hume, is the great guide of human life and the foundation of all reasoning about matters of fact.'),
-  rejectingReview,rescueRejection(),citedRepair,acceptingReReview],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,5,'compose, review, the batch 24 rescue, the gate repair, and its independent re-review');
- assert.deepEqual(result.trace.citationGate,
-  [{partId:'P1',action:'repair-applied',preGateStatus:'partial'}],
-  'the widened trigger fires for the partial part and records its pre-gate status');
- assert.equal(result.questionParts[0].status,'supported');
- assert.match(result.answer,/great guide of human life.*\[S1\]/,
-  'the repaired claim ships with its restored citation');
- assert.ok(result.evidenceMap.some(item=>item.partId==='P1'&&item.id==='S1'));
-});
 
-test('citation gate adopts a cited re-review part at partial status (batch 12 B12-4a)',async()=>{
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-  answerStatus:'partial',directAnswerClaimIds:['P1-C2'],retainedContextClaimIds:['P1-C2']}],
-  claims:[{claimId:'P1-C1',status:'partial',sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
-   clauses:[{text:'Hume links causal expectation to custom.',status:'partial',issueCode:'none',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
- const citedRepair=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
-    text:'Hume links causal expectation to custom formed through repeated conjunction. [S1]'})),
-   additions:[]}]})};
- };
- const partialAcceptingReReview=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const ai=makeAI([answer('PART P1\nHume links causal expectation to custom. [S1]\n'+
-  'Repeated experience shapes expectation in ordinary reasoning.'),
-  uncitedReview,rescueRejection(),citedRepair,partialAcceptingReReview],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(result.trace.citationGate[0].action,'repair-applied');
- assert.equal(result.trace.citationGate[0].refusal,undefined);
- assert.deepEqual(result.trace.citationGateSummary,{firings:1,adoptions:1,
-  outcomes:{adopted:1,repairRefused:0,repairThrew:0,reReviewRefused:0}});
- assert.equal(result.questionParts[0].answerStatus,'partial');
- assert.equal(result.questionParts[0].status,'partial');
- assert.match(result.answer,/causal expectation.*\[S1\]/);
- assert.ok(result.evidenceMap.some(item=>item.partId==='P1'&&item.id==='S1'));
-});
 
-test('citation gate records a failed repair for a partial part and containment suppresses the uncited draft (batch 22)',async()=>{
- const rejectingReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-  answerStatus:'partial',directAnswerClaimIds:['P1-C2'],retainedContextClaimIds:['P1-C2']}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
-   clauses:[{text:'Hume links necessity to custom and regular conjunction.',
-    status:'partial',issueCode:'none',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
- const uncitedRepair=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
-    text:'Custom, for Hume, is the great guide of human life and the foundation of all reasoning about matters of fact.'})),
-   additions:[]}]})};
- };
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n'+
-   'Custom, for Hume, is the great guide of human life and the foundation of all reasoning about matters of fact.'),
-  rejectingReview,rescueRejection(),uncitedRepair],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'compose, review, the batch 24 rescue, and the one gate repair attempt');
- assert.equal(result.trace.citationGate[0].action,'repair-refused');
- assert.equal(result.trace.citationGate[0].preGateStatus,'partial');
- assert.equal(result.outcome,'generation-failed');
- assert.equal(result.trace.sourceRequiredContainment.uncitedPartIds[0],'P1');
- assert.doesNotMatch(result.answer,/great guide of human life/);
-});
 
-test('citation gate traces duplicate-key patch failure and containment prevents uncited shipment (batch 22)',async()=>{
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
- const duplicateKeyRepair={response:'{"parts":[{"partId":"P1","replacements":['+
-  '{"claimId":"P1-C1","claimId":"P1-C9","text":"A repaired claim without source support."}],"additions":[]}]}'};
- const ai=makeAI([answer('PART P1\nHume links necessity to custom.'),uncitedReview,duplicateKeyRepair],
-  {decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(result.outcome,'generation-failed',
-  'one uncited source-required part cannot ship when it is not a strict minority');
- assert.equal(result.trace.citationGate[0].action,'repair-refused');
- assert.equal(result.trace.citationGate[0].repairFailure.failureStep,'patch-schema-validation');
- assert.equal(result.trace.citationGate[0].repairFailure.code,'answer-repair-invalid');
- assert.equal(result.trace.citationGate[0].repairFailure.responseShape.duplicateClaimIdKeyCount,1);
- assert.equal(result.trace.citationGate[0].repairFailure.responseShape.replacementCount,1);
- assert.deepEqual(result.trace.citationGateSummary.outcomes,
-  {adopted:0,repairRefused:1,repairThrew:0,reReviewRefused:0});
- assert.deepEqual(result.trace.sourceRequiredContainment,
-  {totalParts:1,sourceRequiredPartIds:['P1'],uncitedPartIds:['P1'],
-   droppedPartIds:[],disposition:'suppressed-not-strict-minority',
-   level:'per-part',uncitedBookScopedPartIds:[]});
-});
 
-test('citation gate records a forbidden repair field as schema refusal rather than a blind throw (batch 22)',async()=>{
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
- const invalidField={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:[{claimId:'P1-C1',text:'Hume explains necessity through custom. [S1]'}],
-  additions:[],citedSourceIds:['S1']}]})};
- const ai=makeAI([answer('PART P1\nHume explains necessity through custom.'),uncitedReview,invalidField],
-  {decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(result.trace.citationGate[0].action,'repair-refused');
- assert.equal(result.trace.citationGate[0].repairFailure.failureStep,'patch-schema-validation');
- assert.equal(result.trace.citationGate[0].repairFailure.code,'answer-repair-invalid');
- assert.deepEqual(result.trace.citationGate[0].repairFailure.responseShape.unexpectedPartFields,
-  ['citedSourceIds']);
- assert.equal(result.trace.citationGateSummary.outcomes.repairThrew,0);
- assert.equal(result.outcome,'generation-failed');
-});
 
-test('citation gate records unexpected provider throws separately from validation refusals (batch 22)',async()=>{
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
- const providerFailure=Object.assign(new TypeError('simulated repair adapter failure'),
-  {code:'adapter-bug'});
- const ai=makeAI([answer('PART P1\nHume explains necessity through custom.'),
-  uncitedReview,providerFailure],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- const repair=result.trace.citationGate[0];
- assert.equal(repair.action,'repair-threw');
- assert.equal(repair.repairFailure.failureStep,'provider-call');
- assert.equal(repair.repairFailure.errorClass,'TypeError');
- assert.equal(repair.repairFailure.code,'adapter-bug');
- assert.equal(repair.repairFailure.message,'simulated repair adapter failure');
- assert.equal(repair.repairFailure.inputShape.partId,'P1');
- assert.equal(repair.repairFailure.inputShape.targetCount,1);
- assert.equal(repair.repairFailure.inputShape.answerCount,1);
- assert.equal(repair.repairFailure.inputShape.linkedSourceCount,1);
- assert.ok(repair.repairFailure.inputShape.repairPayloadBytes>0);
- assert.equal(result.trace.citationGateSummary.outcomes.repairThrew,1);
- assert.equal(result.outcome,'generation-failed');
-});
 
 test('source-required containment drops one peripheral uncited part but suppresses an uncited majority (batch 22)',async()=>{
  const runFixture=async(uncitedPartIds)=>{
@@ -4743,25 +3807,6 @@ test('citation gate leaves general-context parts untouched',async()=>{
  assert.match(result.answer,/learned expectation/);
 });
 
-test('build-time budget refuses optional gate calls and traces the skip (batch 11 B11-3)',async()=>{
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.'),
-  uncitedReview],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true,buildOptionalStageBudgetMs:-1});
- assert.equal(ai.calls.length,2,
-  'compose and review (core) still run; the refused gate repair never reaches the provider');
- assert.deepEqual(result.trace.buildTimeBudget,
-  {budgetMs:-1,skips:[{stage:'answer-repair',partId:'P1'}]},
-  'the refusal is recorded in the trace, distinct from a provider failure');
- assert.equal(result.trace.citationGate?.[0]?.action,'repair-refused',
-  'the gate treats the refusal as a failed repair and downgrades as usual');
- assert.equal(result.questionParts[0].status,'unsupported');
- assert.equal(result.outcome,'generation-failed',
-  'the optional citation repair was refused and the uncited source-required part is contained');
- assert.doesNotMatch(result.answer,/custom and regular conjunction/);
-});
 
 test('no build-time budget trace appears when optional calls run within budget (batch 11 B11-3)',async()=>{
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
@@ -4775,18 +3820,18 @@ test('no build-time budget trace appears when optional calls run within budget (
 test('review output budget scales past the old cap for a many-claim review',async()=>{
  const sentences=Array.from({length:25},(_,index)=>
   `Hume observation ${index+1} links necessity to custom and regular conjunction in experience. [S1]`);
- // Batch 24 (B24-3): a 25-claim part exceeds the split threshold, so
- // its review runs as two concurrent calls over claim halves. The
- // per-record budget formula is unchanged; it now applies per half.
+ // Redesign Stage A: split review (batch 24 B24-3) is deleted, so a
+ // 25-claim part is audited by ONE review call and the per-record
+ // budget formula applies to the whole record set at once.
  const reviewHandler=review([['P1','answered']]);
- const ai=makeAI([answer('PART P1\n'+sentences.join(' ')),reviewHandler,reviewHandler]);
+ const ai=makeAI([answer('PART P1\n'+sentences.join(' ')),reviewHandler]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose plus the two split review halves');
+ assert.equal(ai.calls.length,2,'compose plus the single many-claim review');
  const reviewCalls=ai.calls.filter(call=>call.request.messages[0].content.startsWith('Review the complete answer'));
- assert.equal(reviewCalls.length,2,'the many-claim review is split into two calls');
+ assert.equal(reviewCalls.length,1,'the many-claim review is a single call');
  assert.deepEqual(reviewCalls.map(call=>call.request.max_completion_tokens).sort((a,b)=>b-a),
-  [4060,3840],'each half budget is 1,200 plus 220 tokens per review record in that half (13 and 12 claims)');
+  [6700],'the budget is 1,200 plus 220 tokens per review record (25 claims)');
  assert.equal(result.trace.reviewRetry,undefined,'a completed review is not retried');
 });
 
@@ -5143,45 +4188,8 @@ function attributedReview(speaker,{sourceId='S1'}={}){
  };
 }
 
-test('author narration needs no speech cue when the speaker is the work’s own author',async()=>{
- const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
-  attributedReview('Ines Vidal')]);
- const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,2,'no gate or audit repair runs for a clean cited answer');
- assert.equal(result.coverage,'full');
- assert.equal(result.answerCompleteness,'full');
- assert.match(result.answer,/Ines Vidal describes learning/);
- assert.ok(!result.trace.reviewContract.supportIssues.some(issue=>
-  issue.reason==='source-attribution-unanchored'),
-  'the author’s own narration is anchored by the byline');
- assert.equal(result.trace.claimCitationGate,undefined);
- assert.deepEqual(result.trace.assemblyAudit,{violations:[],action:'none'});
-});
 
-test('a third-party speaker still needs a speech cue in the source',async()=>{
- const ai=makeAI([answer('PART P1\nPetra Lindqvist describes the crossing of the salt flats as a lesson in patience. [S1]'),
-  attributedReview('Petra Lindqvist')]);
- const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and the batch 24 rescue (which cannot anchor the claim either)');
- assert.equal(result.coverage,'none','an unanchored third-party attribution cannot verify the claim');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.sourceId==='S1'&&issue.reason==='source-attribution-unanchored'));
- assert.doesNotMatch(result.answer,/Petra Lindqvist describes/);
-});
 
-test('matching a different work’s author does not anchor spans from another work',async()=>{
- const ai=makeAI([answer('PART P1\nInes Vidal describes how geese hold their course by the brightest star patterns. [S2]'),
-  attributedReview('Ines Vidal',{sourceId:'S2'})]);
- const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
-  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and the batch 24 rescue (which cannot anchor the claim either)');
- assert.equal(result.coverage,'none',
-  'the exemption is per source: Vidal does not author the geese passage');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.sourceId==='S2'&&issue.reason==='source-attribution-unanchored'));
-});
 
 test('author anchoring matches only the byline author of the same work',()=>{
  assert.equal(speakerIsWorkAuthor('Ines Vidal',{title:'The Salt Meridian — Ines Vidal'}),true);
@@ -5216,7 +4224,8 @@ test('a general-context claim ships uncited and untouched beside a cited claim',
  assert.equal(ai.calls.length,2,'the claim-level check makes no calls for exempt claims');
  assert.equal(result.trace.claimCitationGate,undefined);
  assert.equal(result.trace.citationGate,undefined);
- assert.deepEqual(result.trace.assemblyAudit,{violations:[],action:'none'});
+ assert.equal(result.trace.assemblyAudit,undefined,
+  'redesign Stage A: the assembly audit no longer runs or records');
  assert.equal(result.answerCompleteness,'full');
  assert.match(result.answer,/teaches patience in a way that maps never can/);
  assert.match(result.answer,/\[S1\]/);
@@ -5239,86 +4248,9 @@ test('assembly ending check flags bare headings and unclosed list items only',()
 const droppedClaimDraft='PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n\n'+
  '- **Field note: Feld writes that geese hold their course by the brightest star patterns [S2]';
 
-test('assembly audit repairs an accepted claim that assembly silently dropped',async()=>{
- const restoreRepair={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:[{claimId:'P1-C2',text:'Feld writes that geese hold their course by the brightest star patterns. [S2]'}],
-  additions:[]}]})};
- const ai=makeAI([answer(droppedClaimDraft),
-  review([['P1','answered']],{directAnswerClaimIdsByPart:{P1:['P1-C1','P1-C2']}}),
-  restoreRepair,review([['P1','answered']])]);
- const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
-  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,4,'compose, review, one audit repair, and its re-review');
- assert.deepEqual(result.trace.assemblyAudit.violations,
-  [{partId:'P1',claimId:'P1-C2',type:'accepted-claim-not-represented'}]);
- assert.equal(result.trace.assemblyAudit.action,'repair-applied');
- assert.match(result.answer,/brightest star patterns\. \[S2\]/,
-  'the dropped claim is restored with its citation');
- assert.equal(result.answerCompleteness,'full');
-});
 
-test('assembly audit downgrades when a dropped accepted claim cannot be repaired',async()=>{
- const ai=makeAI([answer(droppedClaimDraft),
-  review([['P1','answered']],{directAnswerClaimIdsByPart:{P1:['P1-C1','P1-C2']}})]);
- const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
-  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
- assert.equal(result.trace.assemblyAudit.action,'downgraded');
- assert.equal(result.trace.assemblyAudit.violations.length,1);
- assert.equal(result.answerCompleteness,'partial',
-  'completeness is reported honestly instead of full over a known gap');
- assert.equal(result.questionParts[0].answerStatus,'partial');
- assert.match(result.answer,/horizon recedes/, 'the surviving claim still ships');
-});
 
-test('assembly audit downgrades an answer ending on a bare heading instead of shipping it as full',async()=>{
- const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n\n**Crossing**'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
- assert.deepEqual(result.trace.assemblyAudit,
-  {violations:[{partId:'P1',type:'unfinished-ending'}],action:'downgraded'});
- assert.notEqual(result.outcome,'generation-failed',
-  'a heading-only ending is a completeness gap, not a total failure');
- assert.equal(result.answerCompleteness,'partial');
- assert.match(result.answer,/horizon recedes/);
-});
 
-test('assembly audit repair can complete an unfinished lead-in ending',async()=>{
- const completeRepair=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  const part=payload.parts[0];
-  const replacements=part.repair.replaceClaimIds.map(claimId=>{
-   const claim=part.claims.find(item=>item.claimId===claimId);
-   const text=claim?.text.startsWith('A full answer')?
-    'A full answer would compare two possibilities: a simulated world and a physical one.':
-    'The hypothesis is possible, but no evidence establishes it, and a full answer would compare two possibilities: a simulated world and a physical one.';
-   return {claimId,text};
-  });
-  return {response:JSON.stringify({parts:[{partId:'P1',replacements,additions:[]}]})};
- };
- const ai=makeAI([answer('PART P1\nThe hypothesis is possible, but no evidence establishes it. A full answer would compare two possibilities:'),
-  review([['P1','answered']]),completeRepair,review([['P1','answered']])]);
- const result=await composeEvidenceAnswer('Are we living in a simulation?',[],ai,[],{
-  plan:{...onePartPlan,parts:[{...onePartPlan.parts[0],question:'Are we living in a simulation?'}]},
-  catalog,trace:true});
- assert.equal(ai.calls.length,4,'compose, review, one audit repair, and its re-review');
- // Batch 6 (B6-5): the same colon ending is also a dangling list
- // introduction; the one repair resolves both violations.
- assert.deepEqual(result.trace.assemblyAudit,
-  {violations:[{partId:'P1',type:'dangling-list-introduction'},
-    {partId:'P1',type:'unfinished-ending'}],action:'repair-applied'});
- assert.notEqual(result.outcome,'generation-failed',
-  'a repaired ending ships instead of being discarded by the legacy check');
- assert.equal(result.failureCode,undefined);
- assert.match(result.answer,/a simulated world and a physical one\./);
- // The part itself stays partial for a pre-existing contract reason that
- // predates the audit: an uncited claim can be retained context but never
- // a direct-answer claim, so this source-less part was already partial at
- // review time. The audit's win is the completed ending, not the status.
- assert.equal(result.questionParts[0].answerStatus,'partial');
-});
 
 // --- Batch 5: Q1 claim linkage, A1 second look, R1 synthesis review,
 // C assembly seams + representation hardening, B speaker-cue scoping,
@@ -5566,68 +4498,10 @@ test('claimTextAppears no longer passes absent claims (C)',()=>{
   'head and tail anchors both present despite a mid-text insertion');
 });
 
-test('assembly audit flags an unbalanced bold seam in prose (C)',async()=>{
- const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a **horizon recedes exactly as fast as a walker advances toward it. [S1]'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
- assert.deepEqual(result.trace.assemblyAudit.violations,
-  [{partId:'P1',type:'unbalanced-bold'}]);
- assert.equal(result.trace.assemblyAudit.action,'downgraded');
- assert.equal(result.questionParts[0].answerStatus,'partial');
-});
 
 
-test('assembly audit flags list markers spliced into a prose paragraph (B6-5)',async()=>{
- const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
-   'The crossing teaches patience. * Patience under a wide sky. * Humility before distance.'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
- assert.deepEqual(result.trace.assemblyAudit.violations,
-  [{partId:'P1',type:'inline-list-marker-splice'}]);
- assert.equal(result.trace.assemblyAudit.action,'downgraded');
- assert.equal(result.questionParts[0].answerStatus,'partial');
-});
 
-test('assembly audit flags a part ending on a list introduction with no list (B6-5)',async()=>{
- const twoPartPlan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Ines Vidal',role:'primary',bookIds:['501']},
-   {label:'Aaron Feld',role:'primary',bookIds:['502']}],
-  parts:[{id:'P1',question:'What does Vidal describe learning from crossing the salt flats?',
-    sourceBookIds:['501'],searchQueries:['salt flats horizon'],candidateSourceIds:['S1']},
-   {id:'P2',question:'What does Feld describe about geese finding direction?',
-    sourceBookIds:['502'],searchQueries:['geese stars'],candidateSourceIds:['S2']}],
-  queries:['salt flats horizon','geese stars']};
- const perPartReview=review([['P1','answered'],['P2','answered']]);
- const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
-   'The primary shifts include:\n'+
-   'PART P2\nGeese read the stars on clear nights and hold their course by the brightest patterns. [S2]'),
-  perPartReview,perPartReview]);
- const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
-  [vidalSalt,feldGeese],ai,[],{plan:twoPartPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,4,'compose, two per-part reviews, and the failed audit repair attempt');
- assert.deepEqual(result.trace.assemblyAudit.violations,
-  [{partId:'P1',type:'dangling-list-introduction'}]);
- assert.equal(result.trace.assemblyAudit.action,'downgraded');
- assert.equal(result.questionParts[0].answerStatus,'partial');
- assert.equal(result.questionParts[1].answerStatus,'answered',
-  'the clean part is untouched by the other part’s seam');
-});
 
-test('assembly audit flags a part opening on a lowercase fragment (B6-5)',async()=>{
- const ai=makeAI([answer('PART P1\nthe horizon recedes exactly as fast as a walker advances toward it, and the crossing teaches patience. [S1]'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
- assert.deepEqual(result.trace.assemblyAudit.violations,
-  [{partId:'P1',type:'lowercase-segment-opening'}]);
- assert.equal(result.trace.assemblyAudit.action,'downgraded');
- assert.equal(result.questionParts[0].answerStatus,'partial');
-});
 
 test('legitimate lists, bold lead-ins, and mid-part colons stay seam-free (B6-5)',async()=>{
  const ai=makeAI([answer('PART P1\n**Field summary:** Ines Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
@@ -5637,7 +4511,8 @@ test('legitimate lists, bold lead-ins, and mid-part colons stay seam-free (B6-5)
  const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
   [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
  assert.equal(ai.calls.length,2,'no audit repair runs for a seam-free answer');
- assert.deepEqual(result.trace.assemblyAudit,{violations:[],action:'none'});
+ assert.equal(result.trace.assemblyAudit,undefined,
+  'redesign Stage A: the assembly audit no longer runs or records; the seam-free text ships as composed');
 });
 
 test('person name matching tolerates middle initials but not different people (B)',()=>{
@@ -5676,166 +4551,11 @@ test('author narration with a middle-initial byline is anchored (B, run-50 Frank
  assert.match(result.answer,/Viktor Frankl argues/);
 });
 
-test('a character named with speech verbs elsewhere on the page no longer anchors an attribution (B, Austen shape)',async()=>{
- const ellisonPage={id:'S1',bookId:'501',title:batch4Catalog[501],page:12,
-  url:'https://example.test/salt-meridian#page=12',
-  text:'Mara Ellison said the crossing would take three days. Mara Ellison argued that the wells would surely hold. The guides counted the tins of water twice and checked the survey chain link by link. Dust settled over the camp as the evening wind dropped. I learned that a horizon can recede exactly as fast as a walker advances toward it.',
-  preview:'Mara Ellison said the crossing would take three days.'};
- const ai=makeAI([answer('PART P1\nMara Ellison argues that a horizon can recede exactly as fast as a walker advances toward it. [S1]'),
-  attributedReview('Mara Ellison')]);
- const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [ellisonPage],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(result.coverage,'none',
-  'the cue search is scoped to the accepted span’s neighbourhood, not the whole page');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.sourceId==='S1'&&issue.reason==='source-attribution-unanchored'));
-});
 
-test('a claim naming a different speaker than the reviewer demotes as a speaker mismatch (B)',async()=>{
- const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
-  attributedReview('Aaron Feld')]);
- const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.sourceId==='S1'&&issue.reason==='source-attribution-speaker-mismatch'),
-  'the claim’s own named speaker is compared against the attributed speaker');
-});
 
-test('a part repaired by an earlier gate gets no second repair cycle in the assembly audit (L3)',async()=>{
- // Both cited claims sit in list lines that markdown normalization drops,
- // so the shipped segment cites nothing (the citation gate fires and
- // consumes the part's one repair cycle) while both accepted claims are
- // unrepresented (the assembly audit would normally repair them too).
- const droppedDraft='PART P1\nCrossing open country on foot teaches patience in a way that maps never can.\n\n'+
-  '- **Field note: Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it [S1]\n\n'+
-  '- **Field note: Feld writes that geese hold their course by the brightest star patterns [S2]';
- const ai=makeAI([answer(droppedDraft),
-  review([['P1','answered']],{directAnswerClaimIdsByPart:{P1:['P1-C2','P1-C3']}})]);
- const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
-  [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,3,
-  'compose, review, and the citation gate’s repair attempt — the assembly audit adds no cycle');
- assert.deepEqual(result.trace.gateRepairCycles,[{partId:'P1',gate:'citation-presence'}]);
- assert.deepEqual(result.trace.assemblyAudit.repairSkippedPartIds,['P1']);
- assert.equal(result.trace.assemblyAudit.action,'downgraded');
-});
 
-test('answer repair adoption is per part (L4)',async()=>{
- const repairPlan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
-   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
-  parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
-    searchQueries:['Hume necessity'],candidateSourceIds:['S1'],
-    requirements:[{id:'P1-R1',text:'Explain the role of custom in causal inference.'}]},
-   {id:'P2',question:'How does Kant explain causality?',sourceBookIds:['40'],
-    searchQueries:['Kant causality'],candidateSourceIds:['S2'],
-    requirements:[{id:'P2-R1',text:'Explain why causality is a priori.'}]}],
-  queries:['Hume necessity','Kant causality']};
- const initialReview=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({
-   parts:payload.parts.map(part=>({partId:part.partId,status:'answered',answerStatus:'partial',
-     repairable:true,
-     directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
-      .map(claim=>claim.claimId),
-     requirementCoverage:part.requirements.map(requirement=>({requirementId:requirement.id,
-       status:'unanswered',answerClaimIds:[]}))})),
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-       spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const repair=()=>({response:JSON.stringify({parts:[
-  {partId:'P1',replacements:[],additions:['Custom trains the mind to infer one event after another. [S1]']},
-  {partId:'P2',replacements:[],additions:['Causality is known a priori because it is a category. [S2]']}]})});
- const reReview=(succeeds,requirementId)=>(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({
-   parts:payload.parts.map(part=>({partId:part.partId,status:'answered',
-     answerStatus:succeeds?'answered':'partial',
-     directAnswerClaimIds:succeeds?payload.claims.map(claim=>claim.claimId):[],
-     requirementCoverage:part.requirements.map(requirement=>({requirementId:requirement.id,
-       status:succeeds?'answered':'unanswered',
-       answerClaimIds:succeeds?[payload.claims.at(-1).claimId]:[]}))})),
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-       spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]\n'+
-   'PART P2\nCausality is a category of the understanding. [S2]'),
-  initialReview,initialReview,repair,reReview(true,'P1-R1'),reReview(false,'P2-R1')]);
- const result=await composeEvidenceAnswer('How do Hume and Kant each explain causality?',
-  [hume,kant],ai,[],{plan:repairPlan,catalog,trace:true});
- assert.equal(ai.calls.length,6,'compose, two per-part reviews, one shared repair, two per-part re-reviews');
- assert.equal(result.trace.answerRepair.applied,true);
- assert.deepEqual(result.trace.answerRepair.adoptedPartIds,['P1']);
- assert.deepEqual(result.trace.answerRepair.rejectedParts,
-  [{partId:'P2',reason:'answer-re-review-unsupported'}]);
- assert.match(result.answer,/Custom trains the mind/,
-  'the part whose repair passed re-review ships its repair');
- assert.doesNotMatch(result.answer,/known a priori because/,
-  'the part whose repair failed keeps its original text');
-});
 
-test('the synthesis-deficit repair pattern is skipped as futile (L4)',async()=>{
- const question='How does Hume explain causal necessity, and what role does custom play?';
- const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,
-  requirements:[
-   {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
-   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}]}]};
- const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-     repairable:true,directAnswerClaimIds:[claim.claimId],
-     requirementCoverage:[
-      {requirementId:'P1-R1',status:'answered',answerClaimIds:[claim.claimId]},
-      {requirementId:'P1-R2',status:'partial',answerClaimIds:[claim.claimId]}]}],
-    claims:[{claimId:claim.claimId,status:'answered',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
-  }]);
- const result=await composeEvidenceAnswer(question,[hume],ai,[],{plan,catalog,trace:true});
- assert.equal(ai.calls.length,2,'no repair call is spent on the futile pattern');
- assert.equal(result.trace.answerRepair.attempted,false);
- assert.equal(result.trace.answerRepair.reason,'synthesis-deficit-repair-skipped');
-});
 
-test('structured calls run at temperature 0 and re-review failures record the review timeout (L2/L6)',async()=>{
- const clean=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]'),
-  review([['P1','answered']])]);
- await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [vidalSalt],clean,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(clean.calls[0].request.temperature,undefined,
-  'compose keeps the provider default — no temperature parameter');
- assert.equal(clean.calls[1].request.temperature,0,'review runs at temperature 0');
-
- const question='How does Hume explain causal necessity, and what role does custom play?';
- const plan={...onePartPlan,parts:[{...onePartPlan.parts[0],question,
-  requirements:[
-   {id:'P1-R1',text:'Explain how repeated conjunction gives rise to the idea of necessity.'},
-   {id:'P1-R2',text:'Explain how custom leads the mind to infer one event from another.'}]}]};
- const providerDown=Object.assign(new Error('provider unavailable'),{code:'provider-down'});
- const ai=makeAI([answer('PART P1\nRepeated conjunction gives Hume the idea of necessity. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',answerStatus:'answered',
-     repairable:true,directAnswerClaimIds:[claim.claimId],
-     requirementCoverage:[
-      {requirementId:'P1-R1',status:'answered',answerClaimIds:[claim.claimId]},
-      {requirementId:'P1-R2',status:'unanswered',answerClaimIds:[]}]}],
-    claims:[{claimId:claim.claimId,status:'answered',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}]}]})};
-  },
-  {response:JSON.stringify({parts:[{partId:'P1',replacements:[],
-   additions:['Custom trains the mind to infer one event after another from their repeated conjunction. [S1]']}]})},
-  providerDown]);
- const result=await composeEvidenceAnswer(question,[hume],ai,[],{plan,catalog,trace:true});
- const failedReReview=result.trace.stages.find(stage=>
-  stage.stage==='answer-re-review'&&stage.status==='failed');
- assert.ok(failedReReview,'the failed re-review is traced');
- assert.equal(failedReReview.timeoutMs,60000,
-  'answer-re-review gets the review timeout, not the 45 s compose-class timeout');
- assert.equal(failedReReview.temperature,0);
-});
 
 // --- Batch 7: B7-1 scaffolding citations (prompt), B7-2 rejection
 // containment, B7-3 claim-to-claim inheritance, B7-5b fallback union
@@ -6021,16 +4741,12 @@ test('a thesis covered only jointly across two books is not inherited (B8-6b); t
  const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n'+
    'Geese read the stars on clear nights and hold their course by the brightest patterns. [S2]\n'+
    'Ines Vidal learned that a horizon recedes exactly as fast as a walker advances toward it, while the geese hold their course by the brightest star patterns, and both accounts suggest direction is found by attending to distant markers.'),
-  review([['P1','answered']]),
-  // Batch 8 (B8-1): the thesis closes the part uncited, so it is a
-  // retained frame claim and the scaffolding repair round runs first;
-  // it decides the thesis is context.
-  {response:JSON.stringify({decisions:[{partId:'P1',claimId:'P1-C3',
-   action:'context',supportClaimIds:[]}]})}]);
+  review([['P1','answered']])]);
  const result=await composeEvidenceAnswer('What do Vidal and Feld each describe about finding direction?',
   [vidalSalt,feldGeese],ai,[],{plan:twoBookPlan,catalog:batch4Catalog,trace:true});
- assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:true,resolved:1});
- assert.equal(ai.calls.length,3,'compose, review, and the batch-8 scaffolding decision round');
+ assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:false,resolved:0},
+  'redesign Stage A: no scaffolding repair round runs; the thesis is retained on the reviewer verdict');
+ assert.equal(ai.calls.length,2,'compose and the single review (redesign Stage A: no scaffolding decision round)');
  assert.equal(result.trace.claimInheritance,undefined,
   'neither book alone covers half the thesis, so inheritance attaches nothing under B8-6b');
  assert.deepEqual(result.trace.contextSecondLook,
@@ -6100,20 +4816,6 @@ test('fallback evidence attaches nothing when the only span fails coverage, and 
  assert.deepEqual(result.trace.reviewCompletion.unvalidatedPartIds,['P1']);
 });
 
-test('assembly audit flags a list introduction stranded mid-segment (B7-6.1)',async()=>{
- const ai=makeAI([answer('PART P1\nInes Vidal describes learning that a horizon recedes exactly as fast as a walker advances toward it. [S1]\n\n'+
-   'The primary shifts include:\n\n'+
-   'Crossing open country on foot teaches patience in a way that maps never can.'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer('What does Vidal describe learning from crossing the salt flats?',
-  [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
- assert.equal(ai.calls.length,3,'compose, review, and the single failed audit repair attempt');
- assert.deepEqual(result.trace.assemblyAudit.violations,
-  [{partId:'P1',type:'dangling-list-introduction'}],
-  'batch 6 caught only a colon line at the segment’s end; the mid-segment shape is flagged now');
- assert.equal(result.trace.assemblyAudit.action,'downgraded');
- assert.equal(result.questionParts[0].answerStatus,'partial');
-});
 
 // ---------------------------------------------------------------------------
 // Batch 8: review-side scaffolding decisions (B8-1), the rejection archive
@@ -6323,21 +5025,6 @@ test('a scaffolding link naming a rejected support is invalid and attaches nothi
  assert.equal(ai.calls.length,2,'no repair round fires: the claim shares too little with the accepted sibling to be a plausible restatement');
 });
 
-test('a retained frame claim with no decision gets one scaffolding repair round (B8-1)',async()=>{
- const ai=makeAI([answer(scaffoldingDraft),
-  scaffoldingReview({retain:['P1-C3']}),
-  {response:JSON.stringify({decisions:[{partId:'P1',claimId:'P1-C3',action:'link',
-   supportClaimIds:['P1-C1','P1-C2']}]})}]);
- const result=await composeEvidenceAnswer('How do Hume and Kant each explain causal necessity?',
-  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P1']}],ai,[],
-  {plan:scaffoldingPlan,catalog,trace:true});
- assert.deepEqual(result.trace.reviewScaffolding.repairRound,{attempted:true,resolved:1});
- assert.deepEqual(result.trace.reviewScaffolding.attached,
-  [{partId:'P1',claimId:'P1-C3',supportClaimIds:['P1-C1','P1-C2'],sourceIds:['S1','S2']}],
-  'the repair round’s link is applied through the same validation path');
- assert.match(result.answer,/mind contributes rather than a power read off from events\. \[S1, S2\]/);
- assert.equal(ai.calls.length,3,'compose, review, and exactly one scaffolding repair round');
-});
 
 test('a non-frame context claim ships unchanged and triggers no repair round (B8-1)',async()=>{
  let captured;
@@ -6402,121 +5089,8 @@ function archiveReReview(acceptRestated){
  return fn;
 }
 
-test('containment reaches across rounds through the rejection archive (B8-2)',async()=>{
- const reReview=archiveReReview(false);
- const ai=makeAI([answer(archiveDraft),archiveFirstReview,
-  {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:[{claimId:'P1-C2',
-    text:'Necessity is a power perceived directly in the objects themselves.'}],
-   additions:[]}]})},
-  reReview]);
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
-  {plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'compose, first review, answer repair, re-review');
- assert.deepEqual(reReview.captured.parts[0].priorRejections,
-  ['Hume insists that necessity is a power perceived directly in the objects themselves.'],
-  'the re-review packet carries the first round’s rejected claim text');
- assert.deepEqual(result.trace.rejectionArchive,{count:1,partIds:['P1']});
- // Batch 10 (B10-3): the recorded measure is the overlap coefficient —
- // all 6 of the restatement's terms live inside the rejected claim's 8,
- // so it records 1, not the one-sided 6/8 = 0.75. The catch itself is
- // unchanged.
- assert.deepEqual(result.trace.rejectionContainment,
-  [{partId:'P1',claimId:'P1-C2',matchedRejectedClaimId:'P1-C2',containment:1,viaArchive:true}],
-  'the adopted repair re-shipped the rejected proposition as uncited context; the archive still catches it');
- assert.doesNotMatch(result.answer,/power perceived directly/,
-  'the laundered restatement is dropped from the shipped answer');
- assert.match(result.answer,/grounds causal necessity in repeated conjunction and custom\. \[S1\]/);
- assert.match(result.answer,/The account rests on observed regularities\./,
-  'unrelated retained context is untouched');
-});
 
-test('a repair that genuinely fixes support ships the claim cited (B8-2 control)',async()=>{
- const reReview=archiveReReview(true);
- const ai=makeAI([answer(archiveDraft),archiveFirstReview,
-  {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:[{claimId:'P1-C2',
-    text:'Hume presents necessity as a power perceived directly in the objects themselves. [S1]'}],
-   additions:[]}]})},
-  reReview]);
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
-  {plan:onePartPlan,catalog,trace:true});
- assert.deepEqual(result.trace.rejectionArchive,{count:1,partIds:['P1']},
-  'the first round’s rejection is still archived');
- assert.equal(result.trace.rejectionContainment,undefined,
-  'nothing is contained: the repaired claim ships cited and accepted');
- assert.match(result.answer,/power perceived directly in the objects themselves\. \[S1\]/);
-});
 
-test('more than six missing source decisions degrade to a round-robin repair subset (batch 10 B10-2)',async()=>{
- // Both parts' reviewers decide S1 for every claim and omit S2
- // entirely: 8 missing claim-source decisions, 4 per part. Before
- // batch 10 the count alone blocked the repair (limit 6) and nothing
- // was attempted. Now six are attempted, split 3/3 across the parts
- // by the round-robin selection — a prefix slice would have taken
- // P1's four and only two of P2's — and the two unrepaired decisions
- // keep their fail-closed recovered treatment.
- const s1OnlyReview=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  const partIds=[...new Set(payload.claims.map(claim=>claim.partId))];
-  return {response:JSON.stringify({parts:partIds.map(partId=>({partId,
-     status:'answered',answerStatus:'answered',
-     directAnswerClaimIds:[payload.claims.find(claim=>claim.partId===partId).claimId],
-     retainedContextClaimIds:[]})),
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0]],
-     subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}))})};
- };
- const repairCall={captured:null};
- const repairDecisions=(_model,{messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  repairCall.captured=payload;
-  return {response:JSON.stringify({decisions:payload.decisions.map(decision=>({
-   claimId:decision.claimId,sourceId:decision.sourceId,status:'answered',
-   spanIds:decision.spanIds.slice(0,1),attributionStatus:'not_applicable',
-   attributedSpeaker:'',subjectAttributionStatus:'supported',
-   attributedSubject:decision.sourceId==='S1'?'Hume':'Kant'}))})};
- };
- const dualPlan={version:'reader-evidence-v2',intent:'compare',
-  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
-   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
-  parts:[
-   {id:'P1',question:'How do Hume and Kant each explain causal necessity?',
-    sourceBookIds:['35','40'],candidateSourceIds:['S1','S2']},
-   {id:'P2',question:'How do Hume and Kant differ on causal necessity?',
-    sourceBookIds:['35','40'],candidateSourceIds:['S1','S2']}],
-  queries:[]};
- const ai=makeAI([answer('PART P1\n'+
-   'Hume explains causal expectation through custom rather than reasoning, while Kant treats causality as an a priori category. [S1, S2]\n'+
-   'For Hume necessity arises from repeated conjunction, while for Kant the understanding supplies the category itself. [S1, S2]\n'+
-   'Hume grounds inference in habit formed by experience, while Kant grounds it in the structure of the understanding. [S1, S2]\n'+
-   'Hume denies that reason perceives necessary connection, while Kant locates the connection in a category of relation. [S1, S2]\n'+
-   'PART P2\n'+
-   'The contrast begins with custom on one side and an a priori category on the other. [S1, S2]\n'+
-   'Necessity and causation arise for Hume from constant conjunction, while the categories are for Kant pure conceptions of the understanding. [S1, S2]\n'+
-   'Necessity for Hume is a determination of the mind, while for Kant it is a condition of objective judgment. [S1, S2]\n'+
-   'The two accounts divide over whether causal connection is found in objects or contributed by the understanding. [S1, S2]'),
-  s1OnlyReview,s1OnlyReview,repairDecisions]);
- const result=await composeEvidenceAnswer('How do Hume and Kant differ about causal necessity?',
-  [{...hume,candidatePartIds:['P1','P2']},{...kant,candidatePartIds:['P1','P2']}],ai,[],
-  {plan:dualPlan,catalog,trace:true});
- assert.deepEqual(result.trace.reviewRepair,
-  {attempted:true,requestedCount:8,attemptedCount:6,applied:true,reason:'complete'},
-  'the repair runs on a subset instead of not running at all');
- assert.deepEqual(repairCall.captured.decisions.map(decision=>decision.claimId),
-  ['P1-C1','P2-C1','P1-C2','P2-C2','P1-C3','P2-C3'],
-  'the subset alternates across parts instead of exhausting the first part');
- assert.equal(ai.calls.length,4,'compose, two reviews, one repair call');
- assert.match(result.answer,/an a priori category\. \[S1, S2\]/,
-  'a repaired claim ships with both citations');
- assert.deepEqual(result.questionParts.map(part=>part.claimIds),
-  [['P1-C1','P1-C2','P1-C3'],['P2-C1','P2-C2','P2-C3']],
-  'the six repaired claims ship; the two unrepaired ones keep the '+
-  'fail-closed treatment — a claim citing two book groups with only '+
-  'one group’s support decided is omitted, not shipped narrowed');
- assert.doesNotMatch(result.answer,/a category of relation\./);
-});
 
 test('a part missing from the review contract suppresses a tied two-part answer (B8-5)',async()=>{
  const dispatcher=(_model,{messages})=>{
@@ -7270,41 +5844,6 @@ test('introducesDuplicatedParagraph counts paragraph repetition against the orig
   [para('**Section Heading**',0),para('**Section Heading**',1),para('**Section Heading**',2)]),false);
 });
 
-test('a gate-repair adoption records its re-review decisions and keeps verified status (batch 9 B9-5)',async()=>{
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
- const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction. [S1]'}],
-  additions:[]}]})};
- const citedReReview=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.'),
-  uncitedReview,citedRepair,citedReReview],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.deepEqual(result.trace.citationGate,
-  [{partId:'P1',action:'repair-applied',preGateStatus:'answered'}]);
- assert.equal(result.outcome,'verified-source-draft',
-  'the adopted claim is traced, so verified status stands');
- assert.equal(result.trace.untracedCitedClaims,undefined,
-  'no shipped cited claim lacks a mechanism');
- const shippedClaimIds=result.questionParts[0].claimIds;
- assert.ok(shippedClaimIds.length>=1);
- const acceptedKeys=new Set((result.trace.reReviewDecisions||[])
-  .filter(decision=>decision.accepted===true&&decision.sourceId)
-  .map(decision=>decision.partId+'|'+decision.claimId));
- assert.ok(shippedClaimIds.every(claimId=>acceptedKeys.has('P1|'+claimId)),
-  'every shipped claim of the adopted part is accepted in the recorded re-review decisions');
- assert.ok((result.trace.reReviewDecisions||[])
-  .some(decision=>decision.sourceId==='S1'&&decision.accepted===true),
-  'the re-review acceptance for the restored citation is in the trace');
-});
 
 // Batch 24 (B24-1): a zero-accept part gets one rescue re-review
 // before the citation gate and containment. The router below keys
@@ -7351,40 +5890,7 @@ const batch24RejectingClaims=[{claimId:'P1-C1',status:'partial',
   evidenceRole:'work-assertion',
   supportBoundary:'The span states the custom account but the claim was demoted.'}]}];
 
-test('batch 24 rescue re-review flips a zero-accept part so it ships cited and escapes containment',async()=>{
- const ai=batch24RouterAI({reviewClaims:batch24RejectingClaims,rescueVerdict:'supported'});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(result.outcome,'verified-source-draft');
- assert.match(result.answer,/Hume links necessity to custom and regular conjunction\. \[S1\]/);
- assert.equal(result.evidenceMap.length,1);
- assert.equal(result.trace.sourceRequiredContainment.disposition,'all-shipped-source-parts-cited');
- const rescue=result.trace.rescueReview;
- assert.ok(rescue,'the rescue outcome is recorded in the trace');
- assert.equal(rescue.parts.length,1);
- assert.equal(rescue.parts[0].partId,'P1');
- assert.equal(rescue.parts[0].outcome,'completed');
- assert.equal(rescue.parts[0].flipped,1);
- assert.deepEqual(rescue.parts[0].claims.map(claim=>[claim.claimId,claim.sourceId,claim.verdict]),
-  [['P1-C1','S1','supported']]);
- assert.ok(rescue.parts[0].claims[0].fragment.length>0,'the decisive fragment is recorded');
- assert.ok(result.trace.reviewContract.reviewDecisions.some(decision=>
-  decision.claimId==='P1-C1'&&decision.accepted===true&&decision.rescueAccepted===true),
-  'the flipped decision is marked rescueAccepted in the review decisions');
-});
 
-test('batch 24 rescue re-review that rejects everything leaves the part to containment',async()=>{
- const ai=batch24RouterAI({reviewClaims:batch24RejectingClaims,rescueVerdict:'not-supported'});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(result.trace.rescueReview.parts[0].outcome,'completed');
- assert.equal(result.trace.rescueReview.parts[0].flipped,0);
- assert.equal(result.trace.rescueReview.parts[0].claims[0].verdict,'not-supported');
- assert.equal(result.outcome,'generation-failed');
- assert.equal(result.failureStage,'source-required-containment');
- assert.deepEqual(result.trace.sourceRequiredContainment.uncitedPartIds,['P1']);
- assert.doesNotMatch(result.answer,/great guide of human life/);
-});
 
 test('batch 24 rescue never fires for a part with an accepted claim',async()=>{
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n'+
@@ -7410,42 +5916,6 @@ test('batch 24 rescue never fires for a part with an accepted claim',async()=>{
  assert.equal(result.outcome,'verified-source-draft');
 });
 
-test('batch 24 split review covers all claims of a part with more than ten source-linked claims',async()=>{
- const sentences=Array.from({length:12},(_,index)=>
-  `Hume point ${index+1} links necessity to custom and regular conjunction. [S1]`);
- const calls=[];
- const ai={calls,run:async(model,request)=>{
-  calls.push({model,request});
-  const system=String(request?.messages?.[0]?.content||'');
-  if(system.startsWith('Answer the reader'))
-   return answer('PART P1\n'+sentences.join(' '));
-  if(system.startsWith('Review the complete answer')){
-   const payload=parsePayload(request.messages);
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',
-    directAnswerClaimIds:[payload.claims[0].claimId],retainedContextClaimIds:[]}],
-    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
-      subjectAttributionStatus:'supported',attributedSubject:'Hume'}))}))})};
-  }
-  throw new Error('unexpected stage in split-review fixture: '+system.slice(0,40));
- }};
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- const reviewCalls=calls.filter(call=>
-  String(call.request.messages[0].content).startsWith('Review the complete answer'));
- assert.equal(reviewCalls.length,2,'a 12-claim part is reviewed in two concurrent calls');
- const halfSizes=reviewCalls.map(call=>JSON.parse(call.request.messages[1].content).claims.length)
-  .sort((a,b)=>a-b);
- assert.deepEqual(halfSizes,[6,6],'the halves partition the claims');
- const accepted=result.trace.reviewContract.reviewDecisions
-  .filter(decision=>decision.accepted===true);
- assert.equal(accepted.length,12,'merged decisions cover every claim');
- assert.equal(result.evidenceMap.length,12);
- assert.equal(result.coverage,'full');
- assert.equal(result.trace.rescueReview,undefined,'no zero-accept part, no rescue');
-});
 
 test('batch 24 review-stage failure after the in-build review retry does not whole-build retry',async()=>{
  const requestFailed=()=>new Error('Review request failed');
@@ -7542,362 +6012,15 @@ const rescueSupportedResponder=({messages})=>{
 const planWithRequirement={...onePartPlan,parts:[{...onePartPlan.parts[0],
  requirements:[{id:'P1-R1',text:'Explain the role of custom in causal inference.'}]}]};
 
-test('batch 25 Q1: rescue flips propagate into the part contract so the rescued part ships',async()=>{
- // Production shape (Kierkegaard sel-p1, batch 24): the reviewer's
- // requirement coverage maps NO claims (answerClaimIds []) and every
- // claim is rejected, so the part contract reads unanswered even
- // after the rescue flips its direct-answer claim.
- const reviewResponder=()=>({response:JSON.stringify({parts:[{partId:'P1',
-   status:'partial',answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
-   retainedContextClaimIds:[],
-   requirementCoverage:[{requirementId:'P1-R1',status:'partial',answerClaimIds:[]}]}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
-    subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})});
- const ai=batch25RouterAI({reviewResponder,rescueResponder:rescueSupportedResponder});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:planWithRequirement,catalog,trace:true});
- assert.equal(result.trace.rescueReview.parts[0].flipped,1);
- assert.match(result.answer,/custom operates on the imagination/,
-  'the rescued part ships its prose');
- assert.match(result.answer,/\[S1\]/,'the rescued part ships cited');
- const recompute=result.trace.contractRecompute;
- assert.ok(recompute,'the contract recompute is recorded');
- assert.equal(recompute.parts[0].partId,'P1');
- assert.equal(recompute.parts[0].before.requirements['P1-R1'],'partial');
- assert.equal(recompute.parts[0].after.requirements['P1-R1'],'answered',
-  'the empty requirement mapping is recomputed from the now-accepted direct-answer claim');
- assert.notEqual(recompute.parts[0].after.finalStatus,'unanswered');
- const decision=result.trace.reviewContract.partDecisions.find(item=>item.partId==='P1');
- assert.deepEqual(decision.requirementCoverage[0].answerClaimIds,['P1-C1']);
- assert.equal(decision.requirementCoverage[0].status,'answered');
- assert.notEqual(decision.finalStatus,'unanswered',
-  'the shipped part decision no longer reads unanswered');
-});
 
-test('batch 25 Q2: a part with accepted claims but incomplete coverage gets a rescue pass',async()=>{
- const draftText='PART P1\nHume says custom operates on the imagination. [S1]\n'+
-  'Hume says the mind is determined by custom to infer one object from another. [S1]';
- const reviewResponder=()=>({response:JSON.stringify({parts:[{partId:'P1',
-   status:'partial',answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
-   retainedContextClaimIds:[],
-   requirementCoverage:[{requirementId:'P1-R1',status:'partial',answerClaimIds:['P1-C1']}]}],
-  claims:[{claimId:'P1-C1',status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
-     subjectAttributionStatus:'supported',attributedSubject:'Hume'}]},
-   {claimId:'P1-C2',status:'partial',
-    sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
-     subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})});
- const ai=batch25RouterAI({reviewResponder,rescueResponder:rescueSupportedResponder,
-  draftText});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:planWithRequirement,catalog,trace:true});
- const rescue=result.trace.rescueReview;
- assert.ok(rescue,'rescue fired although one claim was already accepted');
- assert.equal(rescue.parts[0].trigger,'coverage-incomplete');
- assert.equal(rescue.parts[0].flipped,1);
- assert.deepEqual(rescue.parts[0].claims.map(claim=>claim.claimId),['P1-C2'],
-  'only the rejected pair was re-judged');
- assert.match(result.answer,/determined by custom to infer one object from another/,
-  'the rescued claim ships beside the already-accepted one');
-});
 
-test('batch 25 Q2: a supported verdict with an unstated element does not flip',async()=>{
- const reviewResponder=()=>({response:JSON.stringify({parts:[{partId:'P1',
-   status:'partial',answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
-   retainedContextClaimIds:[]}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
-    subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})});
- const rescueResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
-   fragment:item.spans[0].text,
-   elements:[{element:'custom operates on the imagination',stated:true},
-    {element:'custom is the sole guide of human life',stated:false}]}))})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- const rescue=result.trace.rescueReview;
- assert.equal(rescue.parts[0].flipped,0,
-  'the multi-element claim is not flipped while one element is unstated');
- assert.equal(rescue.parts[0].claims[0].verdict,'not-supported');
- assert.equal(rescue.parts[0].claims[0].elementDowngrade,true);
- assert.equal(rescue.parts[0].claims[0].elements.length,2,
-  'the element check is recorded in the trace');
- assert.doesNotMatch(result.answer,/custom operates on the imagination/);
-});
 
-test('batch 25 Q3 + batch 27 B27-5: an invalid rescue response gets one failed-pairs full-span retry and the flips apply',async()=>{
- const reviewResponder=()=>({response:JSON.stringify({parts:[{partId:'P1',
-   status:'partial',answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
-   retainedContextClaimIds:[]}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
-    subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})});
- let rescueCalls=0;
- const rescueResponder=request=>{
-  rescueCalls++;
-  if(rescueCalls===1){
-   const payload=JSON.parse(request.messages[1].content);
-   return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-    claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
-    fragment:'a fragment that appears in no supplied span',
-    elements:[{element:item.claimText,stated:true}]}))})};
-  }
-  return rescueSupportedResponder(request);
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- const rescue=result.trace.rescueReview;
- assert.equal(rescueCalls,2,'the rescue was retried exactly once');
- assert.equal(rescue.parts[0].outcome,'completed-after-retry');
- assert.equal(rescue.parts[0].attempts.length,2);
- assert.equal(rescue.parts[0].attempts[0].outcome,'invalid-response');
- // Batch 27 (B27-5): the retry no longer compacts the evidence. It
- // re-asks only the pair whose verdict failed validation, with its
- // full span set, under the compact retry instruction.
- assert.equal(rescue.parts[0].attempts[1].outcome,'completed');
- assert.equal(rescue.parts[0].attempts[1].retryScope,'failed-pairs');
- assert.equal(rescue.parts[0].attempts[1].retriedPairCount,1);
- assert.equal(rescue.parts[0].attempts[1].fullSpans,true);
- assert.equal(rescue.parts[0].flipped,1);
- assert.match(result.answer,/custom operates on the imagination/,
-  'the retried rescue flips the claim and the part ships');
-});
 
-test('batch 25 Q4: a gate repair citing one of several linked sources is adopted',async()=>{
- const twoSourcePlan={...onePartPlan,parts:[{...onePartPlan.parts[0],
-  candidateSourceIds:['S1','S2'],sourceBookIds:['35','40']}]};
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1']}],claims:[]})};
- const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction. [S1]'}],
-  additions:[]}]})};
- const citedReReview=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.'),
-  uncitedReview,citedRepair,citedReReview],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume,kant],ai,[],{plan:twoSourcePlan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'compose, review, the gate repair, and its re-review');
- assert.deepEqual(result.trace.citationGate,
-  [{partId:'P1',action:'repair-applied',preGateStatus:'answered'}],
-  'citing one of the two linked sources now satisfies the candidate check');
- assert.match(result.answer,/regular conjunction\. \[S1\]/);
- assert.equal(result.questionParts[0].status,'supported');
- assert.deepEqual(result.trace.repairCycleLedger,
-  {P1:[{phase:'citation-presence',outcomeChanged:true}]},
-  'the adopted gate cycle is recorded in the cross-phase ledger');
-});
 
-test('batch 25 Q4: a gate repair citing a foreign source is still refused',async()=>{
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C1','P1-C2']}],claims:[]})};
- const foreignRepair={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:[
-   {claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction in experience. [S2]'},
-   {claimId:'P1-C2',text:'Custom, for Hume, guides the inference from one object to another.'}],
-  additions:[]}]})};
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction.\n\n'+
-   'Custom, for Hume, guides causal inference.'),
-  uncitedReview,foreignRepair],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume,kant],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(result.trace.citationGate[0].action,'repair-refused');
- assert.equal(result.trace.citationGate[0].repairFailure.failureStep,'citation-candidate-check',
-  'a citation outside the part’s linked sources does not satisfy the gate');
- assert.equal(result.trace.citationGate[0].repairFailure.candidateCheck.linkedSourceCount,1);
- assert.doesNotMatch(result.answer,/regular conjunction in experience/);
-});
 
-test('batch 25 L1: a one-claim repair re-reviews only that claim and carries the rest',async()=>{
- const claimTexts=[
-  'Hume links necessity to custom and regular conjunction.',
-  'Custom determines the mind to infer one object from another.',
-  'Constant conjunction is observed throughout nature.',
-  'The idea of necessity arises from an impression of reflection.'];
- const draft='PART P1\n'+claimTexts.join('\n\n');
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
-  retainedContextClaimIds:['P1-C1','P1-C2','P1-C3','P1-C4']}],claims:[]})};
- const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:claimTexts.map((text,index)=>({claimId:'P1-C'+(index+1),
-   text:index===0?text+' [S1]':text})),
-  additions:[]}]})};
- let reReviewPayload=null;
- const deltaReReview=(_model,{messages})=>{
-  reReviewPayload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   directAnswerClaimIds:reReviewPayload.claims.map(claim=>claim.claimId),
-   retainedContextClaimIds:[]}],
-   claims:reReviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const ai=makeAI([answer(draft),uncitedReview,citedRepair,deltaReReview],
-  {decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,4,'compose, review, the gate repair, and its re-review');
- assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C1'],
-  'the re-review packet contains only the claim whose citation set changed');
- assert.deepEqual(result.trace.deltaReReview,
-  [{partId:'P1',deltaClaimIds:['P1-C1'],carriedClaimIds:['P1-C2','P1-C3','P1-C4'],
-   claimMapping:[{candidateClaimId:'P1-C1',priorClaimId:'P1-C1'},
-    {candidateClaimId:'P1-C2',priorClaimId:'P1-C2'},
-    {candidateClaimId:'P1-C3',priorClaimId:'P1-C3'},
-    {candidateClaimId:'P1-C4',priorClaimId:'P1-C4'}],
-   newClaimIds:[],removedClaimIds:[]}]);
- assert.equal(result.trace.citationGate[0].action,'repair-applied');
- for(const text of claimTexts)
-  assert.ok(result.answer.includes(text),
-   'carried claims keep their verdicts and ship: '+text.slice(0,40));
- assert.match(result.answer,/regular conjunction\. \[S1\]/);
-});
 
-test('batch 25 L1: a repair changing every claim falls back to a full re-review',async()=>{
- const claimTexts=[
-  'Hume links necessity to custom and regular conjunction.',
-  'Custom determines the mind to infer one object from another.'];
- const draft='PART P1\n'+claimTexts.join('\n\n');
- const uncitedReview={response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-  answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
-  retainedContextClaimIds:['P1-C1','P1-C2']}],claims:[]})};
- const citedRepair={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:claimTexts.map((text,index)=>({claimId:'P1-C'+(index+1),
-   text:text+' [S1]'})),
-  additions:[]}]})};
- let reReviewPayload=null;
- const fullReReview=(_model,{messages})=>{
-  reReviewPayload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   directAnswerClaimIds:reReviewPayload.claims.map(claim=>claim.claimId),
-   retainedContextClaimIds:[]}],
-   claims:reReviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const ai=makeAI([answer(draft),uncitedReview,citedRepair,fullReReview],
-  {decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,4);
- assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C1','P1-C2'],
-  'every claim changed, so the re-review packet is the whole part');
- assert.deepEqual(result.trace.deltaReReview,
-  [{partId:'P1',deltaClaimIds:['P1-C1','P1-C2'],carriedClaimIds:[],
-   claimMapping:[{candidateClaimId:'P1-C1',priorClaimId:'P1-C1'},
-    {candidateClaimId:'P1-C2',priorClaimId:'P1-C2'}],
-   newClaimIds:[],removedClaimIds:[]}]);
- assert.equal(result.trace.citationGate[0].action,'repair-applied');
-});
 
-test('batch 25 L2: cycles are ledgered across phases and a changed first cycle allows a second',async()=>{
- // Phase 1 (answer repair): the reviewer marks the part repairable
- // with its direct answer unsupported; the repair is adopted (the
- // outcome class changes) but the adopted text still ships uncited,
- // so the citation gate runs phase 2 and its repair is adopted too.
- const initialReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-   answerStatus:'partial',repairable:true,directAnswerClaimIds:['P1-C1'],
-   retainedContextClaimIds:[]}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
-   clauses:[{text:'Hume links necessity to custom.',status:'partial',issueCode:'none',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
- const repairOnce=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
-    text:'Hume links necessity to custom and regular conjunction.'})),
-   additions:[]}]})};
- };
- const acceptCited=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const acceptContext=()=>({response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
-   retainedContextClaimIds:['P1-C1']}],claims:[]})});
- const gateRepair={response:JSON.stringify({parts:[{partId:'P1',
-  replacements:[{claimId:'P1-C1',text:'Hume links necessity to custom and regular conjunction. [S1]'}],
-  additions:[]}]})};
- const ai=makeAI([answer('PART P1\nHume links necessity to custom. [S1]'),
-  initialReview,rescueRejection(),repairOnce,acceptContext,gateRepair,acceptCited],
-  {decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(result.trace.answerRepair.applied,true,
-  'the answer-repair cycle adopted its candidate');
- assert.equal(result.trace.citationGate[0].action,'repair-applied',
-  'the gate cycle still ran after the changed first cycle');
- assert.deepEqual(result.trace.repairCycleLedger,
-  {P1:[{phase:'answer-repair',outcomeChanged:true},
-    {phase:'citation-presence',outcomeChanged:true}]});
-});
 
-test('batch 25 L2: two no-change cycles are ledgered and no third repair is attempted',async()=>{
- // Phase 1 (answer repair): repairable part, repair runs, its
- // re-review rejects it — no change. Phase 2 (citation gate): the
- // part still ships uncited; the gate repair produces a candidate
- // whose re-review also refuses — no change. Later phases must not
- // run another repair for the part.
- const initialReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-   answerStatus:'partial',repairable:true,directAnswerClaimIds:['P1-C1'],
-   retainedContextClaimIds:['P1-C2']}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
-   clauses:[{text:'Hume links necessity to custom.',status:'partial',issueCode:'none',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
- const repairOnce=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
-    text:'Hume links necessity to custom and regular conjunction. [S1]'})),
-   additions:[]}]})};
- };
- const rejectingReReview=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-   answerStatus:'partial',directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
-   retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'partial',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'partial',spanIds:[]}))}))})};
- };
- const gateRepair=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
-    text:'Custom is the great guide of human life. [S1]'})),
-   additions:[]}]})};
- };
- const ai=makeAI([answer('PART P1\nHume links necessity to custom. [S1]\n'+
-   'Custom is the great guide of human life.'),
-  initialReview,rescueRejection(),repairOnce,rejectingReReview,
-  gateRepair,rejectingReReview],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,7,
-  'compose, review, rescue, answer repair + re-review, gate repair + re-review — and nothing further');
- assert.equal(result.trace.answerRepair.applied,false);
- assert.deepEqual(result.trace.repairCycleLedger,
-  {P1:[{phase:'answer-repair',outcomeChanged:false},
-    {phase:'citation-presence',outcomeChanged:false}]},
-  'both cross-phase cycles are recorded as no-change');
-});
 
 // Batch 26. The addendum to the shipment-leak diagnosis measured the
 // batch-25 rescue end to end: 55 flips, ZERO accepted — 42 vetoed by
@@ -7944,79 +6067,7 @@ const clausePartialReview={parts:[{partId:'P1',status:'partial',answerStatus:'pa
    {text:'the mind is determined to infer one object from another',status:'answered',
     issueCode:'none',sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}]}]};
 
-test('batch 26 B26-1: a rescue clearance of the outstanding clause lets the flip ship the claim',async()=>{
- let rescuePayload;
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
-  review:clausePartialReview,
-  rescue:payload=>{
-   rescuePayload=payload;
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,
-    elements:[{element:item.claimText,stated:true}],
-    clauses:[{text:'treats constant conjunction as its basis',stated:true,
-     fragment:'similar objects are constantly conjoined'}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.deepEqual(rescuePayload.decisions[0].outstandingClauses,
-  [{text:'treats constant conjunction as its basis'}],
-  'the rescue request carries exactly the outstanding clause');
- assert.equal(result.outcome,'verified-source-draft');
- assert.ok(result.answer.includes('Hume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]'),
-  'the flipped claim sentence ships in the final answer');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.equal(decision.rescueAccepted,true);
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.deepEqual(rescueClaim.clearedClauses,
-  [{text:'treats constant conjunction as its basis',
-   fragment:'similar objects are constantly conjoined'}]);
- assert.equal(rescueClaim.flipOutcome,'accepted');
- assert.equal(rescueClaim.flipVeto,undefined);
- const reconciliation=result.trace.finalCoverageReconciliation
-  .find(entry=>entry.partId==='P1');
- assert.ok(reconciliation.shippedClaimIds.includes('P1-C1'));
- assert.equal(reconciliation.textAbsentClaimIds,undefined,
-  'B26-4: rendered-text verification ran and found the shipped claim present');
-});
 
-test('batch 26 B26-1 + batch 27 B27-4: a supported verdict omitting its clause entries never flips',async()=>{
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
-  review:clausePartialReview,
-  rescue:payload=>{
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,
-    elements:[{element:item.claimText,stated:true}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- const rescueEntry=result.trace.rescueReview.parts[0];
- // Batch 27 (B27-4): clause entries are enforced like element
- // entries. The supported verdict returns no clauses entry for the
- // listed outstanding clause on either attempt, so it is invalid,
- // retried once, and then recorded not-supported with reason
- // clause-verdicts-missing — it never flips, so the clause demotion
- // the flip would have faced never even engages.
- assert.equal(rescueEntry.flipped,0,
-  'a verdict that omits its listed clause entries never flips');
- assert.equal(rescueEntry.outcome,'completed-after-retry');
- assert.deepEqual(rescueEntry.attempts.map(attempt=>attempt.outcome),
-  ['invalid-response','clause-verdicts-missing']);
- const rescueClaim=rescueEntry.claims[0];
- assert.equal(rescueClaim.verdict,'not-supported');
- assert.equal(rescueClaim.clauseVerdictsMissing,true);
- assert.equal(rescueClaim.reason,'clause-verdicts-missing');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,false,'the claim stays unaccepted (fail-closed)');
- assert.notEqual(result.outcome,'verified-source-draft');
- assert.ok(!result.answer.includes('treats constant conjunction as its basis'));
-});
 
 const subjectMismatchReview={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2'],
@@ -8027,186 +6078,9 @@ const subjectMismatchReview={parts:[{partId:'P1',status:'partial',answerStatus:'
    subjectAttributionStatus:'supported',attributedSubject:'Kant',
    evidenceRole:'work-assertion',supportBoundary:'Supports the full sentence.'}]}]};
 
-test('batch 26 B26-2: a rescue flip anchored to the work author clears a subject mismatch',async()=>{
- let rescuePayload;
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom and regular conjunction. [S1]\nCustom is the great guide of human life.',
-  review:subjectMismatchReview,
-  rescue:payload=>{
-   rescuePayload=payload;
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,anchor:'Hume',
-    elements:[{element:item.claimText,stated:true}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.deepEqual(rescuePayload.decisions[0].attributionFinding,
-  {reason:'source-subject-attribution-mismatch'},
-  'the rescue request carries the attribution finding to answer');
- assert.equal(result.outcome,'verified-source-draft');
- assert.ok(result.answer.includes('Hume links necessity to custom and regular conjunction. [S1]'),
-  'the anchored flip ships the claim');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.equal(decision.rescueAccepted,true);
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.anchor,'Hume');
- assert.equal(rescueClaim.flipOutcome,'accepted');
- assert.equal(rescueClaim.flipVeto,undefined);
-});
 
-test('batch 26 B26-2: an anchor that matches no candidate holds the flip and records the veto',async()=>{
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom and regular conjunction. [S1]\nCustom is the great guide of human life.',
-  review:subjectMismatchReview,
-  rescue:payload=>{
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,anchor:'Kant',
-    elements:[{element:item.claimText,stated:true}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- const rescueEntry=result.trace.rescueReview.parts[0];
- assert.equal(rescueEntry.flipped,0,'no flip is applied without a valid anchor');
- const rescueClaim=rescueEntry.claims[0];
- assert.equal(rescueClaim.attributionHeld,true);
- assert.equal(rescueClaim.verdict,'not-supported');
- assert.deepEqual(rescueClaim.flipVeto,
-  {layer:'attribution',held:true,reason:'source-subject-attribution-mismatch'});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,false);
- assert.equal(result.outcome,'generation-failed');
-});
 
-test('batch 26 B26-3: a repair that splits a claim keeps verdicts on their own texts through delta re-review',async()=>{
- // The Wealth shape, through the citation gate: the part ships
- // only uncited context claims (its one cited claim was rejected),
- // and the gate repair rewrites one context claim into two
- // sentences while citing another. Re-segmentation of the repaired
- // paragraph — now cited — splits the two sentences into separate
- // claims, minting a new claim in the middle of the part and
- // shifting every later claim's position by one.
- const splitReview={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2','P1-C3','P1-C4'],
-   directAnswerRequirementIds:[],requirements:[]}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:[],
-    attributionStatus:'not_applicable',attributedSpeaker:'',
-    subjectAttributionStatus:'supported',attributedSubject:'Hume',
-    evidenceRole:'work-assertion',supportBoundary:'No span was supplied.'}]}]};
- let reReviewPayload;
- const gateRepair=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  const texts={'P1-C2':'Constant conjunction is observed throughout nature. It is observed in every case of resembling objects.',
-   'P1-C3':'Custom is the great guide of human life. [S1]',
-   'P1-C4':'The idea of necessity arises from an impression of reflection.'};
-  return {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:payload.parts[0].repair.replaceClaimIds
-    .map(claimId=>({claimId,text:texts[claimId]})),additions:[]}]})};
- };
- const deltaReReview=(_model,{messages})=>{
-  reReviewPayload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',directAnswerClaimIds:['P1-C3'],
-    retainedContextClaimIds:reReviewPayload.parts[0].contextClaims.map(claim=>claim.claimId),
-    directAnswerRequirementIds:[],requirements:[]}],
-   claims:reReviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(entry=>entry.sourceId===sourceId).spanIds[0]],
-     attributionStatus:'not_applicable',attributedSpeaker:'',
-     subjectAttributionStatus:'supported',attributedSubject:'Hume',
-     evidenceRole:'work-assertion'}))}))})};
- };
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1] Constant conjunction is observed throughout nature. Custom is the great guide of human life.\n\n'+
-   'The idea of necessity arises from an impression of reflection.'),
-  {response:JSON.stringify(splitReview)},rescueRejection(),gateRepair,deltaReReview],
-  {decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,5,'compose, review, rescue, gate repair, one delta re-review');
- assert.equal(result.trace.citationGate[0].action,'repair-applied');
- assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C3'],
-  'only the changed cited claim is sent for a source decision');
- assert.deepEqual(reReviewPayload.parts[0].contextClaims.map(claim=>claim.claimId),
-  ['P1-C1','P1-C2'],
-  'the split halves are delta context claims; the carried claim is not re-reviewed');
- assert.deepEqual(result.trace.deltaReReview,
-  [{partId:'P1',deltaClaimIds:['P1-C1','P1-C2','P1-C3'],
-   carriedClaimIds:['P1-C4'],
-   claimMapping:[{candidateClaimId:'P1-C1',priorClaimId:'P1-C2'},
-    {candidateClaimId:'P1-C2',priorClaimId:null},
-    {candidateClaimId:'P1-C3',priorClaimId:'P1-C3'},
-    {candidateClaimId:'P1-C4',priorClaimId:'P1-C4'}],
-   newClaimIds:['P1-C2'],removedClaimIds:[]}],
-  'identity mapping is recorded: the first candidate claim is the old second claim, the split-off sentence is new');
- for(const fragment of ['Constant conjunction is observed throughout nature.',
-   'It is observed in every case of resembling objects.',
-   'Custom is the great guide of human life. [S1]',
-   'The idea of necessity arises from an impression of reflection.'])
-  assert.ok(result.answer.includes(fragment),'answer ships: '+fragment);
- const carriedDecision=result.trace.reReviewDecisions
-  .find(entry=>entry.claimId==='P1-C4');
- assert.ok(carriedDecision.claimText.startsWith('The idea of necessity'),
-  'the carried verdict for P1-C4 belongs to the idea text, not a shifted neighbour');
-});
 
-test('batch 26 B26-3: an ambiguous text mapping falls back to a whole-part re-review',async()=>{
- // Two identical context claims make the candidate-to-prior mapping
- // ambiguous (each duplicate matches both originals), so the delta
- // path must refuse to carry anything and re-review the whole part.
- const duplicateReview={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-   directAnswerClaimIds:['P1-C1'],
-   retainedContextClaimIds:['P1-C2','P1-C3','P1-C4'],
-   directAnswerRequirementIds:[],requirements:[]}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:[],
-    attributionStatus:'not_applicable',attributedSpeaker:'',
-    subjectAttributionStatus:'supported',attributedSubject:'Hume',
-    evidenceRole:'work-assertion',supportBoundary:'No span was supplied.'}]}]};
- let reReviewPayload;
- const gateRepair=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  const texts={'P1-C2':'Constant conjunction is observed throughout nature. [S1]',
-   'P1-C3':'Custom is the great guide of human life.',
-   'P1-C4':'Custom is the great guide of human life.'};
-  return {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:payload.parts[0].repair.replaceClaimIds
-    .map(claimId=>({claimId,text:texts[claimId]})),additions:[]}]})};
- };
- const fullReReview=(_model,{messages})=>{
-  reReviewPayload=parsePayload(messages);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',directAnswerClaimIds:['P1-C1'],
-    retainedContextClaimIds:reReviewPayload.parts[0].contextClaims.map(claim=>claim.claimId),
-    directAnswerRequirementIds:[],requirements:[]}],
-   claims:reReviewPayload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(entry=>entry.sourceId===sourceId).spanIds[0]],
-     attributionStatus:'not_applicable',attributedSpeaker:'',
-     subjectAttributionStatus:'supported',attributedSubject:'Hume',
-     evidenceRole:'work-assertion'}))}))})};
- };
- const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1] Constant conjunction is observed throughout nature.\n\n'+
-   'Custom is the great guide of human life.\n\n'+
-   'Custom is the great guide of human life.'),
-  {response:JSON.stringify(duplicateReview)},rescueRejection(),gateRepair,fullReReview],
-  {decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,5,'compose, review, rescue, gate repair, whole-part re-review');
- assert.deepEqual(reReviewPayload.claims.map(claim=>claim.claimId),['P1-C1'],
-  'the whole candidate is re-reviewed: its cited claim is in the packet');
- assert.deepEqual(reReviewPayload.parts[0].contextClaims.map(claim=>claim.claimId),
-  ['P1-C2','P1-C3'],
-  'and both duplicated context claims are in the packet too — nothing was carried');
- assert.equal(result.trace.deltaReReview[0].mappingFallback,'ambiguous-claim-mapping');
- assert.deepEqual(result.trace.deltaReReview[0].carriedClaimIds,[]);
- assert.equal(result.trace.citationGate[0].action,'repair-applied');
-});
 
 test('batch 26 B26-4: rendered-text verification records a shipped claim whose text is absent',async()=>{
  const parts=[{part:{id:'P1',sourceRequired:true},answers:[
@@ -8272,31 +6146,6 @@ const rescueNotSupported=payload=>({response:JSON.stringify({decisions:
  (payload.decisions||[]).map(item=>({claimId:item.claimId,sourceId:item.sourceId,
   verdict:'not-supported',fragment:item.spans?.[0]?.text||'no support'}))})});
 
-test('batch 27 B27-2: a pronoun-actor span cannot corroborate the reviewer-resolved name',async()=>{
- const spans=buildReviewSpans('S1',conradPronounText);
- const pronounSpan=spans.find(span=>span.text.includes('he ordered an immense round table'));
- assert.ok(pronounSpan,'the fixture span carries the pronoun actor');
- const ai=batch26RouterAI({
-  draft:'PART P1\nKurtz sat at the head of an immense round table in the station\'s mess-room. [S1]',
-  review:conradReview([pronounSpan.spanId]),
-  rescue:rescueNotSupported});
- const result=await composeEvidenceAnswer('In Heart of Darkness, who sat at the head of the round table in the station mess-room?',
-  [conradSource],ai,[],{plan:conradPlan,
-   catalog:{77:'Heart of Darkness — Joseph Conrad'},trace:true});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,false,
-  'reviewer and claim agreeing on a name no span states no longer ships');
- assert.equal(decision.validationReason,'subject-not-named-in-span');
- assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
-  issue.claimId==='P1-C1'&&issue.sourceId==='S1'&&
-  issue.reason==='subject-not-named-in-span'));
- assert.doesNotMatch(result.answer,/Kurtz sat at the head/);
- // The demotion is an attribution finding the rescue can answer:
- // the requested pair carried the finding (B27-3 trace shape).
- const requested=result.trace.rescueReview.parts[0].requestedPairs[0];
- assert.equal(requested.attributionFindingSent,true);
-});
 
 test('batch 27 B27-2: a co-accepted span naming the person ships the same claim',async()=>{
  const namingSentence='Kurtz sat at the head of the immense round table whenever he came down to the station.';
@@ -8343,146 +6192,8 @@ test('batch 27 B27-1: extraction blind spots are counted in the review contract'
   'the claim carries a capitalized name candidate, so the blind spot is counted');
 });
 
-test('batch 27 B27-3/B27-4: the rescue request is traced and its clauses come from the first normalization',async()=>{
- let rescuePayload;
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
-  review:clausePartialReview,
-  rescue:payload=>{
-   rescuePayload=payload;
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,
-    elements:[{element:item.claimText,stated:true}],
-    clauses:[{text:'treats constant conjunction as its basis',stated:true,
-     fragment:'similar objects are constantly conjoined'}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- // The packet's outstanding list equals the first normalization's own
- // clause findings for the pair — the not-answered clause decisions
- // recorded on the pair's review decision — not a recomputation.
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- const expectedOutstanding=(decision.clauseDecisions||[])
-  .filter(clause=>clause.status!=='answered').map(clause=>clause.text);
- assert.deepEqual(expectedOutstanding,['treats constant conjunction as its basis']);
- assert.deepEqual(rescuePayload.decisions[0].outstandingClauses,
-  expectedOutstanding.map(text=>({text})));
- // B27-3 trace shape: the request itself is recorded per pair.
- assert.deepEqual(result.trace.rescueReview.parts[0].requestedPairs,
-  [{claimId:'P1-C1',sourceId:'S1',outstandingClauseCount:1,
-   outstandingClauses:['treats constant conjunction as its basis'],
-   attributionFindingSent:false,
-   spanCount:rescuePayload.decisions[0].spans.length}]);
-});
 
-test('batch 27 B27-4: a supported verdict omitting one listed clause is retried and then flips',async()=>{
- const twoClauseReview={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2']}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
-    attributionStatus:'not_applicable',attributedSpeaker:'',
-    subjectAttributionStatus:'supported',attributedSubject:'Hume',
-    evidenceRole:'work-assertion',supportBoundary:'Supports the full sentence.'}],
-   clauses:[
-    {text:'Hume links necessity to custom',status:'answered',issueCode:'none',
-     sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]},
-    {text:'treats constant conjunction as its basis',status:'partial',issueCode:'compound',
-     sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1']}]},
-    {text:'the mind is determined to infer one object from another',status:'partial',
-     issueCode:'scope',sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1']}]}]}]};
- let rescueCalls=0;
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
-  review:twoClauseReview,
-  rescue:payload=>{
-   rescueCalls++;
-   const item=payload.decisions[0];
-   assert.deepEqual(item.outstandingClauses.map(clause=>clause.text),
-    ['treats constant conjunction as its basis',
-     'the mind is determined to infer one object from another'],
-    'both outstanding clauses from the first normalization ride in the packet');
-   const clauses=rescueCalls===1?
-    [{text:'treats constant conjunction as its basis',stated:true,
-      fragment:'similar objects are constantly conjoined'}]:
-    [{text:'treats constant conjunction as its basis',stated:true,
-      fragment:'similar objects are constantly conjoined'},
-     {text:'the mind is determined to infer one object from another',stated:true,
-      fragment:'the mind is determined by custom to infer one from the other'}];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,
-    elements:[{element:item.claimText,stated:true}],clauses}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(rescueCalls,2,'the clause-incomplete verdict was re-asked exactly once');
- const rescueEntry=result.trace.rescueReview.parts[0];
- assert.deepEqual(rescueEntry.attempts.map(attempt=>attempt.outcome),
-  ['invalid-response','completed']);
- assert.equal(rescueEntry.attempts[0].reason,'clause-verdicts-missing');
- assert.equal(rescueEntry.flipped,1,
-  'the completed clause verdicts let the flip apply');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.match(result.answer,/treats constant conjunction as its basis/);
-});
 
-test('batch 27 B27-5: the retry re-asks only the failed pair, with its full span set',async()=>{
- const spanTexts=[
-  'Custom is the great guide of human life, and it is to custom alone that we must look for the explanation of causal inference in every case.',
-  'Constant conjunction is observed throughout nature, where similar objects are constantly conjoined in every instance that experience offers us.',
-  'Repetition shapes the inference by determining the mind, through repeated conjunction, to expect the same train of events as before.'];
- const sourceText=spanTexts.join(' ');
- const spans=buildReviewSpans('S1',sourceText);
- assert.equal(spans.length,3,'the fixture source yields three distinct spans');
- const source={id:'S1',bookId:'35',title:catalog[35],page:42,text:sourceText,
-  preview:'Custom is the great guide of human life.'};
- const review={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[]}],
-  claims:[
-   {claimId:'P1-C1',status:'partial',sources:[{sourceId:'S1',status:'partial',
-     spanIds:[spans[0].spanId],attributionStatus:'not_applicable',attributedSpeaker:'',
-     subjectAttributionStatus:'supported',attributedSubject:'Hume',
-     evidenceRole:'work-assertion'}]},
-   {claimId:'P1-C2',status:'partial',sources:[{sourceId:'S1',status:'partial',
-     spanIds:[spans[2].spanId],attributionStatus:'not_applicable',attributedSpeaker:'',
-     subjectAttributionStatus:'supported',attributedSubject:'Repetition',
-     evidenceRole:'work-assertion'}]}]};
- let rescueCalls=0;let retryPayload=null;
- const ai=batch26RouterAI({
-  draft:'PART P1\nCustom guides human life and causal inference. [S1]\n\nRepetition shapes the inference through repeated conjunction. [S1]',
-  review,
-  rescue:payload=>{
-   rescueCalls++;
-   if(rescueCalls===1)return {response:JSON.stringify({decisions:[
-    {claimId:'P1-C1',sourceId:'S1',verdict:'not-supported',
-     fragment:payload.decisions[0].spans[0].text},
-    {claimId:'P1-C2',sourceId:'S1',verdict:'supported',
-     fragment:'a fragment that appears in no supplied span',
-     elements:[{element:'Repetition shapes the inference',stated:true}]}]})};
-   retryPayload=payload;
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',
-    fragment:item.spans.find(span=>span.text.includes('Repetition shapes')).text,
-    elements:[{element:item.claimText,stated:true}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [source],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(rescueCalls,2);
- assert.equal(retryPayload.decisions.length,1,
-  'only the pair whose verdict failed validation is re-asked');
- assert.equal(retryPayload.decisions[0].claimId,'P1-C2');
- assert.equal(retryPayload.decisions[0].spans.length,3,
-  'the retry carries the pair\'s FULL span set — under the batch-25 two-span cap, the validating fragment (span three) could never be quoted');
- const rescueEntry=result.trace.rescueReview.parts[0];
- assert.equal(rescueEntry.attempts[1].retryScope,'failed-pairs');
- assert.equal(rescueEntry.attempts[1].fullSpans,true);
- assert.equal(rescueEntry.flipped,1,'the retried pair flips on its third span');
- assert.match(result.answer,/Repetition shapes the inference/);
-});
 
 test('batch 27 B27-6: rendered-text verification tolerates furniture and quote normalization',()=>{
  const answers=[
@@ -8512,61 +6223,6 @@ test('batch 27 B27-6: rendered-text verification still flags genuinely absent cl
 // Batch 28 (B28-1..B28-3)
 // ---------------------------------------------------------------------------
 
-test('batch 28 B28-1: a clause answered via one source is listed in the other source\'s rescue packet',async()=>{
- // The clause is answered overall — Hume's spans establish it —
- // but Kant's own clause decision is open (no spans). Under the
- // batch-27 recording (overall status replicated to every cited
- // source) the S2 pair's packet listed zero outstanding clauses, so
- // the veto population and the packet population could never agree.
- const clauseText='Custom leads the mind to infer one object from another';
- const claimText=clauseText+', and causality is a pure conception of the understanding.';
- const twoSourcePlan={version:'reader-evidence-v2',intent:'compare',
-  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
-   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
-  parts:[{id:'P1',question:'How do Hume and Kant each ground causal necessity?',
-   sourceBookIds:['35','40'],searchQueries:['Hume Kant causality'],
-   candidateSourceIds:['S1','S2'],
-   requirements:[{id:'P1-R1',text:'Explain how custom grounds the inference to causal necessity.'}]}],
-  queries:['Hume Kant causality']};
- const review={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[],
-   requirementCoverage:[{requirementId:'P1-R1',status:'partial',
-    answerClaimIds:['P1-C1']}]}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
-     attributionStatus:'not_applicable',attributedSpeaker:'',evidenceRole:'work-assertion'},
-    {sourceId:'S2',status:'partial',spanIds:[],
-     attributionStatus:'not_applicable',attributedSpeaker:'',evidenceRole:'work-assertion'}],
-   clauses:[{text:clauseText,status:'answered',issueCode:'none',
-    sources:[{sourceId:'S1',spanIds:['S1-Q1']},{sourceId:'S2',spanIds:[]}]}]}]};
- const ai=batch26RouterAI({
-  draft:`PART P1\n${claimText} [S1, S2]`,
-  review,
-  rescue:payload=>{
-   const item=payload.decisions[0];
-   assert.equal(item.sourceId,'S2','only the open pair is rescue-asked');
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,
-    elements:[{element:item.claimText,stated:true}],
-    clauses:[{text:clauseText,stated:true,
-     fragment:'Causality is one of the categories of relation'}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How do Hume and Kant each ground causal necessity?',
-  [hume,kant],ai,[],{plan:twoSourcePlan,catalog,trace:true});
- const pair=result.trace.rescueReview.parts[0].requestedPairs
-  .find(entry=>entry.sourceId==='S2');
- assert.equal(pair.outstandingClauseCount,1,
-  'the per-source recording lists the clause for the pair it is open for');
- assert.deepEqual(pair.outstandingClauses,[clauseText]);
- assert.equal(result.trace.rescueReview.parts[0].flipped,1,
-  'the clearing clause verdict lets the flip apply');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S2');
- assert.equal(decision.accepted,true);
- assert.match(result.answer,/causality is a pure conception of the understanding/,
-  'the flipped claim text ships');
- assert.equal(result.outcome,'verified-source-draft');
-});
 
 test('batch 28 B28-2: accepted requirement answers derive the direct-answer set the reviewer omitted',async()=>{
  // The batch-27 Orwell shape: every claim accepted, the requirement
@@ -8623,79 +6279,6 @@ test('batch 28 B28-2: reviewer nominations present leave the derivation and the 
  assert.doesNotMatch(result.answer,/operates on the imagination/);
 });
 
-test('batch 28 B28-2: one part\'s re-review deadline cannot abort a sibling part\'s repair',async()=>{
- const twoPartPlan={version:'reader-evidence-v2',intent:'compare',
-  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
-   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
-  parts:[
-   {id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
-    searchQueries:['Hume necessity custom'],candidateSourceIds:['S1']},
-   {id:'P2',question:'How does Kant explain causal necessity?',sourceBookIds:['40'],
-    searchQueries:['Kant causality a priori'],candidateSourceIds:['S2']}],
-  queries:['Hume custom','Kant a priori']};
- const repairedTexts={
-  P1:'Hume explains necessity through custom and repeated conjunction, repaired. [S1]',
-  P2:'Kant explains causality as an a priori category of the understanding, repaired. [S2]'};
- const ai={calls:[],async run(model,request){
-  const messages=request.messages;
-  ai.calls.push(messages);
-  const system=messages[0].content;
-  if(system.startsWith('Answer the reader'))
-   return {response:'PART P1\nHume says necessity is a directly observed power. [S1]\n'+
-    'PART P2\nKant says causality is directly observed in experience. [S2]'};
-  if(system.startsWith('Judge only the listed claim')){
-   const payload=JSON.parse(messages[1].content);
-   return {response:JSON.stringify({decisions:(payload.decisions||[]).map(item=>({
-    claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
-    fragment:item.spans?.[0]?.text||'no support'}))})};
-  }
-  if(system.startsWith('Patch only the requested claims')){
-   const payload=parsePayload(messages);
-   return {response:JSON.stringify({parts:payload.parts.map(part=>({partId:part.partId,
-    replacements:(part.repair?.replaceClaimIds||[])
-     .map(claimId=>({claimId,text:repairedTexts[part.partId]})),additions:[]}))})};
-  }
-  if(system.startsWith('Review the complete answer')){
-   const payload=parsePayload(messages);
-   const part=payload.parts[0],claim=payload.claims[0];
-   if(claim.text.includes('repaired')){
-    if(part.partId==='P2'){
-     const error=new Error('Inference deadline exceeded');
-     error.code='inference-deadline-exceeded';error.stage='answer-re-review';
-     throw error;
-    }
-    const spanId=claim.sourceEvidence
-     .find(item=>item.sourceId===claim.sourceIds[0]).spanIds[0];
-    return {response:JSON.stringify({parts:[{partId:part.partId,status:'answered',
-      answerStatus:'answered',directAnswerClaimIds:[claim.claimId]}],
-     claims:[{claimId:claim.claimId,status:'answered',
-      sources:[{sourceId:claim.sourceIds[0],status:'answered',spanIds:[spanId],
-       attributionStatus:'not_applicable',attributedSpeaker:'',
-       subjectAttributionStatus:'supported',
-       attributedSubject:part.partId==='P1'?'Hume':'Kant',
-       evidenceRole:'work-assertion'}]}]})};
-   }
-   return {response:JSON.stringify({parts:[{partId:part.partId,status:'partial',
-     answerStatus:'partial',repairable:true,directAnswerClaimIds:[claim.claimId]}],
-    claims:[{claimId:claim.claimId,status:'partial',
-     sources:[{sourceId:claim.sourceIds[0],status:'partial',spanIds:[]}]}]})};
-  }
-  throw new Error('unexpected stage: '+system.slice(0,60));
- }};
- const result=await composeEvidenceAnswer('How do Hume and Kant explain causal necessity?',
-  [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],ai,[],
-  {plan:twoPartPlan,catalog,trace:true});
- assert.equal(result.trace.answerRepair.applied,true,
-  'the surviving part\'s repair still applies');
- assert.deepEqual(result.trace.answerRepair.adoptedPartIds,['P1']);
- assert.deepEqual(result.trace.answerRepair.reReviewFailures,
-  [{partId:'P2',reason:'inference-deadline-exceeded'}],
-  'the failed part records its own re-review failure');
- assert.match(result.answer,/repeated conjunction, repaired/,
-  'the adopted repair ships');
- assert.doesNotMatch(result.answer,/a priori category of the understanding, repaired/,
-  'the timed-out part\'s repair does not ship');
-});
 
 test('batch 28 B28-3: a strict-minority drop names unvalidatedPartsDropped on the result, label unchanged',async()=>{
  // The batch-27 Plato shape: one part of three fails review twice
@@ -8729,38 +6312,6 @@ test('batch 28 B28-3: a strict-minority drop names unvalidatedPartsDropped on th
   'the trace carries the same record');
 });
 
-test('batch 28 B28-3: a case lost to a stage failure carries the failure code on the result',async()=>{
- // The repair is written, but its independent re-review dies on the
- // provider deadline and nothing else ships. Before batch 28 the
- // result carried no failureCode at all — the deadline existed only
- // inside the trace's answer-repair record.
- const deadlineError=Object.assign(new Error('Inference deadline exceeded'),
-  {code:'inference-deadline-exceeded',stage:'answer-re-review'});
- const ai=makeAI([
-  answer('PART P1\nHume says necessity is a directly observed power connecting causes to effects. [S1]'),
-  (_model,{messages})=>{
-   const payload=parsePayload(messages),claim=payload.claims[0];
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-    repairable:true,directAnswerClaimIds:[claim.claimId]}],claims:[{claimId:claim.claimId,status:'partial',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
-  },
-  rescueRejection(),
-  (_model,{messages})=>{
-   return {response:JSON.stringify({parts:[{partId:'P1',replacements:[{claimId:'P1-C1',text:
-    'Hume says our idea of necessity arises from uniformity in nature, where similar objects are constantly conjoined, and custom leads the mind to infer one from the other. [S1]'}],additions:[]}]})};
-  },
-  deadlineError
- ],{decorateReview:false});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
-  {plan:onePartPlan,catalog,trace:true});
- assert.equal(result.outcome,'insufficient-evidence');
- assert.equal(result.trace.answerRepair.reason,'inference-deadline-exceeded');
- assert.equal(result.failureCode,'inference-deadline-exceeded',
-  'the causing stage failure is surfaced on the result');
- assert.equal(result.failureStage,'answer-repair');
- assert.equal(result.downgradeReasons,undefined,
-  'no downgrade flag fired, so no downgradeReasons field appears');
-});
 
 
 // ---------------------------------------------------------------------------
@@ -8821,229 +6372,11 @@ test('batch 29 B29-1 (iv): no clause text with invalid offsets keeps the textles
  assert.equal(result.decisions[0].unresolved,true);
  assert.ok(result.warnings.includes('clause-range-invalid'));
 });
-test('batch 29 B29-1 (i) pilot: a duplicated clause text with bogus offsets still clears at rescue and ships',async()=>{
- const review={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2'],
-   directAnswerRequirementIds:[],requirements:[]}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
-    attributionStatus:'not_applicable',attributedSpeaker:'',
-    subjectAttributionStatus:'supported',attributedSubject:'Hume',
-    evidenceRole:'work-assertion',supportBoundary:'Supports the full sentence.'}],
-   clauses:[{text:'custom produces necessity',start:3,end:11,status:'partial',
-    issueCode:'compound',
-    sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1']}]}]}]};
- const ai=batch26RouterAI({
-  draft:'PART P1\nHe holds that custom produces necessity, and that custom produces necessity in every inference from experience. [S1]\nCustom is the great guide of human life.',
-  review,
-  rescue:payload=>{
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,
-    elements:[{element:item.claimText,stated:true}],
-    clauses:[{text:'custom produces necessity',stated:true,
-     fragment:'similar objects are constantly conjoined'}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(result.outcome,'verified-source-draft');
- assert.ok(result.answer.includes('custom produces necessity in every inference from experience. [S1]'),
-  'the flipped claim ships: the clause was located by text, not stranded by offsets');
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.flipOutcome,'accepted');
- assert.equal(rescueClaim.flipVeto,undefined);
-});
-test('batch 29 B29-1 (iii) pilot: an unlocatable clause text is recorded, packeted, and clearable',async()=>{
- const review={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:['P1-C2'],
-   directAnswerRequirementIds:[],requirements:[]}],
-  claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
-    attributionStatus:'not_applicable',attributedSpeaker:'',
-    subjectAttributionStatus:'supported',attributedSubject:'Hume',
-    evidenceRole:'work-assertion',supportBoundary:'Supports the full sentence.'}],
-   clauses:[
-    {text:'Hume links necessity to custom',status:'answered',issueCode:'none',
-     sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]},
-    {text:'the will is determined by motives',status:'partial',issueCode:'scope',
-     sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1']}]},
-    {text:'the mind is determined to infer one object from another',status:'answered',
-     issueCode:'none',sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}]}]};
- let rescuePayload;
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
-  review,
-  rescue:payload=>{
-   rescuePayload=payload;
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,
-    elements:[{element:item.claimText,stated:true}],
-    clauses:[{text:'the will is determined by motives',stated:true,
-     fragment:'similar objects are constantly conjoined'}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.deepEqual(rescuePayload.decisions[0].outstandingClauses,
-  [{text:'the will is determined by motives'}],
-  'the unlocatable clause is recorded with its text and listed in the packet');
- assert.equal(result.outcome,'verified-source-draft');
- assert.ok(result.answer.includes('treats constant conjunction as its basis'),
-  'the clearing verdict accepts the flip and the claim text ships');
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.flipOutcome,'accepted');
- assert.deepEqual(rescueClaim.clearedClauses,
-  [{text:'the will is determined by motives',
-   fragment:'similar objects are constantly conjoined'}]);
-});
 
 // ---------------------------------------------------------------------------
 // Batch 29 (B29-2): clearance alignment — present-but-non-clearing clause
 // entries invalidate the verdict (clause-not-cleared), never flip-then-veto.
 // ---------------------------------------------------------------------------
-test('batch 29 B29-2 (i): a stated:false clause entry is re-asked, then the clearing retry flips',async()=>{
- let rescueCalls=0;
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
-  review:clausePartialReview,
-  rescue:payload=>{
-   rescueCalls++;
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,
-    elements:[{element:item.claimText,stated:true}],
-    clauses:[{text:'treats constant conjunction as its basis',
-     stated:rescueCalls>1,fragment:'similar objects are constantly conjoined'}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- const rescueEntry=result.trace.rescueReview.parts[0];
- assert.deepEqual(rescueEntry.attempts[0],
-  {outcome:'invalid-response',reason:'clause-not-cleared',
-   callLatencyMs:rescueEntry.attempts[0].callLatencyMs},
-  'presence without clearance fails validation on the first attempt');
- assert.equal(rescueEntry.outcome,'completed-after-retry');
- assert.equal(rescueEntry.flipped,1);
- assert.equal(result.outcome,'verified-source-draft');
- assert.ok(result.answer.includes('treats constant conjunction as its basis'));
- const rescueClaim=rescueEntry.claims[0];
- assert.deepEqual(rescueClaim.clauseOutcomes,
-  [{text:'treats constant conjunction as its basis',stated:true,
-   fragmentInSpan:true,cleared:true}],
-  'the trace records the per-clause outcome of the applying verdict');
- assert.equal(rescueClaim.flipOutcome,'accepted');
- assert.equal(rescueClaim.flipVeto,undefined);
-});
-test('batch 29 B29-2 (ii): still non-clearing after the retry records not-supported, never a veto',async()=>{
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another. [S1]\nCustom is the great guide of human life.',
-  review:clausePartialReview,
-  rescue:payload=>{
-   const item=payload.decisions[0];
-   return {response:JSON.stringify({decisions:[{claimId:item.claimId,sourceId:item.sourceId,
-    verdict:'supported',fragment:item.spans[0].text,
-    elements:[{element:item.claimText,stated:true}],
-    clauses:[{text:'treats constant conjunction as its basis',stated:false,
-     fragment:'similar objects are constantly conjoined'}]}]})};
-  }});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- const rescueEntry=result.trace.rescueReview.parts[0];
- assert.equal(rescueEntry.outcome,'completed-after-retry');
- assert.deepEqual(rescueEntry.attempts.map(attempt=>attempt.outcome),
-  ['invalid-response','clause-not-cleared']);
- assert.equal(rescueEntry.flipped,0);
- const rescueClaim=rescueEntry.claims[0];
- assert.equal(rescueClaim.verdict,'not-supported');
- assert.equal(rescueClaim.clauseNotCleared,true);
- assert.equal(rescueClaim.reason,'clause-not-cleared');
- assert.equal(rescueClaim.flipOutcome,undefined,
-  'the pair was never flipped, so no flip outcome exists');
- assert.ok(!JSON.stringify(result.trace.rescueReview).includes('flipVeto'),
-  'no flip veto appears anywhere in the rescue trace');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,false,'the original decision stands');
- assert.ok(!result.answer.includes('treats constant conjunction as its basis'));
-});
-test('batch 29 B29-2 (iii): a fragment failure cannot discard an earlier pair’s clause-omission flag',async()=>{
- const twoSourcePlan={version:'reader-evidence-v2',intent:'compare',
-  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
-   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
-  parts:[{id:'P1',question:'How do Hume and Kant each ground causal necessity?',
-   sourceBookIds:['35','40'],searchQueries:['Hume Kant causality'],
-   candidateSourceIds:['S1','S2'],
-   requirements:[{id:'P1-R1',text:'Explain how custom grounds the inference to causal necessity.'}]}],
-  queries:['Hume Kant causality']};
- const review={parts:[{partId:'P1',status:'partial',answerStatus:'partial',
-   directAnswerClaimIds:['P1-C1'],retainedContextClaimIds:[],
-   requirementCoverage:[{requirementId:'P1-R1',status:'partial',
-    answerClaimIds:['P1-C1']}]}],
-  claims:[{claimId:'P1-C1',status:'partial',sources:[
-   {sourceId:'S1',status:'partial',spanIds:['S1-Q1'],
-    attributionStatus:'not_applicable',attributedSpeaker:'',
-    subjectAttributionStatus:'supported',attributedSubject:'Hume',
-    evidenceRole:'work-assertion',supportBoundary:'Supports part of the sentence.'},
-   {sourceId:'S2',status:'partial',spanIds:['S2-Q1'],
-    attributionStatus:'not_applicable',attributedSpeaker:'',
-    subjectAttributionStatus:'supported',attributedSubject:'Hume',
-    evidenceRole:'work-assertion',supportBoundary:'Supports part of the sentence.'}],
-   clauses:[
-    {text:'Hume links necessity to custom',status:'partial',issueCode:'compound',
-     sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1']},
-      {sourceId:'S2',status:'partial',spanIds:['S2-Q1']}]},
-    {text:'and regular conjunction',status:'partial',issueCode:'compound',
-     sources:[{sourceId:'S1',status:'partial',spanIds:['S1-Q1']},
-      {sourceId:'S2',status:'partial',spanIds:['S2-Q1']}]}]}]};
- let rescueCalls=0,retryPayload;
- const ai=batch26RouterAI({
-  draft:'PART P1\nHume links necessity to custom and regular conjunction. [S1, S2]',
-  review,
-  rescue:payload=>{
-   rescueCalls++;
-   if(rescueCalls>1)retryPayload=payload;
-   const bySource=new Map(payload.decisions.map(item=>[item.sourceId,item]));
-   if(rescueCalls===1){
-    // Pair A omits its clause entries entirely; pair B (later in the
-    // response) fails on a fragment no span contains. Before B29-2,
-    // the fragment failure returned early and discarded A's omission
-    // record, so the retry never re-asked A.
-    const a=bySource.get('S1'),b=bySource.get('S2');
-    return {response:JSON.stringify({decisions:[
-     {claimId:a.claimId,sourceId:'S1',verdict:'supported',
-      fragment:a.spans[0].text,elements:[{element:a.claimText,stated:true}]},
-     {claimId:b.claimId,sourceId:'S2',verdict:'supported',
-      fragment:'a fragment that appears in no supplied span',
-      elements:[{element:b.claimText,stated:true}],
-      clauses:(b.outstandingClauses||[]).map(clause=>({text:clause.text,
-       stated:true,fragment:b.spans[0].text}))}]})};
-   }
-   // The retry re-asks both pairs; A omits its clauses again, B clears.
-   const a=bySource.get('S1'),b=bySource.get('S2');
-   const retryDecisions=[];
-   if(a)retryDecisions.push({claimId:a.claimId,sourceId:'S1',verdict:'supported',
-    fragment:a.spans[0].text,elements:[{element:a.claimText,stated:true}]});
-   if(b)retryDecisions.push({claimId:b.claimId,sourceId:'S2',verdict:'supported',
-    fragment:b.spans[0].text,elements:[{element:b.claimText,stated:true}],
-    clauses:(b.outstandingClauses||[]).map(clause=>({text:clause.text,
-     stated:true,fragment:b.spans[0].text}))});
-   return {response:JSON.stringify({decisions:retryDecisions})};
-  }});
- const result=await composeEvidenceAnswer('How do Hume and Kant each ground causal necessity?',
-  [hume,kant],ai,[],{plan:twoSourcePlan,catalog,trace:true});
- assert.ok(retryPayload,'the rescue was retried');
- assert.deepEqual(retryPayload.decisions.map(item=>item.sourceId).sort(),
-  ['S1','S2'],'the omission-flagged pair survives into the retry scope');
- const rescueEntry=result.trace.rescueReview.parts[0];
- assert.deepEqual(rescueEntry.attempts.map(attempt=>attempt.outcome),
-  ['invalid-response','clause-verdicts-missing']);
- const claimA=rescueEntry.claims.find(claim=>claim.sourceId==='S1');
- assert.equal(claimA.verdict,'not-supported');
- assert.equal(claimA.clauseVerdictsMissing,true,
-  'A’s omission record survived the fragment failure and was recorded');
- const claimB=rescueEntry.claims.find(claim=>claim.sourceId==='S2');
- assert.equal(claimB.verdict,'supported');
-});
 
 // ---------------------------------------------------------------------------
 // Batch 29 (B29-3): possessive trait attribution. The batch-27 B27-2
@@ -9053,35 +6386,6 @@ test('batch 29 B29-2 (iii): a fragment failure cannot discard an earlier pair’
 // ---------------------------------------------------------------------------
 const b29ConradPlan={...conradPlan,parts:[{...conradPlan.parts[0],
  question:'What does the narrator observe about Kurtz in Heart of Darkness?'}]};
-test('batch 29 B29-3 (i): a possessive-only claim over a possessive-pronoun span demotes',async()=>{
- const c5='He observes the glamour that seems to envelop Kurtz\'s destitution and loneliness.';
- assert.deepEqual(claimPersonSubjects(c5),['Kurtz']);
- assert.deepEqual(claimPossessiveOnlySubjects(c5),['Kurtz'],
-  'the claim links Kurtz only through the possessive attribution');
- assert.deepEqual(claimPersonSubjects('Hamlet\'s conscience weakens resolution and action.'),[],
-  'narrowing: a claim-initial possessive subject stays with the lead patterns');
- const sourceText='The Russian travelled up the river in a dilapidated steamboat with patched sails. '+
-  'His need was to exist, and to move onwards at the greatest possible risk, and with a maximum of privation. '+
-  'If the absolutely pure, uncalculating spirit of adventure had ever ruled a human being, it ruled this be-patched youth.';
- const spans=buildReviewSpans('S1',sourceText);
- const possessiveSpan=spans.find(span=>span.text.includes('His need was to exist'));
- assert.ok(possessiveSpan,'the fixture span presents the bearer under a possessive pronoun only');
- const source={...conradSource,text:sourceText};
- const ai=batch26RouterAI({
-  draft:'PART P1\n'+c5+' [S1]',
-  review:conradReview([possessiveSpan.spanId]),
-  rescue:rescueNotSupported});
- const result=await composeEvidenceAnswer(
-  'What does the narrator observe about Kurtz in Heart of Darkness?',
-  [source],ai,[],{plan:b29ConradPlan,
-   catalog:{77:'Heart of Darkness — Joseph Conrad'},trace:true});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,false,
-  'the batch-28 Conrad shape no longer ships on reviewer resolution alone');
- assert.equal(decision.validationReason,'subject-not-named-in-span');
- assert.doesNotMatch(result.answer,/envelop Kurtz/);
-});
 test('batch 29 B29-3 (iii): a possessive claim whose accepted span names the person ships',async()=>{
  const sourceText='Kurtz\'s destitution and loneliness were plain for every visitor to see at the station. '+
   'His need was to exist, and to move onwards at the greatest possible risk.';
@@ -9144,93 +6448,7 @@ test('batch 29 B29-4: a streaming compose deadline suppression is counted on the
  assert.equal(calls,2,'one compose call per whole-build attempt, no in-build retry');
 });
 
-test('batch 30 split-on-timeout: a timed-out monolithic review retries as two claim halves',async()=>{
- const sentences=Array.from({length:6},(_,index)=>
-  `Hume point ${index+1} links necessity to custom and regular conjunction. [S1]`);
- const calls=[];
- let reviewAttempts=0;
- const ai={calls,run:async(model,request)=>{
-  calls.push({model,request});
-  const system=String(request?.messages?.[0]?.content||'');
-  if(system.startsWith('Answer the reader'))
-   return answer('PART P1\n'+sentences.join(' '));
-  if(system.startsWith('Review the complete answer')){
-   reviewAttempts++;
-   if(reviewAttempts===1)throw Object.assign(new Error('Inference deadline exceeded'),
-    {code:'inference-deadline-exceeded',stage:'review'});
-   const payload=parsePayload(request.messages);
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',
-    directAnswerClaimIds:[payload.claims[0].claimId],retainedContextClaimIds:[]}],
-    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
-      subjectAttributionStatus:'supported',attributedSubject:'Hume'}))}))})};
-  }
-  throw new Error('unexpected stage in split-on-timeout fixture: '+system.slice(0,40));
- }};
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- assert.equal(result.outcome,'verified-source-draft',
-  'the part completes through the split retry and the answer ships');
- const reviewCalls=calls.filter(call=>
-  String(call.request.messages[0].content).startsWith('Review the complete answer'));
- assert.equal(reviewCalls.length,3,'the timed-out attempt plus two half reviews');
- const halfClaimSets=reviewCalls.slice(1).map(call=>
-  JSON.parse(call.request.messages[1].content).claims.map(claim=>claim.claimId));
- assert.deepEqual(halfClaimSets.map(set=>set.length),[3,3]);
- assert.deepEqual(new Set(halfClaimSets.flat()).size,6,
-  'the halves are disjoint and together cover every claim of the part');
- const accepted=result.trace.reviewContract.reviewDecisions
-  .filter(decision=>decision.accepted===true);
- assert.equal(accepted.length,6,'merged half verdicts cover every claim');
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,mode:'review-only',
-  reason:'inference-deadline-exceeded',applied:true,outcome:'recovered',
-  parts:[{partId:'P1',reason:'inference-deadline-exceeded',applied:true,
-   mode:'review-only',samePacket:false,splitRetry:true,outcome:'recovered'}]},
-  'the retry is recorded as a split retry, not a same-packet resend');
-});
 
-test('batch 30 split-on-timeout halves partition an odd claim set without loss or duplication',async()=>{
- const sentences=Array.from({length:7},(_,index)=>
-  `Hume point ${index+1} links necessity to custom and regular conjunction. [S1]`);
- const calls=[];
- let reviewAttempts=0;
- const ai={calls,run:async(model,request)=>{
-  calls.push({model,request});
-  const system=String(request?.messages?.[0]?.content||'');
-  if(system.startsWith('Answer the reader'))
-   return answer('PART P1\n'+sentences.join(' '));
-  if(system.startsWith('Review the complete answer')){
-   reviewAttempts++;
-   if(reviewAttempts===1)throw Object.assign(new Error('Inference deadline exceeded'),
-    {code:'inference-deadline-exceeded',stage:'review'});
-   const payload=parsePayload(request.messages);
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',
-    directAnswerClaimIds:[payload.claims[0].claimId],retainedContextClaimIds:[]}],
-    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-      spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
-      subjectAttributionStatus:'supported',attributedSubject:'Hume'}))}))})};
-  }
-  throw new Error('unexpected stage in split partition fixture: '+system.slice(0,40));
- }};
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
-  plan:onePartPlan,catalog,trace:true});
- const reviewCalls=calls.filter(call=>
-  String(call.request.messages[0].content).startsWith('Review the complete answer'));
- const firstPayload=JSON.parse(reviewCalls[0].request.messages[1].content);
- const allClaimIds=firstPayload.claims.map(claim=>claim.claimId);
- assert.equal(allClaimIds.length,7);
- const halfClaimSets=reviewCalls.slice(1).map(call=>
-  JSON.parse(call.request.messages[1].content).claims.map(claim=>claim.claimId));
- assert.deepEqual(halfClaimSets.map(set=>set.length),[4,3],
-  'the split takes the ceiling half first');
- assert.deepEqual([...halfClaimSets.flat()].sort(),[...allClaimIds].sort(),
-  'the halves partition the part\u2019s claims exactly');
- assert.equal(result.outcome,'verified-source-draft');
-});
 
 test('batch 30 inference call records carry kind and claimCount',async()=>{
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
@@ -9251,58 +6469,6 @@ test('batch 30 inference call records carry kind and claimCount',async()=>{
  assert.equal(reviewCall.claimCount,1,'the review record counts the claims it judged');
 });
 
-test('batch 30 B30-2: two flipped parts in one build both ship after per-part re-normalization',async()=>{
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
-   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
-  parts:[{id:'P1',question:'How does Hume explain causal necessity?',sourceBookIds:['35'],
-    searchQueries:['Hume necessity custom'],candidateSourceIds:['S1'],
-    requirements:[{id:'P1-R1',text:'Explain the role of custom in causal inference.'}]},
-   {id:'P2',question:'How does Kant explain causality?',sourceBookIds:['40'],
-    searchQueries:['Kant causality category'],candidateSourceIds:['S2'],
-    requirements:[{id:'P2-R1',text:'Explain causality as a category of the understanding.'}]}],
-  queries:['Hume necessity custom','Kant causality category']};
- const draftText='PART P1\nHume says custom operates on the imagination. [S1]\n'+
-  'PART P2\nKant says causality is a category of the understanding. [S2]';
- const subjects={P1:'Hume',P2:'Kant'};
- const reviewResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  const part=payload.parts[0];
-  const requirement=part.requirements[0];
-  return {response:JSON.stringify({parts:[{partId:part.partId,
-    status:'partial',answerStatus:'partial',
-    directAnswerClaimIds:[payload.claims[0].claimId],retainedContextClaimIds:[],
-    requirementCoverage:[{requirementId:requirement.id,status:'partial',
-     answerClaimIds:[payload.claims[0].claimId]}]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'partial',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'partial',
-     spanIds:[sourceId+'-Q1'],subjectAttributionStatus:'supported',
-     attributedSubject:subjects[part.partId]}))}))})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:rescueSupportedResponder,
-  draftText});
- const sources=[{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}];
- const result=await composeEvidenceAnswer(
-  'How do Hume and Kant each explain causal necessity?',sources,ai,[],
-  {plan,catalog,trace:true});
- assert.equal(result.trace.rescueReview.parts.length,2,
-  'both source-required parts entered the rescue');
- assert.deepEqual(result.trace.rescueReview.parts.map(entry=>entry.flipped),[1,1],
-  'each part flipped one claim through its own rescue iteration');
- assert.match(result.answer,/custom operates on the imagination/,
-  'the first part\u2019s flip survived the second part\u2019s re-normalization');
- assert.match(result.answer,/category of the understanding/,
-  'the second part\u2019s flip shipped too');
- assert.match(result.answer,/\[S1\]/);
- assert.match(result.answer,/\[S2\]/);
- assert.deepEqual(result.trace.contractRecompute.parts.map(entry=>entry.partId),
-  ['P1','P2'],'both rescued contracts were recomputed');
- for(const partId of ['P1','P2']){
-  const decision=result.trace.reviewContract.reviewDecisions
-   .find(item=>item.partId===partId);
-  assert.equal(decision.accepted,true,partId+' ends accepted in the merged review');
- }
-});
 
 test('batch 30 B30-2: derivePartContract composes coverage and status derivation',()=>{
  const answered=derivePartContract({reviewerStatus:'answered',
@@ -9443,166 +6609,9 @@ function b30RescueResponder(anchor){
  };
 }
 
-test('batch 31 B31-2: a narration antecedent suppresses the pronoun-span demotion at the gate (batch-30 B30-4 shape)',async()=>{
- // Marlow shape (batch 29's dominant false-demotion family): the
- // cited span presents the actor only as "He"; the packet's own
- // narration names Marlow as subject in another span of the same
- // source. In batch 30 this pair survived only through the rescue:
- // demoted at the gate, flipped by the rescue, restored at
- // re-normalization via B30-4's antecedent key (this test asserted
- // exactly that flow). Batch 31 promotes the key to the gate
- // itself, so the pair is now accepted in the FIRST review contract
- // and the rescue never runs — the router carries no rescue
- // responder, and would throw if one were called. The B30-4
- // rescue-site restoration remains as a backstop for pairs the
- // gate's stricter test cannot release (see the possessive-only
- // backstop test below).
- const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
-  page:44,url:'https://example.test/conrad#page=44',
-  text:['He ordered the helmsman to steer the steamer toward the shore, and the crew, who had been waiting in silence for the signal, moved at once to their stations along the rail.',
-   'The helmsman kept the steamer steady as the shore came into view, holding the vessel against the current that pressed her toward the bank.',
-   'An order from the bridge sent the steamer closer to the shore before dusk, and the leadsman began to call the depths as the water shoaled.',
-   'The helmsman watched the shore while the steamer slowed in the current, and the mate stood ready with the anchor as the light began to fail.',
-   'Marlow had taken command of the steamer only that morning, after the manager\u2019s sudden illness left the vessel without a captain for the voyage upriver.'].join(' '),
-  preview:'He ordered the helmsman to steer the steamer toward the shore.'};
- const ai=batch25RouterAI({
-  reviewResponder:b30ReviewResponder({attributedSubject:'Marlow',spanId:'S1-Q1'}),
-  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
-  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
- assert.equal(result.trace.rescueReview,undefined,
-  'the gate resolved the pair; no rescue round was needed');
- const antecedentSpan=buildReviewSpans('S1',source.text)
-  .find(span=>span.text.includes('Marlow had taken command'));
- assert.ok(antecedentSpan,'the fixture packet names Marlow as narration subject');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.equal(decision.gateRestoration,undefined,
-  'no rescue restoration was involved');
- assert.equal(result.trace.reviewContract.gateRestorations,undefined);
- assert.deepEqual(result.trace.reviewContract.gateDemotionsSuppressed,
-  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
-   reason:'subject-not-named-in-span',antecedentSpanId:antecedentSpan.spanId}],
-  'the suppressed demotion is traced with its antecedent span');
- assert.match(result.answer,/Marlow orders the helmsman/);
-});
 
-test('batch 31 B31-2 backstop: a possessive-only narration antecedent does not suppress at the gate, and B30-4 still restores at the rescue',async()=>{
- // The gate test requires an agent/subject-position antecedent; a
- // narration POSSESSIVE ("Marlow's reputation…") does not qualify,
- // so this pair is demoted at the gate exactly as in batch 30 —
- // and B30-4's rescue-site key, whose helper counts possessive
- // registrations, still restores it there. The two readings are
- // deliberately different: the gate releases on its own authority,
- // the rescue restoration stands behind a model verdict.
- const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
-  page:44,url:'https://example.test/conrad#page=44',
-  text:['He ordered the helmsman to steer the steamer toward the shore, and the crew, who had been waiting in silence for the signal, moved at once to their stations along the rail.',
-   'The helmsman kept the steamer steady as the shore came into view, holding the vessel against the current that pressed her toward the bank.',
-   'The officers of the company spoke often of Marlow\u2019s reputation for steadiness, and the crew trusted his judgment in the difficult reaches of the river above the station.',
-   'The helmsman watched the shore while the steamer slowed in the current, and the mate stood ready with the anchor as the light began to fail.',
-   'An order from the bridge sent the steamer closer to the shore before dusk, and the leadsman began to call the depths as the water shoaled.'].join(' '),
-  preview:'He ordered the helmsman to steer the steamer toward the shore.'};
- const ai=batch25RouterAI({
-  reviewResponder:b30ReviewResponder({attributedSubject:'Marlow',spanId:'S1-Q1'}),
-  rescueResponder:b30RescueResponder('Marlow'),
-  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
-  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
- assert.equal(result.trace.reviewContract.gateDemotionsSuppressed,undefined,
-  'a possessive-only antecedent never suppresses at the gate');
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.restoredByAntecedent,true,
-  'the rescue verdict records the antecedent restoration');
- assert.equal(rescueClaim.flipOutcome,'accepted');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.equal(decision.gateRestoration,'antecedent');
- assert.deepEqual(result.trace.reviewContract.gateRestorations,
-  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',kind:'antecedent',
-   reason:'subject-not-named-in-span'}]);
- assert.match(result.answer,/Marlow orders the helmsman/);
-});
 
-test('batch 30 B30-4: a subject named only inside quoted speech is not an antecedent',async()=>{
- // Trait shape (batch 28's shipped misattribution): the packet names
- // Kurtz only inside quoted speech in the source's spans. Stripping
- // the quotations leaves no narration antecedent, so the pair stays
- // held even though the rescue judges it supported.
- const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
-  page:87,url:'https://example.test/conrad#page=87',
-  text:['He swayed the men around him with an unreflecting audacity, and even the oldest hands on the station found themselves listening for his step in the corridor outside.',
-   'The men around the station repeated the story of his audacity for weeks, telling it in the evenings when the work was done and the lamps were lit in the mess room.',
-   'His audacity impressed the men who traded at the post, though none of them could have said what it was about the man that held their attention so completely.',
-   'The men said his audacity had swayed the whole camp by winter, and the story grew with every telling until it bore little resemblance to the thing itself.',
-   'The manager read the letter aloud to the assembled clerks: \u201CKurtz has arrived at the inner station, and Kurtz will take charge of the ivory trade from this season onward.\u201D',
-   'A clerk copied the note into the station log that same evening: "Kurtz remains at the inner station, where Kurtz directs the collection of ivory for the company."'].join(' '),
-  preview:'He swayed the men around him with an unreflecting audacity.'};
- const ai=batch25RouterAI({
-  reviewResponder:b30ReviewResponder({attributedSubject:'Kurtz',spanId:'S1-Q1'}),
-  rescueResponder:b30RescueResponder('Kurtz'),
-  draftText:'PART P1\nKurtz swayed the men around him with an unreflecting audacity. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, how does Kurtz influence the men around him?',
-  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.attributionHeld,true,
-  'no narration antecedent: the pair stays held');
- assert.equal(rescueClaim.restoredByAntecedent,undefined);
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,false);
- assert.equal(result.trace.reviewContract.gateRestorations,undefined);
- assert.doesNotMatch(result.answer,/Kurtz swayed the men/);
-});
 
-test('batch 30 B30-4: the provenance voice restores a pseudonymous-voice demotion',async()=>{
- // Voice shape (batch 29, Kierkegaard SP1): the claim names no one,
- // the packet spans name no one, and the reviewer-side demotion is
- // the pseudonymous-voice form requirement. The rescue attributes
- // the pair to the work's provenance voice — the voice key.
- const source={id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',
-  page:32,url:'https://example.test/kierkegaard#page=32',
-  text:'Faith is a relation to God that rests on the absurd. It cannot be mediated by the universal, and the single individual stands higher than the universal.',
-  preview:'Faith is a relation to God that rests on the absurd.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
-  parts:[{id:'P1',question:'What does Fear and Trembling say about faith?',
-   sourceBookIds:['140'],searchQueries:['Fear and Trembling faith'],
-   candidateSourceIds:['S1']}],queries:['Fear and Trembling faith']};
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,
-  rescueResponder:b30RescueResponder('Johannes de Silentio'),
-  draftText:'PART P1\nThe speaker describes faith as a relation to God that rests on the absurd. [S1]'});
- const result=await composeEvidenceAnswer(
-  'What does Fear and Trembling say about faith?',
-  [source],ai,[],{plan,catalog:{...catalog,
-   '140':'Fear and Trembling \u2014 S\u00f8ren Kierkegaard'},trace:true});
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.restoredByVoiceAnchor,true,
-  'the rescue verdict records the voice-anchor restoration');
- assert.equal(rescueClaim.flipOutcome,'accepted');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.equal(decision.gateRestoration,'voice-anchor');
- assert.deepEqual(result.trace.reviewContract.gateRestorations,
-  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',kind:'voice-anchor',
-   reason:'pseudonymous-voice-unidentified'}]);
- assert.match(result.answer,/faith as a relation to God/);
-});
 
 // ---------------------------------------------------------------------------
 // Batch 30 (B30-5): source-required requires per-part selected linkage.
@@ -9939,211 +6948,9 @@ test('batch 31 B31-1: a book-scoped three-part plan ships with two uncited parts
 // sits beside it.)
 // ---------------------------------------------------------------------------
 
-test('batch 31 B31-2: the round-table shape keeps its demotion (no narration antecedent for the reviewer-resolved name)',async()=>{
- // Pilot (ii): the span's actor is the pronoun "he" (the Outer
- // Station manager); the reviewer resolves it to Kurtz. No packet
- // span names Kurtz as a narration subject — he is not named in
- // the passage at all — so the antecedent test finds nothing and
- // the B27-2 demotion stands exactly as before.
- const spans=buildReviewSpans('S1',conradPronounText);
- const pronounSpan=spans.find(span=>span.text.includes('he ordered an immense round table'));
- assert.ok(pronounSpan,'the fixture span carries the pronoun actor');
- const ai=batch26RouterAI({
-  draft:'PART P1\nKurtz sat at the head of an immense round table in the station\u2019s mess-room. [S1]',
-  review:conradReview([pronounSpan.spanId]),
-  rescue:rescueNotSupported});
- const result=await composeEvidenceAnswer('In Heart of Darkness, who sat at the head of the round table in the station mess-room?',
-  [conradSource],ai,[],{plan:conradPlan,
-   catalog:{77:'Heart of Darkness — Joseph Conrad'},trace:true});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.accepted,false);
- assert.equal(decision.validationReason,'subject-not-named-in-span');
- assert.equal(result.trace.reviewContract.gateDemotionsSuppressed,undefined,
-  'no suppression is recorded for a demotion that stood');
- assert.doesNotMatch(result.answer,/Kurtz sat at the head/);
-});
 
-test('batch 31 B31-2: the trait shape keeps its demotion (the only antecedents are quoted speech)',async()=>{
- // Pilot (iv): the batch-28 shipped-misattribution shape. Kurtz
- // is named in the packet only inside quoted speech; stripping the
- // quotations leaves no narration antecedent, so neither the gate
- // suppression nor the B30-4 rescue key releases the pair.
- const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
-  page:87,url:'https://example.test/conrad#page=87',
-  text:['He swayed the men around him with an unreflecting audacity, and even the oldest hands on the station found themselves listening for his step in the corridor outside.',
-   'The men around the station repeated the story of his audacity for weeks, telling it in the evenings when the work was done and the lamps were lit in the mess room.',
-   'His audacity impressed the men who traded at the post, though none of them could have said what it was about the man that held their attention so completely.',
-   'The men said his audacity had swayed the whole camp by winter, and the story grew with every telling until it bore little resemblance to the thing itself.',
-   'The manager read the letter aloud to the assembled clerks: \u201CKurtz has arrived at the inner station, and Kurtz will take charge of the ivory trade from this season onward.\u201D',
-   'A clerk copied the note into the station log that same evening: "Kurtz remains at the inner station, where Kurtz directs the collection of ivory for the company."'].join(' '),
-  preview:'He swayed the men around him with an unreflecting audacity.'};
- const ai=batch25RouterAI({
-  reviewResponder:b30ReviewResponder({attributedSubject:'Kurtz',spanId:'S1-Q1'}),
-  rescueResponder:b30RescueResponder('Kurtz'),
-  draftText:'PART P1\nKurtz swayed the men around him with an unreflecting audacity. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, how does Kurtz influence the men around him?',
-  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
- assert.equal(result.trace.reviewContract.gateDemotionsSuppressed,undefined,
-  'quoted-speech mentions never suppress at the gate');
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.attributionHeld,true,
-  'the pair stays held at the rescue as well');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,false);
- assert.doesNotMatch(result.answer,/Kurtz swayed the men/);
-});
 
-test('batch 31 B31-2: the Kierkegaard voice shape is not demoted when the reviewer names the provenance voice',async()=>{
- // Pilot (iii): the claim names no one; the reviewer attributes
- // the pair to the work's pseudonymous voice. In batch 30 this
- // pair needed the rescue's voice-anchor restoration; with the
- // reviewer naming the voice, the gate-time voice key suppresses
- // the pseudonymous-voice demotion and no rescue runs (the router
- // carries no rescue responder and would throw).
- const source={id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',
-  page:32,url:'https://example.test/kierkegaard#page=32',
-  text:'Faith is a relation to God that rests on the absurd. It cannot be mediated by the universal, and the single individual stands higher than the universal.',
-  preview:'Faith is a relation to God that rests on the absurd.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
-  parts:[{id:'P1',question:'What does Fear and Trembling say about faith?',
-   sourceBookIds:['140'],searchQueries:['Fear and Trembling faith'],
-   candidateSourceIds:['S1']}],queries:['Fear and Trembling faith']};
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
-     subjectAttributionStatus:'supported',
-     attributedSubject:'Johannes de Silentio'}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,
-  draftText:'PART P1\nThe speaker describes faith as a relation to God that rests on the absurd. [S1]'});
- const result=await composeEvidenceAnswer(
-  'What does Fear and Trembling say about faith?',
-  [source],ai,[],{plan,catalog:{...catalog,
-   '140':'Fear and Trembling — Søren Kierkegaard'},trace:true});
- assert.equal(result.trace.rescueReview,undefined,
-  'the gate resolved the pair; no rescue round was needed');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.deepEqual(result.trace.reviewContract.gateDemotionsSuppressed,
-  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
-   reason:'pseudonymous-voice-unidentified',voice:'Johannes de Silentio'}]);
- assert.match(result.answer,/faith as a relation to God/);
-});
 
-test('batch 33 B33-1: span heads reach the review packet and the Conrad production claims demote and do not flip',async()=>{
- // Production fixture (phase-2 batch-32 Conrad SP1, P2-C4/P2-C5):
- // the exact S1 page text (book 315, p. 34) and the exact shipped
- // claim texts. The passage is Marlow's interview with the station
- // manager; the claims credit Kurtz with the manager's round table,
- // "unalterable conviction", and smile. On the batch-32 code the
- // reviewer could not see who the passage's "he" was — the subject
- // is fixed by narration before each span window — and both claims
- // shipped. With spanHead in the packet, the reviewer identifies
- // the span subject as someone other than the claims' subject and
- // returns a subject conflict; the rescue, shown the same heads,
- // judges both pairs not-supported, so neither flips.
- const pageText=['there were no external checks. Once when various tropical',
-  'diseases had laid low almost every ‘agent’ in the station, he',
-  'was heard to say, ‘Men who come out here should have no',
-  ' entrails.’ He sealed the utterance with that smile of his, as',
-  'though it had been a door opening into a darkness he had',
-  'in his keeping. You fancied you had seen things—but the',
-  'seal was on. When annoyed at meal-times by the constant',
-  'quarrels of the white men about precedence, he ordered an',
-  'immense round table to be made, for which a special house',
-  'had to be built. This was the station’s mess-room. Where',
-  'he sat was the first place—the rest were nowhere. One felt',
-  'this to be his unalterable conviction. He was neither civil',
-  'nor uncivil. He was quiet. He allowed his ‘boy’—an overfed',
-  'young negro from the coast—to treat the white men, under',
-  'his very eyes, with provoking insolence.',
-  '   ‘He began to speak as soon as he saw me. I had been very',
-  'long on the road. He could not wait. Had to start without',
-  'me. The up-river stations had to be relieved. There had been',
-  'so many delays already that he did not know who was dead',
-  'and who was alive, and how they got on—and so on, and so',
-  'on. He paid no attention to my explanations, and, playing',
-  'with a stick of sealing-wax, repeated several times that the',
-  'situation was ‘very grave, very grave.’ There were rumours',
-  'that a very important station was in jeopardy, and its chief,',
-  'Mr. Kurtz, was ill. Hoped it was not true. Mr. Kurtz was …',
-  'I felt weary and irritable. Hang Kurtz, I thought. I inter-',
-  'rupted him by saying I had heard of Mr. Kurtz on the coast.',
-  '‘Ah! So they talk of him down there,’ he murmured to him-',
-  ' self. Then he began again, assuring me Mr. Kurtz was the'].join('\n');
- const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
-  page:34,url:'https://example.test/conrad#page=34',text:pageText,
-  preview:'He sealed the utterance with that smile of his.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Joseph Conrad',role:'primary',bookIds:['315']}],
-  parts:[{id:'P1',question:'In Heart of Darkness, how does Marlow’s picture of Kurtz take shape in this passage?',
-   sourceBookIds:['315'],searchQueries:['Kurtz Marlow picture'],
-   candidateSourceIds:['S1']}],queries:['Kurtz Marlow picture']};
- const captured={};
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const catalogByText=fragment=>payload.spanCatalog
-   .find(entry=>entry.text.includes(fragment));
-  const smile=catalogByText('door opening into a darkness');
-  const table=catalogByText('immense round table');
-  const conviction=catalogByText('unalterable conviction');
-  captured.smileHead=smile?.head;captured.tableHead=table?.head;
-  captured.smileText=smile?.text;
-  const [first,second]=payload.claims;
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-   answerStatus:'partial',
-   directAnswerClaimIds:[first.claimId,second.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:first.claimId,status:'answered',
-     sources:[{sourceId:'S1',status:'answered',
-      spanIds:[table.spanId,conviction.spanId],
-      subjectAttributionStatus:'conflict'}]},
-    {claimId:second.claimId,status:'answered',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[smile.spanId],
-      subjectAttributionStatus:'conflict'}]}]})};
- };
- const rescueResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
-   fragment:item.spans[0].text,
-   elements:[{element:item.claimText,stated:false}]}))})};
- };
- const draft='PART P1\n'+
-  'He observes Kurtz\'s commanding and "unalterable conviction," noting how Kurtz\'s mere presence dictated the social order at the station, such as his insistence on a specific place at the mess-room table. [S1]\n'+
-  'Marlow also witnesses the physical and psychological impact of Kurtz\'s presence, noting the "smile" that seemed to act as a "door opening into a darkness". [S1]';
- const ai=batch25RouterAI({reviewResponder,rescueResponder,draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, how does Marlow’s picture of Kurtz take shape?',
-  [source],ai,[],{plan,catalog:b30ConradCatalog,trace:true});
- assert.match(captured.smileHead||'',/no\s+entrails/,
-  'the smile span carries its preceding narration as a separate head');
- assert.ok(captured.tableHead?.includes('smile of his'),
-  'the round-table span head carries the interview narration before it');
- assert.ok(!captured.smileText.includes('entrails'),
-  'the head is never merged into the span text itself');
- const decisions=result.trace.reviewContract.reviewDecisions
-  .filter(item=>item.sourceId==='S1');
- assert.equal(decisions.length,2);
- for(const decision of decisions){
-  assert.equal(decision.accepted,false);
-  assert.equal(decision.validationReason,'source-subject-attribution-conflict');
- }
- assert.equal(result.trace.rescueReview.parts[0].flipped,0,
-  'neither demoted pair flips at the rescue');
- assert.doesNotMatch(result.answer,/unalterable conviction/);
- assert.doesNotMatch(result.answer,/door opening into a darkness/);
-});
 
 const b33HeadFillers=[
  'The helmsman kept the steamer steady as the shore came into view, holding the vessel against the current that pressed her toward the bank and the shallows beyond.',
@@ -10184,109 +6991,8 @@ function b33HeadReviewResponder(captured){
  };
 }
 
-test('batch 33 B33-1: a subject named only in a span head releases the pronoun-span demotion at the gate',async()=>{
- // Control: the claim's true subject is named as a narration
- // subject ONLY in the actor span's head — the naming sentence is
- // ranked out of the packet as a span, so the batch-31 antecedent
- // test can pass only by reading the head.
- const source=b33HeadPage('Marlow had taken command of the steamer only that morning, after the manager’s sudden illness left the vessel without a captain for the voyage upriver.');
- const captured={};
- const ai=batch25RouterAI({
-  reviewResponder:b33HeadReviewResponder(captured),
-  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
-  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
- assert.ok(captured.actorHead?.includes('Marlow had taken command'),
-  'the actor span head carries the naming sentence');
- assert.ok(!captured.packetSpanIds.includes(captured.namingId),
-  'the naming sentence is not itself a packet span — the head is the only carrier');
- const suppressed=result.trace.reviewContract.gateDemotionsSuppressed;
- assert.equal(suppressed?.length,1);
- assert.equal(suppressed[0].reason,'subject-not-named-in-span');
- assert.equal(suppressed[0].antecedentSpanId,captured.actorId,
-  'the antecedent was found in the actor span’s own head');
- assert.equal(suppressed[0].antecedentInHead,true);
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.match(result.answer,/Marlow orders the helmsman/);
-});
 
-test('batch 33 B33-1: a possessive-only mention in a head releases nothing at the gate',async()=>{
- // Negative control (the trait shape's habitat): the head names
- // the claim's subject only as a possessor. The gate antecedent
- // test keeps its non-possessive bar for heads exactly as for span
- // text, so the demotion stands and the pair does not ship.
- const source=b33HeadPage('The officers of the company spoke often of Marlow’s reputation for steadiness aboard the steamer, and the crew trusted his judgment in the difficult reaches of the river.');
- const captured={};
- const rescueResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
-   fragment:item.spans[0].text,
-   elements:[{element:item.claimText,stated:false}]}))})};
- };
- const ai=batch25RouterAI({
-  reviewResponder:b33HeadReviewResponder(captured),
-  rescueResponder,
-  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
-  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
- assert.ok(captured.actorHead?.includes('Marlow’s reputation'),
-  'the head carries the possessive-only mention');
- assert.equal(result.trace.reviewContract.gateDemotionsSuppressed,undefined,
-  'a possessive-only head antecedent never suppresses at the gate');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,false);
- assert.equal(decision.validationReason,'subject-not-named-in-span');
- assert.doesNotMatch(result.answer,/Marlow orders the helmsman/);
-});
 
-test('batch 33 B33-1: head content cannot support a claim — a rescue fragment copied from a head fails validation',async()=>{
- // Separation by construction: heads feed antecedent tests and
- // reviewer context only. A rescue verdict whose decisive fragment
- // is text that exists solely in a span's head (the naming
- // sentence here is possessive-only, so the gate demotion stands
- // and the rescue runs; the sentence itself is not a packet span)
- // fails the fragment-in-span-text validation, so the flip never
- // happens — head content is not evidence, however the rescue
- // judges the pair.
- const source=b33HeadPage('The officers of the company spoke often of Marlow’s reputation for steadiness aboard the steamer, and the crew trusted his judgment in the difficult reaches of the river.');
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  const actor=payload.spanCatalog.find(entry=>
-   entry.text.includes('He ordered the helmsman'));
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[actor.spanId],
-     subjectAttributionStatus:'supported',attributedSubject:'Marlow'}]}]})};
- };
- const rescueResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
-   fragment:'The officers of the company spoke often of Marlow’s reputation for steadiness aboard the steamer',
-   elements:[{element:item.claimText,stated:true}],anchor:'Marlow'}))})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder,
-  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
-  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
- const rescue=result.trace.rescueReview.parts[0];
- assert.equal(rescue.flipped,0,
-  'a fragment drawn only from a head never flips the pair');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,false);
- assert.doesNotMatch(result.answer,/Marlow orders the helmsman/);
-});
 
 const b33PPPage=[
  'The whole of what Elizabeth had already heard, his claims on Mr. Darcy, was now openly acknowledged by Wickham to the whole party.',
@@ -10303,60 +7009,6 @@ const b33PPPlan={version:'reader-evidence-v2',intent:'explain',
   candidateSourceIds:['S1']}],queries:['Bennet Darcy extenuating circumstances']};
 const b33PPCatalog={'341':'Pride and Prejudice — Jane Austen'};
 
-test('batch 33 B33-4: a claim resting on a shared title+surname form demotes when the packet attests two people with that surname',async()=>{
- // Production shape (phase-3 P&P SP1 P1-C6): the span's words are
- // Jane Bennet's; the claim credits Elizabeth; the span names her
- // only as "Miss Bennet". The packet attests both sisters in full,
- // so the shared form cannot carry the attribution. A sibling
- // claim whose span names Jane Bennet in full ships unaffected.
- const draft='PART P1\n'+
-  'While others in society condemn him as "the worst of men," Elizabeth is one of the few who searches for "extenuating circumstances." [S1]\n'+
-  'Jane Bennet pleaded for allowances with her mild and steady candour. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  const target=payload.spanCatalog.find(entry=>
-   entry.text.includes('extenuating circumstances'));
-  const janeSpan=payload.spanCatalog.find(entry=>
-   entry.text.includes('gentleness of temper'));
-  const claims=payload.claims.map(claim=>({
-   claimId:claim.claimId,status:'answered',
-   sources:[{sourceId:'S1',status:'answered',
-    spanIds:[claim.claimId.endsWith('C1')?target.spanId:janeSpan.spanId],
-    subjectAttributionStatus:'supported',
-    attributedSubject:claim.claimId.endsWith('C1')?
-     'Elizabeth Bennet':'Jane Bennet'}]}));
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
-   retainedContextClaimIds:[]}],claims})};
- };
- const rescueResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
-   fragment:'',elements:[{element:item.claimText,stated:false}],anchor:''}))})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder,draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In Pride and Prejudice, how do Elizabeth and Jane respond to the case against Darcy?',
-  [b33PPSource],ai,[],{plan:b33PPPlan,catalog:b33PPCatalog,trace:true});
- const decisions=result.trace.reviewContract.reviewDecisions
-  .filter(item=>item.sourceId==='S1');
- const elizabeth=decisions.find(item=>item.claimId.endsWith('C1'));
- const jane=decisions.find(item=>item.claimId.endsWith('C2'));
- assert.equal(elizabeth.accepted,false,
-  'the shared-form attribution demotes');
- assert.equal(elizabeth.validationReason,'source-attribution-unanchored');
- const familyIssue=result.trace.reviewContract.supportIssues.find(item=>
-  item.claimId===elizabeth.claimId&&item.sourceId==='S1'&&
-  item.reason==='source-attribution-unanchored');
- assert.equal(familyIssue?.familyNameAmbiguity?.surname,'Bennet',
-  'the support issue records the same-family producer');
- assert.equal(jane.accepted,true,
-  'the fully-named sibling claim is unaffected');
- assert.doesNotMatch(result.answer,/extenuating circumstances/);
- assert.match(result.answer,/Jane Bennet pleaded for allowances/);
-});
 
 test('batch 33 B33-4: a head naming the person in full disambiguates the shared form',async()=>{
  // The span still names only "Miss Bennet", but the span's head
@@ -10399,290 +7051,11 @@ test('batch 33 B33-4: a head naming the person in full disambiguates the shared 
 // Batch 33 (B33-5): gate economy II pilots.
 // ---------------------------------------------------------------------------
 
-test('batch 33 B33-5 (a): a bullet-label claim whose content the spans state is exempt from the label demotion; unstated content is not',async()=>{
- // Production shape (phase-2 Empires P2): the reviewer demoted
- // the pair because the passages "do not explicitly categorize
- // them as 'Economic and Environmental Factors'" — the composer's
- // own synthesis label, measured as if it were claim content. The
- // label-stripped content is fully stated by the bound span, so
- // the demotion does not stand. The control claim wears the same
- // form but its content is genuinely unstated, and it demotes.
- const source={id:'S1',bookId:'287',title:'Decline and Fall — Edward Gibbon',
-  page:210,url:'https://example.test/gibbon#page=210',
-  text:'The opening of new sea routes diverted the trade of the region, and the plague, returning year after year, thinned the towns and weakened the ability of the province to defend itself against its enemies.',
-  preview:'The opening of new sea routes diverted the trade of the region.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Edward Gibbon',role:'primary',bookIds:['287']}],
-  parts:[{id:'P1',question:'In the Decline and Fall, what factors weakened the empire’s ability to defend itself?',
-   sourceBookIds:['287'],searchQueries:['sea routes plague defend'],
-   candidateSourceIds:['S1']}],queries:['sea routes plague defend']};
- const draft='PART P1\n'+
-  '* **Economic and Environmental Factors:** The opening of new sea routes or the impact of the plague can weaken a region\u2019s ability to defend itself. [S1]\n'+
-  '* **Naval Supremacy:** The building of a great fleet of warships gave the empire command of every sea and harbor along the coast. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  const spanId=payload.spanCatalog[0].spanId;
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-   answerStatus:'answered',
-   directAnswerClaimIds:[payload.claims.find(claim=>
-    claim.text.includes('Economic'))?.claimId].filter(Boolean),
-   retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,
-    status:'answered',sources:[{sourceId:'S1',status:'partial',
-     spanIds:[spanId],
-     supportBoundary:claim.text.includes('Economic')?
-      'The spans mention specific historical factors like new sea routes and plague, but do not explicitly categorize them as Economic and Environmental Factors.':
-      'The spans describe trade routes and plague, not a war fleet.'}]}))})};
- };
- const ai=batch25RouterAI({reviewResponder,draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In the Decline and Fall, what factors weakened the empire\u2019s ability to defend itself?',
-  [source],ai,[],{plan,catalog:{'287':'Decline and Fall — Edward Gibbon'},trace:true});
- const decisions=result.trace.reviewContract.reviewDecisions;
- const exempted=decisions.find(item=>item.claimId.endsWith('C1'));
- const control=decisions.find(item=>item.claimId.endsWith('C2'));
- assert.equal(exempted.accepted,true,
-  'the label demotion does not stand when the content is stated');
- assert.equal(control.accepted,false,
-  'genuinely unstated bullet-label content still demotes');
- const suppressed=result.trace.reviewContract.gateDemotionsSuppressed||[];
- assert.ok(suppressed.some(item=>item.kind==='bullet-label'&&
-  item.claimId===exempted.claimId),
-  'the exemption is recorded as a gate suppression');
- assert.ok((result.trace.vetoCensus||[]).some(item=>
-  item.kind==='bullet-label'&&item.outcome==='suppressed'),
-  'the veto census carries the exemption');
- assert.match(result.answer,/new sea routes/);
- assert.doesNotMatch(result.answer,/great fleet of warships/);
-});
 
-test('batch 33 B33-5 (b): a companion span stating the claim restores a reviewer not-supported verdict (the Love shape)',async()=>{
- // Production shape (phase-3 Love P2-C7): the reviewer bound one
- // span, found the specific proposition unstated there, and noted
- // it was "better supported by other spans in the source" — the
- // companion span states it, with the subject anchored. The pair
- // is restored and recorded.
- const source={id:'S1',bookId:'500',title:'The Doctrine of Marriage — John Milton',
-  page:31,url:'https://example.test/milton#page=31',
-  text:'Milton describes marriage as a social institution, sanctioned by law and custom, by which two persons are joined for the ordering of household and property. Milton teaches that marriage, entered in faith, is a spiritual union in which two souls are joined before God.',
-  preview:'Milton describes marriage as a social institution.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'John Milton',role:'primary',bookIds:['500']}],
-  parts:[{id:'P1',question:'In The Doctrine of Marriage, how does Milton present the nature of marriage?',
-   sourceBookIds:['500'],searchQueries:['Milton marriage spiritual union'],
-   candidateSourceIds:['S1']}],queries:['Milton marriage spiritual union']};
- const draft='PART P1\nMilton presents marriage as a spiritual union in which two souls are joined before God. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  const bound=payload.spanCatalog.find(entry=>
-   entry.text.includes('social institution'));
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
-   status:'answered',sources:[{sourceId:'S1',status:'partial',
-   spanIds:[bound.spanId],subjectAttributionStatus:'supported',
-   attributedSubject:'John Milton',
-   supportBoundary:'The span identifies marriage as a social institution, but the specific spiritual union claim is better supported by other spans in the source.'}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In The Doctrine of Marriage, how does Milton present the nature of marriage?',
-  [source],ai,[],{plan,catalog:{'500':'The Doctrine of Marriage — John Milton'},trace:true});
- const decision=result.trace.reviewContract.reviewDecisions[0];
- assert.equal(decision.accepted,true,
-  'the companion span restores the pair');
- const restorations=result.trace.reviewContract.gateRestorations||[];
- assert.ok(restorations.some(item=>item.kind==='companion-span'),
-  'the restoration is recorded');
- assert.match(result.answer,/spiritual union/);
-});
 
-test('batch 33 B33-5 (b): a companion span stating the claim suppresses a subject-mismatch demotion (the Forgiveness shape)',async()=>{
- // Production shape (phase-3 Forgiveness): the reviewer resolved
- // the bound span's proposition to Augustine while the claim's
- // extracted targets missed him, and the gate demoted on the
- // mismatch — while another packet span states the proposition
- // with Augustine as its subject. The demotion is suppressed.
- const source={id:'S1',bookId:'600',title:'Confessions — St. Augustine',
-  page:112,url:'https://example.test/augustine#page=112',
-  text:'He speaks of the blessings that men receive in this life and of the will by which they are distributed among the nations of the earth. I have learned that God gives all blessings of His sovereign good pleasure, not due to the merits of good-will, and I assert this plainly.',
-  preview:'He speaks of the blessings that men receive in this life.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'St. Augustine',role:'primary',bookIds:['600']}],
-  parts:[{id:'P1',question:'In the Confessions, how does Augustine describe the giving of blessings?',
-   sourceBookIds:['600'],searchQueries:['Augustine blessings sovereign pleasure'],
-   candidateSourceIds:['S1']}],queries:['Augustine blessings sovereign pleasure']};
- const draft='PART P1\nHe teaches that God gives all blessings of His sovereign good pleasure, not due to the merits of good-will. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  const bound=payload.spanCatalog.find(entry=>
-   entry.text.includes('distributed among the nations'));
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
-   status:'answered',sources:[{sourceId:'S1',status:'answered',
-   spanIds:[bound.spanId],subjectAttributionStatus:'supported',
-   attributedSubject:'St. Augustine',
-   supportBoundary:'The span confirms that grace is given of God\u2019s sovereign good pleasure, not due to merits of good-will.'}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In the Confessions, how does Augustine describe the giving of blessings?',
-  [source],ai,[],{plan,catalog:{'600':'Confessions — St. Augustine'},trace:true});
- const decision=result.trace.reviewContract.reviewDecisions[0];
- assert.equal(decision.accepted,true,
-  'the companion span suppresses the mismatch demotion');
- const suppressed=result.trace.reviewContract.gateDemotionsSuppressed||[];
- assert.ok(suppressed.some(item=>item.kind==='companion-span'),
-  'the suppression is recorded with its kind');
- assert.match(result.answer,/sovereign good pleasure/);
-});
 
-test('batch 33 B33-5 (b): the unanchored veto of a rescue flip must pass the antecedent test (the Wuthering shape)',async()=>{
- // Production shape (phase-3 Wuthering P2-C5): the rescue judged
- // the pair supported with anchor "Catherine"; re-normalization
- // vetoed it as source-attribution-unanchored because the bound
- // span's cue window holds no Catherine speech cue — while the
- // packet's own narration names Catherine as a subject. The veto
- // now has to pass the antecedent test first, and it does not
- // survive it.
- const source={id:'S1',bookId:'362',title:'Wuthering Heights — Emily Brontë',
-  page:74,url:'https://example.test/wuthering#page=74',
-  text:'Confused as Catherine was, her wits were alert at applying our conversation. \u201CAh! Nelly has played traitor,\u201D she exclaimed, passionately. \u201CNelly is my hidden enemy.\u201D The wind was loud upon the moor that night, and the house stood dark against the driving rain from the hills. Catherine took the letter from the drawer and hid it beneath the loose board in the passage that winter, where none of the household would think to look for it.',
-  preview:'Confused as Catherine was, her wits were alert.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Emily Brontë',role:'primary',bookIds:['362']}],
-  parts:[{id:'P1',question:'In Wuthering Heights, what does Catherine accuse Nelly of?',
-   sourceBookIds:['362'],searchQueries:['Catherine Nelly played traitor'],
-   candidateSourceIds:['S1']}],queries:['Catherine Nelly played traitor']};
- const draft='PART P1\nCatherine claims that Nelly has "played traitor" by sharing information or perhaps withholding it in a way that harms the family. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  const bound=payload.spanCatalog.find(entry=>
-   entry.text.includes('Confused as Catherine was'));
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
-   status:'answered',sources:[{sourceId:'S1',status:'answered',
-   spanIds:[bound.spanId],attributionStatus:'supported',
-   attributedSpeaker:'Catherine',
-   subjectAttributionStatus:'supported',
-   attributedSubject:'Catherine'}]}]})};
- };
- const rescueResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
-   fragment:'\u201CAh! Nelly has played traitor,\u201D she exclaimed, passionately.',
-   elements:[{element:item.claimText,stated:true}],anchor:'Catherine'}))})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder,draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In Wuthering Heights, what does Catherine accuse Nelly of?',
-  [source],ai,[],{plan,catalog:{'362':'Wuthering Heights — Emily Brontë'},trace:true});
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.flipOutcome,'accepted',
-  'the antecedent parity blocks the unanchored veto');
- const restorations=result.trace.reviewContract.gateRestorations||[];
- assert.ok(restorations.some(item=>item.kind==='antecedent-parity'&&
-  item.reason==='source-attribution-unanchored'),
-  'the parity suppression is recorded');
- assert.match(result.answer,/played traitor/);
-});
 
-test('batch 33 B33-5 (c): a polarity veto falls when a packet span carries the claim’s own polarity construction (the Science shape)',async()=>{
- // Production shape (phase-2 Science P1-C3): the claim restates
- // the source's "cannot completely dissect" in the same
- // construction, the reviewer's boundary agreed with the claim,
- // and the rescue flip was vetoed for polarity because the pooled
- // selected spans also contained an affirming clause. A packet
- // span that carries the claim's negative construction — and does
- // not itself contradict the claim — suppresses the veto.
- const source={id:'S1',bookId:'287',title:'Modern Philosophy — J.P. Cooke',
-  page:300,url:'https://example.test/cooke#page=300',
-  text:'Cooke writes that we cannot employ the scalpel of analysis upon the distinction itself, since the instrument ends where the spirit begins. Even if with the scalpel of our modern philosophy we cannot completely dissect the two, the distinction between the spiritual and the material remains.',
-  preview:'Cooke writes that we cannot employ the scalpel of analysis.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'J.P. Cooke',role:'primary',bookIds:['287']}],
-  parts:[{id:'P1',question:'In Modern Philosophy, what does Cooke say about the scalpel of analysis?',
-   sourceBookIds:['287'],searchQueries:['Cooke scalpel dissect spiritual material'],
-   candidateSourceIds:['S1']}],queries:['Cooke scalpel dissect spiritual material']};
- const draft='PART P1\nCooke suggests that modern philosophy can employ the scalpel of analysis, though it cannot completely dissect the distinction between the spiritual and the material. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-   answerStatus:'partial',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],claims:[{claimId:claim.claimId,
-   status:'partial',sources:[{sourceId:'S1',status:'partial',
-   spanIds:payload.spanCatalog.map(entry=>entry.spanId),
-   subjectAttributionStatus:'supported',attributedSubject:'J.P. Cooke',
-   supportBoundary:'Establishes that Cooke\u2019s work suggests scientific and philosophical analysis cannot completely dissect the distinction between the spiritual and material.'}]}]})};
- };
- const rescueResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
-   fragment:'we cannot completely dissect the two',
-   elements:[{element:item.claimText,stated:true}],anchor:'Cooke'}))})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder,draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In Modern Philosophy, what does Cooke say about the scalpel of analysis?',
-  [source],ai,[],{plan,catalog:{'287':'Modern Philosophy — J.P. Cooke'},trace:true});
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.flipOutcome,'accepted',
-  'the polarity-agreement suppression lets the flip ship');
- const restorations=result.trace.reviewContract.gateRestorations||[];
- assert.ok(restorations.some(item=>item.kind==='polarity-agreement'),
-  'the suppression is recorded as a polarity-agreement restoration');
- assert.ok((result.trace.vetoCensus||[]).some(item=>
-  item.layer==='polarity'&&item.outcome==='restored'),
-  'the veto census carries the polarity event at trace level');
- assert.match(result.answer,/completely dissect/);
-});
 
-test('batch 31 B31-2: a positive-contradiction mismatch stands regardless of antecedents',async()=>{
- // Pilot (v): the claim names Hume as its subject; the reviewer
- // attributes the pair to Kant. The extractor positively
- // identifies a different subject for the claim's predication, so
- // the mismatch is a positive contradiction — the antecedent test
- // does not apply (the packet DOES name Hume as subject, in the
- // accepted span itself; the demotion stands anyway).
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  const spanId=claim.sourceEvidence.find(item=>item.sourceId==='S1').spanIds[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[spanId],
-     subjectAttributionStatus:'supported',attributedSubject:'Kant'}]}]})};
- };
- const rescueResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-   claimId:item.claimId,sourceId:item.sourceId,verdict:'not-supported',
-   fragment:item.spans?.[0]?.text||'no support',
-   elements:[{element:item.claimText,stated:false}]}))})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder,
-  draftText:'PART P1\nHume explains causal necessity through custom and repeated experience. [S1]'});
- const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,false);
- assert.equal(decision.validationReason,'source-subject-attribution-mismatch');
- assert.ok(!(result.trace.reviewContract.gateDemotionsSuppressed||[])
-  .some(entry=>entry.reason==='source-subject-attribution-mismatch'),
-  'a positive contradiction is never suppressed');
- assert.doesNotMatch(result.answer,/Hume explains causal necessity through custom/);
-});
 
 // ---------------------------------------------------------------------------
 // Batch 32 (B32-6): the three batch-31 B31-3 pilots that stood here
@@ -10798,277 +7171,10 @@ test('batch 32 B32-8 (iii): a sentence-initial function word is not a claim subj
  assert.match(result.answer,/death is akin to sleep/);
 });
 
-test('batch 32 B32-8 (iii): a function-word anchor cannot ground a hold — the two-key check runs on the claim\u2019s own names',async()=>{
- // The possessive-only Marlow packet (the B31-2 backstop shape),
- // with the reviewer returning NO subject verdict: the gate demotes
- // on source-subject-attribution-missing (and subject-not-named),
- // the rescue judges the pair supported but fills the anchor slot
- // with the function word 'From'. Before this batch the verdict
- // was held: the anchor matched no candidate, and the two-key
- // restoration — which keys on the anchor — never ran. A
- // function-word anchor is not an anchor at all; the restoration
- // key runs on the claim's own candidate names instead. The flip
- // then carries no anchor write, so at re-normalization the
- // subject-attribution ground recomputes — and B32-8 (ii)'s
- // neutralization, not the anchor, is what answers it (before this
- // batch the gateRestoration neutralization covered the voice and
- // subject-not-named grounds only, and this flip was vetoed).
- const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
-  page:44,url:'https://example.test/conrad#page=44',
-  text:['He ordered the helmsman to steer the steamer toward the shore, and the crew, who had been waiting in silence for the signal, moved at once to their stations along the rail.',
-   'The helmsman kept the steamer steady as the shore came into view, holding the vessel against the current that pressed her toward the bank.',
-   'The officers of the company spoke often of Marlow\u2019s reputation for steadiness, and the crew trusted his judgment in the difficult reaches of the river above the station.',
-   'The helmsman watched the shore while the steamer slowed in the current, and the mate stood ready with the anchor as the light began to fail.',
-   'An order from the bridge sent the steamer closer to the shore before dusk, and the leadsman began to call the depths as the water shoaled.'].join(' '),
-  preview:'He ordered the helmsman to steer the steamer toward the shore.'};
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,
-  rescueResponder:b30RescueResponder('From'),
-  draftText:'PART P1\nMarlow orders the helmsman to steer the steamer toward the shore. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, what does Marlow do as the steamer approaches the shore?',
-  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.anchorFunctionWordDiscarded,true,
-  'the function-word anchor is recorded as discarded');
- assert.equal(rescueClaim.restoredByAntecedent,true,
-  'the antecedent key ran on the claim\u2019s own candidate name');
- assert.equal(rescueClaim.flipOutcome,'accepted');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.ok((result.trace.reviewContract.gateRestorations||[])
-  .some(entry=>entry.claimId==='P1-C1'&&entry.kind==='antecedent'&&
-   entry.reason==='source-subject-attribution-missing'),
-  'B32-8 (ii): the antecedent restoration neutralizes the subject-attribution ground at re-normalization');
- assert.match(result.answer,/Marlow orders the helmsman/);
-});
 
-test('batch 32 B32-8 (i): the batch-31 Kierkegaard P2-C6 pair is accepted — no manufactured contradiction, voice ground suppressed',async()=>{
- // Production shape (batch-31 SP2, P2-C6 × S5): the pair carried
- // two grounds — the pseudonymous-voice form requirement and a
- // subject-attribution mismatch. The mismatch's "positive
- // contradiction" was manufactured by the extractor registering
- // the sentence-initial preposition 'By' as the claim's subject;
- // the reviewer's attribution (supported, to the work's
- // pseudonymous voice) was never the contradiction the gate
- // recorded. With function words out of the extraction, the only
- // ground is the voice form requirement, and it is suppressed
- // because the reviewer names the provenance voice.
- const source={id:'S1',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',
-  page:21,url:'https://example.test/kierkegaard#page=21',
-  text:'The upbuilding discourses are not sermons, since the author has no authority to preach; they are offered to the single individual, who reads them not for entertainment or aesthetic diversion but for edification in a spiritual sense, and their religious and existential writings edify the reader who receives them in faith.',
-  preview:'The upbuilding discourses are not sermons.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Søren Kierkegaard',role:'primary',bookIds:['140']}],
-  parts:[{id:'P1',question:'How are the upbuilding discourses presented?',
-   sourceBookIds:['140'],searchQueries:['upbuilding discourses sermons'],
-   candidateSourceIds:['S1']}],queries:['upbuilding discourses sermons']};
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
-     attributionStatus:'supported',
-     subjectAttributionStatus:'supported',
-     attributedSubject:'Johannes de Silentio'}]}]})};
- };
- const claim='By this reading, the authorship\u2019s religious and existential writings are presented as upbuilding discourses meant to edify the reader in a spiritual sense rather than as entertainment or aesthetic diversion, though de Silentio refrains from calling them sermons.';
- const ai=batch25RouterAI({reviewResponder,
-  draftText:'PART P1\n'+claim+' [S1]'});
- const result=await composeEvidenceAnswer(
-  'How are the upbuilding discourses presented?',
-  [source],ai,[],{plan,catalog:{...catalog,
-   '140':'Fear and Trembling — Søren Kierkegaard'},trace:true});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- assert.ok((result.trace.reviewContract.gateDemotionsSuppressed||[])
-  .some(entry=>entry.reason==='pseudonymous-voice-unidentified'),
-  'the voice ground is suppressed at the gate, as in production');
- assert.ok(!(result.trace.reviewContract.supportIssues||[])
-  .some(issue=>issue.claimId==='P1-C1'&&
-   issue.reason==='source-subject-attribution-mismatch'),
-  'no mismatch ground is manufactured from the preposition');
- assert.match(result.answer,/upbuilding discourses meant to edify the reader/);
-});
 
-test('batch 32 B32-8 (i): a two-ground pair is suppressed as a set (the Wuthering P2-C12 shape)',async()=>{
- // Production shape (phase-3 SP2, P2-C12 × S2): the pair carried
- // subject-not-named (suppressed — the packet names Nelly Dean as
- // narration subject) and a subject-attribution mismatch that
- // STOOD, because the suppression's antecedent test never included
- // the reviewer's attributed subject among its test names and the
- // extractor's mention-position names (Linton, Catherine) made the
- // mismatch read as a positive contradiction. The reviewer's
- // 'Nelly' is the claim's own lead subject under a shorter name
- // form — a shared name token, not a contradiction — and the same
- // packet antecedent answers both grounds.
- const pageText=[
-  'Catherine told me she was engaged to Edgar Linton, and she laughed when she said his fortune would raise her above the Heights and everyone in it.',
-  'She described her feelings about Heathcliff and Edgar with a strange, fierce calm, while the wind pressed hard against the windows of the sitting room.',
-  'The household settled into its evening routine, the servants banked the fires, and the dogs were chained in the yard before the light had fully gone.',
-  'Nelly Dean had kept the house at Wuthering Heights for twenty years before the new tenant arrived, and she knew every room and every habit of the family by heart.',
-  'The rain came on again before supper, drumming on the flagged roof while the cattle shifted in the byre below the hill.'].join(' ');
- const source={id:'S1',bookId:'362',title:'Wuthering Heights — Emily Brontë',
-  page:58,url:'https://example.test/wuthering#page=58',text:pageText,
-  preview:'Catherine told me she was engaged to Edgar Linton.'};
- const spans=buildReviewSpans('S1',pageText);
- const acceptedSpan=spans.find(span=>span.text.includes('Catherine told me'));
- assert.ok(acceptedSpan,'the accepted span is Nelly\u2019s unnamed narration');
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Emily Brontë',role:'primary',bookIds:['362']}],
-  parts:[{id:'P1',question:'What does Nelly Dean recount about Catherine?',
-   sourceBookIds:['362'],searchQueries:['Nelly Catherine Linton feelings'],
-   candidateSourceIds:['S1']}],queries:['Nelly Catherine Linton feelings']};
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[acceptedSpan.spanId],
-     attributionStatus:'supported',
-     subjectAttributionStatus:'supported',attributedSubject:'Nelly'}]}]})};
- };
- const claim='Nelly Dean recounts a conversation with Mr. Linton, during which Catherine describes her feelings about Heathcliff and Edgar.';
- const ai=batch25RouterAI({reviewResponder,
-  draftText:'PART P1\n'+claim+' [S1]'});
- const result=await composeEvidenceAnswer(
-  'What does Nelly Dean recount about Catherine?',
-  [source],ai,[],{plan,catalog:{...catalog,
-   '362':'Wuthering Heights — Emily Brontë'},trace:true});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true,
-  'both grounds are answered by the packet antecedent; the pair ships');
- const suppressed=result.trace.reviewContract.gateDemotionsSuppressed||[];
- assert.ok(suppressed.some(entry=>entry.reason==='subject-not-named-in-span'),
-  'the subject-not-named ground is suppressed');
- assert.ok(suppressed.some(entry=>entry.reason==='source-subject-attribution-mismatch'),
-  'the mismatch ground is suppressed by the same antecedent');
- assert.match(result.answer,/Nelly Dean recounts a conversation/);
-});
 
-test('batch 32 B32-8 (ii): a rescue flip on a subject-attribution ground is not vetoed at re-normalization (the C&P P2-C2 shape)',async()=>{
- // Production shape (phase-3 SP2, C&P P2-C2 × S2, and the batch-31
- // census behind it): the gate demotes on a subject-attribution
- // ground; the rescue restores the pair (its antecedent key reads
- // the packet's possessive narration, which the gate's stricter
- // test cannot use); at re-normalization the SAME subject ground
- // recomputes and vetoes the flip — the gateRestoration
- // neutralization covered the voice and subject-not-named grounds
- // but not this family. Batch 32 closes the parity gap.
- const pageText=[
-  'He questioned the student about the article with a quiet, persistent curiosity, returning again and again to the theory of extraordinary men, while the student sat silent and pale before him in the small, close office.',
-  'The clerk in the corridor carried the files to the archive, and the porter swept the steps of the department as the afternoon light failed over the square.',
-  'Porfiry\u2019s questions had unsettled the student for days beforehand, and his method of quiet, persistent inquiry was known throughout the department.'].join(' ');
- const source={id:'S1',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',
-  page:210,url:'https://example.test/crime#page=210',text:pageText,
-  preview:'He questioned the student about the article.'};
- const spans=buildReviewSpans('S1',pageText);
- const citedSpan=spans.find(span=>span.text.includes('He questioned the student'));
- assert.ok(citedSpan,'the cited span presents the interrogator as "he"');
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['114']}],
-  parts:[{id:'P1',question:'In Crime and Punishment, how does Porfiry question Raskolnikov about the article?',
-   sourceBookIds:['114'],searchQueries:['Porfiry questions article'],
-   candidateSourceIds:['S1']}],queries:['Porfiry questions article']};
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[citedSpan.spanId]}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,
-  rescueResponder:b30RescueResponder('Porfiry'),
-  draftText:'PART P1\nPorfiry questions Raskolnikov about the article he published. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Crime and Punishment, how does Porfiry question Raskolnikov about the article?',
-  [source],ai,[],{plan,catalog:{...catalog,
-   '114':'Crime and Punishment — Fyodor Dostoevsky'},trace:true});
- const rescueClaim=result.trace.rescueReview.parts[0].claims[0];
- assert.equal(rescueClaim.flipOutcome,'accepted',
-  'the restored flip survives re-normalization');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true);
- // Path note: in this fixture the anchor validates outright (the
- // possessive packet span names Porfiry where the rescue packet
- // can see it), so the flip is carried by the B26-2 anchor write.
- // The discriminating case for B32-8 (ii)'s neutralization — a
- // restored flip carrying NO anchor write, vetoed at
- // re-normalization by the recomputed subject-attribution ground
- // before this batch — is the Marlow pilot above.
- assert.match(result.answer,/Porfiry questions Raskolnikov/);
-});
 
-test('batch 32 B32-8 (iv): presence as addressee is an antecedent (the Lockwood shape)',async()=>{
- // Production shape (phase-3 SP2, Wuthering P1): every Lockwood
- // claim demoted subject-not-named — Lockwood is the frame
- // narrator, named inside the packet spans only where Nelly
- // ADDRESSES him ("Mr. Lockwood, …"), inside quoted speech the
- // narration antecedent test strips away. Being spoken TO by name
- // in the passage's own dialogue is presence in the evidence: the
- // antecedent test now registers a subject named in address
- // position (vocative / dialogue-tag addressee) as well.
- const pageText=[
-  'I had scarcely settled in the kitchen when he appeared at the stairhead and ordered the dogs to be chained, and the housekeeper set a candle on the table and withdrew without a word to either of us.',
-  '\u201CMr. Lockwood, you must not wander on the moors after dark,\u201D said Nelly, setting down the tea; \u201Cthe mist comes on quick, and strangers lose the path before they know it.\u201D',
-  'The wind had risen by supper time, and the whole household gathered close around the fire while the rain beat steadily against the small windows of the house.'].join(' ');
- const source={id:'S1',bookId:'362',title:'Wuthering Heights — Emily Brontë',
-  page:12,url:'https://example.test/wuthering#page=12',text:pageText,
-  preview:'I had scarcely settled in the kitchen.'};
- const spans=buildReviewSpans('S1',pageText);
- const acceptedSpan=spans.find(span=>span.text.includes('scarcely settled'));
- assert.ok(acceptedSpan,'the accepted span is Lockwood\u2019s own unnamed narration');
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Emily Brontë',role:'primary',bookIds:['362']}],
-  parts:[{id:'P1',question:'What does Lockwood decide after his first evening at the Heights?',
-   sourceBookIds:['362'],searchQueries:['Lockwood evening Heights decide'],
-   candidateSourceIds:['S1']}],queries:['Lockwood evening Heights decide']};
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[acceptedSpan.spanId],
-     subjectAttributionStatus:'supported',attributedSubject:'Lockwood'}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,
-  draftText:'PART P1\nLockwood decides to leave the Heights and return to the Grange. [S1]'});
- const result=await composeEvidenceAnswer(
-  'What does Lockwood decide after his first evening at the Heights?',
-  [source],ai,[],{plan,catalog:{...catalog,
-   '362':'Wuthering Heights — Emily Brontë'},trace:true});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision.accepted,true,
-  'the addressee antecedent suppresses the subject-not-named demotion');
- const suppressed=(result.trace.reviewContract.gateDemotionsSuppressed||[])
-  .find(entry=>entry.claimId==='P1-C1');
- assert.equal(suppressed?.reason,'subject-not-named-in-span');
- assert.equal(suppressed?.antecedentVia,'addressee',
-  'the suppression records that the antecedent was an address');
- assert.match(result.answer,/Lockwood decides to leave the Heights/);
-});
 
 // ---------------------------------------------------------------------------
 // Batch 32 (B32-5): context-claim demotion inheritance.
@@ -11406,71 +7512,7 @@ test('batch 33 B33-8: an all-uncited part still gets a review packet — the can
   'suppressed-not-strict-minority');
 });
 
-test('batch 33 B33-8: with zero packet-visible spans anywhere, a context kill is recorded unmeasured and the claim falls back to its own review outcome',async()=>{
- // The guard's own shape: no cited sources AND no candidate
- // sources — the part has no packet view on either side. The
- // reviewer returns per-claim outcomes (answered) but retains
- // nothing at part level. Before the guard, the claims died as
- // 'context-claim-not-retained' — a demotion resting on an empty
- // measurement. Now the part records contextSupportUnmeasured and
- // each claim falls back to its own review outcome.
- const source={...hume,candidatePartIds:[]};
- const plan={...onePartPlan,parts:onePartPlan.parts.map(part=>({...part,
-  candidateSourceIds:[],sourceBookIds:[]}))};
- const draft='PART P1\n'+
-  'Hume explains causal expectation through custom rather than reasoning.\n'+
-  'Custom is the great guide of human life in all factual reasoning.';
- const reviewResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-   answerStatus:'partial',directAnswerClaimIds:[],retainedContextClaimIds:[]}],
-   claims:(payload.parts[0].contextClaims||[]).map(claim=>({
-    claimId:claim.claimId,status:'answered',sources:[]}))})};
- };
- const ai=batch25RouterAI({reviewResponder,draftText:draft});
- const result=await composeEvidenceAnswer('How does Hume explain causality?',
-  [source],ai,[],{plan,catalog,trace:true});
- assert.deepEqual(result.trace.reviewContract.contextSupportUnmeasured,['P1'],
-  'the part is recorded as unmeasured');
- const decisions=result.trace.reviewContract.reviewDecisions
-  .filter(item=>item.contextOnly);
- assert.ok(decisions.length>=1&&decisions.every(item=>
-  item.contextSupportUnmeasured===true&&item.accepted===true),
-  'the claims fall back to their own answered outcomes');
- assert.match(result.answer,/great guide of human life/,
-  'the fallback-accepted context claims ship');
-});
 
-test('batch 33 B33-8: a measured non-retention still demotes — the guard does not fire when the packet view is non-empty',async()=>{
- // Control: the part's packet carries spans (a cited sibling
- // claim), the reviewer declines to retain the context claim, and
- // the kill stands with its ordinary reason — no unmeasured
- // record.
- const draft='PART P1\n'+
-  'Hume explains causal expectation through custom rather than reasoning. [S1]\n'+
-  'Custom is the great guide of human life in all factual reasoning.';
- const reviewResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  const cited=payload.claims.find(claim=>!claim.contextOnly);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[cited.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:cited.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
-     subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,draftText:draft});
- const result=await composeEvidenceAnswer('How does Hume explain causality?',
-  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
- assert.equal(result.trace.reviewContract.contextSupportUnmeasured,undefined,
-  'no unmeasured record when the view was non-empty');
- const contextDecision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.contextOnly);
- assert.equal(contextDecision.accepted,false);
- assert.equal(contextDecision.validationReason,'context-claim-not-retained');
- assert.doesNotMatch(result.answer,/great guide of human life/);
- assert.match(result.answer,/causal expectation through custom/);
-});
 
 // ---------------------------------------------------------------------------
 // Batch 32 (B32-9): review-contract degradation.
@@ -11585,35 +7627,6 @@ const b32RescueNotSupported=({messages})=>{
   elements:[{element:item.claimText,stated:false}]}))})};
 };
 
-test('batch 32 B32-10 (a): a claim crediting the letter\u2019s recipient with its content demotes (the Sulpicius\u2192Cicero shape)',async()=>{
- // Phase-3 Death AP2: the answer credited Cicero with the content
- // of Sulpicius's letter TO him, and shipped — the reviewer's own
- // boundary named the true direction and no layer read the page's
- // byline. The byline is deterministic: sender Servius Sulpicius,
- // recipient Cicero. A claim framing Cicero as the writing/
- // suggesting author of the letter's content demotes.
- const claim='Marcus Tullius Cicero, writing to a grieving friend, suggests that the magnitude of a loss should be measured by what it deprives someone of, not merely by its objective importance.';
- const ai=batch25RouterAI({
-  reviewResponder:b32LetterReview('Marcus Tullius Cicero'),
-  rescueResponder:b32RescueNotSupported,
-  draftText:'PART P1\n'+claim+' [S5]'});
- const result=await composeEvidenceAnswer(
-  'How is the magnitude of a loss presented in the letter?',
-  [b32LetterSource],ai,[],{plan:b32LetterPlan,
-   catalog:{...catalog,'45':'Letters — Marcus Tullius Cicero'},trace:true});
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S5');
- assert.equal(decision.accepted,false,
-  'the recipient-as-author claim is demoted');
- assert.equal(decision.validationReason,'source-attribution-speaker-mismatch');
- const issue=result.trace.reviewContract.supportIssues
-  .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S5'&&
-   entry.letterBylineDirection);
- assert.deepEqual(issue?.letterBylineDirection,
-  {sender:'Servius Sulpicius',recipient:'Cicero'},
-  'the demotion records the byline direction it read');
- assert.doesNotMatch(result.answer,/magnitude of a loss should be measured/);
-});
 
 test('batch 32 B32-10 (a) control: a claim crediting the letter\u2019s sender ships',async()=>{
  const claim='Servius Sulpicius, writing to Cicero, suggests that the magnitude of a loss should be measured by what it deprives someone of, not merely by its objective importance.';
@@ -11792,251 +7805,10 @@ function b34ClaimIdByText(result,prefix){
  return decision?.claimId;
 }
 
-test('batch 34 B34-1 pilot (a): Narrators framing survives layer 1 and layer 2 re-anchors the orphan paragraphs',async()=>{
- // Production: every P3 framing claim was purge-demoted; C3/C4 (the
- // Underground Man's cited claims, opening with bare "He") shipped
- // between Marlow paragraphs and read as Marlow's. Under layer 1
- // the closing syntheses (C9/C10 — connective tissue over the
- // surviving cited claims) are rescued; under layer 2 the orphans
- // are re-anchored to their recorded subjects.
- const ai=batch25RouterAI({reviewResponder:b34NarratorsReview,
-  rescueResponder:b34RescueRefused,draftText:b34NarratorsDraft(b34P3C9)});
- const result=await composeEvidenceAnswer(
-  'How do narrators such as Dostoevsky\u2019s Underground Man and Conrad\u2019s Marlow shape and limit what the reader can conclude?',
-  [b34UmSource,b34MarlowSource],ai,[],{plan:b34NarratorsPlan,
-   catalog:b34NarratorsCatalog,trace:true});
- const rescues=result.trace.reviewContract.framingRescues||[];
- const c9Id=b34ClaimIdByText(result,'While the Underground Man limits');
- const c10Id=b34ClaimIdByText(result,'Ultimately, the Underground Man limits');
- assert.ok(rescues.some(entry=>entry.claimId===c9Id),
-  'the While-synthesis is rescued by layer 1');
- assert.ok(rescues.some(entry=>entry.claimId===c10Id),
-  'the Ultimately-synthesis is rescued by layer 1');
- assert.match(result.answer,/While the Underground Man limits the reader by being too deeply embedded/);
- assert.match(result.answer,/Ultimately, the Underground Man limits the reader through the chaotic instability/);
- assert.match(result.answer,/Underground Man shapes the narrative by intentionally distorting/,
-  'the S6 orphan paragraph is re-anchored to the Underground Man');
- assert.match(result.answer,/Marlow shapes the narrative by filtering reality/,
-  'the Marlow orphan paragraph is re-anchored to Marlow');
- assert.doesNotMatch(result.answer,/He shapes the narrative by intentionally distorting/,
-  'no bare-He orphan paragraph ships');
- const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
- assert.ok(rewritten.some(entry=>entry.subject==='Underground Man'));
- assert.ok(rewritten.some(entry=>entry.subject==='Marlow'));
-});
 
-test('batch 34 B34-1 pilot (a2): with the framing claims wall-blocked, layer 2 still re-anchors (layers are independent)',async()=>{
- // The C9 variant carries a new numeric token (1864) that no
- // surviving claim or question holds: layer 1's wall refuses it
- // and the demotion stands. The orphan claims must STILL be
- // re-anchored by layer 2 alone — the layers are not gated on
- // each other.
- const c9Variant=b34P3C9.replace('fundamentally unutterable.',
-  'fundamentally unutterable in 1864.');
- const ai=batch25RouterAI({reviewResponder:b34NarratorsReview,
-  rescueResponder:b34RescueRefused,draftText:b34NarratorsDraft(c9Variant)});
- const result=await composeEvidenceAnswer(
-  'How do narrators such as Dostoevsky\u2019s Underground Man and Conrad\u2019s Marlow shape and limit what the reader can conclude?',
-  [b34UmSource,b34MarlowSource],ai,[],{plan:b34NarratorsPlan,
-   catalog:b34NarratorsCatalog,trace:true});
- const rescues=result.trace.reviewContract.framingRescues||[];
- const c9Id=b34ClaimIdByText(result,'While the Underground Man limits');
- assert.ok(!rescues.some(entry=>entry.claimId===c9Id),
-  'the wall-blocked synthesis is not rescued');
- assert.doesNotMatch(result.answer,/unutterable in 1864/);
- assert.match(result.answer,/Underground Man shapes the narrative by intentionally distorting/,
-  'layer 2 re-anchors the orphan without any layer-1 rescue');
- assert.doesNotMatch(result.answer,/He shapes the narrative by intentionally distorting/);
-});
 
-test('batch 34 B34-1 pilot (b): Solitude — the Proust bullet is re-anchored to Proust, not Luther',async()=>{
- // Production (phase-3 Solitude P1): the purge demoted C5, the
- // bullet heading naming Marcel Proust; C6 then shipped as a bare
- // "He suggests…" inside the Luther bullet's sequence. The heading
- // is framing-class (bullet-label lead-in): if layer 1's wall
- // passes it, it ships and anchors the bullet; otherwise layer 2
- // rewrites the orphan's pronoun to Proust. Either way the bullet
- // must not read as Luther's.
- const sourceLuther={id:'S1',bookId:'151',
-  title:'Martin Luther — Lytton Strachey',page:18,
-  url:'https://example.test/luther#page=18',
-  text:'Martin Luther, during his period of poetical solitude at the Wartburg, gave himself to the translation of Scripture; afterwards he was plunged into the most pitiful realities of public strife, and the whole world sought him — citizens, doctors, and princes all seeking his counsel on theological and social matters.',
-  preview:'Martin Luther, during his period of poetical solitude at the Wartburg.'};
- const sourceProust={id:'S2',bookId:'414',
-  title:'In Search of Lost Time — Marcel Proust',page:2571,
-  url:'https://example.test/proust#page=2571',
-  text:'The emancipation of the spiritual life, once it is complete, permits a man to sustain thought and preserve an internal solitude even while surrounded by numerous company; the danger is not the presence of others but the worldly disposition one brings to society, for the library\u2019s solitude and the drawing-room\u2019s society meet in a mind that has learned to be alone in a crowd.',
-  preview:'The emancipation of the spiritual life, once it is complete.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Various authors',role:'primary',bookIds:['151','414']}],
-  parts:[{id:'P1',question:'How do writers weigh solitude against social life?',
-   sourceBookIds:['151','414'],searchQueries:['solitude society'],
-   candidateSourceIds:['S1','S2']}],queries:['solitude society']};
- const draft='PART P1\n'+[
-  'Writers and thinkers weigh solitude against social life by viewing them as distinct states that can either exist in tension or reach a point of functional integration.',
-  '* **The transition from isolation to social engagement:** In the life of Martin Luther, there is a marked shift from a period of "poetical solitude" at Wartburg to a phase of intense social and political activity. [S1]',
-  'After his period of isolation, he was "plunged into the most pitiful realities" and became a central figure for the "whole world," with citizens, doctors, and princes all seeking his counsel on theological and social matters. [S1]',
-  '* **The integration of solitude within society:** Marcel Proust describes a state where the boundary between the library (solitude) and the drawing-room (society) becomes permeable.',
-  'He suggests that once the emancipation of [the] spiritual life is complete, one can sustain thought and preserve an internal solitude even while surrounded by "numerous company". [S2]',
-  'In this view, the danger of society is not the presence of others, but the "worldly disposition" one brings to it. [S2]',
-  'Writers view the balance between solitude and society as a spectrum ranging from productive intellectual engagement to a dangerous erosion of social cohesion.'].join('\n\n');
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const spanByFragment=fragment=>payload.spanCatalog
-   .find(entry=>entry.text.includes(fragment))?.spanId;
-  const rules=[
-   {marker:'life of Martin Luther',sourceId:'S1',fragment:'poetical solitude',subject:null},
-   {marker:'After his period of isolation',sourceId:'S1',fragment:'most pitiful realities',subject:null},
-   {marker:'He suggests that once the emancipation',sourceId:'S2',fragment:'emancipation of the spiritual life',subject:'Marcel Proust'},
-   {marker:'In this view, the danger of society',sourceId:'S2',fragment:'worldly disposition',subject:'Marcel Proust'}];
-  const claims=payload.claims.map(claim=>{
-   const rule=rules.find(item=>claim.text.includes(item.marker));
-   if(!rule)throw new Error('unmapped claim in B34 Solitude fixture');
-   return {claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:rule.sourceId,status:'answered',
-     spanIds:[spanByFragment(rule.fragment)],
-     ...(rule.subject?{subjectAttributionStatus:'supported',
-      attributedSubject:rule.subject,attributedSpeaker:rule.subject}:{})}]};
-  });
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
-   retainedContextClaimIds:[]}],claims})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'How do writers and thinkers weigh solitude against social life?',
-  [sourceLuther,sourceProust],ai,[],{plan,
-   catalog:{...catalog,'151':'Martin Luther — Lytton Strachey',
-    '414':'In Search of Lost Time — Marcel Proust'},trace:true});
- assert.match(result.answer,/life of Martin Luther/,
-  'the Luther bullet ships intact');
- const headingShipped=/integration of solitude within society/.test(result.answer);
- const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
- const orphanId=b34ClaimIdByText(result,'He suggests that once the emancipation');
- if(headingShipped){
-  assert.ok((result.trace.reviewContract.framingRescues||[])
-   .some(entry=>entry.claimId===
-    b34ClaimIdByText(result,'* **The integration of solitude')),
-   'the heading shipped via a layer-1 framing rescue');
- }else{
-  assert.ok(rewritten.some(entry=>entry.claimId===orphanId&&
-   entry.subject==='Marcel Proust'),
-   'layer 2 rewrote the orphan to Proust');
-  assert.match(result.answer,/Marcel Proust suggests that once the emancipation/);
- }
- assert.doesNotMatch(result.answer,/He suggests that once the emancipation/,
-  'the Proust claim never ships as a bare He under Luther');
-});
 
-test('batch 34 B34-1 pilot (c): Science — thesis and conclusion framing ships over surviving cited claims; non-framing context still demotes',async()=>{
- // Production (phase-2 Science AP1 P1): all five context claims
- // were purge-demoted, including the part's opening thesis (C1)
- // and closing restatement (C10). Both are connective tissue over
- // the part's surviving cited claims and must ship under layer 1;
- // C5 — mid-part, no framing shape — is not framing-class and its
- // demotion stands; C7's synthesis vocabulary is not carried by
- // the survivors, so the wall refuses it too.
- const source={id:'S1',bookId:'285',
-  title:'The Ante-Nicene Fathers, Volume II — Various authors',page:1209,
-  url:'https://example.test/ante-nicene#page=1209',
-  text:'Demonstration is a discourse agreeable to reason, drawing from points already admitted, and it produces scientific belief in the soul of the learner. Knowledge is of two kinds: scientific and certain knowledge, and knowledge that is merely based on hope. A physician is ideally deficient in no element of the power of healing, and a Gnostic defective in no element of scientific knowledge. A syllogism draws a single conclusion from several premises, whereas demonstration shows one thing that is one and identical.',
-  preview:'Demonstration is a discourse agreeable to reason.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Various authors',role:'primary',bookIds:['285']}],
-  parts:[{id:'P1',question:'How do authors distinguish certainty from opinion?',
-   sourceBookIds:['285'],searchQueries:['demonstration certainty opinion'],
-   candidateSourceIds:['S1']}],queries:['certainty']};
- const draft='PART P1\n'+
-  'Authors in the library distinguish between different degrees of reliability in knowledge, categorizing information based on whether it produces certain scientific belief or merely leads to opinion.\n'+
-  'One perspective defines "demonstration" as a specific type of discourse that is agreeable to reason and serves to produce belief in disputed points by drawing from points that are already admitted. [S1]\n'+
-  'Within this framework, knowledge is split into two distinct modes: "scientific and certain" knowledge and knowledge that is "merely based on hope". [S1]\n'+
-  'This distinction is further clarified by the quality of the "scientific belief" produced in the learner; true demonstration is what produces this specific type of belief, whereas other forms of reasoning might only lead to mere opinion. [S1]\n'+
-  'The reliability of knowledge is also tied to the concept of "perfection" within a category or genus.\n'+
-  'For example, a physician is ideally one who is "deficient in no element of the power of healing," and a Gnostic is ideally one "who is defective in no element of scientific knowledge". [S1]\n'+
-  'This suggests that the certainty of knowledge is linked to the completeness and perfection of the subject\u2019s mastery over their field.\n'+
-  'Furthermore, a distinction is made between demonstration and syllogism based on how they reach conclusions.\n'+
-  'While a syllogism involves drawing a single conclusion from several different premises, a demonstration is indicative of one thing that is "one and identical". [S1]\n'+
-  'Authors distinguish between certainty and opinion by the capacity of a demonstration to produce scientific belief in the soul of the learner.';
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const span=payload.spanCatalog[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',
-   directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
-   retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId]}]}))})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'How do authors in the library distinguish certainty from opinion?',
-  [source],ai,[],{plan,catalog:{...catalog,
-   '285':'The Ante-Nicene Fathers, Volume II — Various authors'},trace:true});
- const rescues=result.trace.reviewContract.framingRescues||[];
- assert.ok(rescues.some(entry=>entry.claimId===
-  b34ClaimIdByText(result,'Authors in the library distinguish')),
-  'the opening thesis is rescued');
- assert.ok(rescues.some(entry=>entry.claimId===
-  b34ClaimIdByText(result,'Authors distinguish between certainty')),
-  'the closing restatement is rescued');
- assert.match(result.answer,/different degrees of reliability in knowledge/);
- assert.match(result.answer,/capacity of a demonstration to produce scientific belief/);
- assert.doesNotMatch(result.answer,/tied to the concept of "perfection"/,
-  'the non-framing mid-part claim still demotes');
- assert.doesNotMatch(result.answer,/linked to the completeness and perfection/,
-  'the wall refuses synthesis vocabulary the survivors do not carry');
-});
 
-test('batch 34 B34-1 pilot (d) NEGATIVE CONTROL: the batch-31 laundering claim, framing-shaped, still does not ship',async()=>{
- // The batch-31 Dostoevsky shape routed through layer 1: the
- // laundering claim (b32C5Text — Alyosha's rebuttal lines carried
- // as Ivan's substance) sits at the part's opening frame position,
- // uncited, unretained. It is framing-CLASS, but it introduces a
- // sourced proposition the part's surviving claims do not carry —
- // its span-verbatim run ("a lust of power, of filthy earthly
- // gain, of domination") trips the wall, the fallback demotion
- // stands, and the batch-31 outcome does not recur. If this pilot
- // fails, layer 1 stops (design stop rule).
- const draft='PART P1\n'+b32C5Text+'\n'+
-  'Ivan\u2019s narrative posits that for fifteen centuries, humanity has lived without "signs from heaven," leaving nothing but faith in what the heart says. [S4]\n'+
-  b32C4Text;
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const accepted=payload.claims[0];
-  const span=payload.spanCatalog[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-   answerStatus:'answered',directAnswerClaimIds:[accepted.claimId],
-   retainedContextClaimIds:[]}],
-   claims:[{claimId:accepted.claimId,status:'answered',
-    sources:[{sourceId:'S4',status:'answered',spanIds:[span.spanId],
-     subjectAttributionStatus:'supported',attributedSubject:'Ivan'}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In The Brothers Karamazov, how does the Grand Inquisitor episode challenge Alyosha\u2019s faith?',
-  [b32KaramazovSource],ai,[],{plan:b32KaramazovPlan,
-   catalog:b32KaramazovCatalog,trace:true});
- assert.doesNotMatch(result.answer,/keepers of the mystery/,
-  'the laundering claim does not ship through the framing channel');
- assert.doesNotMatch(result.answer,/lust of power, of filthy earthly gain/,
-  'the laundered span wording does not ship');
- const launderingId=b34ClaimIdByText(result,'The challenge also touches upon');
- assert.ok(!(result.trace.reviewContract.framingRescues||[])
-  .some(entry=>entry.claimId===launderingId),
-  'layer 1 did not rescue the laundering claim');
- const decision=result.trace.reviewContract.reviewDecisions
-  .find(item=>item.claimId===launderingId);
- assert.equal(decision.accepted,false);
- assert.equal(decision.validationReason,'context-claim-not-retained');
- assert.match(result.answer,/fifteen centuries/,
-  'the accepted cited claim ships');
- assert.match(result.answer,/ceased to see signs from heaven/,
-  'control: the topical context claim ships (rescued or retained on its own merits)');
-});
 
 test('batch 34 B34-1 pilot (e): a framing-shaped claim smuggling a new actor, date, and quotation still demotes',async()=>{
  const draft='PART P1\n'+
@@ -12106,78 +7878,6 @@ test('batch 34 B34-1 pilot (f) control: a pronoun genuinely continuing the previ
   'the guard does not fire on a genuine continuation');
 });
 
-test('batch 34 B34-2 (i): an accepted disclosure claim lost by a gate repair is restored at assembly',async()=>{
- // The War & Peace phase-3 SP2 shape: the review accepts a
- // disclosure context claim ("the passages do not provide..."), a
- // citation-gate repair then adopts a candidate whose re-review
- // never retains it, and on pre-change code the claim vanishes
- // with no record — the reader never learns the part's central
- // fact is missing from the sources.
- const tolstoy={id:'S1',bookId:'777',title:'War and Peace — Leo Tolstoy',page:901,
-  url:'https://example.test/war-and-peace#page=901',
-  text:'The movement of nations is the aggregate of individual lives; an army '+
-   'moves as a mass, and a regiment is one small part of a vast collective '+
-   'motion across the field, no single will directing the whole.',
-  preview:'The movement of nations is the aggregate of individual lives.'};
- const b34Plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Leo Tolstoy',role:'primary',bookIds:['777']}],
-  parts:[{id:'P1',question:'What do Tolstoy\u2019s passages describe of Prince Andrei\u2019s battlefield experiences in the war?',
-   sourceBookIds:['777'],searchQueries:['Andrei battlefield'],candidateSourceIds:['S1']}],
-  queries:['Andrei battlefield']};
- const draft='PART P1\n'+
-  'The passages do not provide the specific narrative details of Prince Andrei\u2019s battlefield experiences in the war.\n\n'+
-  'The movement of armies in the passages is the aggregate of innumerable individual acts rather than the expression of any single will. [S1]\n\n'+
-  'Andrei\u2019s regiment moves with the army as one small part of a vast collective motion.';
- let reviewCalls=0;
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);reviewCalls++;
-  if(reviewCalls===1)return {response:JSON.stringify({parts:[{partId:'P1',
-    status:'partial',answerStatus:'partial',
-    directAnswerClaimIds:['P1-C3'],retainedContextClaimIds:['P1-C1','P1-C3']}],
-   claims:[{claimId:'P1-C2',status:'partial',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
-    clauses:[{text:'The movement of armies in the passages is the aggregate of innumerable individual acts rather than the expression of any single will.',
-     status:'partial',issueCode:'none',
-     sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
-    retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
- };
- const repairResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  // The repair model rewrites both uncited claims: the direct one
-  // gains its citation; the disclosure claim is rewritten into a
-  // bland scene-setter — the loss the seam has to catch.
-  const texts={'P1-C1':'The war chapters open with the army already in motion across the frontier.',
-   'P1-C3':'Andrei\u2019s regiment moves with the army as one small part of a vast collective motion across the field. [S1]'};
-  return {response:JSON.stringify({parts:[{partId:'P1',
-   replacements:payload.parts[0].repair.replaceClaimIds.map(claimId=>({claimId,
-    text:texts[claimId]||texts['P1-C3']})),
-   additions:[]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  repairResponder,assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'What do Tolstoy\u2019s passages describe of Prince Andrei\u2019s battlefield experiences in the war?',
-  [tolstoy],ai,[],{plan:b34Plan,trace:true,
-  catalog:{777:'War and Peace — Leo Tolstoy'}});
- assert.equal(result.trace.citationGate?.[0]?.action,'repair-applied',
-  'fixture sanity: the citation gate adopted the repair that loses the claim');
- assert.match(result.answer,/do not provide the specific narrative details of Prince Andrei/,
-  'the accepted disclosure claim is restored into the shipped answer');
- assert.deepEqual(result.trace.assemblyDisclosureRestored,
-  [{partId:'P1',claimId:'P1-C1'}]);
- assert.deepEqual(result.trace.assemblyDisclosureDropped,[],
-  'the disclosure invariant holds on the shipped answer');
- assert.match(result.answer,/collective motion across the field\. \[S1\]/,
-  'the repaired claim still ships');
-});
 
 test('batch 34 B34-2 (ii): a source-required claim shipping uncited inside a cited part labels the part',async()=>{
  // The Faust shape: the part renders a citation, so B33-3's
@@ -12318,191 +8018,9 @@ function b34GatsbyReview({c2Subject='Gatsby',c2Boundary=b34GatsbyBoundary}={}){
  };
 }
 
-test('batch 34 B34-3 pilot 1 (Gatsby): the boundary subject demotes the tears swap',async()=>{
- const draft='PART P1\n'+
-  'Gatsby throws shirt after shirt before his guests, shirts of sheer linen and thick silk and fine flannel. [S1]\n\n'+
-  'He also witnesses the overwhelming impact of Gatsby’s luxury, such as the “beautiful shirts” that move Gatsby to tears. [S1]';
- const ai=batch25RouterAI({reviewResponder:b34GatsbyReview(),
-  rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In The Great Gatsby, how does Daisy react to the display of wealth?',
-  [b34GatsbySource],ai,[],{plan:b34GatsbyPlan,catalog:b34GatsbyCatalog,trace:true});
- assert.match(result.answer,/shirt after shirt/,
-  'the clean claim still ships');
- assert.doesNotMatch(result.answer,/move Gatsby to tears/,
-  'the swapped claim is demoted by the boundary subject check');
- const swaps=result.trace.reviewContract?.boundarySubjectChecks||[];
- assert.deepEqual(swaps.map(entry=>({claimId:entry.claimId,
-   boundarySubject:entry.boundarySubject,via:entry.via})),
-  [{claimId:'P1-C2',boundarySubject:'Daisy',via:'boundary'}]);
- assert.ok((result.trace.vetoCensus||[]).some(entry=>
-   entry.claimId==='P1-C2'&&entry.outcome==='demoted'&&
-   entry.kind==='boundary-subject'),
-  'the swap joins the veto census as a demotion');
-});
 
-test('batch 34 B34-3 pilot 2 (Wickham): the span speech attribution demotes the scandalous swap',async()=>{
- const austen={id:'S1',bookId:'341',title:'Pride and Prejudice — Jane Austen',
-  page:78,url:'https://example.test/pride#page=78',
-  text:'Mr. Wickham, glad of an audience, told his story with great feeling. “I can never be in company with this Mr. Darcy without being grieved to the soul by a thousand tender recollections. His father, Miss Bennet, the late Mr. Darcy, was one of the best men that ever breathed, and the truest friend I ever had. His behaviour to myself has been scandalous; but I can proclaim nothing before all the world.”',
-  preview:'Mr. Wickham, glad of an audience, told his story.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Jane Austen',role:'primary',bookIds:['341']}],
-  parts:[{id:'P1',question:'How does Elizabeth Bennet judge Mr. Darcy early in Pride and Prejudice?',
-   sourceBookIds:['341'],searchQueries:['Elizabeth Darcy judgment'],candidateSourceIds:['S1']}],
-  queries:['Elizabeth Darcy']};
- const draft='PART P1\n'+
-  'Elizabeth arrives at the Meryton assembly already disposed to think ill of Darcy.\n\n'+
-  'Early in the novel, she describes him as “very disagreeable” and views his behavior as “scandalous”. [S1]\n\n'+
-  'Wickham addresses Elizabeth directly as Miss Bennet while telling his story. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const spanByFragment=fragment=>payload.spanCatalog
-   .find(entry=>entry.text.includes(fragment))?.spanId;
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',directAnswerClaimIds:['P1-C1','P1-C2'],
-    retainedContextClaimIds:['P1-C1']}],
-   claims:payload.claims.map(claim=>claim.text.includes('scandalous')?
-    {claimId:claim.claimId,status:'answered',attributedSubject:'',
-     attributedSpeaker:'Elizabeth Bennet',
-     sources:[{sourceId:'S1',status:'answered',
-      spanIds:[spanByFragment('scandalous')],
-      subjectAttributionStatus:'supported',attributedSubject:'',
-      attributedSpeaker:'Elizabeth Bennet',
-      supportBoundary:'Establishes Elizabeth’s early negative descriptions of Darcy as ‘very disagreeable’ and his behavior as ‘scandalous’.'}]}:
-    {claimId:claim.claimId,status:'answered',attributedSubject:'Wickham',
-     attributedSpeaker:'Wickham',
-     sources:[{sourceId:'S1',status:'answered',
-      spanIds:[spanByFragment('Miss Bennet')],
-      subjectAttributionStatus:'supported',attributedSubject:'Wickham',
-      attributedSpeaker:'Wickham',
-      supportBoundary:'The span shows Wickham addressing Miss Bennet in his account.'}]})})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'How does Elizabeth Bennet judge Mr. Darcy early in Pride and Prejudice?',
-  [austen],ai,[],{plan,catalog:{341:'Pride and Prejudice — Jane Austen'},trace:true});
- assert.match(result.answer,/already disposed to think ill of Darcy/,
-  'the retained context claim still ships');
- assert.doesNotMatch(result.answer,/views his behavior as/,
-  'the swapped claim is demoted: the words are Wickham’s, not Elizabeth’s');
- const swaps=result.trace.reviewContract?.boundarySubjectChecks||[];
- assert.equal(swaps.length,1);
- assert.equal(swaps[0].claimId,'P1-C2');
- assert.equal(swaps[0].via,'span-speech');
- assert.equal(swaps[0].boundarySubject,'Mr. Wickham');
-});
 
-test('batch 34 B34-3 pilot 3 (Emerson): the span clause subject demotes the despair swap',async()=>{
- const emerson={id:'S1',bookId:'555',title:'Essays — Ralph Waldo Emerson',
-  page:201,url:'https://example.test/emerson#page=201',
-  text:'The essays, the fiction, and the poetry of the day have the like municipal limits. Their novelists despair of the heart. Thackeray finds that God has made no allowance for the poor thing in his universe.',
-  preview:'The essays, the fiction, and the poetry of the day have the like municipal limits.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Ralph Waldo Emerson',role:'primary',bookIds:['555']}],
-  parts:[{id:'P1',question:'How does Emerson judge the fiction of his day?',
-   sourceBookIds:['555'],searchQueries:['Emerson fiction novelists'],candidateSourceIds:['S1']}],
-  queries:['Emerson fiction']};
- const draft='PART P1\n'+
-  'Emerson says the essays, fiction, and poetry of the day have municipal limits. [S1]\n\n'+
-  'For instance, some novelists portray characters who, in their pursuit of status or worldly success, ultimately “despair of the heart”. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const spanByFragment=fragment=>payload.spanCatalog
-   .find(entry=>entry.text.includes(fragment))?.spanId;
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
-    retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>claim.text.includes('despair')?
-    {claimId:claim.claimId,status:'answered',attributedSubject:'',
-     attributedSpeaker:'',
-     sources:[{sourceId:'S1',status:'answered',
-      spanIds:[spanByFragment('despair of the heart')],
-      subjectAttributionStatus:'supported',attributedSubject:'',
-      attributedSpeaker:'',
-      supportBoundary:'Confirms that novelists’ romances can fan low flames and that novelists may ‘despair of the heart’.'}]}:
-    {claimId:claim.claimId,status:'answered',attributedSubject:'Emerson',
-     attributedSpeaker:'Emerson',
-     sources:[{sourceId:'S1',status:'answered',
-      spanIds:[spanByFragment('municipal limits')],
-      subjectAttributionStatus:'supported',attributedSubject:'Emerson',
-      attributedSpeaker:'Emerson',
-      supportBoundary:'The span states Emerson’s judgment of the day’s essays, fiction, and poetry.'}]})})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'How does Emerson judge the fiction of his day?',[emerson],ai,[],{
-  plan,catalog:{555:'Essays — Ralph Waldo Emerson'},trace:true});
- assert.match(result.answer,/municipal limits/,
-  'the clean claim still ships');
- assert.doesNotMatch(result.answer,/portray characters/,
-  'the swapped claim is demoted: the despair is the novelists’, not the characters’');
- const swaps=result.trace.reviewContract?.boundarySubjectChecks||[];
- assert.deepEqual(swaps.map(entry=>({claimId:entry.claimId,
-   boundarySubject:entry.boundarySubject,claimSubject:entry.claimSubject,
-   via:entry.via})),
-  [{claimId:'P1-C2',boundarySubject:'novelists',claimSubject:'characters',
-   via:'span-phrase'}]);
-});
 
-test('batch 34 B34-3 pilot 4 (parity): a boundary naming the claim’s subject blocks the attribution flip veto',async()=>{
- // Gatsby ph3 SP2's shape: the reviewer attributes Daisy's tears
- // to Gatsby (conflict), the claim demotes, the rescue judges the
- // pair supported — and on pre-change code the same attribution
- // ground vetoes the flip at re-normalization although the pair's
- // boundary records Daisy crying.
- const draft='PART P1\n'+
-  'Daisy is moved to tears by the beauty of the shirts Gatsby shows her. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const span=payload.spanCatalog.find(entry=>entry.text.includes('never seen such'));
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-    answerStatus:'partial',directAnswerClaimIds:['P1-C1'],
-    retainedContextClaimIds:[]}],
-   claims:[{claimId:'P1-C1',status:'partial',attributedSubject:'Gatsby',
-    attributedSpeaker:'',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[span.spanId],
-     subjectAttributionStatus:'conflict',attributedSubject:'Gatsby',
-     attributedSpeaker:'',supportBoundary:b34GatsbyBoundary}]}]})};
- };
- const rescueResponder=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({decisions:payload.decisions.map(item=>({
-   claimId:item.claimId,sourceId:item.sourceId,verdict:'supported',
-   fragment:'never seen such — such beautiful shirts before',
-   elements:[{element:item.claimText,stated:true}]}))})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In The Great Gatsby, how does Daisy react to the display of wealth?',
-  [b34GatsbySource],ai,[],{plan:b34GatsbyPlan,catalog:b34GatsbyCatalog,trace:true});
- assert.match(result.answer,/Daisy is moved to tears/,
-  'the rescued claim ships: the boundary blocked the attribution veto');
- assert.ok((result.trace.reviewContract?.gateRestorations||[]).some(entry=>
-   entry.kind==='boundary-subject'&&entry.claimId==='P1-C1'),
-  'the blocked veto is recorded as a boundary-subject restoration');
- assert.ok((result.trace.vetoCensus||[]).some(entry=>
-   entry.claimId==='P1-C1'&&entry.outcome==='restored'&&
-   entry.kind==='boundary-subject'),
-  'the census counts the veto as restored, not stood');
-});
 
 test('batch 34 B34-3 controls: correct subject, different action, and silent boundary all ship unchanged',async()=>{
  // (a) The same span and boundary with the claim correctly naming
@@ -12795,174 +8313,7 @@ test('batch 34 B34-7 classifySpanRegion: production page records classify appara
   'verse text is text: a bare verse number without a colon is not a note key');
 });
 
-test('batch 34 B34-7 pilot (Don Quixote): a framing claim resting only on introduction spans demotes when the novel’s own chapters are in the packet',async()=>{
- // Production shape: the packet mixes the bound-in introduction
- // (Translator's Preface, p. 38) with the novel's own opening
- // chapter (p. 118). The framing claim cites only the preface;
- // the chapter claims cite the novel. The framing must rest on
- // the novel's chapters, not on the packaging.
- const preface={id:'S1',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
-  page:38,url:'https://example.test/quixote#page=38',
-  text:'TRANSLATOR’S PREFACE | | I: ABOUT THIS TRANSLATION | IT WAS with considerable reluctance that I abandoned in favour of the present undertaking what had long been my intention. The work had occupied my thoughts for many years before I resolved to attempt it.',
-  preview:'TRANSLATOR’S PREFACE'};
- const novel={id:'S2',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
-  page:118,url:'https://example.test/quixote#page=118',
-  text:'CHAPTER I | WHICH TREATS OF THE CHARACTER AND PURSUITS OF THE FAMOUS GENTLEMAN DON QUIXOTE OF LA MANCHA | IN a village of La Mancha, the name of which I have no desire to call to mind, there lived not long since one of those gentlemen that keep a lance in the lance-rack, an old buckler, a lean hack, and a greyhound for coursing. An olla of rather more beef than mutton, a salad on most nights, scraps on Saturdays, lentils on Fridays, and a pigeon or so extra on Sundays, made away with three-quarters of his income.',
-  preview:'CHAPTER I'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Miguel de Cervantes',role:'primary',bookIds:['124']}],
-  parts:[{id:'P1',question:'How does the opening of Don Quixote frame the novel’s view of chivalry?',
-   sourceBookIds:['124'],searchQueries:['Don Quixote opening chivalry'],
-   candidateSourceIds:['S1','S2'],
-   requirements:[{id:'P1-R1',text:'Show how the opening presents the hero and his chivalric outlook'}]}],
-  queries:['Don Quixote opening']};
- const draft='PART P1\n'+
-  '**The Translator’s Preface:** the translator opens by explaining his reluctance to abandon his earlier undertaking for the present one. [S1]\n\n'+
-  'In a village of La Mancha, a country gentleman lives keeping a lance in the lance-rack and a greyhound for coursing. [S2]\n\n'+
-  'The novel opens by introducing its hero as a gentleman of La Mancha whose name the narrator declines to call to mind. [S2]';
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const spanByFragment=fragment=>payload.spanCatalog
-   .find(entry=>entry.text.includes(fragment))?.spanId;
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',directAnswerClaimIds:['P1-C2','P1-C3'],
-    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
-     answerClaimIds:['P1-C2','P1-C3']}]}],
-   claims:payload.claims.map(claim=>{
-    const text=claim.text;
-    if(text.includes('reluctance'))return {claimId:claim.claimId,status:'answered',
-     attributedSubject:'',attributedSpeaker:'',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[spanByFragment('reluctance')],
-      subjectAttributionStatus:'supported',attributedSubject:'',
-      attributedSpeaker:'',
-      supportBoundary:'The preface describes the translator’s reluctance.'}]};
-    const fragment=text.includes('village of La Mancha')?'village of La Mancha':'call to mind';
-    return {claimId:claim.claimId,status:'answered',
-     attributedSubject:'',attributedSpeaker:'',
-     sources:[{sourceId:'S2',status:'answered',spanIds:[spanByFragment(fragment)],
-      subjectAttributionStatus:'supported',attributedSubject:'',
-      attributedSpeaker:'',
-      supportBoundary:'The chapter introduces the hero of La Mancha.'}]};
-   })})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'How does the opening of Don Quixote frame the novel’s view of chivalry?',
-  [preface,novel],ai,[],{plan,catalog:{124:'Don Quixote — Miguel de Cervantes'},trace:true});
- assert.doesNotMatch(result.answer,/reluctance/,
-  'the preface-only framing claim does not ship');
- assert.match(result.answer,/village of La Mancha/,
-  'the chapter claim ships');
- assert.match(result.answer,/call to mind/,
-  'the closing chapter claim ships');
- assert.deepEqual(result.trace.reviewContract?.apparatusFramingChecks||[],
-  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',kind:'apparatus-framing'}],
-  'the demotion is traced with its source');
- const census=(result.trace.reviewContract?.vetoCensus||[])
-  .find(entry=>entry.claimId==='P1-C1');
- assert.deepEqual(census,{partId:'P1',claimId:'P1-C1',sourceId:'S1',
-  layer:'gate',ground:'framing-claim-apparatus-only',outcome:'demoted',
-  kind:'apparatus-framing',finalDisposition:'suppressed-and-dropped'},
-  'the veto census carries the demotion');
- const decision=(result.trace.reviewContract?.reviewDecisions||[])
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision?.accepted,false,'the decision row records the demotion');
- assert.equal(decision?.validationReason,'framing-claim-apparatus-only',
-  'the decision row names the ground');
-});
 
-test('batch 34 B34-7 controls: an introduction-only packet, a reception-fact content claim, and a study-note framing claim',async()=>{
- const preface={id:'S1',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
-  page:38,url:'https://example.test/quixote#page=38',
-  text:'TRANSLATOR’S PREFACE | | I: ABOUT THIS TRANSLATION | IT WAS with considerable reluctance that I abandoned in favour of the present undertaking what had long been my intention. The work had occupied my thoughts for many years before I resolved to attempt it.',
-  preview:'TRANSLATOR’S PREFACE'};
- const novel={id:'S2',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
-  page:118,url:'https://example.test/quixote#page=118',
-  text:'CHAPTER I | WHICH TREATS OF THE CHARACTER AND PURSUITS OF THE FAMOUS GENTLEMAN DON QUIXOTE OF LA MANCHA | IN a village of La Mancha, the name of which I have no desire to call to mind, there lived not long since one of those gentlemen that keep a lance in the lance-rack, an old buckler, a lean hack, and a greyhound for coursing.',
-  preview:'CHAPTER I'};
- const noab={id:'S3',bookId:'638',title:'The New Oxford Annotated Bible — Michael D. Coogan',
-  page:47,url:'https://example.test/noab#page=47',
-  text:'genesis 7 | 5 The Lord saw that the wickedness of humankind was great in the earth, and that every inclination of the thoughts of their hearts was only evil continually. 6 And the Lord was sorry that he had made humankind on the earth, and it grieved him to his heart. | 7 | a Meaning of Heb uncertain | b Or window | 6.5–8.19: The great flood. This story describes God’s un-creation and re-creation of the world. The version preserved here is an interweaving of parallel accounts, one of which links with the Priestly traditions of 1.1–2.3 and 5.1–32, and the other of which links with the Yahwistic primeval history in 2.4b–4.26.',
-  preview:'genesis 7'};
- const planFor=(parts)=>({version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Miguel de Cervantes',role:'primary',bookIds:['124']}],
-  parts,queries:['Don Quixote opening']});
- const reviewFor=(directIds)=>({messages})=>{
-  const payload=parsePayload(messages);
-  const spanByFragment=fragment=>payload.spanCatalog
-   .find(entry=>entry.text.includes(fragment))?.spanId;
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',directAnswerClaimIds:directIds}],
-   claims:payload.claims.map(claim=>{
-    const text=claim.text;
-    // Payload claim texts strip their citation markers: read the
-    // cited source from the packet's own sourceEvidence, not the text.
-    const sourceId=claim.sourceEvidence?.[0]?.sourceId||'S1';
-    const fragment=text.includes('reluctance')?'reluctance':
-     text.includes('interweav')?'interweaving of parallel accounts':
-     text.includes('wickedness')?'wickedness of humankind':'village of La Mancha';
-    return {claimId:claim.claimId,status:'answered',
-     attributedSubject:'',attributedSpeaker:'',
-     sources:[{sourceId,status:'answered',spanIds:[spanByFragment(fragment)],
-      subjectAttributionStatus:'supported',attributedSubject:'',
-      attributedSpeaker:'',supportBoundary:'The span supports the claim.'}]};
-   })})};
- };
- const run=async(draft,sources,parts,directIds,question)=>{
-  const ai=batch25RouterAI({reviewResponder:reviewFor(directIds),
-   rescueResponder:b34RescueRefused,
-   repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-   assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-    parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-   draftText:draft});
-  return composeEvidenceAnswer(question,sources,ai,[],
-   {plan:planFor(parts),catalog:{124:'Don Quixote — Miguel de Cervantes',
-    638:'The New Oxford Annotated Bible — Michael D. Coogan'},trace:true});
- };
- // (a) Introduction-only packet (the SP1 shape): no text span exists,
- // so the framing claim stands — the gate cannot fix a packet that
- // gave the reviewer nothing else.
- let result=await run('PART P1\n'+
-  '**The Translator’s Preface:** the translator opens by explaining his reluctance to abandon his earlier undertaking for the present one. [S1]',
-  [preface],[{id:'P1',question:'What does the Translator’s Preface to Don Quixote say about the translation?',
-   sourceBookIds:['124'],searchQueries:['Translator Preface'],candidateSourceIds:['S1']}],
-  ['P1-C1'],'What does the Translator’s Preface to Don Quixote say about the translation?');
- assert.match(result.answer,/reluctance/,
-  'control (a): with no text span in the packet, the preface framing ships');
- assert.deepEqual(result.trace.reviewContract?.apparatusFramingChecks||[],[],
-  'control (a): no apparatus demotion is recorded');
- // (b) A content claim citing the preface for a fact ships even when
- // text spans exist: the claim is not framing, so the gate does not apply.
- result=await run('PART P1\n'+
-  'The translator abandoned his earlier undertaking with considerable reluctance to take up the present translation. [S1]\n\n'+
-  'In a village of La Mancha, a country gentleman lives keeping a lance in the lance-rack. [S2]',
-  [preface,novel],[{id:'P1',question:'How does the opening of Don Quixote frame the novel’s view of chivalry?',
-   sourceBookIds:['124'],searchQueries:['Don Quixote opening'],candidateSourceIds:['S1','S2']}],
-  ['P1-C1','P1-C2'],'How does the opening of Don Quixote frame the novel’s view of chivalry?');
- assert.match(result.answer,/reluctance/,
-  'control (b): a content claim citing the preface ships');
- assert.match(result.answer,/village of La Mancha/,'control (b): the chapter claim ships');
- assert.deepEqual(result.trace.reviewContract?.apparatusFramingChecks||[],[],
-  'control (b): no apparatus demotion is recorded');
- // (c) A study-note framing claim demotes when verse text is in the packet.
- result=await run('PART P1\n'+
-  '**The Flood Story:** the notes explain that the flood story interweaves two parallel traditions. [S3]\n\n'+
-  'The Lord saw that the wickedness of humankind was great in the earth. [S3]',
-  [noab],[{id:'P1',question:'How does Genesis present the flood story?',
-   sourceBookIds:['638'],searchQueries:['Genesis flood'],candidateSourceIds:['S3']}],
-  ['P1-C1','P1-C2'],'How does Genesis present the flood story?');
- assert.doesNotMatch(result.answer,/two parallel traditions/,
-  'control (c): the note-only framing claim does not ship');
- assert.match(result.answer,/wickedness of humankind/,
-  'control (c): the verse-text claim ships');
- assert.deepEqual(result.trace.reviewContract?.apparatusFramingChecks||[],
-  [{partId:'P1',claimId:'P1-C1',sourceId:'S3',kind:'apparatus-framing'}],
-  'control (c): the study-note demotion is traced');
-});
 
 test('batch 34 B34-8 finalizeVetoCensus: every disposition from the shipped set and the shipped text',()=>{
  // The census entries below cover all four (vote, shipped) cells
@@ -13001,122 +8352,6 @@ test('batch 34 B34-8 finalizeVetoCensus: every disposition from the shipped set 
   'a restoration whose claim never ships ends dropped');
 });
 
-test('batch 34 B34-8 pilot route: the census carries final dispositions in both trace mirrors',async()=>{
- // Run A — the Don Quixote mixed packet (B34-7 fixture): the
- // preface-only framing claim demotes on the apparatus ground and
- // never ships, so its census entry must read
- // suppressed-and-dropped. Run B — the Gibbon bullet-label
- // exemption (B33-5 (a) fixture): the demotion does not stand, the
- // claim ships cited, so its census entry must read
- // suppressed-and-shipped — the production shape (Conrad P1-C5,
- // Kierkegaard P1-C6, love P1-C6) that motivated the field.
- const quixotePlan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Miguel de Cervantes',role:'primary',bookIds:['124']}],
-  parts:[{id:'P1',question:'How does the opening of Don Quixote frame the novel’s view of chivalry?',
-   sourceBookIds:['124'],searchQueries:['Don Quixote opening chivalry'],
-   candidateSourceIds:['S1','S2'],
-   requirements:[{id:'P1-R1',text:'Show how the opening presents the hero and his chivalric outlook'}]}],
-  queries:['Don Quixote opening']};
- const preface={id:'S1',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
-  page:38,url:'https://example.test/quixote#page=38',
-  text:'TRANSLATOR’S PREFACE | | I: ABOUT THIS TRANSLATION | IT WAS with considerable reluctance that I abandoned in favour of the present undertaking what had long been my intention. The work had occupied my thoughts for many years before I resolved to attempt it.',
-  preview:'TRANSLATOR’S PREFACE'};
- const novel={id:'S2',bookId:'124',title:'Don Quixote — Miguel de Cervantes',
-  page:118,url:'https://example.test/quixote#page=118',
-  text:'CHAPTER I | WHICH TREATS OF THE CHARACTER AND PURSUITS OF THE FAMOUS GENTLEMAN DON QUIXOTE OF LA MANCHA | IN a village of La Mancha, the name of which I have no desire to call to mind, there lived not long since one of those gentlemen that keep a lance in the lance-rack, an old buckler, a lean hack, and a greyhound for coursing. An olla of rather more beef than mutton, a salad on most nights, scraps on Saturdays, lentils on Fridays, and a pigeon or so extra on Sundays, made away with three-quarters of his income.',
-  preview:'CHAPTER I'};
- const quixoteDraft='PART P1\n'+
-  '**The Translator’s Preface:** the translator opens by explaining his reluctance to abandon his earlier undertaking for the present one. [S1]\n\n'+
-  'In a village of La Mancha, a country gentleman lives keeping a lance in the lance-rack and a greyhound for coursing. [S2]\n\n'+
-  'The novel opens by introducing its hero as a gentleman of La Mancha whose name the narrator declines to call to mind. [S2]';
- const quixoteReview=({messages})=>{
-  const payload=parsePayload(messages);
-  const spanByFragment=fragment=>payload.spanCatalog
-   .find(entry=>entry.text.includes(fragment))?.spanId;
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',directAnswerClaimIds:['P1-C2','P1-C3'],
-    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
-     answerClaimIds:['P1-C2','P1-C3']}]}],
-   claims:payload.claims.map(claim=>{
-    const text=claim.text;
-    if(text.includes('reluctance'))return {claimId:claim.claimId,status:'answered',
-     attributedSubject:'',attributedSpeaker:'',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[spanByFragment('reluctance')],
-      subjectAttributionStatus:'supported',attributedSubject:'',
-      attributedSpeaker:'',
-      supportBoundary:'The preface describes the translator’s reluctance.'}]};
-    const fragment=text.includes('village of La Mancha')?'village of La Mancha':'call to mind';
-    return {claimId:claim.claimId,status:'answered',
-     attributedSubject:'',attributedSpeaker:'',
-     sources:[{sourceId:'S2',status:'answered',spanIds:[spanByFragment(fragment)],
-      subjectAttributionStatus:'supported',attributedSubject:'',
-      attributedSpeaker:'',
-      supportBoundary:'The chapter introduces the hero of La Mancha.'}]};
-   })})};
- };
- const quixoteAi=batch25RouterAI({reviewResponder:quixoteReview,rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:quixoteDraft});
- const dropped=await composeEvidenceAnswer(
-  'How does the opening of Don Quixote frame the novel’s view of chivalry?',
-  [preface,novel],quixoteAi,[],{plan:quixotePlan,catalog:{124:'Don Quixote — Miguel de Cervantes'},trace:true});
- assert.doesNotMatch(dropped.answer,/reluctance/,'run A: the apparatus-demoted claim does not ship');
- const droppedEntry=(dropped.trace.vetoCensus||[])
-  .find(entry=>entry.claimId==='P1-C1');
- assert.deepEqual(droppedEntry,{partId:'P1',claimId:'P1-C1',sourceId:'S1',
-  layer:'gate',ground:'framing-claim-apparatus-only',outcome:'demoted',
-  kind:'apparatus-framing',finalDisposition:'suppressed-and-dropped'},
-  'run A: the trace-level census carries the dropped disposition');
- const droppedContract=(dropped.trace.reviewContract?.vetoCensus||[])
-  .find(entry=>entry.claimId==='P1-C1');
- assert.equal(droppedContract?.finalDisposition,'suppressed-and-dropped',
-  'run A: the contract-level census carries the same disposition');
- // Run B — Gibbon bullet-label exemption.
- const gibbon={id:'S1',bookId:'287',title:'Decline and Fall — Edward Gibbon',
-  page:210,url:'https://example.test/gibbon#page=210',
-  text:'The opening of new sea routes diverted the trade of the region, and the plague, returning year after year, thinned the towns and weakened the ability of the province to defend itself against its enemies.',
-  preview:'The opening of new sea routes diverted the trade of the region.'};
- const gibbonPlan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Edward Gibbon',role:'primary',bookIds:['287']}],
-  parts:[{id:'P1',question:'In the Decline and Fall, what factors weakened the empire’s ability to defend itself?',
-   sourceBookIds:['287'],searchQueries:['sea routes plague defend'],
-   candidateSourceIds:['S1']}],queries:['sea routes plague defend']};
- const gibbonDraft='PART P1\n'+
-  '* **Economic and Environmental Factors:** The opening of new sea routes or the impact of the plague can weaken a region’s ability to defend itself. [S1]\n'+
-  '* **Naval Supremacy:** The building of a great fleet of warships gave the empire command of every sea and harbor along the coast. [S1]';
- const gibbonReview=({messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  const spanId=payload.spanCatalog[0].spanId;
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial',
-   answerStatus:'answered',
-   directAnswerClaimIds:[payload.claims.find(claim=>
-    claim.text.includes('Economic'))?.claimId].filter(Boolean),
-   retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,
-    status:'answered',sources:[{sourceId:'S1',status:'partial',
-     spanIds:[spanId],
-     supportBoundary:claim.text.includes('Economic')?
-      'The spans mention specific historical factors like new sea routes and plague, but do not explicitly categorize them as Economic and Environmental Factors.':
-      'The spans describe trade routes and plague, not a war fleet.'}]}))})};
- };
- const gibbonAi=batch25RouterAI({reviewResponder:gibbonReview,draftText:gibbonDraft});
- const shipped=await composeEvidenceAnswer(
-  'In the Decline and Fall, what factors weakened the empire’s ability to defend itself?',
-  [gibbon],gibbonAi,[],{plan:gibbonPlan,catalog:{'287':'Decline and Fall — Edward Gibbon'},trace:true});
- assert.match(shipped.answer,/new sea routes/,'run B: the exempted claim ships');
- const shippedEntry=(shipped.trace.vetoCensus||[])
-  .find(entry=>entry.kind==='bullet-label');
- assert.ok(shippedEntry,'run B: the census carries the exemption entry');
- assert.equal(shippedEntry.outcome,'suppressed','run B: the layer vote is still suppression');
- assert.equal(shippedEntry.finalDisposition,'suppressed-and-shipped',
-  'run B: the disposition says the suppression did not take effect');
- const shippedContract=(shipped.trace.reviewContract?.vetoCensus||[])
-  .find(entry=>entry.kind==='bullet-label');
- assert.equal(shippedContract?.finalDisposition,'suppressed-and-shipped',
-  'run B: the contract-level census carries the same disposition');
-});
 
 test('batch 35 B35-1: subjectNamesEquivalent — containment and spelling variants match, distinct surnames do not',()=>{
  assert.equal(subjectNamesEquivalent('Gibbon','Edward Gibbon'),true,
@@ -13256,207 +8491,8 @@ test('batch 35 B35-1 pilot: a spelling variant of the claim’s subject is a mat
   'no swap is recorded against a variant-matched subject');
 });
 
-test('batch 35 B35-3 pilot (Magwitch): the span’s attested speaker demotes an accepted claim crediting another speaker',async()=>{
- // Great Expectations shape: the reviewer ACCEPTS a claim
- // crediting Pip with words the span attributes to Magwitch.
- // Batch 35 verifies shipping claims against the span’s own
- // speech attribution — the speaker channel names Magwitch from
- // the span text itself — and the claim demotes. The control
- // credits Magwitch and ships.
- const source={id:'S1',bookId:'312',title:'Great Expectations — Charles Dickens',
-  page:402,url:'https://example.test/greatexpectations#page=402',
-  text:'Pip said, “I am grateful for everything,” earlier that day, though his voice shook as he spoke. “I made my fortune by my own effort and owe it to no one,” said Magwitch, turning to Pip with a fierce pride.',
-  preview:'Pip said, “I am grateful for everything,” earlier that day.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Charles Dickens',role:'primary',bookIds:['312']}],
-  parts:[{id:'P1',question:'Who claims to have made a fortune by his own effort?',
-   sourceBookIds:['312'],searchQueries:['fortune own effort'],
-   candidateSourceIds:['S1']}],queries:['fortune effort']};
- const makeAI=speaker=>batch25RouterAI({
-  reviewResponder:({messages})=>{
-   const payload=parsePayload(messages);
-   const span=payload.spanCatalog.find(entry=>entry.text.includes('made my fortune'));
-   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-     answerStatus:'answered',
-     directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
-     retainedContextClaimIds:[]}],
-    claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-     attributedSubject:speaker,attributedSpeaker:speaker,
-     sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
-      subjectAttributionStatus:'supported',attributedSubject:speaker,
-      attributedSpeaker:speaker,
-      supportBoundary:'The span shows the speaker telling of the fortune made by his own effort.'}]}))})};
-  },
-  rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:'PART P1\n'+speaker+' says, “I made my fortune by my own effort and owe it to no one.” [S1]'});
- const wrong=await composeEvidenceAnswer(
-  'Who claims to have made a fortune by his own effort?',
-  [source],makeAI('Pip'),[],{plan,
-   catalog:{312:'Great Expectations — Charles Dickens'},trace:true});
- assert.doesNotMatch(wrong.answer,/made my fortune/,
-  'the misattributed claim is demoted by the span’s attested speaker');
- const demoted=(wrong.trace.reviewContract?.boundarySubjectChecks||[])
-  .find(entry=>entry.outcome==='demoted');
- assert.ok(demoted,'the verified demotion is recorded');
- assert.equal(demoted.via,'span-speech');
- assert.equal(demoted.boundarySubject,'Magwitch');
- assert.equal(demoted.verified,true);
- const right=await composeEvidenceAnswer(
-  'Who claims to have made a fortune by his own effort?',
-  [source],makeAI('Magwitch'),[],{plan,
-   catalog:{312:'Great Expectations — Charles Dickens'},trace:true});
- assert.match(right.answer,/made my fortune/,
-  'control: the correctly credited claim ships');
-});
 
-test('batch 35 B35-3 pilot (Conrad): a neighboring segment’s head naming the subject does not suppress the subject-not-named demotion',async()=>{
- // The batch-34 Conrad door, rebuilt: the claim credits Kurtz with
- // the manager’s smile passage. A packet span the claim does NOT
- // cite carries Kurtz’s naming sentence in its head (the manager
- // span’s lead-in reaches back to it). Batch 34’s suppression read
- // that head and released the demotion; batch 35 qualifies an
- // in-head antecedent only when the head belongs to a segment the
- // pair cites — a same-page neighbor’s head names the subject as
- // someone else’s actor, not this passage’s.
- // Ranking engineering (review-spans scores draft terms +3,
- // question terms +1, ties by page order): each filler carries
- // answer/question terms the naming sentence lacks, so the naming
- // span ranks below the eight packet slots while the manager and
- // smile spans rank in. The manager scene runs three sentences so
- // the smile span’s own 400-character head covers only the scene
- // itself — the naming sentence sits in the MANAGER span’s head,
- // exactly the production geometry.
- const fillers=[
-  'The steamer lay off the station through the long afternoon while her crew watched the darkness gather over the river and the far shore, and the mate kept his silent watch until the lamps were lit along the bank.',
-  'All morning the steamer had waited below the station landing, his boats lowered and raised again at his order, while the darkness of the forest stood unmoving beyond the shore and the current carried branches past her hull.',
-  'The clerks at the station kept his ledgers through the heat, entering figures in a fair round hand, while the steamer swung at her anchor and the shore lay white and still under the haze until darkness came down.',
-  'Bales and cases were stacked along the station yard in long rows, and porters moved among them at his signal without haste, as the steamer’s bell sounded across the water and the shore faded slowly into the early darkness.',
-  'The steamer’s funnel trailed a thin smoke over the station roofs, and his flag hung limp above the yard, and from the shore there came no sound at all but the river slipping past the piles into the gathering darkness.',
-  'An agent walked the station path with a bundle of papers under his arm, pausing to watch the steamer warp herself closer to the bank, where the shore shelved gently and the darkness lay already among the trees.',
-  'The station store was shuttered early, his tins and cloth counted and locked away, while the steamer rode quiet at her moorings and the opposite shore dissolved by degrees into a darkness without a single light.',
-  'Rivets, oil, and spare cordage filled the steamer’s manifest, checked twice by his engineer, while the station bell tolled once and the shore birds settled, and darkness thickened over the anchorage like a held breath.'];
- const naming='Kurtz had come down from the interior only the week before, and by the time the steamer reached the station the whole company spoke of little but his illness, his ivory, and the strange ascendancy he held over the men of the interior.';
- const manager='The manager of the Outer Station, his face sealed and composed in the gathering darkness, betrayed nothing as the words reached him from the veranda.';
- const managerScene2='He listened with his head inclined, his hands folded upon the table before him, and he gave no sign that the report had moved him in any way at all.';
- const managerScene3='When the speaker had finished, the manager rose without hurry, adjusted his sleeve, and looked out over the water as if the matter were already closed.';
- const smile='He sealed the utterance with that smile of his, as though it had been a door opening into a darkness he had in his keeping.';
- const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
-  page:34,url:'https://example.test/conrad#page=34',
-  text:[...fillers,naming,manager,managerScene2,managerScene3,smile].join(' '),
-  preview:'He sealed the utterance with that smile of his.'};
- const captured={};
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const claim=payload.claims[0];
-  const smileSpan=payload.spanCatalog.find(entry=>
-   entry.text.includes('smile of his'));
-  const managerSpan=payload.spanCatalog.find(entry=>
-   entry.text.includes('face sealed and composed'));
-  captured.smileId=smileSpan?.spanId;
-  captured.managerHead=managerSpan?.head;
-  captured.packetSpanIds=payload.parts[0].evidence[0].spanIds;
-  const namingSpan=payload.spanCatalog.find(entry=>
-   entry.text.includes('strange ascendancy'));
-  captured.namingInPacket=Boolean(namingSpan)&&
-   captured.packetSpanIds.includes(namingSpan.spanId);
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',directAnswerClaimIds:[claim.claimId],
-    retainedContextClaimIds:[]}],
-   claims:[{claimId:claim.claimId,status:'answered',
-    attributedSubject:'Kurtz',
-    sources:[{sourceId:'S1',status:'answered',spanIds:[smileSpan.spanId],
-     subjectAttributionStatus:'supported',attributedSubject:'Kurtz',
-     supportBoundary:'The span shows a smile sealing the utterance like a door into darkness.'}]}]})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:'PART P1\nKurtz sealed the utterance with that smile of his, as though it had been a door opening into a darkness he had in his keeping. [S1]'});
- const result=await composeEvidenceAnswer(
-  'In Heart of Darkness, what does the smile at the Outer Station suggest?',
-  [source],ai,[],{plan:b30ConradPlan,catalog:b30ConradCatalog,trace:true});
- assert.ok(captured.managerHead?.includes('strange ascendancy'),
-  'precondition: the manager span’s head carries the Kurtz naming sentence');
- assert.equal(captured.namingInPacket,false,
-  'precondition: the naming sentence is not itself a packet span');
- const suppressed=(result.trace.reviewContract?.gateDemotionsSuppressed||[])
-  .filter(entry=>entry.claimId==='P1-C1');
- assert.deepEqual(suppressed,[],
-  'the neighboring head does not suppress the demotion');
- const decision=(result.trace.reviewContract?.reviewDecisions||[])
-  .find(item=>item.claimId==='P1-C1'&&item.sourceId==='S1');
- assert.equal(decision?.accepted,false,
-  'the subject-not-named demotion stands');
- assert.doesNotMatch(result.answer,/door opening into a darkness/,
-  'the manager’s smile is not shipped as Kurtz’s');
-});
 
-test('batch 35 B35-2 pilot (C&P): the guard names Sonya from the draft part’s first claim — never the possessive inside the orphan’s own text',async()=>{
- // Production shape (phase-3 C&P SP1, claim texts verbatim): the
- // Sonya part’s records are ALL subject-less; the orphan “Her
- // presence serves…” itself mentions “Raskolnikov’s theory”.
- // Batch 34’s guard harvested that possessive as the claim’s
- // subject and shipped “Raskolnikov’s presence…”. Batch 35 takes
- // the referent from the draft part’s first claim — Sonya — whose
- // text establishes her as the part’s subject.
- const source={id:'S1',bookId:'114',title:'Crime and Punishment — Fyodor Dostoevsky',
-  page:310,url:'https://example.test/crime#page=310',
-  text:'Raskolnikov’s theory of extraordinary men holds that the extraordinary man has the right to transgress the moral law in pursuit of a higher idea. Sonya, meanwhile, answers Raskolnikov directly: where Raskolnikov preaches transgression, she answers with a life of sacrifice, endurance, and faith in a higher spiritual truth.',
-  preview:'Raskolnikov’s theory of extraordinary men holds that the extraordinary man has the right.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['114']}],
-  parts:[{id:'P1',question:'What does Raskolnikov’s theory claim?',
-   sourceBookIds:['114'],searchQueries:['Raskolnikov theory extraordinary'],
-   candidateSourceIds:['S1']},
-   {id:'P2',question:'How does Sonya answer Raskolnikov’s theory?',
-   sourceBookIds:['114'],searchQueries:['Sonya challenges theory'],
-   candidateSourceIds:['S1']}],queries:['Raskolnikov Sonya theory']};
- const draft='PART P1\n'+
-  'Raskolnikov’s theory divides humanity into the ordinary and the extraordinary, and grants the extraordinary man a right to transgress. [S1]\n\n'+
-  'PART P2\n'+
-  'Sonya challenges Raskolnikov’s theory through a mechanism of spiritual and moral presence, standing as a living contradiction to his cold, rationalistic worldview. [S1]\n\n'+
-  'Her presence serves as a constant reminder of the human and emotional dimensions that Raskolnikov’s theory attempts to ignore or override.';
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const spanFor=fragment=>payload.spanCatalog
-   .find(entry=>entry.text.includes(fragment))?.spanId;
-  return {response:JSON.stringify({parts:payload.parts.map(part=>({
-    partId:part.partId,status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:payload.claims
-     .filter(claim=>claim.claimId.startsWith(part.partId+'-'))
-     .map(claim=>claim.claimId),
-    retainedContextClaimIds:part.partId==='P2'?['P2-C2']:[]})),
-   claims:payload.claims.map(claim=>claim.claimId==='P1-C1'?
-    {claimId:claim.claimId,status:'answered',attributedSubject:'Raskolnikov',
-     sources:[{sourceId:'S1',status:'answered',
-      spanIds:[spanFor('theory of extraordinary men')],
-      subjectAttributionStatus:'supported',attributedSubject:'Raskolnikov'}]}:
-    {claimId:claim.claimId,status:'answered',
-     sources:[{sourceId:'S1',status:'answered',
-      spanIds:[spanFor('answers Raskolnikov directly')]}]})})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In Crime and Punishment, how does Sonya answer Raskolnikov’s theory of extraordinary men?',
-  [source],ai,[],{plan,catalog:{114:'Crime and Punishment — Fyodor Dostoevsky'},trace:true});
- assert.match(result.answer,/Sonya’s presence serves as a constant reminder/,
-  'the orphan is re-anchored to Sonya, the draft part’s established subject');
- assert.doesNotMatch(result.answer,/Raskolnikov’s presence serves/,
-  'the guard never manufactures the Raskolnikov possessive');
- assert.doesNotMatch(result.answer,/Her presence serves as a constant reminder/,
-  'the bare-Her orphan does not ship');
- const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
- assert.ok(rewritten.some(entry=>entry.subject==='Sonya'),
-  'the rewrite is recorded with Sonya as its subject');
-});
 
 test('batch 35 B35-2 pilot (Kierkegaard): an impersonal “It matters…” opener is never rewritten into a person',async()=>{
  // Production shape (phase-2 Kierkegaard SP2): batch 34’s guard
@@ -13517,132 +8553,7 @@ test('batch 35 B35-2 pilot (Kierkegaard): an impersonal “It matters…” open
   'the guard does not fire at all on this answer');
 });
 
-test('batch 35 B35-2 pilot (Narrators): a post-demotion survivor in a subject-absent part is named from the draft part’s first claim',async()=>{
- // The Narrators subject-absent shape: the part’s first claim —
- // the one naming the Underground Man — is demoted at review; the
- // surviving cited claim opens with a bare “He” and records no
- // subject. The part ships no recorded subject at all, so the
- // guard restores the subject from the draft part’s first claim
- // instead of leaving the orphan to read as the previous part’s
- // Marlow.
- const sourceUM={id:'S1',bookId:'184',title:'Notes from the Underground — Fyodor Dostoevsky',
-  page:22,url:'https://example.test/underground#page=22',
-  text:'I am a sick man. I am a spiteful man. To be excessively conscious is an illness, a real, thorough illness; I have intentionally turned every feeling into its opposite, taking refuge in irony and spite, in the inertia of a man who cannot become even an insect.',
-  preview:'I am a sick man. I am a spiteful man.'};
- const sourceMarlow={id:'S2',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
-  page:43,url:'https://example.test/conrad#page=43',
-  text:'It seems to me that I am trying to tell you a dream, making a vain attempt, because no relation of a dream can convey the dream-sensation, that commingling of absurdity, surprise, and bewilderment which is of the very essence of dreams.',
-  preview:'It seems to me that I am trying to tell you a dream.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Fyodor Dostoevsky',role:'primary',bookIds:['184']},
-   {label:'Joseph Conrad',role:'primary',bookIds:['315']}],
-  parts:[{id:'P1',question:'How does Marlow shape what the reader can conclude?',
-   sourceBookIds:['315'],searchQueries:['Marlow dream sensation'],
-   candidateSourceIds:['S2']},
-   {id:'P2',question:'How does the Underground Man shape what the reader can conclude?',
-   sourceBookIds:['184'],searchQueries:['Underground Man consciousness'],
-   candidateSourceIds:['S1']}],queries:['narrators contrast']};
- const draft='PART P1\n'+
-  'Marlow shapes his tale as a dream he cannot fully convey, warning his listeners that the sensation of the events escapes language. [S2]\n\n'+
-  'PART P2\n'+
-  'The Underground Man shapes his narrative from inside a distorted and spiteful consciousness. [S1]\n\n'+
-  'He shapes the narrative by intentionally distorting his own psyche, using his “consciousness” to create complexity and doubt. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const spanFor=sourceId=>payload.spanCatalog
-   .find(entry=>entry.spanId.startsWith(sourceId+'-'))?.spanId;
-  return {response:JSON.stringify({parts:payload.parts.map(part=>({
-    partId:part.partId,status:'answered',answerStatus:'answered',
-    directAnswerClaimIds:payload.claims
-     .filter(claim=>claim.claimId.startsWith(part.partId+'-')&&
-      claim.claimId!=='P2-C1').map(claim=>claim.claimId),
-    retainedContextClaimIds:[]})),
-   claims:payload.claims.map(claim=>{
-    if(claim.claimId==='P1-C1')return {claimId:claim.claimId,status:'answered',
-     attributedSubject:'Marlow',
-     sources:[{sourceId:'S2',status:'answered',spanIds:[spanFor('S2')],
-      subjectAttributionStatus:'supported',attributedSubject:'Marlow'}]};
-    if(claim.claimId==='P2-C1')return {claimId:claim.claimId,
-     status:'unsupported',
-     sources:[{sourceId:'S1',status:'unsupported',spanIds:[spanFor('S1')],
-      subjectAttributionStatus:'supported'}]};
-    return {claimId:claim.claimId,status:'answered',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[spanFor('S1')]}]};
-   })})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'How do Marlow and the Underground Man each shape what the reader can conclude?',
-  [sourceUM,sourceMarlow],ai,[],{plan,catalog:b34NarratorsCatalog,trace:true});
- assert.match(result.answer,/Underground Man shapes the narrative by intentionally distorting/,
-  'the survivor is re-anchored to the Underground Man from the draft');
- assert.doesNotMatch(result.answer,/He shapes the narrative by intentionally distorting/,
-  'the bare-He survivor does not ship under Marlow’s sequence');
- const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
- assert.ok(rewritten.some(entry=>entry.subject==='Underground Man'));
-});
 
-test('batch 35 B35-2 pilot (Wuthering): the Lockwood framing geometry still re-anchors — via the draft’s named subject, not a text harvest of the orphan',async()=>{
- // Production geometry (phase-3 Wuthering SP1, claim texts from
- // the artifact): within ONE part, a Nelly section (a claim
- // recording Heathcliff) gives way to a Lockwood section — heading,
- // framing claim, then the orphan “His initial impressions of
- // Heathcliff are filtered…” whose record names no one. Batch 34
- // rewrote it correctly only by harvesting “Heathcliff” out of the
- // orphan’s own text and comparing it to the running antecedent;
- // batch 35 takes the referent from the nearest preceding DRAFT
- // claim’s named subject — the framing claim’s Lockwood.
- const source={id:'S1',bookId:'362',title:'Wuthering Heights — Emily Brontë',
-  page:31,url:'https://example.test/wuthering#page=31',
-  text:'Nelly Dean describes Heathcliff’s temperament in blunt, almost colloquial terms, characterizing him as rough as a saw-edge, and hard as whinstone. Lockwood serves as the initial framing device, providing an outsider’s view of the characters, and his initial impressions of Heathcliff are filtered through his own romanticized or misunderstood perceptions of the household.',
-  preview:'Nelly Dean describes Heathcliff’s temperament in blunt terms.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Emily Brontë',role:'primary',bookIds:['362']}],
-  parts:[{id:'P1',question:'How do Nelly Dean and Lockwood each mediate the portrayal of Heathcliff?',
-   sourceBookIds:['362'],searchQueries:['Nelly Lockwood Heathcliff portrayal'],
-   candidateSourceIds:['S1']}],queries:['Wuthering narration']};
- const draft='PART P1\n'+
-  'For example, she describes Heathcliff’s temperament in blunt, almost colloquial terms, characterizing him as rough as a saw-edge. [S1]\n\n'+
-  '**Lockwood’s Framing**\n\n'+
-  'Lockwood serves as the initial framing device, providing an outsider’s view of the characters. [S1]\n\n'+
-  'His initial impressions of Heathcliff are filtered through his own romanticized or misunderstood perceptions. [S1]';
- const reviewResponder=({messages})=>{
-  const payload=parsePayload(messages);
-  const span=payload.spanCatalog[0];
-  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
-    answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId),
-    retainedContextClaimIds:[]}],
-   claims:payload.claims.map(claim=>{
-    if(claim.text.includes('saw-edge'))return {claimId:claim.claimId,
-     status:'answered',attributedSubject:'Heathcliff',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
-      subjectAttributionStatus:'supported',attributedSubject:'Heathcliff'}]};
-    return {claimId:claim.claimId,status:'answered',
-     sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId]}]};
-   })})};
- };
- const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
-  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
-  assemblyAuditResponder:({messages})=>({response:JSON.stringify({
-   parts:parsePayload(messages).parts.map(part=>({partId:part.partId,action:'none'}))})}),
-  draftText:draft});
- const result=await composeEvidenceAnswer(
-  'In Wuthering Heights, how do Nelly Dean and Lockwood each mediate the portrayal of Heathcliff?',
-  [source],ai,[],{plan,catalog:{362:'Wuthering Heights — Emily Brontë'},trace:true});
- assert.match(result.answer,/Lockwood’s initial impressions of Heathcliff are filtered/,
-  'the orphan is re-anchored to Lockwood, the draft’s framing subject');
- assert.doesNotMatch(result.answer,/His initial impressions of Heathcliff are filtered/,
-  'the bare-His orphan does not ship after the Heathcliff sequence');
- assert.doesNotMatch(result.answer,/Heathcliff’s initial impressions/,
-  'the orphan’s own text harvest (Heathcliff) is never the referent');
- const rewritten=result.trace.assemblyAntecedentGuard?.rewritten||[];
- assert.ok(rewritten.some(entry=>entry.subject==='Lockwood'));
-});
 
 test('batch 35 B35-4: the region census lands in the trace for every packet span, gate trip or not',async()=>{
  // Batch 34 shipped B34-7's classifier with records only on
@@ -13870,52 +8781,7 @@ const b35SynthesisPlan={version:'reader-evidence-v2',intent:'explain',
   sourceBookIds:['341'],searchQueries:['Elizabeth Darcy view'],
   candidateSourceIds:['S1'],sourceRequired:true}],queries:['Elizabeth Darcy']};
 
-test('batch 35 B35-7 pilot (synthesis provenance): a synthesis unit restating a dropped cited claim is removed, not shipped on attached citations',async()=>{
- const draft='PART P1\n'+
-  'Darcy offends Elizabeth with his proud manners at the ball. [S1]\n\n'+
-  'Elizabeth believes Wickham\u2019s account that Darcy behaved scandalously toward him. [S1]\n\n'+
-  'Elizabeth views Darcy as scandalous in his behavior toward Wickham. [S1]\n\n'+
-  'Elizabeth\u2019s perception of Darcy evolves from viewing his behavior toward Wickham as scandalous to doubting her own assumptions.';
- const ai=b35SynthesisAI({draft,partialClaimId:'P1-C3',synthesisId:'P1-C4',supportId:'P1-C1'});
- const result=await composeEvidenceAnswer('How does Elizabeth\u2019s view of Darcy evolve?',
-  [b35SynthesisSource],ai,[],{plan:b35SynthesisPlan,
-   catalog:{341:'Pride and Prejudice — Jane Austen'},trace:true});
- assert.deepEqual(result.trace.assemblyLoss,
-  [{partId:'P1',claimId:'P1-C3',reason:'claim-partial-not-shipped',disposition:'traced'}],
-  'the source claim is accepted at review and dropped at assembly');
- assert.deepEqual(result.trace.synthesisProvenanceDropped,
-  [{partId:'P1',claimId:'P1-C4',droppedClaimId:'P1-C3',basis:'containment',containment:1}],
-  'the synthesis unit inherits the dropped claim\u2019s disposition');
- assert.doesNotMatch(result.answer,/perception of Darcy evolves/,
-  'the synthesis unit does not ship');
- assert.match(result.answer,/proud manners at the ball\. \[S1\]/,'the anchor claim ships');
- assert.match(result.answer,/behaved scandalously toward him\. \[S1\]/,
-  'a claim with its OWN accepted source ships even sharing the vocabulary');
-});
 
-test('batch 35 B35-7 pilot (synthesis provenance, production wording): the distinctive-term branch catches the low-overlap P&P shape',async()=>{
- // The phase-3 P&P SP2 texts verbatim in shape: containment between
- // the dropped claim and the synthesis unit measures 0.22 — under
- // the containment bar — but the unit carries the dropped claim's
- // distinctive term 'scandalous', which no surviving cited claim
- // of the part establishes.
- const draft='PART P1\n'+
-  'Darcy offends Elizabeth with his proud manners at the ball. [S1]\n\n'+
-  'Elizabeth initially trusts Wickham and believes his account of Darcy\u2019s conduct. [S1]\n\n'+
-  'She views his character through a lens of dislike, finding his behavior "scandalous" and his presence painful. [S1]\n\n'+
-  'Elizabeth\u2019s perception of Darcy evolves from viewing him as a disagreeable and scandalous individual to doubting her own negative assumptions about his temperament.';
- const ai=b35SynthesisAI({draft,partialClaimId:'P1-C3',synthesisId:'P1-C4',supportId:'P1-C1'});
- const result=await composeEvidenceAnswer('How does Elizabeth\u2019s view of Darcy evolve?',
-  [b35SynthesisSource],ai,[],{plan:b35SynthesisPlan,
-   catalog:{341:'Pride and Prejudice — Jane Austen'},trace:true});
- assert.deepEqual(result.trace.synthesisProvenanceDropped,
-  [{partId:'P1',claimId:'P1-C4',droppedClaimId:'P1-C3',basis:'distinctive-term',
-   term:'scandalou',containment:0.222}],
-  'the distinctive-term branch records the production shape');
- assert.doesNotMatch(result.answer,/disagreeable and scandalous individual/,
-  'the synthesis unit does not ship cited on attached evidence');
- assert.match(result.answer,/proud manners at the ball\. \[S1\]/,'the anchor claim ships');
-});
 
 test('batch 35 B35-8 pilot (rebind-before-partition): a quote living in an unaccepted packet source is rebound there and the part survives with the rebound binding',async()=>{
  // The C&P SP1 shape: the draft cites [S1, S2]; review accepts
@@ -14011,4 +8877,151 @@ test('batch 35 B35-8 pilot (review retry deadline): a deadline retry records a 1
  assert.equal(reviewCalls[1].kind,'retry');
  assert.equal(reviewCalls[1].timeoutMs,120000,
   'the retry after the deadline death gets the raised deadline instead of a fresh flat 60 s');
+});
+
+// ---------------------------------------------------------------------------
+// Redesign Stage A: the audit is the reviewer's single judgment.
+// ---------------------------------------------------------------------------
+
+test('redesign Stage A: no boundary, context-purge, or veto demotion can fire on the pilot route',async()=>{
+ // The Marchmain shape that batch 34 demoted and batch 35 learned
+ // to record: the span's boundary subject (Alice) differs from the
+ // claim's reviewer-resolved subject (Bernard). Stage A records
+ // the finding and ships the claim on the reviewer's verdict.
+ const source={id:'S1',bookId:'77',title:'Letters — Alice Marchmain',
+  page:12,url:'https://example.test/letters#page=12',
+  text:'Alice kept a photograph of Bernard beside her desk for many years. She wept openly at the news of his leaving, and the letter shook in her hand as she read it again.',
+  preview:'Alice kept a photograph of Bernard beside her desk.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Alice Marchmain',role:'primary',bookIds:['77']}],
+  parts:[{id:'P1',question:'How does Bernard react to the news of the leaving?',
+   sourceBookIds:['77'],searchQueries:['Bernard news leaving'],
+   candidateSourceIds:['S1']}],queries:['Bernard leaving']};
+ const ai=makeAI([
+  answer('PART P1\nBernard weeps openly at the news of his leaving. [S1]\n'+
+   'The letter plainly shook everyone who read it.'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages);
+   const span=payload.spanCatalog[0];
+   const cited=payload.claims.find(claim=>claim.sourceIds.includes('S1'));
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+     answerStatus:'answered',directAnswerClaimIds:[cited.claimId],
+     retainedContextClaimIds:(payload.parts[0].contextClaims||[])
+      .map(claim=>claim.claimId)}],
+    claims:payload.claims.map(claim=>claim.claimId===cited.claimId?
+     {claimId:claim.claimId,status:'answered',
+      sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
+       subjectAttributionStatus:'supported',attributedSubject:'Bernard',
+       supportBoundary:'The span describes Alice crying openly at the news.'}]}:
+     {claimId:claim.claimId,status:'answered',sources:[]})})};
+  }],{decorateReview:false});
+ const result=await composeEvidenceAnswer(
+  'How does Bernard react to the news of the leaving?',
+  [source],ai,[],{plan,catalog:{77:'Letters — Alice Marchmain'},trace:true});
+ assert.match(result.answer,/Bernard weeps openly/,
+  'the cited claim ships on the reviewer verdict despite the boundary finding');
+ assert.match(result.answer,/The letter plainly shook everyone who read it/,
+  'the uncited reviewer-answered claim ships: the context purge is gone');
+ const records=result.trace.reviewContract?.boundarySubjectChecks||[];
+ assert.equal(records.length,1,'the boundary finding is still recorded as telemetry');
+ assert.equal(records[0].outcome,'recorded');
+ assert.equal(result.trace.vetoCensus,undefined,
+  'no veto census exists on the pilot route');
+ assert.ok(!(result.trace.reviewContract?.gateDemotionsSuppressed||[]).length,
+  'no gate demotion is recorded as having fired');
+ assert.equal(ai.calls.length,2,'compose plus the single audit call; nothing follows the audit');
+});
+
+test('redesign Stage A: a reviewer-misattributed claim is removed whole by the audit, recorded, and disclosed',async()=>{
+ const plan={version:'reader-evidence-v2',intent:'compare',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',
+    sourceBookIds:['35'],candidateSourceIds:['S1']},
+   {id:'P2',question:'How does Kant explain causal necessity?',
+    sourceBookIds:['40'],candidateSourceIds:['S2']}],queries:['Hume Kant causality']};
+ const reviewPart=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const part=payload.parts[0];
+  const claim=payload.claims[0];
+  const spanId=claim.sourceEvidence[0].spanIds[0];
+  const conflict=part.partId==='P2';
+  return {response:JSON.stringify({parts:[{partId:part.partId,status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:[claim.claimId]}],
+   claims:[{claimId:claim.claimId,status:'answered',
+    sources:[{sourceId:claim.sourceIds[0],status:'answered',spanIds:[spanId],
+     ...(conflict?{attributionStatus:'conflict',attributedSpeaker:'David Hume'}:
+      {attributionStatus:'supported',attributedSpeaker:'David Hume'})}]}]})};
+ };
+ const ai=makeAI([
+  answer('PART P1\nHume says necessity arises from regular conjunction and the mind’s habitual inference. [S1]\n'+
+   'PART P2\nKant says necessity arises from regular conjunction and the mind’s habitual inference. [S2]'),
+  reviewPart,reviewPart],{decorateReview:false});
+ const result=await composeEvidenceAnswer(
+  'How do Hume and Kant each explain causal necessity?',
+  [hume,kant],ai,[],{plan,catalog,trace:true});
+ assert.match(result.answer,/Hume says necessity arises/);
+ assert.doesNotMatch(result.answer,/Kant says necessity arises/,
+  'the misattributed claim is removed whole, not relabeled or rewritten');
+ assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
+   issue.claimId==='P2-C1'&&issue.reason==='source-attribution-conflict'),
+  'the removal is recorded with its reason');
+ const kantPart=result.questionParts.find(part=>part.partId==='P2');
+ assert.deepEqual(kantPart.claimIds,[],'no claim ships for the misattributed part');
+ assert.match(result.answer,/This part of the question could not be answered from the library:/,
+  'the loss is disclosed to the reader in the answer text');
+ assert.ok((result.trace.final.absentPartLabelsInAnswer||[]).includes('P2'));
+ assert.deepEqual(result.trace.final.disclosureLabelVerification.missing,[],
+  'every recorded disclosure label is present verbatim in the shipped text');
+ assert.ok(result.trace.final.disclosureLabelVerification.checked>=1);
+ assert.equal(ai.calls.length,3,'compose plus one audit call per part; nothing follows the audit');
+});
+
+test('redesign Stage A: the byline-direction flag is recorded and never acted on',async()=>{
+ // The batch-35 Death shape as a fixture: Sulpicius writes TO
+ // Cicero; the draft credits Cicero with the letter's content.
+ // The reviewer is the judge and accepts the claim; Stage A only
+ // records the direction flag for later precision measurement.
+ const source={id:'S1',bookId:'80',title:'Letters — Marcus Tullius Cicero',
+  page:9,url:'https://example.test/letters#page=9',
+  text:'Servius Sulpicius To Cicero, greetings. I have received your letter, and I urge you to let reason restrain your grief, for excessive sorrow profits nothing.',
+  preview:'Servius Sulpicius To Cicero, greetings.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Marcus Tullius Cicero',role:'primary',bookIds:['80']}],
+  parts:[{id:'P1',question:'What counsel does the letter offer about grief?',
+   sourceBookIds:['80'],searchQueries:['grief reason restrain'],
+   candidateSourceIds:['S1']}],queries:['grief counsel']};
+ const ai=makeAI([
+  answer('PART P1\nCicero argues that reason should restrain grief, since excessive sorrow profits nothing. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(
+  'What counsel does the letter offer about grief?',
+  [source],ai,[],{plan,catalog:{80:'Letters — Marcus Tullius Cicero'},trace:true});
+ assert.match(result.answer,/Cicero argues that reason should restrain grief/,
+  'the claim ships: the flag is record-only and removes nothing');
+ assert.deepEqual(result.trace.final.bylineDirectionFlags,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
+    creditedName:'Cicero',bylineAuthor:'Servius Sulpicius'}]);
+});
+
+test('redesign Stage A: the pronoun-orphan flag is recorded and never acted on',async()=>{
+ const source={id:'S1',bookId:'35',title:catalog[35],page:7,
+  url:'https://example.test/plato#page=7',
+  text:'The soul, Socrates argues, survives the body and is not dissolved by death, since it is simple and uncompounded in nature.',
+  preview:'The soul survives the body.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
+  parts:[{id:'P1',question:'What is argued about the soul and death?',
+   sourceBookIds:['35'],searchQueries:['soul survives body'],
+   candidateSourceIds:['S1']}],queries:['soul death']};
+ const ai=makeAI([
+  answer('PART P1\nHe argues that the soul survives the body and is not dissolved by death. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(
+  'What is argued about the soul and death?',
+  [source],ai,[],{plan,catalog,trace:true});
+ assert.match(result.answer,/He argues that the soul survives the body/,
+  'the claim ships: the flag is record-only and removes nothing');
+ assert.deepEqual(result.trace.final.pronounOrphanFlags,
+  [{partId:'P1',paragraphIndex:0,pronoun:'He'}]);
 });
