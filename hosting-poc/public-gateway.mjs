@@ -10,8 +10,7 @@
  * identity; they do not prove that a claim follows from the source.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {MAX_SELECTOR_CANDIDATES,enforcePartPacketFloor,enforceSubmittedBookDiversity,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,
-  selectEvidenceCandidates} from './evidence-selector.mjs';
+import {MAX_SELECTOR_CANDIDATES,MAX_SELECTOR_SOURCES,enforcePartPacketFloor,enforceSubmittedBookDiversity,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates} from './evidence-selector.mjs';
 import {normalizePlan,citationIds} from './reader-contract.mjs';
 import {normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 import {isHeadingLine} from './review-spans.mjs';
@@ -4084,13 +4083,83 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           sourceSelectionStatus='paired-snapshot';
           sourceSelectionUsage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
           selectionTrace={stage:'evidence-selection',elapsedMs:0,status:sourceSelectionStatus,
+            packingProvenance:'paired-snapshot',
             candidateCount:candidatePool.length,selectionCandidateCount:selectionCandidates.length,
             selected:answerSources.map(source=>({id:source.id,candidateId:source.candidateId,
               bookId:source.bookId,page:source.page,candidatePartIds:source.candidatePartIds,
               candidatePartSupport:source.candidatePartSupport})),pairedSnapshot:true};
         }else try{
-          const decision=await selectEvidenceCandidates({question:data.question,parts:selectionParts,
-            candidates:selectorCandidates,ai:env.AI});
+          // Redesign Stage A: deterministic packing is THE pilot
+          // selection path — the model selector call no longer
+          // executes here. The decision is synthesized from the
+          // retrieval record itself: per part, the pool-order
+          // candidates linked to the part (retrieval hints /
+          // candidatePartIds), with the retrieval support class
+          // (candidatePartSupport) as the evidence cue; the
+          // selected set is the fallback ordering (per-part
+          // reservation, then round-robin by book) bounded to the
+          // shared packet cap. The floor, recovery, diversity, and
+          // packing chain below runs unchanged, and the final
+          // packed list still gets the B35-7 diversity
+          // verification. Packing provenance is traced on the
+          // selection trace (packingProvenance:'deterministic').
+          const candidateIdByPoolRow=new Map(selectionCandidates
+            .map((source,index)=>[source,'C'+(index+1)]));
+          const planPartById=new Map(plan.parts.map(part=>[part.id,part]));
+          // A pool row is part-linked by retrieval (support entry or
+          // candidate hint) or, when a part has no retrieval-linked
+          // row at all, by plan scope — the link the outage fallback
+          // always used at packing time. Scope links are context
+          // class: they admit the page to the part's packet without
+          // claiming retrieval judged it supportive.
+          const scopeLinked=(source,partId)=>{
+            const part=planPartById.get(partId);
+            if(!part)return true;
+            const scope=part.sourceBookIds;
+            return !Array.isArray(scope)||!scope.length||
+              scope.map(String).includes(String(source.bookId));
+          };
+          const decisionParts=selectionParts.map(part=>{
+            const evidence=[];
+            for(const source of selectionCandidates){
+              const supportEntry=(source.candidatePartSupport||[])
+                .find(entry=>entry.partId===part.partId);
+              const hinted=Array.isArray(source.candidatePartIds)&&
+                source.candidatePartIds.includes(part.partId);
+              if(!supportEntry&&!hinted)continue;
+              evidence.push({candidateId:candidateIdByPoolRow.get(source),
+                support:supportEntry?.support||'context',
+                ...(supportEntry?.excerpt?
+                  {excerpt:supportEntry.excerpt,excerptMatched:true}:{})});
+            }
+            if(!evidence.length)
+              for(const source of selectionCandidates)
+                if(scopeLinked(source,part.partId))
+                  evidence.push({candidateId:candidateIdByPoolRow.get(source),
+                    support:'context'});
+            evidence.sort((left,right)=>
+              (left.support==='direct'?0:1)-(right.support==='direct'?0:1));
+            return {partId:part.partId,
+              candidateIds:evidence.map(entry=>entry.candidateId),
+              coverage:evidence.some(entry=>entry.support==='direct')?
+                'supported':evidence.length?'partial':'none',
+              evidence};
+          });
+          const partLinkedIds=new Set(decisionParts
+            .flatMap(part=>part.candidateIds));
+          const decision={
+            parts:decisionParts,
+            // Only part-linked pages are selected: a page no part
+            // claims (by retrieval or by scope) is not evidence for
+            // this question, and an empty linked set is the
+            // deterministic abstention (no-relevant-evidence).
+            selectedCandidateIds:orderFallbackCandidates(selectionCandidates,
+              plan.parts.map(part=>part.id))
+              .map(source=>candidateIdByPoolRow.get(source))
+              .filter(id=>id&&partLinkedIds.has(id))
+              .slice(0,MAX_SELECTOR_SOURCES),
+            usage:{calls:0,neurons:0,inputTokens:0,outputTokens:0},
+            provenance:'deterministic'};
           sourceSelectionUsage=decision.usage;
           const floorDecision=enforcePartPacketFloor(decision,selectorCandidates);
           const selectionRecovery=recoverUncoveredPartCandidates({...decision,
@@ -4111,12 +4180,14 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             {partIds:plan.parts.map(part=>part.id)});
           const selectedIds=diversity.selectedCandidateIds;
           if(!selectedIds.length){
-            // Keep the selector's abstention: do not relabel retrieval-order
-            // pages as relevant. The composer can still answer from broader
-            // knowledge with no library citations when the packet is empty.
+            // The deterministic path abstains only when the pool
+            // itself yields no candidates. The composer can still
+            // answer from broader knowledge with no library
+            // citations when the packet is empty.
             sourceSelectionStatus='no-relevant-evidence';
             selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
-              status:sourceSelectionStatus,candidateCount:candidatePool.length,
+              status:sourceSelectionStatus,packingProvenance:'deterministic',
+              candidateCount:candidatePool.length,
               selectionCandidateCount:selectionCandidates.length,
               suppressedCandidateDuplicates:candidateDeduplication.suppressed,
               candidates:selectorCandidates,decision,selected:[],
@@ -4189,7 +4260,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             throw error;
           }
           selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
-            status:'selected',candidateCount:candidatePool.length,
+            status:'selected',packingProvenance:'deterministic',
+            candidateCount:candidatePool.length,
             selectionCandidateCount:selectionCandidates.length,
             suppressedCandidateDuplicates:candidateDeduplication.suppressed,
             candidates:selectorCandidates,decision,selected:answerSources.map(source=>({
@@ -4209,7 +4281,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           sourceSelectionStatus='selected';
           }
         }catch(error){
-          sourceSelectionUsage={calls:1,neurons:0,inputTokens:0,outputTokens:0};
+          // Redesign Stage A: no model call exists on this path to
+          // charge for; the fallback below is a packing-error path.
+          sourceSelectionUsage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
           // Preserve availability if the extra semantic selection call fails,
           // while clearly marking that the answer used the retriever's order.
           sourceSelectionStatus='deterministic-fallback';
@@ -4227,7 +4301,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             totalBytes=packed.totalBytes;
           }
           selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
-            status:sourceSelectionStatus,
+            status:sourceSelectionStatus,packingProvenance:'deterministic-fallback',
             candidateCount:candidatePool.length,selectionCandidateCount:selectionCandidates.length,
             suppressedCandidateDuplicates:candidateDeduplication.suppressed,
             failureCode:['selector-provider-error','selector-invalid-request','selector-invalid-response',

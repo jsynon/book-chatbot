@@ -271,47 +271,8 @@ function parseJson(raw,stage){
 export function parseReviewJson(raw){return parseJson(raw,'review');}
 export function parseAnswerRepairJson(raw){return parseJson(raw,'answer-repair');}
 
-const REVIEW_REPAIR_PROMPT=`Complete only the missing source decisions listed in the request. Do not reconsider other claims or the answer as a whole. For each exact claimId/sourceId pair, decide whether one or more supplied spans support that cited claim as written, including attribution and qualification. Distinguish a work's own position from a reported view, narrative voice, or editorial context. Return evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary stating what the accepted span establishes and its limit. For every claim assigning an action, belief, motive, state, or trait to a named person, including possessive constructions and names following a subordinate clause, return subjectAttributionStatus (supported|conflict|unclear|not_applicable) and attributedSubject (the actual named subject or empty). Use not_applicable only when the grammatical subject is a non-person; when personhood or attribution is uncertain, use unclear rather than omitting the fields. Use only the listed span IDs. Return exactly one decision for every requested pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","status":"answered|partial|unanswered","spanIds":["S1-Q1"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"","subjectAttributionStatus":"supported|conflict|unclear|not_applicable","attributedSubject":"","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}]}. Use an empty spanIds array and status partial or unanswered when the supplied span packet does not support the claim. Do not infer support from a citation alone.`;
-// Batch 8 (B8-1): decision-completeness repair for review scaffolding.
-// A frame claim the reviewer retained without a scaffolding decision —
-// link, context, or omit — gets exactly one compact round that must
-// choose. Modeled on REVIEW_REPAIR_PROMPT: complete only the listed
-// decisions, reconsider nothing else.
-const SCAFFOLDING_REPAIR_PROMPT=`Complete only the missing scaffolding decisions listed in the request. Do not reconsider other claims or the answer as a whole. Each part lists frameClaims — uncited claims that open or close the part and were retained without a decision — and acceptedClaims, the cited claims of that part that review accepted with supporting spans. For every listed frame claim, decide exactly one action: "link" when the claim restates or combines positions the accepted claims establish, naming in supportClaimIds the accepted claims whose spans establish the restated position (name supporting claims for each side of a combined claim; never return a one-sided link for a two-sided claim); "context" when the claim is genuine background, a transition, or interpretation that needs no citation; "omit" when the claim presents a source-derived position that no accepted claim establishes. Return exactly one decision for every requested frame claim, no more and no fewer, as JSON: {"decisions":[{"partId":"P1","claimId":"P1-C3","action":"link","supportClaimIds":["P1-C1"]},{"partId":"P1","claimId":"P1-C4","action":"context","supportClaimIds":[]}]}. Use only claim IDs listed in the request for that part.`;
 
-const ANSWER_REPAIR_PROMPT=`Patch only the requested claims. Each part lists replaceClaimIds, any missing requirements, and whether answer coverage needs an addition. When missing requirements are listed, each item may include a questionAnchor copied verbatim from the reader's current question. Preserve its exact subject and relation; do not treat the phrase as a string-match test. Make the minimum change that directly addresses each one; do not add optional material. Replace every listed claimId exactly once with one complete sentence; do not rewrite, repeat, remove, or change any other existing claim. Add one or more standalone sentences only when addCoverage is true, and do not repeat claims already present. Use only the already selected evidence and exact spans supplied for that part; do not seek, invent, or cite other sources. A replacement of a source-derived claim must cite only a source supplied for that part, and its citation must support the entire replacement, including attribution, scope, and logical relations. Distinguish a work's own position from a reported view, narrative voice, or editorial context, and stay within the supportBoundary recorded by review; do not turn context or a reported position into the author's own claim. Independent general knowledge may be used for a needed addition when the supplied material does not answer it; keep it distinct from supplied-source claims and leave it uncited. If a requested claim cannot be repaired responsibly, do not invent support; return a replacement that is fully supported or let the bounded repair fail. Return exactly one JSON object with each requested part once and this shape: {"parts":[{"partId":"P1","replacements":[{"claimId":"P1-C2","text":"one replacement sentence"}],"additions":["one new sentence"]}]}. Include empty arrays when there are no replacements or additions. Do not return complete part text, preserved claims, citations to unselected sources, or commentary.`;
 
-function mergeReviewRepairs(rawReview,requested,repair){
-  if(!Array.isArray(repair?.decisions)||repair.decisions.length!==requested.length)
-    return {ok:false,reason:'decision-count-mismatch'};
-  const expected=new Map(requested.map(item=>[item.claimId+'|'+item.sourceId,item]));
-  const received=new Map();
-  for(const item of repair.decisions){
-    const key=String(item?.claimId||'')+'|'+String(item?.sourceId||'');
-    const request=expected.get(key);
-    if(!request||received.has(key)||!hasRecognizedStatus(item?.status)||
-       !Array.isArray(item?.spanIds)||
-       item.spanIds.some(spanId=>typeof spanId!=='string'||!request.spanIds.includes(spanId))||
-       !['supported','conflict','unclear','not_applicable'].includes(item?.attributionStatus)||
-       typeof item?.attributedSpeaker!=='string')
-      return {ok:false,reason:'invalid-or-unrequested-decision'};
-    received.set(key,{claimId:request.claimId,sourceId:request.sourceId,status:normalizeStatus(item.status),
-      spanIds:[...new Set(item.spanIds)],attributionStatus:item.attributionStatus,
-      attributedSpeaker:item.attributedSpeaker.trim().slice(0,120),
-      ...(typeof item.subjectAttributionStatus==='string'?{subjectAttributionStatus:item.subjectAttributionStatus}:{}),
-      ...(typeof item.attributedSubject==='string'?{attributedSubject:item.attributedSubject.trim().slice(0,120)}:{}),
-      ...(REVIEW_EVIDENCE_ROLES.has(item.evidenceRole)?{evidenceRole:item.evidenceRole}:{}),
-      ...(typeof item.supportBoundary==='string'&&item.supportBoundary.trim()?
-        {supportBoundary:item.supportBoundary.trim().slice(0,180)}:{})});
-  }
-  if(received.size!==expected.size)return {ok:false,reason:'missing-decision'};
-  const claims=(rawReview?.claims||[]).map(claim=>{
-    const repairs=[...received.values()].filter(item=>item.claimId===claim.claimId);
-    if(!repairs.length)return claim;
-    return {...claim,sources:[...(Array.isArray(claim.sources)?claim.sources:[]),...repairs]};
-  });
-  return {ok:true,review:{...rawReview,claims}};
-}
 
 // Batch 24 (B24-1): zero-accept rescue re-review. When a
 // source-required part finishes review with no accepted source-linked
@@ -326,31 +287,6 @@ function mergeReviewRepairs(rawReview,requested,repair){
 // support standard the rubric grades, and genuine overreach — added
 // framing, a second side, a causal step, a stronger verb — still
 // fails it, so Dostoevsky-pattern parts die honestly.
-const RESCUE_REVIEW_PROMPT=`Judge only the listed claim and source pairs. Do not reconsider other claims or the answer as a whole. A supplied span may carry a head — the passage text immediately before the span; read it as context that can identify the span's subject, never as evidence that states the claim. For each exact claimId/sourceId pair, decide whether the supplied span text states the claim in substance: return "supported" when a reasonable reader would say the span says what the claim says, and "not-supported" when the claim adds anything the span does not state — an interpretive framing, a second side or position, an unstated causal step, or a stronger verb than the span uses. Distinguish a work's own position from a reported view, narrative voice, or editorial context. In fragment, quote the decisive span text your verdict rests on, copied exactly from one of the pair's supplied spans. Do not infer support from a citation alone. Batch 25 (B25-Q2): break the claim into its distinct elements — each fact, relation, or qualification it asserts — and list them in elements, marking each element stated:true only when the supplied spans state that element; a "supported" verdict requires every element of the claim to be stated. Batch 26 (B26-1): when a pair lists outstandingClauses — clause findings from the original review that were not answered — judge each listed clause on its own against the pair's spans and return one clauses entry per listed clause, copying its text exactly, with stated:true only when the spans state that clause and a fragment quoting the decisive span text for that clause exactly. Batch 26 (B26-2): when a pair carries an attributionFinding, also name in anchor the speaker or subject the span itself anchors the claim to, copied as the name appears in the span text (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Batch 27 (B27-4): clause entries are required, not optional — a "supported" verdict for a pair listing outstandingClauses that omits any listed clause is invalid, is re-asked once, and is then recorded not-supported. Batch 29 (B29-2): presence is not clearance — a clauses entry marking its clause stated:false, or whose fragment is not text from the pair's own spans, does not clear the clause, and a "supported" verdict leaving any listed clause uncleared is invalid on the same terms as an omitted entry. Return exactly one decision for every listed pair, no more and no fewer, as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
-// Batch 27 (B27-5): the rescue retry's compact instruction. The
-// batch-25 compact retry compacted the EVIDENCE (spans capped at two
-// per pair), which made two production retries structurally incapable
-// of succeeding — the fragment that would validate lived in a later
-// span the retry never sent. The retry now compacts the instruction
-// instead: it re-asks only the pairs whose verdicts failed validation,
-// with their full span sets, under this shorter form of the same
-// contract (same verdict standard, same element/clause/anchor fields,
-// same exact-fragment rule).
-const RESCUE_REVIEW_RETRY_PROMPT=`Judge only the listed claim and source pairs — a previous response for these pairs failed validation, and this re-ask carries their full span sets. A supplied span may carry a head — the passage text immediately before the span; read it as context that can identify the span's subject, never as evidence that states the claim. For each pair, decide whether the supplied span text states the claim in substance: "supported" when a reasonable reader would say the span says what the claim says, "not-supported" when the claim adds anything the span does not state. In fragment, copy the decisive span text exactly from one of the pair's supplied spans. List the claim's elements in elements, each marked stated:true only when the spans state it; "supported" requires every element stated. When a pair lists outstandingClauses, return one clauses entry per listed clause, copying its text exactly, stated:true only when the spans state that clause, with a fragment quoting its decisive span text exactly — a supported verdict omitting any listed clause is invalid, and so is one whose clauses entries do not clear every listed clause (stated:true with a fragment from the pair's own spans). When a pair carries an attributionFinding, name in anchor the speaker or subject the span itself anchors the claim to (for the work's own narration, the byline author); omit anchor when the span anchors no such name. Return exactly one decision per listed pair as JSON: {"decisions":[{"claimId":"P1-C1","sourceId":"S1","verdict":"supported|not-supported","fragment":"exact span text","elements":[{"element":"the element the claim asserts","stated":true}],"clauses":[{"text":"the listed clause text","stated":true,"fragment":"exact span text"}],"anchor":"the anchored speaker or subject"}]}.`;
-// Batch 24 (B24-1): strict validation of a rescue response. Any
-// deviation — wrong count, an unrequested or duplicated pair, an
-// unrecognized verdict, a missing fragment, or a "supported" verdict
-// whose fragment does not appear in that pair's span texts — rejects
-// the whole rescue for the part, which then keeps its original review
-// decisions exactly. A malformed rescue can never make things worse.
-// Batch 30 (B30-4): strip quotation-mark-delimited regions from span
-// text before an antecedent check — a name that occurs only inside
-// quoted speech belongs to the quoted speaker's discourse, not to the
-// passage's own narration, and cannot anchor a claim to the narrator's
-// subject. Paired straight and curly double quotes are removed with
-// their contents; a quote left unpaired (the span begins or ends
-// mid-quotation) removes everything from that quote to the end of the
-// span — fail-closed, since the quoted region's extent is unknown.
 function stripQuotedSpeechRegions(text){
   const stripped=String(text||'')
     .replace(/"[^"]*"/gu,' ')
@@ -448,24 +384,23 @@ export function classifySpanRegion(span,source){
   return 'text';
 }
 
-// Batch 35 (B35-4): the production-firing registry — the trace
-// field names that prove each batch-35 mechanism fired, exported
-// as a single list for the client harness roll-up. A mechanism
-// whose field is absent from an entire validation artifact is
-// reported PRODUCTION-INERT automatically. Paths are relative to
-// a case's evidenceTrace (gateway selection fields live under
-// selectionTrace, noted inline).
+// The production-firing registry (batch 35 B35-4 pattern, carried
+// into the redesign): the trace field names that prove each
+// surviving mechanism fired, exported as a single list for the
+// client harness roll-up. A mechanism whose field is absent from
+// an entire validation artifact is reported PRODUCTION-INERT
+// automatically. Paths are relative to a case's evidenceTrace
+// (gateway selection fields live under selectionTrace, noted
+// inline). Redesign Stage A: entries for deleted mechanisms
+// (assemblyAntecedentGuard, reviewContract.gateDemotionsSuppressed,
+// synthesisProvenanceDropped) are removed; the new record-only
+// final checks and the deterministic packing provenance are added.
+// The export name is kept for harness compatibility.
 export const BATCH35_FIRING_FIELDS=[
-  // B35-1 + B35-3: subject-swap findings from the rebuilt check —
-  // demotions and record-only findings alike.
+  // The boundary subject check survives ONLY as this record-only
+  // census (redesign Stage A): findings are recorded, never acted
+  // on.
   'reviewContract.boundarySubjectChecks',
-  // B35-2: antecedent guard actions (the field exists only when
-  // the guard restored, rewrote, or removed — silence is its
-  // no-fire state, read together with boundarySubjectChecks).
-  'assemblyAntecedentGuard',
-  // B35-3: subject-not-named demotions and their antecedent
-  // suppressions (the ledger the suppression-safety rule narrows).
-  'reviewContract.gateDemotionsSuppressed',
   // B35-4: the per-span region census (B34-7's firing ledger).
   'reviewContract.spanRegionClassifications',
   // B35-6: claim-level uncited labels measured on shipped units,
@@ -475,12 +410,22 @@ export const BATCH35_FIRING_FIELDS=[
   // B35-7 (gateway): the final-list diversity verification record,
   // present on every submission path.
   'selectionTrace.diversityFinal',
-  // B35-7: synthesis units dropped for inheriting a dropped
-  // source claim's disposition.
-  'synthesisProvenanceDropped',
   // B35-8: review calls retried after a deadline, with the
   // widened deadline recorded per call.
   'inferenceCalls',
+  // Redesign Stage A: deterministic packing is the pilot selection
+  // path; this field records its provenance on every case.
+  'selectionTrace.packingProvenance',
+  // Redesign Stage A: the new record-only final checks — byline /
+  // header direction flags and pronoun-orphan flags (zero action
+  // on output; they earn any future power only at >=80% measured
+  // precision).
+  'final.bylineDirectionFlags',
+  'final.pronounOrphanFlags',
+  // Redesign Stage A: raw span-ID tokens stripped from shipped
+  // prose, and the disclosure-label verbatim verification record.
+  'final.spanIdLeaksStripped',
+  'final.disclosureLabelVerification',
 ];
 
 // Batch 33 (B33-1): a head is continuous prose, not a window — the
@@ -493,11 +438,6 @@ export const BATCH35_FIRING_FIELDS=[
 // non-possessive bar, the subject patterns themselves) is unchanged.
 function headSentenceUnits(head){
   return String(head||'').split(/(?<=[.!?…])\s+/u).filter(Boolean);
-}
-function spanHeadNamesSubjectInNarration(head,name){
-  if(!name||!head)return false;
-  return headSentenceUnits(head)
-    .some(unit=>spanNamesSubjectInNarration(unit,name));
 }
 
 // Batch 31 (B31-2): the gate-time antecedent test — B30-4's second
@@ -520,98 +460,6 @@ function spanHeadNamesSubjectInNarration(head,name){
 // A head that names a DIFFERENT person than the claim's subject does
 // not by itself demote — it only supplies antecedents to the tests
 // that already consume them.
-function findSubjectAntecedentSpan(spans,names,accept=null){
-  const targets=(names||[]).filter(Boolean);
-  if(!targets.length)return null;
-  for(const span of spans||[]){
-    for(const [text,inHead] of [[span?.text,false],[span?.head,true]]){
-      const units=inHead?headSentenceUnits(text):[text];
-      for(const unit of units){
-        const narration=stripQuotedSpeechRegions(unit);
-        if(!narration.trim())continue;
-        for(const entry of personSubjectMatches(narration)){
-          if(entry.possessiveOnly)continue;
-          // Batch 35 (B35-1): the alias rule applies here too — a
-          // translation-variant spelling of the subject's name in
-          // the evidence IS the subject named (the W&P shape:
-          // "Prince Andrew" in the span releasing a demotion of a
-          // claim naming "Prince Andrei" was previously impossible
-          // because this test matched strictly).
-          const matched=targets.find(name=>subjectNamesEquivalent(entry.name,name));
-          if(matched){
-            const found={spanId:String(span?.spanId||''),name:matched,
-              ...(inHead?{inHead:true}:{})};
-            if(accept&&!accept(found))continue;
-            return found;
-          }
-        }
-      }
-    }
-  }
-  // Batch 32 (B32-8 (iv)): presence as ADDRESSEE. A frame narrator
-  // is routinely named inside the packet spans only where another
-  // character speaks TO them — "Mr. Lockwood, you must not wander
-  // on the moors after dark," said Nelly — inside the quoted speech
-  // the narration pass above strips away (phase-3 Wuthering: every
-  // Lockwood claim demoted subject-not-named although the packet
-  // names him as the conversation's addressee throughout). Being
-  // addressed by name in the passage's own dialogue is presence in
-  // the evidence, so the test's second pass reads the UNstripped
-  // text for address position: the name in a vocative inside a
-  // quoted region (followed by address punctuation), or as the
-  // object of a dialogue tag ("said … to Mr. Lockwood"). A name
-  // that is merely spoken ABOUT inside quoted speech — the trait
-  // shape's habitat, "Kurtz has arrived… Kurtz will take charge" —
-  // matches neither pattern and still releases nothing.
-  for(const span of spans||[]){
-    for(const [text,inHead] of [[span?.text,false],[span?.head,true]]){
-      const matched=spanNamesSubjectAsAddressee(text,targets);
-      if(matched){
-        const found={spanId:String(span?.spanId||''),name:matched,
-          via:'addressee',...(inHead?{inHead:true}:{})};
-        if(accept&&!accept(found))continue;
-        return found;
-      }
-    }
-  }
-  return null;
-}
-const ADDRESSEE_TITLES='(?:Mr\\.|Mrs\\.|Miss|Ms\\.|Dr\\.)?\\s*';
-function spanNamesSubjectAsAddressee(text,names){
-  const raw=String(text||'');
-  if(!raw)return '';
-  for(const name of names||[]){
-    const forms=[String(name||'').trim()];
-    const tokens=normalizedPersonName(name).split(' ').filter(Boolean);
-    const surname=tokens.at(-1)||'';
-    // The address form of a full name is usually title + surname
-    // ("Mr. Lockwood" for "Lockwood", "Mrs. Dean" for "Nelly Dean").
-    if(surname&&surname.length>=4&&
-       !forms.some(form=>normalizedPersonName(form)===surname))
-      forms.push(surname);
-    for(const form of forms){
-      if(!form)continue;
-      const escaped=form.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')
-        .replace(/\s+/gu,'\\s+');
-      const vocative=new RegExp(
-        `["\u201C][^"\u201D\\n]{0,160}?\\b${ADDRESSEE_TITLES}${escaped}\\s*[!?,]`,'u');
-      if(vocative.test(raw))return name;
-      // The span splitter cuts pages into fixed windows, so an
-      // address that begins a quoted region in the page routinely
-      // lands at a span START, its opening quote in the previous
-      // span ("…tea; “the mist…" / "Lockwood, you must not…"). A
-      // span-initial name followed by address punctuation is the
-      // same vocative, one window later.
-      const spanInitial=new RegExp(
-        `^\\s*${ADDRESSEE_TITLES}${escaped}\\s*[!?,]`,'u');
-      if(spanInitial.test(raw))return name;
-      const tagAddress=new RegExp(
-        `\\b(?:said|says|asked|cried|replied|answered|whispered|murmured|exclaimed)\\b[^.!?\\n]{0,60}?\\bto\\s+${ADDRESSEE_TITLES}${escaped}\\b`,'u');
-      if(tagAddress.test(raw))return name;
-    }
-  }
-  return '';
-}
 
 // Batch 32 (B32-5): content-token overlap for demotion inheritance.
 // The similarity is the coverage of the DEMOTED claim's content
@@ -703,98 +551,6 @@ function demotedContentCoverage(contextText,demotedText){
 // (or, for short claims, sharing predicate content with) the
 // survivors. Any wall failure returns the claim to the ordinary
 // context-support measurement, whose demotion stands.
-const FRAMING_CONNECTIVE_OPENERS=['in contrast','by contrast','on the other hand',
-  'at the same time','in this way','as a result','taken together','in the end',
-  'in short','in turn','meanwhile','ultimately','overall','together',
-  'this suggests','this shows','this creates','this means','in this view',
-  'furthermore','thus','hence','therefore','finally','in sum'];
-function isFramingClassClaim(text,{frame=false}={}){
-  if(frame)return true;
-  const value=String(text||'').trim();
-  if(!value)return false;
-  if(isAnswerHeading(value))return true;
-  if(bulletLabelParts(value))return true;
-  const opener=value
-    .replace(/^\s*(?:#{1,6}\s+|[-*•]\s+|\*\*[^*\n]{1,140}\*\*:?\s*)/u,'')
-    .toLowerCase();
-  return FRAMING_CONNECTIVE_OPENERS.some(phrase=>
-    opener===phrase||opener.startsWith(phrase+' ')||opener.startsWith(phrase+','));
-}
-function framingWallFailures(claimText,{survivingText='',survivingSubjects=[],
-  questionText='',spanTexts=[]}={}){
-  const failures=[];
-  const text=String(claimText||'');
-  // W1: every attributed subject is already an entity of the part —
-  // recorded as a surviving claim's subject/speaker, or appearing
-  // by name in a surviving claim's text or a question text. (The
-  // claim-side subject extractor is deliberately narrow; the
-  // known side therefore tests literal name appearance, not the
-  // same extraction.)
-  const recordedSubjects=(survivingSubjects||[]).filter(Boolean);
-  const nameTokens=value=>(String(value||'').toLowerCase()
-    .match(/[a-z]+/gu)||[]);
-  const haystackTokens=nameTokens(survivingText+' '+questionText);
-  const haystackSet=new Set(haystackTokens);
-  const appearsAsName=name=>{
-    const tokens=nameTokens(name);
-    if(!tokens.length)return false;
-    if(tokens.length===1)return haystackSet.has(tokens[0]);
-    outer: for(let index=0;index+tokens.length<=haystackTokens.length;index++){
-      for(let offset=0;offset<tokens.length;offset++)
-        if(haystackTokens[index+offset]!==tokens[offset])continue outer;
-      return true;
-    }
-    return false;
-  };
-  const claimSubjects=new Set(claimPersonSubjects(text));
-  const speaker=namedSpeakerAttribution(text);
-  if(speaker)claimSubjects.add(speaker);
-  for(const subject of claimSubjects)
-    if(!recordedSubjects.some(name=>personNamesMatch(subject,name))&&
-       !appearsAsName(subject)){
-      failures.push('new-subject');break;
-    }
-  // W2: no quoted material the surviving claims do not carry.
-  for(const raw of text.match(/“[^”]{10,}”|"[^"]{10,}"/gu)||[]){
-    const segment=raw.slice(1,-1);
-    if(segment.trim().split(/\s+/u).length<3)continue;
-    if(!renderedSurfaceAppears(segment,survivingText)){
-      failures.push('new-quotation');break;
-    }
-  }
-  // W3: no numeric token the surviving claims and question lack.
-  const numericHaystack=survivingText+' '+questionText;
-  for(const token of text.match(/\d[\d,./-]*/gu)||[])
-    if(!numericHaystack.includes(token)){failures.push('new-numeric');break;}
-  // W4: no verbatim span run (>= 6 content tokens, heads included)
-  // that the surviving claims do not also carry — source wording
-  // entering the answer through the context channel is the
-  // laundering signature.
-  const gramsOf=value=>{
-    const sequence=contextTokenSequence(value),grams=new Set();
-    for(let index=0;index+6<=sequence.length;index++)
-      grams.add(sequence.slice(index,index+6).join(' '));
-    return grams;
-  };
-  const survivingGrams=gramsOf(survivingText);
-  const spanGrams=new Set();
-  for(const spanText of spanTexts)for(const gram of gramsOf(spanText))spanGrams.add(gram);
-  for(const gram of gramsOf(text))
-    if(spanGrams.has(gram)&&!survivingGrams.has(gram)){
-      failures.push('span-verbatim');break;
-    }
-  // W5: the claim's content is connective tissue over the surviving
-  // claims — B32-5's coverage test, with B33-6's predicate rule as
-  // the short-claim path (a heading cannot reach the coverage
-  // floor's token minimum, but it must still share predicate
-  // content with what it frames).
-  if(demotedContentCoverage(survivingText,text)===null){
-    const shortClaim=contextOverlapTokens(text).size<8;
-    if(!(shortClaim&&sharesPredicateContent(survivingText,text)))
-      failures.push('content-coverage');
-  }
-  return failures;
-}
 
 // Batch 34 (B34-3): the in-span subject-swap check. Three batch-33
 // misattributions share a shape the attribution gate structurally
@@ -1317,290 +1073,11 @@ function letterBylineForSource(source){
 // quotedRegionTexts, claimQuotedPhrases, normalizeQuoteSurface) had
 // no other callers and are removed with it.
 
-function parseRescueDecisions(rescue,requested){
-  if(!Array.isArray(rescue?.decisions)||rescue.decisions.length!==requested.length)
-    return {ok:false,reason:'decision-count-mismatch'};
-  const expected=new Map(requested.map(item=>[item.claimId+'|'+item.sourceId,item]));
-  const normalizeFragmentText=value=>String(value||'').normalize('NFKC')
-    .toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/gu,' ');
-  const received=new Map();
-  // Batch 27 (B27-4/B27-5): pair-specific validation failures are
-  // collected with the pairs that caused them, so the retry can be
-  // scoped to exactly those pairs. Clause-verdict omissions are
-  // gathered across the whole response before failing it.
-  const clauseMissingPairs=[];
-  // Batch 29 (B29-2): pairs whose supported verdict returned a
-  // present-but-non-clearing clause entry — collected alongside the
-  // omission pairs so both feed the same retry scope.
-  const clauseNotClearedPairs=[];
-  for(const item of rescue.decisions){
-    const key=String(item?.claimId||'')+'|'+String(item?.sourceId||'');
-    const request=expected.get(key);
-    const fragment=typeof item?.fragment==='string'?item.fragment.trim().slice(0,280):'';
-    if(!request||received.has(key)||
-       !['supported','not-supported'].includes(item?.verdict)||!fragment)
-      return {ok:false,reason:'invalid-or-unrequested-decision'};
-    const fragmentInSpans=value=>{
-      const needle=normalizeFragmentText(value);
-      return needle.length>=8&&request.spans.some(span=>
-        normalizeFragmentText(span.text).includes(needle));
-    };
-    if(item.verdict==='supported'&&!fragmentInSpans(fragment))
-      // Batch 27 (B27-5): the failing pair is named so the retry can
-      // re-ask only it, with its full span set. Batch 29 (B29-2):
-      // the failure discards THIS response's later decisions, but
-      // pairs already flagged for clause omission or non-clearance
-      // keep their flags in the retry scope — their recorded
-      // decisions carry the flags, and without the retry scope
-      // naming them the merge below would keep a flagged "supported"
-      // verdict and let it flip.
-      return {ok:false,reason:'fragment-not-in-span',
-        failedPairs:[...new Set([key,...clauseMissingPairs,
-          ...clauseNotClearedPairs])],
-        decisions:received};
-    // Batch 25 (B25-Q2): a "supported" verdict must survive the
-    // element-by-element check — the batch-24 flips that failed audit
-    // were multi-element claims waved through by the binary standard.
-    // A supported verdict whose element list is missing, empty, or
-    // carries any element not marked stated is downgraded to
-    // not-supported for that pair only; the rest of the rescue stands.
-    const elements=Array.isArray(item?.elements)?item.elements
-      .map(element=>({element:String(element?.element||'').trim().slice(0,120),
-        stated:element?.stated===true}))
-      .filter(element=>element.element):[];
-    let verdict=item.verdict,elementDowngrade=false;
-    if(verdict==='supported'&&
-       (!elements.length||elements.some(element=>element.stated!==true))){
-      verdict='not-supported';elementDowngrade=true;
-    }
-    // Batch 26 (B26-1): clause clearances. When the request listed the
-    // pair's outstanding (not-answered) clause findings, a clause is
-    // cleared only when the verdict accounts for it individually: an
-    // entry copying the clause's text, marked stated, whose own
-    // fragment passes the same strict in-span check as the pair
-    // fragment. Anything less — no entry, stated:false, a fragment the
-    // spans do not contain — leaves the clause outstanding. Batch 29
-    // (B29-2) superseded the re-normalization veto this comment used
-    // to describe for supported verdicts: presence without clearance
-    // now fails validation here (see the outcomes block below), and
-    // only a verdict the retry cannot repair is recorded
-    // not-supported — a flip is never granted and then vetoed.
-    let clearedClauses=[];
-    // Batch 27 (B27-4): clause entries are enforced, the way element
-    // entries have been since B25-Q2. A "supported" verdict for a pair
-    // whose packet listed outstanding clauses is incomplete when it
-    // returns no clauses array or omits any listed clause (no entry
-    // copying that clause's text). Batch 26 left this unenforced and
-    // the model omitted clause verdicts on most supported pairs while
-    // returning elements on 102/102 — compliance followed enforcement.
-    // An incomplete response fails validation (collected in
-    // clauseMissingPairs below) and feeds the retry; a verdict that
-    // still omits them after the retry is recorded not-supported with
-    // reason clause-verdicts-missing and never flips.
-    let clauseVerdictsMissing=false;
-    let clauseOutcomes=[],clauseNotCleared=false;
-    if(verdict==='supported'&&Array.isArray(request.outstandingClauses)&&
-       request.outstandingClauses.length){
-      const entries=Array.isArray(item?.clauses)?item.clauses:[];
-      clauseVerdictsMissing=!Array.isArray(item?.clauses)||
-        request.outstandingClauses.some(clause=>!entries.some(candidate=>
-          normalizedClauseSurface(candidate?.text||'')===
-            normalizedClauseSurface(clause.text)));
-      if(clauseVerdictsMissing)clauseMissingPairs.push(key);
-      // Batch 29 (B29-2): clearance alignment. The batch-28 clearance
-      // diagnosis proved the hole this closes: B27-4 enforced the
-      // textual PRESENCE of clause entries here, while the clearance
-      // conditions (stated:true, fragment in the pair's spans) were
-      // enforced only at re-normalization, as a veto AFTER the flip —
-      // of batch 28's 18 clause vetoes, 10 had their clauses sent.
-      // Now a present-but-non-clearing entry invalidates the verdict
-      // on the same terms as an omitted one: the pair joins the retry
-      // scope below, and a verdict still non-clearing after the retry
-      // is recorded not-supported with clauseNotCleared set — never
-      // flipped, never vetoed. Every listed clause's outcome is
-      // recorded either way, so the trace shows stated, fragment
-      // containment, and clearance per clause.
-      for(const clause of request.outstandingClauses){
-        const entry=entries.find(candidate=>
-          normalizedClauseSurface(candidate?.text||'')===
-            normalizedClauseSurface(clause.text));
-        const clauseFragment=entry&&typeof entry.fragment==='string'?
-          entry.fragment.trim().slice(0,280):'';
-        const fragmentInSpan=Boolean(clauseFragment)&&
-          fragmentInSpans(clauseFragment);
-        const cleared=Boolean(entry)&&entry.stated===true&&fragmentInSpan;
-        clauseOutcomes.push({text:clause.text,
-          stated:Boolean(entry)&&entry.stated===true,
-          fragmentInSpan,cleared});
-        if(entry&&!cleared)clauseNotCleared=true;
-        if(cleared)clearedClauses.push({text:clause.text,
-          fragment:clauseFragment});
-      }
-      if(clauseNotCleared)clauseNotClearedPairs.push(key);
-    }
-    // Batch 26 (B26-2): attribution anchoring. When the pair's original
-    // decision carries an attribution finding, a flip additionally
-    // requires a validated anchor: the rescue names the speaker or
-    // subject, the name must match a person the claim itself names (or
-    // the source's pseudonymous voice), and the name must be evidenced
-    // — it occurs in the verdict's fragment or in one of the pair's
-    // span texts, or it is the author of the pair source's own work
-    // (the byline anchoring the speaker gate already recognizes for
-    // author narration). No valid anchor, no flip: the pair is held,
-    // recorded as attributionHeld, and the original decision stands.
-    let anchor='',attributionHeld=false,restoredByAntecedent=false,
-      restoredByVoiceAnchor=false,anchorFunctionWordDiscarded=false,
-      restoredByBoundarySubject=null;
-    if(verdict==='supported'&&request.attributionFinding){
-      anchor=typeof item?.anchor==='string'?item.anchor.trim().slice(0,120):'';
-      // Batch 32 (B32-8 (iii)): an anchor that is a stopword or
-      // function word (the production instance: 'From', extracted
-      // from a claim that opened "From this view, …") is not an
-      // anchor and cannot ground a held verdict. It is discarded —
-      // recorded, and withheld from the verdict so no downstream
-      // write can install it as an attributed subject — and the
-      // two-key restoration below runs on the claim's own candidate
-      // names, the names the finding was actually about.
-      if(anchor&&isFunctionWordAnchor(anchor))
-        anchorFunctionWordDiscarded=true;
-      const candidates=Array.isArray(request.anchorCandidates)?
-        request.anchorCandidates:[];
-      const byline=Array.isArray(request.anchorBylineAuthors)?
-        request.anchorBylineAuthors:[];
-      let valid=!anchorFunctionWordDiscarded&&Boolean(anchor)&&
-        candidates.some(name=>personNamesMatch(anchor,name))&&
-        (spanTextNamesSpeaker(fragment,anchor)||
-         request.spans.some(span=>spanTextNamesSpeaker(span.text,anchor))||
-         byline.some(name=>personNamesMatch(anchor,name)));
-      // Batch 30 (B30-4): two-key restoration. For the two subject
-      // demotions whose complaint is that the pair's own spans never
-      // name the subject (subject-not-named-in-span,
-      // source-subject-attribution-missing), the anchor above fails
-      // structurally for narrative subjects — narration has no byline
-      // and the cited span presents the actor under a pronoun, which
-      // is the demotion itself. The second key is the antecedent: the
-      // subject named in an agent/subject position in the narration of
-      // ANY span of the same source in the review packet (quoted
-      // speech stripped — a name occurring only inside a quotation
-      // belongs to the quoted discourse and cannot anchor). A rescue
-      // "supported" verdict whose anchor matches a claim target (key
-      // one, checked above) plus that antecedent restores the pair;
-      // the restoration is recorded on the verdict and neutralizes
-      // only this demotion at re-normalization. For the
-      // pseudonymous-voice demotion the second key is the source's
-      // provenance voice naming the attributed subject.
-      if(!valid&&anchor&&
-         candidates.some(name=>personNamesMatch(anchor,name))){
-        const findingReason=request.attributionFinding.reason||'';
-        if((findingReason==='subject-not-named-in-span'||
-            findingReason==='source-subject-attribution-missing')&&
-           (request.packetSourceSpans||[]).some(span=>
-            spanNamesSubjectInNarration(span?.text,anchor)||
-            spanHeadNamesSubjectInNarration(span?.head,anchor))){
-          valid=true;restoredByAntecedent=true;
-        }else if(findingReason==='pseudonymous-voice-unidentified'){
-          const voice=String(request.provenanceVoiceName||'').trim();
-          if(voice&&personNamesMatch(anchor,voice)){
-            valid=true;restoredByVoiceAnchor=true;
-          }
-        }
-      }
-      // Batch 32 (B32-8 (iii)): the discarded-function-word path —
-      // the same two keys, keyed on each of the claim's own
-      // candidate names in turn (the antecedent key) or on a
-      // candidate that names the provenance voice (the voice key).
-      if(!valid&&anchorFunctionWordDiscarded){
-        const findingReason=request.attributionFinding.reason||'';
-        for(const candidate of candidates){
-          if((findingReason==='subject-not-named-in-span'||
-              findingReason==='source-subject-attribution-missing')&&
-             (request.packetSourceSpans||[]).some(span=>
-              spanNamesSubjectInNarration(span?.text,candidate)||
-              spanHeadNamesSubjectInNarration(span?.head,candidate))){
-            valid=true;restoredByAntecedent=true;break;
-          }
-          if(findingReason==='pseudonymous-voice-unidentified'){
-            const voice=String(request.provenanceVoiceName||'').trim();
-            if(voice&&personNamesMatch(candidate,voice)){
-              valid=true;restoredByVoiceAnchor=true;break;
-            }
-          }
-        }
-      }
-      // Batch 34 (B34-3, parity side): the boundary key. Before
-      // the hold stands, ask the pair's own support boundary —
-      // attached to the request with the other attribution
-      // material — whether it affirmatively records the CLAIM's
-      // subject performing the claim's action. Gatsby ph3 SP2's
-      // supported claims died on held attribution vetoes the
-      // boundary contradicted (it recorded Daisy crying while the
-      // veto attributed the tears elsewhere). A boundary naming
-      // the claim's subject releases the hold exactly as an anchor
-      // does; the restoration is recorded on the verdict, and
-      // re-normalization's boundary parity re-derives it from the
-      // same record before the flip may ship.
-      if(!valid&&typeof request.supportBoundaryText==='string'&&
-         request.supportBoundaryText){
-        const candidates=Array.isArray(request.anchorCandidates)?
-          request.anchorCandidates:[];
-        const knownNames=[...new Set([...candidates,
-          ...capitalizedNameCandidates(request.supportBoundaryText),
-          ...(request.spans||[]).flatMap(span=>
-            capitalizedNameCandidates(span.text||''))])];
-        const boundaryCheck=boundarySubjectCheck({
-          claimText:request.claimText||'',
-          boundaryText:request.supportBoundaryText,
-          spanTexts:(request.spans||[]).map(span=>span.text||''),
-          spanHeads:(request.spans||[]).map(span=>span.head||'')
-            .filter(Boolean),
-          claimSubjectRecorded:candidates[0]||'',
-          knownNames});
-        if(boundaryCheck.parity){
-          valid=true;
-          restoredByBoundarySubject={subject:boundaryCheck.parity.subject,
-            via:boundaryCheck.parity.via};
-        }
-      }
-      if(!valid){verdict='not-supported';attributionHeld=true;}
-    }
-    received.set(key,{verdict,fragment,
-      ...(elements.length?{elements}:{}),
-      ...(elementDowngrade?{elementDowngrade:true}:{}),
-      ...(clearedClauses.length?{clearedClauses}:{}),
-      ...(clauseVerdictsMissing?{clauseVerdictsMissing:true}:{}),
-      ...(clauseOutcomes.length?{clauseOutcomes}:{}),
-      ...(clauseNotCleared?{clauseNotCleared:true}:{}),
-      ...(anchor&&!anchorFunctionWordDiscarded?{anchor}:{}),
-      ...(anchorFunctionWordDiscarded?{anchorFunctionWordDiscarded:true}:{}),
-      ...(attributionHeld?{attributionHeld:true}:{}),
-      ...(restoredByAntecedent?{restoredByAntecedent:true}:{}),
-      ...(restoredByVoiceAnchor?{restoredByVoiceAnchor:true}:{}),
-      ...(restoredByBoundarySubject?
-        {restoredByBoundarySubject}:{})});
-  }
-  if(clauseMissingPairs.length)return {ok:false,reason:'clause-verdicts-missing',
-    failedPairs:[...new Set([...clauseMissingPairs,...clauseNotClearedPairs])],
-    decisions:received};
-  if(clauseNotClearedPairs.length)return {ok:false,reason:'clause-not-cleared',
-    failedPairs:clauseNotClearedPairs,decisions:received};
-  if(received.size!==expected.size)return {ok:false,reason:'missing-decision'};
-  return {ok:true,decisions:received};
-}
 
 // Batch 26 (B26-2): the attribution-family validation reasons a
 // normalized review decision can carry. A rejected pair whose recorded
 // reason is one of these gets the finding in its rescue packet, so the
 // rescue can try to satisfy the attribution guard with evidence.
-const RESCUE_ATTRIBUTION_REASONS=new Set(['source-attribution-conflict',
-  'source-attribution-unclear','source-attribution-not-applicable',
-  'source-attribution-speaker-mismatch','source-attribution-unanchored',
-  'source-subject-attribution-missing','source-subject-attribution-conflict',
-  'source-subject-attribution-unclear','source-subject-attribution-mismatch',
-  // Batch 27 (B27-2): the subject-not-named demotion is an attribution
-  // finding the rescue can answer with an anchor — a packet span that
-  // names the person restores the pair with evidence.
-  'subject-not-named-in-span',
-  'pseudonymous-voice-unidentified','editorial-source-attribution-unqualified']);
 
 // Batch 10 (B10-2): round-robin selection across parts for the
 // missing-decision repair subset — group the decisions by part in
@@ -1608,25 +1085,6 @@ const RESCUE_ATTRIBUTION_REASONS=new Set(['source-attribution-conflict',
 // untaken decision from each until the limit is reached, so one
 // part's omissions cannot consume another part's share of the budget
 // (a plain prefix slice would).
-function roundRobinMissingDecisions(decisions,limit){
-  const groups=new Map();
-  for(const decision of decisions){
-    const group=groups.get(decision.partId)||[];
-    group.push(decision);
-    groups.set(decision.partId,group);
-  }
-  const queues=[...groups.values()];
-  const selected=[];
-  while(selected.length<limit){
-    let progressed=false;
-    for(const queue of queues){
-      if(selected.length>=limit)break;
-      if(queue.length){selected.push(queue.shift());progressed=true;}
-    }
-    if(!progressed)break;
-  }
-  return selected;
-}
 
 function linkEvidenceToParts(plan,sources){
   // Batch 30 (B30-5): the per-part selection signal the architecture
@@ -2550,6 +2008,22 @@ export function normalizeAnswerMarkdown(value){
     .replace(/(\*\*[^*\n]{2,100}:\*\*)[ \t]+(?=\S)/gu,'$1\n\n');
 }
 
+// Redesign Stage A: raw span IDs (S#-Q#) are internal addressing,
+// never reader prose. Through batch 35 the final seam scan only
+// FLAGGED the pattern (raw-span-id-in-prose) and a repair cycle
+// decided what to do; the repair cycles are deleted, so the strip
+// itself is the deterministic final check: parenthesized or bare
+// span-ID tokens are removed from the shipped text and counted.
+export function stripSpanIdLeaks(value){
+  let count=0;
+  const text=String(value||'')
+    .replace(/\s*\(\s*S[1-9]\d*-Q[1-9]\d*\s*\)/gu,()=>{count++;return '';})
+    .replace(/\bS[1-9]\d*-Q[1-9]\d*\b/gu,()=>{count++;return '';})
+    .replace(/[ \t]{2,}/gu,' ')
+    .replace(/[ \t]+([,.;:!?])/gu,'$1');
+  return {text,count};
+}
+
 // Internal claim and requirement keys belong in the diagnostic trace, never
 // in reader-facing prose. Keep source citation IDs (S1, S2, ...) untouched.
 export function sanitizeInternalAnswerIds(value){
@@ -2833,42 +2307,6 @@ function selectReviewSpansBySource(spanIdsBySource,citedIds,sources,reviewSpanMa
 // contains helper inside sourceVoiceAttributionIssue. A bound span
 // that itself names the pseudonymous speaker identifies the voice, so
 // a claim bound to it is not demoted for leaving the voice unnamed.
-function spanTextNamesSpeaker(text,speaker){
-  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const name=String(speaker||'').trim();
-  return Boolean(name&&new RegExp(`\\b${escape(name)}\\b`,'iu').test(String(text||'')));
-}
-function sourceVoiceAttributionIssue(text,source,plan,precedingAnswers=[],sourceById=new Map()){
-  const provenance=sourceProvenance(source,plan,source?.scopeText||source?.text||source?.preview||'');
-  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const contains=(value,word)=>Boolean(word&&new RegExp(`\\b${escape(String(word).trim())}\\b`,'iu').test(String(value||'')));
-  const textValue=String(text||'');
-  const editorial=provenance.pageVoice?.kind?.startsWith('editorial')?provenance.pageVoice:null;
-  const pseudonymous=provenance.workVoice?.kind==='pseudonymous-author'?provenance.workVoice:null;
-  const isMediated=value=>/\b(?:according to|commentary|editorial|editor(?:'s)? introduction|editor(?:'s)? preface|footnote|editor(?:'s)? note|translator(?:'s)? note|the introduction|the preface)\b/iu.test(String(value||''));
-  if(editorial){
-    const commentator=String(editorial.name||'').trim().split(/\s+/u).at(-1)||'';
-    const named=contains(textValue,commentator)||isMediated(textValue);
-    const priorAttribution=precedingAnswers.some(previous=>
-      (previous.sourceIds||[]).includes(source.id)&&
-      (contains(previous.text,commentator)||isMediated(previous.text)));
-    if(!named&&!priorAttribution)return 'editorial-source-attribution-unqualified';
-  }
-  if(pseudonymous){
-    const speaker=String(pseudonymous.name||'').trim();
-    const named=contains(textValue,speaker);
-    const priorSameVoice=precedingAnswers.some(previous=>
-      contains(previous.text,speaker)&&(previous.sourceIds||[]).some(id=>{
-        const previousSource=sourceById.get(id);
-        const previousProvenance=sourceProvenance(previousSource,plan,
-          previousSource?.scopeText||previousSource?.text||previousSource?.preview||'');
-        return previousProvenance.workVoice?.kind==='pseudonymous-author'&&
-          previousProvenance.workVoice.name===speaker;
-      }));
-    if(!named&&!priorSameVoice)return 'pseudonymous-voice-unidentified';
-  }
-  return '';
-}
 function sourceVoiceGuidance(provenance){
   const pseudonymous=provenance?.workVoice;
   if(pseudonymous?.kind==='pseudonymous-author')
@@ -2906,125 +2344,6 @@ function inferSelectedHypotheticalPlan(question,sources){
 // the shared REVIEW_STOP_WORDS export from review-spans.mjs, aliased
 // here (and for the fallback-evidence terms below) instead of two
 // further character-identical copies drifting independently.
-const POLARITY_STOP_WORDS=REVIEW_STOP_WORDS;
-function polarityTerms(value){
-  return new Set((String(value||'').normalize('NFKC').toLocaleLowerCase()
-    .replace(/[’]/gu,"'").match(/[\p{L}\p{N}]{3,}/gu)||[]).map(term=>{
-      let normalized=term.replace(/(?:ing|ed|es|s)$/u,'');
-      normalized=normalized.replace(/e$/u,'');
-      return normalized.length>=3?normalized:term;
-    }).filter(term=>!POLARITY_STOP_WORDS.has(term)));
-}
-function phraseOverlap(left,right){
-  if(!left.size||!right.size)return 0;
-  let shared=0;
-  for(const term of left)if(right.has(term))shared++;
-  return shared/Math.min(left.size,right.size);
-}
-function hasDirectPolarityContradiction(claimText,sourceText){
-  const sentenceParts=value=>String(value||'').split(/[.!?…]+/u).filter(Boolean);
-  const negativeClauses=sentenceParts(sourceText).flatMap(sentence=>
-    [...sentence.matchAll(/\b(?:cannot|can't|could not|couldn't|unable to|not able to|impossible to)\b([^;]*)/giu)]
-      .map(match=>match[1].split(/\b(?:because|since|while|whereas|although|but|and)\b/iu,1)[0]));
-  if(!negativeClauses.length)return false;
-  const positivePattern=/\b(?:can|could|able to|ability to|capable of|possible to)\b([^;]*)/giu;
-  // Compare polarity within each answer sentence. Pooling modal phrases from
-  // the whole answer let an unrelated “can …” clause trigger a false conflict
-  // against a source's “cannot …” clause (notably in multi-claim summaries).
-  for(const sentence of sentenceParts(claimText)){
-    const claimPhrases=[...sentence.matchAll(positivePattern)].map(match=>polarityTerms(
-      match[1].split(/\b(?:because|since|while|whereas|although|but|and)\b/iu,1)[0]))
-      .filter(terms=>terms.size>=3);
-    for(const claimTerms of claimPhrases){
-      const conflicting=negativeClauses.some(clause=>{
-        const sourceTerms=polarityTerms(clause);
-        return sourceTerms.size>=3&&phraseOverlap(claimTerms,sourceTerms)>=0.6;
-      });
-      const sourceAlsoAffirms=sentenceParts(sourceText).some(sourceSentence=>
-        [...sourceSentence.matchAll(positivePattern)].some(match=>
-          phraseOverlap(claimTerms,polarityTerms(match[1]))>=0.6));
-      if(conflicting&&!sourceAlsoAffirms)return true;
-    }
-  }
-  return false;
-}
-// Batch 33 (B33-5 (c)): polarity AGREEMENT — the mirror of the
-// contradiction test above, on the same machinery. A span agrees
-// with a claim's polarity when it carries the same polarity
-// construction over substantially the same terms: a shared negative
-// clause (cannot / could not / unable to …) whose term overlap is
-// at least the contradiction test's own 0.6 bar, or a shared
-// positive modal phrase at the same bar. The batch-32 Science
-// shape: the claim restates the source's "cannot completely
-// dissect" in the same construction, the reviewer's own boundary
-// agreed with the claim, and the deterministic test vetoed the
-// rescue flip anyway because ANOTHER selected span affirmed a
-// different clause.
-function polarityAgreement(claimText,spanText){
-  const sentenceParts=value=>String(value||'').split(/[.!?…]+/u).filter(Boolean);
-  const negativeClauseTerms=value=>sentenceParts(value).flatMap(sentence=>
-    [...sentence.matchAll(/\b(?:cannot|can't|could not|couldn't|unable to|not able to|impossible to)\b([^;]*)/giu)]
-      .map(match=>polarityTerms(match[1]
-        .split(/\b(?:because|since|while|whereas|although|but|and)\b/iu,1)[0])))
-    .filter(terms=>terms.size>=2);
-  const positivePhraseTerms=value=>sentenceParts(value).flatMap(sentence=>
-    [...sentence.matchAll(/\b(?:can|could|able to|ability to|capable of|possible to)\b([^;]*)/giu)]
-      .map(match=>polarityTerms(match[1]
-        .split(/\b(?:because|since|while|whereas|although|but|and)\b/iu,1)[0])))
-    .filter(terms=>terms.size>=3);
-  for(const claimTerms of negativeClauseTerms(claimText))
-    for(const spanTerms of negativeClauseTerms(spanText))
-      if(phraseOverlap(claimTerms,spanTerms)>=0.6)return true;
-  for(const claimTerms of positivePhraseTerms(claimText))
-    for(const spanTerms of positivePhraseTerms(spanText))
-      if(phraseOverlap(claimTerms,spanTerms)>=0.6)return true;
-  return false;
-}
-// Batch 33 (B33-5 (c)): the contradiction side of the agreement
-// test, measured on the claim's genuine positive assertions only.
-// The pooled contradiction test captures a claim's positive phrase
-// greedily, and the capture runs on into the claim's own "cannot"
-// clause (the splitter does not stop at "though it cannot …"), so
-// a span that mirrors the claim's negative construction is itself
-// scored as contradicting it — the very quirk that produced the
-// production veto. Stripping the claim's negative clauses before
-// the contradiction test measures what the claim actually affirms.
-function spanContradictsClaimPolarity(claimText,spanText){
-  const affirmationsOnly=String(claimText||'')
-    .replace(/\b(?:cannot|can't|could not|couldn't|unable to|not able to|impossible to)\b[^.;!?]*/giu,'');
-  return hasDirectPolarityContradiction(affirmationsOnly,spanText);
-}
-// Batch 33 (B33-5 (a)): the composer's bullet-label form — a bold
-// label ending in a colon, then the content sentence(s). The label
-// is the composer's own synthesis heading; the cited passages are
-// not expected to contain it. Returns {label, content} or null.
-function bulletLabelParts(text){
-  const match=String(text||'')
-    .match(/^\s*(?:[-*•]\s*)?\*\*([^*]{3,80}?):\*\*\s*(.+)$/su);
-  if(!match)return null;
-  return {label:match[1].trim(),content:match[2].trim()};
-}
-function hasNegationScopeMismatch(claimText,sourceText){
-  // "Neither P nor Q may be asserted" is stronger than "P and Q are not both true".
-  // Detect that narrow logical-scope mismatch without encoding any topic or author.
-  const sentenceParts=value=>String(value||'').split(/[.!?…]+/u).filter(Boolean);
-  const sourceRejectsAlternatives=/\b(?:not\s+(?:right|correct|permissible|valid)\s+to|cannot|can't|could not|couldn't|must not|may not)\s+(?:state|say|claim|assert|affirm|maintain)\b/iu;
-  const eitherOr=/\b(?:neither|nor|either)\b/iu;
-  const claimRejectsConjunction=/\b(?:not|cannot|can't|incorrect|wrong|impossible)\b[^.!?;]{0,120}\b(?:both|simultaneously|at once)\b/iu;
-  for(const sourceSentence of sentenceParts(sourceText)){
-    if(!sourceRejectsAlternatives.test(sourceSentence)||!eitherOr.test(sourceSentence))continue;
-    const sourceTerms=polarityTerms(sourceSentence);
-    for(const claimSentence of sentenceParts(claimText)){
-      if(!claimRejectsConjunction.test(claimSentence))continue;
-      const claimTerms=polarityTerms(claimSentence);
-      let shared=0;
-      for(const term of claimTerms)if(sourceTerms.has(term))shared++;
-      // Require shared subject/content words so an unrelated use of "both" cannot trigger.
-      if(shared>=2&&phraseOverlap(claimTerms,sourceTerms)>=0.4)return true;
-    }
-  }
-  return false;
-}
 
 const NAMED_SPEAKER_PATTERN=/^(?:the\s+)?([\p{Lu}][\p{L}\p{M}'’.-]*(?:\s+[\p{Lu}][\p{L}\p{M}'’.-]*){0,3})\s+(?:says?|said|teaches?|taught|argues?|argued|writes?|wrote|claims?|claimed|describes?|described)\b/u;
 // Extract the person a claim names as its speaker, or '' when the claim
@@ -3063,13 +2382,6 @@ const NON_SPECIFIC_SPEAKERS=new Set(['the','a','an','author','narrator','text','
   'their','theirs','our','ours','my','mine','me','him','them','us']);
 // Batch 32 (B32-8 (iii)): a single-token anchor that is a function
 // word is not an anchor — see the rescue-parse use below.
-function isFunctionWordAnchor(anchor){
-  const parts=normalizedPersonName(anchor).split(' ').filter(Boolean);
-  return parts.length===1&&NON_SPECIFIC_SPEAKERS.has(parts[0]);
-}
-// The extracted name is usable for a consistency comparison only when it
-// is an actual person reference, not a generic opener ("The author argues…"
-// captures "The", which names nobody in particular).
 function specificClaimSpeaker(value){
   const name=namedSpeakerAttribution(value);
   if(!name)return '';
@@ -3232,14 +2544,6 @@ function hasCapitalizedNameCandidate(value){
   }
   return false;
 }
-function hasExplicitSpeakerCue(sourceText,speaker){
-  const name=String(speaker||'').trim();
-  if(!name)return false;
-  const escaped=name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const cue='(?:says?|said|replies?|replied|asks?|asked|argues?|argued|writes?|wrote|claims?|claimed|teaches?|taught)';
-  return new RegExp(`(?:^|[\\n.!?;]\\s*)${escaped}\\s+(?:${cue})\\b|(?:^|[\\n.!?;]\\s*)${escaped}\\s*[:—–]`, 'iu')
-    .test(String(sourceText||''));
-}
 
 function normalizedPersonName(value){
   return String(value||'').normalize('NFKC').toLocaleLowerCase()
@@ -3252,52 +2556,6 @@ function normalizedPersonName(value){
 // class of false anchor). The window is now the accepted spans' own
 // sentences plus one neighbouring sentence on each side, the same ±1
 // window convention the composer uses for passages.
-function expandToNeighbourSentences(text,start,end){
-  const ends=[];
-  for(const match of text.matchAll(/[.!?…]["'”’)\]]*(?:\s+|$)/gu))
-    ends.push(match.index+match[0].length);
-  let sentenceStart=0;
-  for(const e of ends){if(e<=start)sentenceStart=e;else break;}
-  let windowStart=0;
-  for(const e of ends){if(e<sentenceStart)windowStart=e;else break;}
-  let sentenceEnd=text.length;
-  for(const e of ends){if(e>=end){sentenceEnd=e;break;}}
-  let windowEnd=text.length;
-  for(const e of ends){if(e>sentenceEnd){windowEnd=e;break;}}
-  return [windowStart,windowEnd];
-}
-export function speakerCueContext(sourceText,selections){
-  const text=String(sourceText||'');
-  const pieces=[];
-  for(const selection of selections||[]){
-    if(text&&Number.isInteger(selection?.start)&&Number.isInteger(selection?.end)&&
-       selection.end>selection.start){
-      const [from,to]=expandToNeighbourSentences(text,selection.start,selection.end);
-      pieces.push(text.slice(from,to));
-    }else if(selection?.quote)pieces.push(selection.quote);
-  }
-  return pieces.join('\n');
-}
-// The speaker-anchoring gate exists to stop a claim from crediting a work's
-// words to someone the passage never names. That risk does not arise when
-// the attributed speaker IS the author of the very work the supporting
-// spans come from: the author's own narration anchors attribution to that
-// author without a separate “the author said” cue, and first-person
-// narration in an author's own work is the normal case, not an anomaly.
-// The match is purely relational — the claimed speaker against the catalog
-// byline of the source that supplied this decision's spans — and it is
-// evaluated per source, so spans borrowed from a different work never
-// inherit the exemption, and a third-party speaker never matches.
-// Person-name equivalence shared by the author exemption and the
-// claim-speaker consistency check. Equal normalized names match;
-// surname-only attribution (one side names just the surname) matches on
-// the shared surname; and when both sides give at least a first name and
-// a surname that agree, extra middle names or initials on either side do
-// not make a different person — a byline's “Viktor E. Frankl” is the
-// “Viktor Frankl” a claim names (the run-50 false rejection: the old
-// exact/surname-only rules missed that pair, and the page's first-person
-// narration supplied no separate cue). Two full names that merely share
-// a surname do not match.
 export function personNamesMatch(left,right){
   const a=normalizedPersonName(left),b=normalizedPersonName(right);
   if(!a||!b)return false;
@@ -3761,10 +3019,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     const reviewerPart=suppliedParts.get(part.id);
     if(!reviewerPart)issues.push('missing-part-decision');
     const acceptedAnswers=[],evidence=[],precedingAnswers=[...answerContext];
-    // Batch 34 (B34-1 layer 1): purge-demoted context claims are
-    // collected here and judged after the claim loop, when the
-    // part's surviving cited claims are known.
-    const framingCandidates=[];
     for(const answer of answerPart?.answers||[]){
       const decision=suppliedClaims.get(answer.claimId);
       const citedIds=new Set(answer.sourceIds);
@@ -3786,7 +3040,16 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // Accept that path only when the reviewer explicitly judged the
         // complete part answered; all cited claims still go through exact
         // source and span validation below.
-        let accepted=(reviewerPart?.retainedContextClaimIds||[]).includes(answer.claimId)||
+        // Redesign Stage A: the reviewer is the single judgment for
+        // uncited claims too. A claim ships as context when the
+        // reviewer retained it (retained-context list, direct answer
+        // of an answered part, or a scaffolding link — all
+        // reviewer-supplied signals) OR when the reviewer's own claim
+        // status is 'answered'. The batch-33/34 part-level
+        // context-support purge (and its empty-measurement guard) is
+        // deleted: no second, deterministic context judgment demotes
+        // what the reviewer accepted.
+        const accepted=(reviewerPart?.retainedContextClaimIds||[]).includes(answer.claimId)||
           (reviewerPart?.answerStatus==='answered'&&
             (reviewerPart?.directAnswerClaimIds||[]).includes(answer.claimId))||
           // Batch 8 (B8-1): a scaffolding link is itself a retention
@@ -3794,63 +3057,23 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           // attached (validated after the claim loop below). A link
           // whose supports prove invalid degrades to plain retained
           // context, never to a fabricated citation.
-          (reviewerPart?.scaffoldingLinks||[]).some(link=>link.claimId===answer.claimId);
-        // Batch 33 (B33-8): the empty-measurement guard. A
-        // context-support judgment is only a measurement when the
-        // part had packet-visible spans to judge against — in the
-        // review packet or in the composer's packet. With zero
-        // visible spans on both sides (the Smith SP2 shape), a
-        // non-retention is not evidence about the claim: record the
-        // part as unmeasured and fall back to the claim's own review
-        // outcome instead of demoting on an empty view.
-        let contextSupportUnmeasured=false;
-        if(!accepted){
-          const reviewVisible=reviewSpanMaps.get(part.id)?
-            [...reviewSpanMaps.get(part.id).values()]
-              .reduce((total,map)=>total+(map?.size||0),0):0;
-          const composerEntry=composerPacketSpansByPart?.get?.(part.id);
-          const composerVisible=!composerEntry?0:
-            typeof composerEntry.size==='number'?composerEntry.size:
-            Array.isArray(composerEntry)?composerEntry.length:0;
-          if(reviewVisible+composerVisible===0){
-            contextSupportUnmeasured=true;
-            if(!contextSupportUnmeasuredParts.includes(part.id))
-              contextSupportUnmeasuredParts.push(part.id);
-            if(decision&&normalizeStatus(decision.status)==='answered')
-              accepted=true;
-          }
-        }
-        // Batch 34 (B34-1 layer 1): a measured purge demotion keeps
-        // references to its issue and decision records — the framing
-        // judgment after the claim loop may reverse both in place.
-        let framingCandidate=null;
+          (reviewerPart?.scaffoldingLinks||[]).some(link=>link.claimId===answer.claimId)||
+          (decision&&normalizeStatus(decision.status)==='answered');
         if(accepted){
           const retainedAnswer={...answer,sourceIds:[],
             renderedText:answer.renderedText||answer.text};
           acceptedAnswers.push(retainedAnswer);
           precedingAnswers.push(retainedAnswer);
         }else{
-          const issue={partId:part.id,claimId:answer.claimId,
-            reason:contextSupportUnmeasured?'context-support-unmeasured':
-              'part-level-context-not-supported'};
-          supportIssues.push(issue);
-          if(!contextSupportUnmeasured)framingCandidate={
-            answer,issue,decision:null,
-            index:(answerPart?.answers||[]).indexOf(answer)};
+          supportIssues.push({partId:part.id,claimId:answer.claimId,
+            reason:'part-level-context-not-supported'});
         }
         const contextDecision={partId:part.id,claimId:answer.claimId,
           claimText:String(answer.text||'').slice(0,320),
           claimStatus:accepted?'answered':'omitted',contextOnly:true,
           reviewerPartStatus:partLevelStatus,reviewLevel:'explicit-context-selection',accepted,
-          ...(contextSupportUnmeasured?{contextSupportUnmeasured:true}:{}),
-          validationReason:accepted?null:
-            contextSupportUnmeasured?'context-support-unmeasured':
-            'context-claim-not-retained'};
+          validationReason:accepted?null:'context-claim-not-retained'};
         reviewDecisions.push(contextDecision);
-        if(framingCandidate){
-          framingCandidate.decision=contextDecision;
-          framingCandidates.push(framingCandidate);
-        }
         continue;
       }
       if(!decision){issues.push('missing-claim-decision');supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-decision'});continue;}
@@ -3861,37 +3084,10 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         proposedSupportedText.length<=600&&!/[\r\n]/u.test(proposedSupportedText)&&
         !/\[\s*S\d+/iu.test(proposedSupportedText)&&
         !/[.!?]\s+\S/u.test(proposedSupportedText);
-      // Supplied clause decisions add specificity, but the model need not
-      // mechanically partition every cited claim before exact source/span
-      // review can accept it.
-      const clauseReview=normalizeClaimClauseDecisions(decision.clauses,answer.text,citedIds,
-        reviewSpanMaps.get(part.id)||new Map());
-      // Batch 27 (B27-4): record every traceable clause finding for
-      // each cited source of this claim. Batch 28 (B28-1): the recorded
-      // status is the SOURCE's own clause-decision status, not the
-      // clause's overall status. The clause veto in re-normalization
-      // reads each pair separately (a clause answered overall can
-      // still demote one cited pair), and the veto can only be cleared
-      // for pairs whose open clauses were actually listed in the
-      // rescue packet — under overall-status recording a clause
-      // answered via another source never reached this pair's packet
-      // (batch 27: every vetoed flip had clausesSent=0). A cited
-      // source with no entry in the clause's sources list records
-      // 'unanswered' — the same reading the veto applies to it, since
-      // the clause is open for that pair until its own decision says
-      // otherwise. The packet filter (status !== 'answered') and all
-      // consumers are unchanged in shape.
-      for(const clause of clauseReview.decisions){
-        if(!clause.text)continue;
-        for(const sourceId of citedIds){
-          const sourceClause=(clause.sources||[]).find(entry=>entry.sourceId===sourceId);
-          clauseFindings.push({partId:part.id,
-            claimId:answer.claimId,sourceId,text:clause.text,
-            status:sourceClause?sourceClause.status:'unanswered'});
-        }
-      }
-      if(clauseReview.warnings.length)warnings.push({partId:part.id,claimId:answer.claimId,
-        code:'clause-review-normalization',details:clauseReview.warnings});
+      // Redesign Stage A: clause decisions no longer reach this
+      // function. The clause-demotion machinery (and the clause
+      // findings that fed the rescue veto) is deleted; the reviewer's
+      // claim-level verdict is applied exactly once, below.
       const sourceDecisions=new Map();
       for(const sourceDecision of decision.sources){
         const sourceId=String(sourceDecision?.sourceId||'');
@@ -3983,59 +3179,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           'source-attribution-conflict':
           namedAttribution&&attributionStatus==='unclear'?'source-attribution-unclear':
           namedAttribution&&attributionStatus==='not_applicable'?'source-attribution-not-applicable':'';
-        const claimedSpeaker=String(sourceDecision?.attributedSpeaker||'').trim();
-        // Batch 5 (B): the claim's own named speaker must be the same
-        // person the reviewer attributed the span to. A reviewer can mark
-        // an attribution “supported” while naming a different person than
-        // the claim does; that mismatch demotes exactly like a conflict.
         const claimSpeaker=namedAttribution?specificClaimSpeaker(candidateText):'';
-        // Batch 32 (B32-10 (a)): letter-byline direction. When the
-        // pair's own source carries a letter byline at its head, a
-        // claim that frames the RECIPIENT as the letter's author —
-        // the recipient is a claim subject or its named speaker, the
-        // claim predicates writing/speech of them, and the claim
-        // does not also name the sender in such a role — has the
-        // letter's direction backwards and demotes as a speaker
-        // mismatch. The byline is deterministic page evidence, so
-        // this ground needs no reviewer finding and is not
-        // antecedent-eligible: presence as the letter's ADDRESSEE
-        // is exactly the confusion being caught.
-        const letterByline=letterBylineForSource(sourceById.get(sourceId));
-        let letterBylineIssue='';
-        if(letterByline){
-          // The framing scan is the gate's own: the production
-          // claim's construction ("Marcus Tullius Cicero, writing
-          // to a grieving friend, suggests…") yields NO extracted
-          // subject at all — the participial aside defeats the lead
-          // patterns — so the subject/speaker extractions cannot be
-          // the test. A person is framed as the letter's author
-          // when their name (or a fuller name ending in it, for the
-          // recipient's surname form) stands within a short window
-          // of a writing/speech predicate in the claim.
-          const framesAsAuthor=person=>{
-            const forms=[person];
-            const surname=normalizedPersonName(person).split(' ')
-              .filter(Boolean).at(-1)||'';
-            if(surname&&surname!==normalizedPersonName(person))
-              forms.push(surname);
-            const verb='writ(?:es?|ing|ten)|says?|said|argues?|suggests?|tells?|advises?|advised|consoles?|consoled|urges?|urged|asks?|presents?|describes?|maintains?|holds?';
-            for(const form of forms){
-              const escaped=form.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')
-                .replace(/\s+/gu,'\\s+');
-              if(new RegExp(`\\b${escaped}\\b[^.!?\\n]{0,60}?\\b(?:${verb})\\b`,'iu')
-                .test(candidateText))return true;
-              if(new RegExp(`\\b(?:${verb})\\b[^.!?\\n]{0,40}?\\b${escaped}\\b`,'iu')
-                .test(candidateText))return true;
-            }
-            return false;
-          };
-          if(framesAsAuthor(letterByline.recipient)&&
-             !framesAsAuthor(letterByline.sender))
-            letterBylineIssue='source-attribution-speaker-mismatch';
-        }
-        const speakerMismatchIssue=claimSpeaker&&claimedSpeaker&&
-          !personNamesMatch(claimSpeaker,claimedSpeaker)?
-          'source-attribution-speaker-mismatch':'';
         const attributedSubject=String(sourceDecision?.attributedSubject||'').trim();
         const subjectStatus=sourceDecision?.subjectAttributionStatus||'missing';
         const personSubjects=claimPersonSubjects(candidateText);
@@ -4080,662 +3224,23 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // blind spot — counted, never gated on.
         if(!subjectTargets.length&&hasCapitalizedNameCandidate(candidateText))
           subjectExtractionBlindSpots++;
-        let subjectAttributionIssue=subjectTargets.length&&subjectStatus==='missing'?
-          'source-subject-attribution-missing':
-          subjectTargets.length&&subjectStatus!=='not_applicable'&&
-          (subjectStatus!=='supported'||!attributedSubject||
-           !subjectTargets.some(name=>personNamesMatch(name,attributedSubject)))?
-          (subjectStatus==='conflict'?'source-subject-attribution-conflict':
-           subjectStatus==='unclear'?'source-subject-attribution-unclear':
-           'source-subject-attribution-mismatch'):
-          claimSpeaker&&subjectStatus!=='missing'&&
-           (subjectStatus!=='supported'||!attributedSubject||
-            !personNamesMatch(claimSpeaker,attributedSubject))?
-            (subjectStatus==='conflict'?'source-subject-attribution-conflict':
-             subjectStatus==='unclear'?'source-subject-attribution-unclear':
-             'source-subject-attribution-mismatch'):'';
-        // Batch 31 (B31-2): gate-time antecedent suppression of the
-        // subject family. Batch 30's census: 60 of 61 gate-demoted
-        // pairs carried reviewer attributionStatus 'supported', and
-        // the independent audit judged none of them misattributed —
-        // the extractor's silence about a subject was treated as a
-        // contradiction of the reviewer. When the demotion is
-        // ABSENCE-shaped — the reviewer returned no subject verdict
-        // ('missing'), or a 'mismatch' that names no positively
-        // identified different subject — the antecedent test decides:
-        // if the packet's own narration for this source names the
-        // subject in an agent/subject position (quoted speech
-        // stripped), the reviewer's decision stands and the demotion
-        // is suppressed and recorded. A POSITIVE contradiction still
-        // demotes untouched: the extractor positively identified a
-        // different subject for the claim's predication (the claim's
-        // own extracted subjects where the reviewer's attributed
-        // subject is not among them), or the claim positively names
-        // its speaker (the claimSpeaker fallback branch) and the
-        // reviewer attributed the words to someone else. The
-        // reviewer's own conflict/unclear verdicts likewise stand.
-        if(subjectAttributionIssue==='source-subject-attribution-missing'||
-           subjectAttributionIssue==='source-subject-attribution-mismatch'){
-          // Batch 32 (B32-8 (i)): the suppression is evaluated for
-          // the PAIR across its grounds, on shared evidence. Three
-          // batch-31/phase-3 lessons are folded into this block:
-          // (1) a "positive contradiction" must be positive — the
-          // extractor's NON-possessive subjects positively identify
-          // a different subject for the predication. A target that
-          // merely shares a name token with the reviewer's
-          // attributed subject ('Nelly' for 'Nelly Dean', 'Porfiry'
-          // for 'Porfiry Petrovich') is the same person under a
-          // shorter name form, not a contradiction; possessive-only
-          // targets predicate nothing, so they cannot contradict
-          // either (the Kierkegaard P2-C6 shape, where the standing
-          // mismatch rested on the claim's possessive mentions while
-          // the voice ground of the same pair was suppressed).
-          // (2) The antecedent test's names include the reviewer's
-          // attributed subject FIRST — before this batch the test
-          // ran on the claim's extracted targets only, so a reviewer
-          // subject the extractor had missed (Wuthering P2-C12's
-          // Nelly, antecedent-present in the packet) was never
-          // tested at all. (3) The voice channel answers the subject
-          // question too: when the reviewer's attributed subject IS
-          // the source's provenance voice, provenance itself
-          // identifies the subject, exactly as the voice key below
-          // holds for the pseudonymous-voice ground.
-          const possessiveOnlyNames=new Set(
-            claimPossessiveOnlySubjects(candidateText));
-          const nonPossessiveTargets=subjectTargets
-            .filter(name=>!possessiveOnlyNames.has(name));
-          const sharesNameToken=(a,b)=>{
-            const aTokens=new Set(normalizedPersonName(a).split(' ')
-              .filter(token=>token.length>1&&
-                !['de','the','von','van','der'].includes(token)));
-            return normalizedPersonName(b).split(' ')
-              .some(token=>aTokens.has(token));
-          };
-          const positiveContradiction=
-            subjectAttributionIssue==='source-subject-attribution-mismatch'&&
-            ((nonPossessiveTargets.length>0&&attributedSubject&&
-              !subjectTargets.some(name=>personNamesMatch(name,attributedSubject))&&
-              !subjectTargets.some(name=>sharesNameToken(name,attributedSubject)))||
-             (personSubjects.length===0&&Boolean(claimSpeaker)));
-          if(!positiveContradiction){
-            const testNames=[...new Set([attributedSubject,...subjectTargets]
-              .filter(Boolean))];
-            // Batch 35 (B35-3, suppression safety): an antecedent
-            // found in a span HEAD qualifies only when the head
-            // belongs to a segment this pair actually cites — the
-            // head is that passage's own lead-in. A head belonging
-            // to a NEIGHBORING segment of the same page (the
-            // batch-34 Conrad shape: the manager scene's head named
-            // Kurtz, and the suppression released a claim crediting
-            // Kurtz with the manager's words) names the subject as
-            // someone else's actor, not this passage's.
-            const citedSpanIds=new Set(selected
-              .map(item=>String(item.spanId||'')).filter(Boolean));
-            const antecedent=findSubjectAntecedentSpan(packetSpans,testNames,
-              found=>!found.inHead||citedSpanIds.has(found.spanId));
-            if(antecedent){
-              gateDemotionsSuppressed.push({partId:part.id,
-                claimId:answer.claimId,sourceId,reason:subjectAttributionIssue,
-                antecedentSpanId:antecedent.spanId,
-                ...(antecedent.via?{antecedentVia:antecedent.via}:{}),
-                ...(antecedent.inHead?{antecedentInHead:true}:{})});
-              subjectAttributionIssue='';
-            }else if(attributedSubject){
-              const pairVoice=sourceProvenance(sourceById.get(sourceId),plan,
-                String(sourceById.get(sourceId)?.scopeText||
-                  sourceById.get(sourceId)?.text||
-                  sourceById.get(sourceId)?.preview||''))?.workVoice;
-              if(pairVoice?.kind==='pseudonymous-author'&&
-                 personNamesMatch(attributedSubject,
-                   String(pairVoice.name||''))){
-                gateDemotionsSuppressed.push({partId:part.id,
-                  claimId:answer.claimId,sourceId,
-                  reason:subjectAttributionIssue,
-                  voice:String(pairVoice.name||'')});
-                subjectAttributionIssue='';
-              }
-            }
-            // Batch 32 (B32-8 (ii)): rescue parity. At a rescue
-            // re-normalization this decision already carries a
-            // supported rescue verdict; a subject ground that still
-            // stands after the gate's own tests gets the antecedent
-            // question asked with the rescue site's wider reading
-            // (B30-4's key: possessive narration registrations
-            // count, because a model verdict stands behind the
-            // release) before it may veto the flip. A pass is
-            // recorded as a restoration, not a suppression.
-            if(subjectAttributionIssue&&sourceDecision.rescueAccepted===true&&
-               testNames.some(name=>packetSpans.some(span=>
-                 spanNamesSubjectInNarration(span?.text,name)||
-                 spanHeadNamesSubjectInNarration(span?.head,name)))){
-              gateRestorations.push({partId:part.id,
-                claimId:answer.claimId,sourceId,kind:'antecedent',
-                reason:subjectAttributionIssue});
-              subjectAttributionIssue='';
-            }
-          }
-        }
-        // A speaker who is the author of this source's own work is anchored
-        // by the byline itself (author narration), so no speech cue is
-        // required for that source; every other speaker still needs one.
-        // Batch 5 (B): the cue search is scoped to the accepted spans ± one
-        // neighbouring sentence (see speakerCueContext) — no longer the
-        // full page text, where any major character is named with a speech
-        // verb somewhere and every attribution looked anchored.
-        const cueSourceText=String(sourceById.get(sourceId)?.scopeText||
-          sourceById.get(sourceId)?.text||sourceById.get(sourceId)?.preview||'');
-        let unanchoredSpeakerIssue=namedAttribution&&attributionStatus==='supported'&&claimedSpeaker&&
-          !speakerIsWorkAuthor(claimedSpeaker,sourceById.get(sourceId))&&
-          !hasExplicitSpeakerCue(speakerCueContext(cueSourceText,selected),claimedSpeaker)?
-          'source-attribution-unanchored':'';
-        // Batch 33 (B33-4): the same-family ground. When the packet
-        // itself attests two people sharing a surname (the name
-        // inventory above), a claim about one of them whose accepted
-        // spans name that person ONLY through the shared
-        // title+surname form ("Miss Bennet") cannot tell which of
-        // them the span denotes: the acceptance demotes as
-        // source-attribution-unanchored even when the reviewer
-        // records support — the phase-3 P&P shape, where Jane
-        // Bennet's words shipped credited to Elizabeth. The ground
-        // releases only on DISAMBIGUATION in the accepted spans or
-        // their heads: the full "Firstname Surname" form, an
-        // appositive tying the first name to the shared form, or a
-        // distinguishing descriptor the packet itself ties to that
-        // first name. A bare first-name mention does NOT
-        // disambiguate — the production head named Elizabeth as the
-        // hearer of the scene while the words were Jane's.
-        let familyNameIssue='',familyNameSurname='';
-        {
-          const inventory=packetNameInventory(part.id);
-          if(inventory.shared.size){
-            const packetSpanById=new Map(packetSpans.map(span=>[
-              String(span?.spanId||''),span]));
-            const acceptedTexts=[],acceptedHeads=[];
-            for(const item of selected){
-              acceptedTexts.push(String(item.quote||''));
-              const packetSpan=packetSpanById.get(String(item.spanId||''));
-              if(packetSpan?.head){
-                acceptedTexts.push(String(packetSpan.head));
-                acceptedHeads.push(String(packetSpan.head));
-              }
-            }
-            const esc=value=>value.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&');
-            const claimFullNames=new Set([...subjectTargets,
-              ...(claimSpeaker?[claimSpeaker]:[])]);
-            for(const [key,entry] of inventory.shared)
-              for(const first of entry.firsts)
-                if(new RegExp(`\\b${esc(first)}\\b`,'u').test(candidateText))
-                  claimFullNames.add(first+' '+entry.surname);
-            for(const fullName of claimFullNames){
-              const tokens=String(fullName||'').trim().split(/\s+/u);
-              if(tokens.length<2)continue;
-              const first=tokens[0],surname=tokens[tokens.length-1];
-              const entry=inventory.shared.get(surname.toLocaleLowerCase());
-              if(!entry||![...entry.firsts].some(name=>
-                name.toLocaleLowerCase()===first.toLocaleLowerCase()))continue;
-              const sharedForm=new RegExp(
-                `\\b(?:Miss|Mrs|Ms|Mr|Dr)\\.?\\s+${esc(entry.surname)}\\b`,'u');
-              if(!acceptedTexts.some(text=>sharedForm.test(text)))continue;
-              const fullForm=new RegExp(
-                `\\b${esc(first)}\\s+${esc(entry.surname)}\\b`,'u');
-              // The full form disambiguates in the span text itself.
-              // In a HEAD it must name the person as the actor of the
-              // span's content: a subject registration in the head's
-              // narration whose sentence shares distinctive content
-              // with the span. The production head named Elizabeth
-              // in full as the HEARER of Wickham's account — subject
-              // of hearing, not of the span's pleading — while the
-              // span's words were Jane's; a full-form mention in
-              // preceding narration about something else fixes
-              // nothing.
-              const HEAD_CONTENT_STOPWORDS=new Set(['there','their',
-                'these','those','where','which','while','about',
-                'would','could','should','after','before','being']);
-              const spanContentTokens=new Set(selected.flatMap(item=>
-                [...contextOverlapTokens(String(item.quote||''))]
-                  .filter(token=>token.length>=5&&
-                    !HEAD_CONTENT_STOPWORDS.has(token))));
-              let disambiguated=selected.some(item=>fullForm.test(
-                String(item.quote||'')))||acceptedHeads.some(head=>
-                headSentenceUnits(head).some(unit=>{
-                  const narration=stripQuotedSpeechRegions(unit);
-                  if(!personSubjectMatches(narration).some(match=>
-                    !match.possessiveOnly&&personNamesMatch(match.name,
-                      first+' '+entry.surname)))return false;
-                  // The actor tie needs at least two distinctive
-                  // content words shared with the span — one shared
-                  // function-length word ("there") is not a tie.
-                  return [...contextOverlapTokens(unit)]
-                    .filter(token=>token.length>=5&&
-                      !HEAD_CONTENT_STOPWORDS.has(token)&&
-                      spanContentTokens.has(token)).length>=2;
-                }));
-              if(!disambiguated)disambiguated=acceptedTexts.some(text=>
-                new RegExp(`${sharedForm.source}[^.!?\\n]{0,40}?(?:,\\s*|\\()` +
-                  `${esc(first)}\\b`,'u').test(text)||
-                new RegExp(`\\b${esc(first)}\\b[^.!?\\n]{0,40}?` +
-                  `(?:,\\s*the\\s+${sharedForm.source}|\\(the\\s+${sharedForm.source}\\))`,'u')
-                  .test(text));
-              if(!disambiguated){
-                const descriptor=new RegExp(
-                  `\\b(?:eldest|youngest|second|elder|younger|only)\\s+` +
-                  `${sharedForm.source}`,'u');
-                disambiguated=acceptedTexts.some(text=>descriptor.test(text))&&
-                  inventory.texts.some(text=>descriptor.test(text)&&
-                    new RegExp(`\\b${esc(first)}\\b`,'u').test(text));
-              }
-              if(!disambiguated){
-                familyNameIssue='source-attribution-unanchored';
-                familyNameSurname=entry.surname;
-                break;
-              }
-            }
-          }
-        }
-        // Batch 33 (B33-5 (b)): unanchored-veto parity. The
-        // speaker-cue ground is the one attribution ground the gate
-        // never held to the antecedent standard B31-2/B32-8 apply to
-        // subject grounds — and at a rescue re-normalization it
-        // vetoed a supported flip whose anchor the packet itself
-        // names as a narration subject elsewhere (the batch-32
-        // Wuthering shape: anchor "Catherine", vetoed unanchored,
-        // while the packet's narration names Catherine as a subject
-        // outside the bound span's cue window). At re-normalization
-        // only — the same scoping as B32-8 (ii) — the ground must
-        // first pass findSubjectAntecedentSpan over the packet spans
-        // and their heads (B33-1); a pass suppresses the veto and is
-        // recorded as a restoration. The same-family ground
-        // (B33-4), which shares the reason string, is deliberately
-        // NOT parried here: an antecedent naming the person as a
-        // subject somewhere does not disambiguate a shared form.
-        if(unanchoredSpeakerIssue&&sourceDecision?.rescueAccepted===true){
-          const antecedent=findSubjectAntecedentSpan(packetSpans,
-            [claimedSpeaker,...subjectTargets,attributedSubject]);
-          if(antecedent){
-            gateRestorations.push({partId:part.id,claimId:answer.claimId,
-              sourceId,kind:'antecedent-parity',
-              reason:unanchoredSpeakerIssue,
-              antecedentSpanId:antecedent.spanId,
-              ...(antecedent.inHead?{antecedentInHead:true}:{})});
-            unanchoredSpeakerIssue='';
-          }
-        }
-        let provenanceAttributionIssue=sourceDecision?.status==='answered'?
-          sourceVoiceAttributionIssue(candidateText,sourceById.get(sourceId),plan,
-            precedingAnswers,sourceById):'';
-        // Batch 24 (B24-2): the pseudonymous-voice demotion is a form
-        // requirement on the claim text, and the semantic audit found
-        // it rejecting claims whose own bound spans name the speaker
-        // ("It is Johannes de silentio who says this…"). When any span
-        // selected for this claim/source itself contains the speaker's
-        // name, the voice is identified by the evidence and the
-        // demotion is suppressed; the claim's fate rests on its
-        // support verdict. One deterministic exception: a claim that
-        // itself names a different person (above all the credited
-        // author) as its subject or speaker keeps the demotion —
-        // attributing the pseudonym's words to that other person is
-        // the misattribution the rule exists to stop, and a span
-        // naming the true speaker does not excuse it. Other voice
-        // issues (editorial mediation) are untouched.
-        if(provenanceAttributionIssue==='pseudonymous-voice-unidentified'){
-          const workVoice=sourceProvenance(sourceById.get(sourceId),plan,
-            cueSourceText)?.workVoice;
-          const speaker=workVoice?.kind==='pseudonymous-author'?
-            String(workVoice.name||'').trim():'';
-          if(speaker&&selected.some(item=>spanTextNamesSpeaker(item.quote,speaker))){
-            const namedOthers=[...personSubjects,
-              ...(claimSpeaker?[claimSpeaker]:[])]
-              .filter(name=>!personNamesMatch(name,speaker));
-            if(!namedOthers.length)provenanceAttributionIssue='';
-          }
-        }
-        // Batch 31 (B31-2): gate-time suppression of the voice
-        // family — B30-4's voice key at the gate. When the demotion
-        // is the pseudonymous-voice form requirement and the
-        // attribution on record NAMES the source's provenance voice
-        // — the reviewer's attributed subject, or a subject the claim
-        // itself names — the voice is identified by the book's own
-        // provenance and the reviewer's decision stands. This
-        // mirrors the rescue key exactly (a named attribution to the
-        // voice plus provenance naming it); a claim that names no one
-        // and a reviewer that attributes no one keep the demotion,
-        // and the rescue backstop remains for them.
-        if(provenanceAttributionIssue==='pseudonymous-voice-unidentified'){
-          const workVoice=sourceProvenance(sourceById.get(sourceId),plan,
-            cueSourceText)?.workVoice;
-          const voiceName=workVoice?.kind==='pseudonymous-author'?
-            String(workVoice.name||'').trim():'';
-          const namesVoice=voiceName&&[attributedSubject,...subjectTargets]
-            .some(name=>name&&personNamesMatch(name,voiceName));
-          if(namesVoice){
-            gateDemotionsSuppressed.push({partId:part.id,
-              claimId:answer.claimId,sourceId,
-              reason:'pseudonymous-voice-unidentified',voice:voiceName});
-            provenanceAttributionIssue='';
-          }
-        }
-        let attributionIssue=modelAttributionIssue||speakerMismatchIssue||subjectAttributionIssue||
-          letterBylineIssue||unanchoredSpeakerIssue||provenanceAttributionIssue||
-          familyNameIssue;
-        // Batch 32 (B32-8 (ii)): an antecedent restoration
-        // neutralizes the subject-attribution demotion it answered,
-        // not only the subject-not-named one. B30-4's two-key path
-        // restores pairs whose finding is source-subject-attribution-
-        // missing exactly as it restores subject-not-named pairs,
-        // but the neutralization below this composition covered
-        // only the voice ground (next block) and, further down, the
-        // subject-not-named ground — a restored pair whose reviewer
-        // fields recomputed a subject-attribution mismatch/missing
-        // at re-normalization was vetoed by the very ground the
-        // restoration had answered. The neutralization is scoped to
-        // the two absence-shaped reasons, mirroring the restoration
-        // key's own eligibility.
-        if((subjectAttributionIssue==='source-subject-attribution-missing'||
-            subjectAttributionIssue==='source-subject-attribution-mismatch')&&
-           sourceDecision.gateRestoration==='antecedent'){
-          gateRestorations.push({partId:part.id,claimId:answer.claimId,sourceId,
-            kind:'antecedent',reason:subjectAttributionIssue});
-          subjectAttributionIssue='';
-          attributionIssue=modelAttributionIssue||speakerMismatchIssue||
-            subjectAttributionIssue||letterBylineIssue||
-            unanchoredSpeakerIssue||provenanceAttributionIssue||familyNameIssue;
-        }
-        // Batch 34 (B34-3, parity side): B32-8 (ii) extended from
-        // antecedents to boundary subjects. At a rescue
-        // re-normalization, an attribution demotion about to veto a
-        // flip the rescue judged supported is asked the boundary
-        // question: does the pair's own support boundary (or a span
-        // head) affirmatively record the CLAIM's subject performing
-        // the claim's action? Gatsby ph3 SP2's supported claims died
-        // on held attribution vetoes the boundary contradicted —
-        // the boundary supported them and no layer read it. When it
-        // names the claim's subject, the veto is blocked and the
-        // block is recorded as a gate restoration, kind
-        // 'boundary-subject', so the census counts it as a veto
-        // that did not stand.
-        if((subjectAttributionIssue||speakerMismatchIssue)&&
-           sourceDecision.rescueAccepted===true){
-          const parityCheck=runBoundarySubjectCheck();
-          if(parityCheck.parity){
-            gateRestorations.push({partId:part.id,
-              claimId:answer.claimId,sourceId,kind:'boundary-subject',
-              reason:subjectAttributionIssue||speakerMismatchIssue,
-              boundarySubject:parityCheck.parity.subject,
-              via:parityCheck.parity.via});
-            subjectAttributionIssue='';
-            if(speakerMismatchIssue)boundaryParitySpeakerCleared=true;
-            attributionIssue=modelAttributionIssue||
-              (boundaryParitySpeakerCleared?'':speakerMismatchIssue)||
-              subjectAttributionIssue||letterBylineIssue||
-              unanchoredSpeakerIssue||provenanceAttributionIssue||
-              familyNameIssue;
-          }
-        }
-        // Batch 30 (B30-4): a voice-anchor restoration neutralizes the
-        // pseudonymous-voice demotion only — the pair was restored
-        // because the source's provenance voice names the attributed
-        // subject and the rescue judged the pair supported. Any other
-        // component issue (a different reason composed into
-        // attributionIssue) keeps the demotion.
-        if(attributionIssue==='pseudonymous-voice-unidentified'&&
-           sourceDecision.gateRestoration==='voice-anchor'){
-          gateRestorations.push({partId:part.id,claimId:answer.claimId,sourceId,
-            kind:'voice-anchor',reason:'pseudonymous-voice-unidentified'});
-          attributionIssue='';
-        }
-        // Batch 27 (B27-2): a person named as a claim's actor must be
-        // named in the evidence — where the evidence presents an
-        // actor under a pronoun. The checks above compare claim-side
-        // and reviewer-side strings against each other, so a reviewer
-        // that resolves a span's bare pronoun to the wrong person
-        // ratifies its own error (the batch-26 Conrad decision, third
-        // recurrence: the span's actor is "he", the reviewer's
-        // boundary and attributedSubject both say Kurtz, and no layer
-        // ever compared the name against the span). This gate does:
-        // when an accepted span for this pair carries a third-person
-        // personal pronoun (an actor the span itself does not name)
-        // and no accepted span names the attributed subject, the
-        // name was resolved from outside the evidence and the
-        // decision demotes fail-closed as subject-not-named-in-span.
-        // Scope, deliberately: spans with no subject-pronoun actor
-        // (expository paraphrase, the work's own first-person voice,
-        // possessive-only reference to an antecedent the span itself
-        // names) present no pronoun resolution to check, and the
-        // reviewer's substance judgment stands there as it always has. Two existing
-        // anchoring routes exempt a target: the target is the author
-        // of this source's own work (speakerIsWorkAuthor — the byline
-        // anchors author narration), or the target is this source's
-        // pseudonymous work voice (sourceProvenance — the catalog
-        // provenance anchors the voice the claim names). The rescue
-        // anchor machinery (B26-2) is the relief valve for demotions:
-        // this reason rides the rescue attribution set, and a packet
-        // span naming the person restores the pair with evidence.
-        // Batch 31 (B31-2): the gate IIFE below records the targets
-        // it found unnamed in the accepted spans, so the antecedent
-        // suppression after it tests exactly the names the demotion
-        // is about.
-        let subjectGateUnnamedTargets=[];
-        let subjectNameIssue=(()=>{
-          if(sourceDecision.status!=='answered'||!selected.length||!subjectTargets.length)
-            return '';
-          const gateTargets=attributedSubject&&
-            subjectTargets.some(name=>personNamesMatch(name,attributedSubject))?
-            [attributedSubject]:subjectTargets;
-          const spanNamesPerson=(quote,target)=>{
-            if(spanTextNamesSpeaker(quote,target))return true;
-            const surname=normalizedPersonName(target).split(' ')
-              .filter(Boolean).at(-1)||'';
-            return surname.length>=4&&spanTextNamesSpeaker(quote,surname);
-          };
-          const pairSource=sourceById.get(sourceId);
-          const workVoice=sourceProvenance(pairSource,plan,cueSourceText)?.workVoice;
-          const targetExempt=target=>
-            speakerIsWorkAuthor(target,pairSource)||
-            (workVoice?.kind==='pseudonymous-author'&&
-             personNamesMatch(target,String(workVoice.name||'')));
-          const targetsToName=gateTargets.filter(target=>!targetExempt(target));
-          if(!targetsToName.length)return '';
-          const unnamedTargets=targetsToName.filter(target=>
-            !selected.some(item=>spanNamesPerson(item.quote,target)));
-          if(!unnamedTargets.length)return '';
-          subjectGateUnnamedTargets=unnamedTargets;
-          // No accepted span names the subject. The demotion applies
-          // only when a span actually presents an unnamed actor — a
-          // third-person subject pronoun (he/she/they) whose referent
-          // the reviewer had to supply. Possessives and object
-          // pronouns ride on an antecedent the span itself usually
-          // names ("the geese hold their course"), and reflexives and
-          // "it/its" introduce no person actor at all.
-          const hasPronounActor=selected.some(item=>
-            /\b(?:he|she|they)\b/iu.test(item.quote));
-          if(hasPronounActor)return 'subject-not-named-in-span';
-          // Batch 29 (B29-3): the possessive-only span exemption is
-          // lifted under a narrow conjunction. When the claim's link
-          // to the person is EXCLUSIVELY possessive (the extractor
-          // found the name only as a possessive attribution — the
-          // batch-28 Conrad shape, "Kurtz's destitution and
-          // loneliness"), and no accepted span names the person, and
-          // an accepted span presents the trait's bearer under a
-          // possessive pronoun ("His need was to exist…"), the
-          // antecedent the exemption presupposes is named nowhere in
-          // the evidence, so the same fail-closed demotion applies.
-          // Claims naming the person in subject position, and
-          // possessive claims whose spans name the person, are
-          // untouched; the anchor path remains the relief valve.
-          const possessiveOnlyTargets=claimPossessiveOnlySubjects(candidateText);
-          const hasPossessiveActor=selected.some(item=>
-            /\b(?:his|her|their)\s+[\p{Ll}]/iu.test(item.quote));
-          return hasPossessiveActor&&unnamedTargets.some(target=>
-            possessiveOnlyTargets.some(name=>personNamesMatch(name,target)))?
-            'subject-not-named-in-span':'';
-        })();
-        // Batch 30 (B30-4): an antecedent restoration neutralizes
-        // this demotion only — the pair was restored because the
-        // review packet's own narration for this source names the
-        // subject in an agent position (outside quoted speech) and
-        // the rescue judged the pair supported. The demotion's other
-        // consumers (the support issue, the validation reason) see
-        // the neutralized value; every other gate is untouched.
-        if(subjectNameIssue&&sourceDecision.gateRestoration==='antecedent'){
-          gateRestorations.push({partId:part.id,claimId:answer.claimId,sourceId,
-            kind:'antecedent',reason:subjectNameIssue});
-          subjectNameIssue='';
-        }
-        // Batch 31 (B31-2): gate-time antecedent suppression. The
-        // B27-2/B29-3 conjunctions are NOT relaxed — this block runs
-        // the same antecedent test B30-4 applied at the rescue site,
-        // over the same packet spans, with the stricter
-        // subject-position requirement: the demotion is suppressed
-        // only when the packet's own narration names an unnamed
-        // target as a subject outside quoted speech. The round-table
-        // shape has no such antecedent (its packet mentions are
-        // possessive, topical, or quoted) and the trait shape's are
-        // quoted or possessive-only, so both demotions stand exactly
-        // as before; the Conrad false-positive shape — the subject
-        // named as narration subject in another packet span of the
-        // same source — is the one released, without waiting for a
-        // rescue verdict the batch-30 run showed rarely comes.
-        if(subjectNameIssue){
-          // Batch 35 (B35-3, suppression safety): the same
-          // head-qualification as the attribution block above — an
-          // in-head antecedent releases this demotion only when
-          // the head is the cited segment's own lead-in; a
-          // neighboring segment's head naming the subject (the
-          // Conrad manager shape) does not qualify.
-          const citedSpanIds=new Set(selected
-            .map(item=>String(item.spanId||'')).filter(Boolean));
-          const antecedent=findSubjectAntecedentSpan(packetSpans,
-            subjectGateUnnamedTargets.length?subjectGateUnnamedTargets:
-            subjectTargets,
-            found=>!found.inHead||citedSpanIds.has(found.spanId));
-          if(antecedent){
-            gateDemotionsSuppressed.push({partId:part.id,
-              claimId:answer.claimId,sourceId,reason:subjectNameIssue,
-              antecedentSpanId:antecedent.spanId,
-              ...(antecedent.via?{antecedentVia:antecedent.via}:{}),
-              ...(antecedent.inHead?{antecedentInHead:true}:{})});
-            subjectNameIssue='';
-          }
-        }
-        // Batch 32 (B32-8 (ii)): rescue parity for this ground, the
-        // same rule as the subject-attribution block above — at a
-        // rescue re-normalization, a still-standing subject-not-named
-        // demotion is asked the antecedent question with the rescue
-        // site's wider (possessive-inclusive) reading before it may
-        // veto a flip the rescue judged supported. (Pairs restored
-        // through B30-4 itself never reach here: their gateRestoration
-        // neutralization above already cleared the ground.)
-        if(subjectNameIssue&&sourceDecision.rescueAccepted===true){
-          const parityTargets=subjectGateUnnamedTargets.length?
-            subjectGateUnnamedTargets:subjectTargets;
-          if(parityTargets.some(name=>packetSpans.some(span=>
-            spanNamesSubjectInNarration(span?.text,name)||
-            spanHeadNamesSubjectInNarration(span?.head,name)))){
-            gateRestorations.push({partId:part.id,
-              claimId:answer.claimId,sourceId,kind:'antecedent',
-              reason:subjectNameIssue});
-            subjectNameIssue='';
-          }
-        }
-        // Batch 33 (B33-5 (b), site S1): the companion-span
-        // suppression for the span-mismatch family. After every
-        // antecedent test has had its say, a subject ground in the
-        // mismatch family (mismatch / missing / not-named) still
-        // demotes the pair for what the BOUND spans do not show.
-        // When another span of the same packet states the claim's
-        // proposition with the subject anchored (the
-        // companionSpanStatesClaim conjunction), the packet as a
-        // whole does show it, and the demotion is suppressed. The
-        // recorded reviewer finding stands in the trace; only the
-        // demotion is suppressed, exactly as B31-2 suppresses.
-        let companionCleared=false;
-        if(subjectNameIssue&&['subject-not-named-in-span',
-          'source-subject-attribution-missing',
-          'source-subject-attribution-mismatch'].includes(subjectNameIssue)&&
-          companionSpanStatesClaim(part.id,sourceId,candidateText,
-            [attributedSubject,...subjectTargets,claimSpeaker],
-            new Set(selected.map(item=>String(item.spanId||''))))){
-          gateDemotionsSuppressed.push({partId:part.id,
-            claimId:answer.claimId,sourceId,kind:'companion-span',
-            reason:subjectNameIssue});
-          subjectNameIssue='';
-          companionCleared=true;
-        }
-        // Batch 33 (B33-5 (b), site S1, second ground family): the
-        // reviewer-attribution grounds (missing / mismatch) live in
-        // subjectAttributionIssue, not the IIFE above. The same
-        // companion suppression applies when B31-2's antecedent test
-        // could not release the pair (its positive-contradiction
-        // carve-out stood) but a companion span states the claim
-        // with the REVIEWER's attributed subject anchored. One
-        // carve-out of my own, mirroring B32-8 (i): when the claim
-        // positively names its speaker and that speaker is not the
-        // attributed subject, the contradiction is the claim's own
-        // attribution, and no companion span can excuse it.
-        if(subjectAttributionIssue&&
-          ['source-subject-attribution-missing',
-           'source-subject-attribution-mismatch']
-            .includes(subjectAttributionIssue)&&
-          (!claimSpeaker||personNamesMatch(claimSpeaker,attributedSubject))&&
-          companionSpanStatesClaim(part.id,sourceId,candidateText,
-            [attributedSubject,...subjectTargets,claimSpeaker],
-            new Set(selected.map(item=>String(item.spanId||''))))){
-          gateDemotionsSuppressed.push({partId:part.id,
-            claimId:answer.claimId,sourceId,kind:'companion-span',
-            reason:subjectAttributionIssue});
-          subjectAttributionIssue='';
-          companionCleared=true;
-        }
-        // The attribution composition above already consumed
-        // subjectAttributionIssue; a companion clearing recomposes
-        // it, mirroring the B32-8 (ii) neutralization pattern.
-        if(companionCleared)
-          attributionIssue=modelAttributionIssue||
-            (boundaryParitySpeakerCleared?'':speakerMismatchIssue)||
-            subjectAttributionIssue||letterBylineIssue||
-            unanchoredSpeakerIssue||provenanceAttributionIssue||
-            familyNameIssue;
-        // Batch 34 (B34-3, swap side): the pair passed every
-        // attribution test above — but those tests compare the
-        // claim against the reviewer's own fields, so a reviewer
-        // that ratified its own misreading passes them all (the
-        // batch-33 Gatsby tears, Wickham 'scandalous', and Emerson
-        // despair swaps each shipped exactly this way). The
-        // boundary subject check reads the records the reviewer
-        // left behind: if the pair's boundary, a span head, the
-        // span's speech attribution, or the span's own clause
-        // structure affirmatively assigns the claim's action to a
-        // DIFFERENT subject, the pair demotes on the existing
-        // mismatch ground. When the records name no subject, or
-        // name the claim's own subject, nothing changes.
-        if(!attributionIssue&&sourceDecision.status==='answered'&&selected.length){
+        // Redesign Stage A: the deterministic gate stack that used
+        // to sit between the reviewer's verdict and its application
+        // (the F3 subject gate and its antecedent-suppression stack,
+        // the unanchored-speaker and family-name tests, the
+        // pseudonymous/editorial provenance demotion, B27-2, the
+        // boundary swap execution, and the polarity and
+        // negation-scope demotions) is DELETED. The only attribution
+        // judgment applied to a pair is the reviewer's own
+        // attributionStatus, computed above as modelAttributionIssue.
+        const attributionIssue=modelAttributionIssue;
+        // The boundary subject check survives only as the record-only
+        // census (B35-1's channel, now the only channel): a swap
+        // finding is recorded with the verdict it would have produced
+        // and never mutates the decision.
+        if(sourceDecision.status==='answered'&&selected.length){
           const swapCheck=runBoundarySubjectCheck();
           if(swapCheck.swap){
-            // Batch 35 (B35-1 + B35-3): the batch-34 swap demotion
-            // is disarmed. Batch 34's two validations audited ~130
-            // of its mismatch demotions at ~2 correct — the check
-            // demoted on extracted subjects that were sentence
-            // fragments, deleted antecedents other mechanisms
-            // depended on, and poisoned the flip-veto channel. The
-            // finding is still RECORDED with full audit detail
-            // (cited span IDs, claim subject, extracted subject,
-            // the verdict it would have produced), and it demotes
-            // only when B35-3's speaker verification confirms it
-            // from the span's own record: the subject comes from a
-            // span-derived channel (span head, span speech
-            // attribution naming a person, or the span's clause
-            // structure), or a boundary finding the span's head
-            // independently corroborates. A boundary-only reading —
-            // the reviewer's prose against the claim — is
-            // measurement, not a gate, until a production audit of
-            // the rebuilt extraction clears the registered
-            // re-arming bar (≥80% correct on ≥20 firings).
-            const verified=swapCheck.swap.via==='span-head'||
-              swapCheck.swap.via==='span-phrase'||
-              (swapCheck.swap.via==='span-speech'&&
-               swapCheck.swap.subject!=='span-speaker')||
-              (swapCheck.swap.via==='boundary'&&
-               swapCheck.swap.spanCorroborated===true);
             boundarySubjectChecks.push({partId:part.id,
               claimId:answer.claimId,sourceId,
               claimSubject:swapCheck.swap.claimSubject||'',
@@ -4743,204 +3248,29 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
               via:swapCheck.swap.via,
               spanIds:selected.map(item=>String(item.spanId||''))
                 .filter(Boolean),
-              outcome:verified?'demoted':'recorded',
+              outcome:'recorded',
               ...(swapCheck.swap.spanCorroborated?
                 {spanCorroborated:true}:{}),
-              ...(verified?{verified:true}:{
-                wouldBeOutcome:'demoted',
-                wouldBeGround:'source-subject-attribution-mismatch'})});
-            if(verified){
-              subjectAttributionIssue='source-subject-attribution-mismatch';
-              attributionIssue=modelAttributionIssue||speakerMismatchIssue||
-                subjectAttributionIssue||letterBylineIssue||
-                unanchoredSpeakerIssue||provenanceAttributionIssue||
-                familyNameIssue;
-            }
+              wouldBeOutcome:'demoted',
+              wouldBeGround:'source-subject-attribution-mismatch'});
           }
-        }
-        const selectedQuote=selected.map(item=>item.quote).join(' ');
-        let polarityIssue=sourceDecision?.status==='answered'&&selected.length&&
-          hasDirectPolarityContradiction(candidateText,selectedQuote)?
-          'source-contradicts-claim-polarity':'';
-        // Batch 33 (B33-5 (c)): polarity agreement suppression at a
-        // rescue re-normalization. The contradiction test reads the
-        // SELECTED spans pooled; a rescue flip the rescue judged
-        // supported can still be vetoed because one selected span
-        // affirms a different clause. When another packet span
-        // carries the claim's own polarity construction over the
-        // same terms (polarityAgreement) and does not itself
-        // contradict the claim, the veto is measuring a different
-        // clause than the claim's, and it is suppressed. Recorded
-        // as a gate restoration, kind 'polarity-agreement'.
-        if(polarityIssue&&sourceDecision?.rescueAccepted===true&&
-          packetSpans.some(span=>
-            !spanContradictsClaimPolarity(candidateText,span.text)&&
-            polarityAgreement(candidateText,span.text))){
-          gateRestorations.push({partId:part.id,claimId:answer.claimId,
-            sourceId,kind:'polarity-agreement',reason:polarityIssue});
-          polarityIssue='';
-        }
-        const negationScopeIssue=sourceDecision?.status==='answered'&&selected.length&&
-          hasNegationScopeMismatch(candidateText,selectedQuote)?
-          'source-negation-scope-mismatch':'';
-        // Batch 32 (B32-6): the B31-3 compound quote-speaker guard
-        // that ran here is retired — see the note at the head of
-        // parseRescueDecisions.
-        if(attributionIssue){
-          sourceDecision.status='partial';
-          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
-            reason:attributionIssue,
-            // Batch 32 (B32-10 (a)): when the letter-byline ground
-            // is the one that fired, the support issue carries the
-            // direction it read, so validation can census the new
-            // ground separately from reviewer speaker mismatches.
-            ...(attributionIssue===letterBylineIssue&&letterByline?
-              {letterBylineDirection:{sender:letterByline.sender,
-                recipient:letterByline.recipient}}:{}),
-            // Batch 33 (B33-4): the same-family ground carries the
-            // shared surname, so validation can census it apart
-            // from speaker-cue unanchored demotions (same reason
-            // string, different producer).
-            ...(attributionIssue===familyNameIssue&&familyNameIssue?
-              {familyNameAmbiguity:{surname:familyNameSurname}}:{})});
-        }
-        if(polarityIssue){
-          sourceDecision.status='partial';
-          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
-            reason:polarityIssue});
-        }
-        if(negationScopeIssue){
-          sourceDecision.status='partial';
-          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
-            reason:negationScopeIssue});
-        }
-        if(subjectNameIssue){
-          sourceDecision.status='partial';
-          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
-            reason:subjectNameIssue});
-        }
-        // A claim-level "answered" label cannot override an explicit partial
-        // clause finding. A validated narrower sentence may keep the supported
-        // remainder, but the rejected clause remains visible in diagnostics.
-        // Batch 26 (B26-1): a rescueAccepted source decision consumes the
-        // clause clearances the rescue recorded for this exact claim/source
-        // pair — a clause the rescue cleared with element coverage and a
-        // validated fragment no longer counts as outstanding FOR THIS
-        // DECISION. Clauses the rescue did not clear demote exactly as
-        // before (fail-closed), and every other source decision of the
-        // claim still sees the original clause findings.
-        const rescueClearedClauseTexts=sourceDecision.rescueAccepted===true?
-          new Set((decision.rescueClauseClearances||[])
-            .filter(clearance=>String(clearance.sourceId)===sourceId)
-            .map(clearance=>normalizedClauseSurface(clearance.text))):null;
-        const unsupportedClause=clauseReview.decisions.find(clause=>
-          clause.status!=='answered'&&
-          !(rescueClearedClauseTexts&&
-            rescueClearedClauseTexts.has(normalizedClauseSurface(clause.text))));
-        if(unsupportedClause&&selected.length>0&&sourceDecision.status==='answered'){
-          const boundSpanIds=(unsupportedClause.sources||[])
-            .filter(item=>item.sourceId===sourceId).flatMap(item=>item.spanIds||[]);
-          const composerSpans=[...(composerPacketSpansByPart?.get?.(part.id)?.values?.()||[])]
-            .filter(span=>span.sourceId===sourceId);
-          const reviewSpans=[...(reviewSpanMaps.get(part.id)?.get(sourceId)?.values?.()||[])]
-            .map(span=>({...span,sourceId,packet:'review'}));
-          const packetCoverage=unsupportedClause.text?
-            clauseContentCoverage(unsupportedClause.text,[...composerSpans,...reviewSpans],boundSpanIds):
-            {method:'normalized-content-term-coverage-v1',measurement:'unavailable-clause-text',
-              reason:unsupportedClause.unresolved?'unresolved-clause-offsets':'clause-text-missing',
-              composerPacketSpanIds:composerSpans.map(span=>span.spanId),
-              reviewPacketSpanIds:reviewSpans.map(span=>span.spanId),
-              boundSpanIds};
-          // Batch 33 (B33-5 (a)): the clause finding against a
-          // bullet-label claim measures the label with the content.
-          // When the label-stripped content is covered by the
-          // selected spans at the same 0.65 union standard as the
-          // verdict-site exemption below, the clause demotion does
-          // not stand; the finding is recorded with the exemption
-          // disposition instead of a demotion.
-          const clauseBulletLabel=bulletLabelParts(candidateText);
-          const clauseBulletCoverage=clauseBulletLabel?
-            secondLookCoverage(clauseBulletLabel.content,
-              selected.map(item=>item.quote)):null;
-          const clauseBulletExempted=!!clauseBulletCoverage&&
-            clauseBulletCoverage.ratio>=0.65&&clauseBulletCoverage.claimTerms>=4;
-          if(clauseBulletExempted)
-            gateDemotionsSuppressed.push({partId:part.id,
-              claimId:answer.claimId,sourceId,kind:'bullet-label',
-              reason:'claim-clause-not-supported',
-              label:clauseBulletLabel.label});
-          if(!validSupportedText&&!clauseBulletExempted)
-            sourceDecision.status='partial';
-          supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
-            reason:'claim-clause-not-supported',issueCode:unsupportedClause.issueCode,
-            clauseText:unsupportedClause.text.slice(0,320),packetCoverage,
-            disposition:clauseBulletExempted?'bullet-label-exempted':
-              validSupportedText?'narrowed-claim-retained':'claim-demoted'});
         }
         const answeredWithoutSelectedSpan=sourceDecision.status==='answered'&&!selected.length;
-        // Batch 33 (B33-5 (b), site S2): the companion-span
-        // restoration for the reviewer's support verdict. The
-        // reviewer found this pair not-supported, but no gate ground
-        // fired and a companion span of the same packet states the
-        // claim with its subject anchored — the reviewer's own
-        // boundary class ("better supported by other spans in the
-        // source"). The pair is restored and recorded; the recorded
-        // reviewer verdict stands in the trace.
-        let companionRestored=false;
-        if(!sourceDecision.recoveredMissingDecision&&
-          sourceDecision.status!=='answered'&&selected.length&&
-          !attributionIssue&&!subjectNameIssue&&!polarityIssue&&
-          !negationScopeIssue&&
-          companionSpanStatesClaim(part.id,sourceId,candidateText,
-            [attributedSubject,...subjectTargets,claimSpeaker],
-            new Set(selected.map(item=>String(item.spanId||''))))){
-          companionRestored=true;
-          gateRestorations.push({partId:part.id,claimId:answer.claimId,
-            sourceId,kind:'companion-span',
-            reason:'claim-source-not-supported'});
-        }
-        // Batch 33 (B33-5 (a)): the bullet-label exemption. The
-        // claim wears the composer's bold synthesis label; the
-        // demotion grounds below measure the whole claim text,
-        // label included, against spans that were never expected to
-        // contain the label. When the label-stripped CONTENT is
-        // covered by the pair's selected spans at the second-look
-        // union standard (0.65 of its content terms), the
-        // not-supported demotion — reviewer verdict or clause
-        // finding — does not stand for this pair. Content that is
-        // genuinely unstated keeps its demotion: the exemption is
-        // keyed on the content's coverage, never on the label's
-        // presence alone.
-        const bulletLabel=bulletLabelParts(candidateText);
-        let bulletLabelExempted=false;
-        if(bulletLabel&&selected.length&&
-          sourceDecision.status!=='answered'){
-          const coverage=secondLookCoverage(bulletLabel.content,
-            selected.map(item=>item.quote));
-          if(coverage.ratio>=0.65&&coverage.claimTerms>=4){
-            bulletLabelExempted=true;
-            gateDemotionsSuppressed.push({partId:part.id,
-              claimId:answer.claimId,sourceId,kind:'bullet-label',
-              reason:'claim-source-not-supported',
-              label:bulletLabel.label});
-          }
-        }
-        if(companionRestored||bulletLabelExempted){
-          supportedSourceIds.add(sourceId);
-        }else if(sourceDecision.recoveredMissingDecision||sourceDecision.status!=='answered'||!selected.length){
+        if(attributionIssue||sourceDecision.recoveredMissingDecision||
+           sourceDecision.status!=='answered'||!selected.length){
           if(answeredWithoutSelectedSpan)sourceDecision.status='partial';
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
-            reason:sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
+            reason:attributionIssue||
+              (sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
               sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan?'missing-claim-source-span':
-              sourceDecision.status!=='answered'?'claim-source-not-supported':'missing-claim-source-span'});
+              sourceDecision.status!=='answered'?'claim-source-not-supported':'missing-claim-source-span')});
           if(sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan)
             hasUnreviewedOrSpanlessSource=true;
         }else{
           supportedSourceIds.add(sourceId);
         }
-        const validationReason=attributionIssue||subjectNameIssue||polarityIssue||negationScopeIssue||
-          (companionRestored||bulletLabelExempted?'':
-          sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
+        const validationReason=attributionIssue||
+          (sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
           sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan?'missing-claim-source-span':
           sourceDecision.status!=='answered'?'claim-source-not-supported':
           !selected.length?'missing-claim-source-span':'');
@@ -4963,12 +3293,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           acceptedQuote:selected[0]?.quote?String(selected[0].quote).slice(0,280):'',
           acceptedQuotes:selected.slice(0,MAX_REVIEW_SPANS_PER_SOURCE)
             .map(item=>String(item.quote||'').slice(0,280)),
-          ...(clauseReview.decisions.length>1?{clauseDecisions:clauseReview.decisions.map(clause=>({
-            text:clause.text.slice(0,320),status:clause.status,issueCode:clause.issueCode,
-            sources:clause.sources.filter(item=>item.sourceId===sourceId)
-              .map(item=>({sourceId:item.sourceId,status:item.status,spanIds:item.spanIds}))
-          }))}:{}),
-          accepted:supportedSourceIds.has(sourceId)&&!attributionIssue&&!subjectNameIssue,
+          accepted:supportedSourceIds.has(sourceId)&&!attributionIssue,
           ...(sourceDecision?.rescueAccepted===true?{rescueAccepted:true}:{}),
           ...(sourceDecision?.gateRestoration?{gateRestoration:sourceDecision.gateRestoration}:{}),
           recoveredMissingDecision:sourceDecision.recoveredMissingDecision===true,
@@ -4996,67 +3321,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         supportIssues.push({partId:part.id,claimId:answer.claimId,
           reason:'claim-narrowing-failed-evidence-validation'});
       }
-      // Batch 34 (B34-7): apparatus-only framing. A framing claim
-      // (B34-1's class minus the bare frame-position flag — see
-      // below) whose accepted spans are ALL
-      // apparatus-class may not stand while the part's packet holds
-      // text-region spans — the work's own text is available and
-      // the framing must rest on it, not on the packaging. The
-      // claim demotes with ground 'framing-claim-apparatus-only';
-      // its decision rows flip to accepted:false and the check is
-      // traced like the B34-3 swap records. Apparatus spans stay
-      // fully citable for content claims, and a framing claim
-      // stands when the packet holds no text-region span at all
-      // (a question about the introduction itself, or a packet
-      // that gave the reviewer nothing else).
-      let apparatusOnlyFraming=false;
-      if(claimStatus==='answered'&&supportedSourceIds.size){
-        // The framing test here is the B34-1 class WITHOUT the bare
-        // frame-position flag: a cited claim's framing status must
-        // be visible in its text (heading, bullet-label lead-in,
-        // connective opener), because position alone would sweep a
-        // content claim that happens to open or close its part —
-        // the reception-fact control — into the demotion.
-        if(isFramingClassClaim(candidateText,{frame:false})){
-          const partSpanMaps=reviewSpanMaps.get(part.id);
-          const spanRegion=(sourceId,spanId)=>{
-            const span=partSpanMaps?.get(sourceId)?.get(spanId);
-            if(!span)return 'text';
-            return classifySpanRegion(span,
-              sources.find(source=>source.id===sourceId));
-          };
-          const acceptedSpanIds=[...supportedSourceIds].flatMap(sourceId=>
-            (selectedBySource.get(sourceId)||[]).map(item=>({sourceId,spanId:item.spanId})));
-          const acceptedRegions=acceptedSpanIds.map(({sourceId,spanId})=>
-            spanRegion(sourceId,spanId));
-          let packetHasTextSpan=false;
-          if(partSpanMaps)for(const [sourceId,bySource] of partSpanMaps.entries()){
-            if(packetHasTextSpan)break;
-            const source=sources.find(item=>item.id===sourceId);
-            for(const span of bySource.values())
-              if(classifySpanRegion(span,source)==='text'){
-                packetHasTextSpan=true;break;
-              }
-          }
-          if(acceptedRegions.length&&
-             acceptedRegions.every(region=>region==='apparatus')&&
-             packetHasTextSpan){
-            apparatusOnlyFraming=true;
-            supportIssues.push({partId:part.id,claimId:answer.claimId,
-              reason:'framing-claim-apparatus-only'});
-            for(const sourceId of supportedSourceIds)
-              apparatusFramingChecks.push({partId:part.id,
-                claimId:answer.claimId,sourceId,kind:'apparatus-framing'});
-            for(const record of reviewDecisions)
-              if(record.partId===part.id&&record.claimId===answer.claimId&&
-                 record.accepted===true){
-                record.accepted=false;
-                record.validationReason='framing-claim-apparatus-only';
-              }
-          }
-        }
-      }
-      if(claimStatus==='answered'&&!apparatusOnlyFraming){
+      if(claimStatus==='answered'){
         const retainedAnswer={...answer,text:candidateText,sourceIds:[...supportedSourceIds]};
         const retainedCitation=' ['+[...supportedSourceIds].join(', ')+']';
         if(validSupportedText){
@@ -5077,80 +3342,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         supportedTextMethod,
         acceptedText:claimStatus==='answered'?candidateText.slice(0,320):'',
         validationReason:claimStatus==='answered'?null:'claim-narrowing-failed-evidence-validation'});
-    }
-    // Batch 34 (B34-1 layer 1): framing claims are judged as framing.
-    // The part-level purge above holds every non-retained context
-    // claim to span-level support; batch 33's record was 43 + 20
-    // demoted-but-supported in all-books, mid-thought openings, and
-    // two shipped pronoun-orphan misattributions the purge itself
-    // manufactured (the framing claims naming the orphan paragraphs'
-    // subjects were the ones demoted). A claim classed as FRAMING —
-    // the packet's frame positions (first / last two of the part),
-    // a heading, a bullet-label lead-in, or a connective opener — is
-    // instead judged against the part's SURVIVING CITED claims and
-    // its question: it ships uncited only when the anti-laundering
-    // wall (framingWallFailures) finds no new sourced proposition in
-    // it — no new subject, no new quotation, no new numeric token,
-    // no verbatim span run the surviving claims lack, and content
-    // coverage (or, for short claims, shared predicate content) over
-    // the survivors. A framing claim that fails any wall test falls
-    // back to the ordinary measurement: its demotion stands exactly
-    // as recorded above. Non-framing candidates are untouched.
-    if(framingCandidates.length){
-      const survivingCited=acceptedAnswers
-        .filter(answer=>(answer.sourceIds||[]).length);
-      const survivingText=survivingCited
-        .map(answer=>String(answer.text||'')).join(' ');
-      const survivingIds=new Set(survivingCited.map(answer=>answer.claimId));
-      const survivingSubjects=[];
-      for(const record of reviewDecisions){
-        if(record.partId!==part.id||!record.sourceId||
-           !survivingIds.has(record.claimId))continue;
-        if(record.attributedSpeaker)survivingSubjects.push(record.attributedSpeaker);
-        if(record.attributedSubject)survivingSubjects.push(record.attributedSubject);
-      }
-      const spanTexts=[];
-      for(const bySource of reviewSpanMaps.get(part.id)?.values()||[])
-        for(const span of bySource?.values()||[]){
-          if(span?.text)spanTexts.push(span.text);
-          if(span?.head)spanTexts.push(span.head);
-        }
-      const questionText=[question||'',part.question||''].join(' ');
-      const answerCount=(answerPart?.answers||[]).length;
-      let rescuedAny=false;
-      for(const candidate of framingCandidates){
-        const claimText=String(candidate.answer.text||'');
-        const frame=candidate.index===0||candidate.index>=answerCount-2;
-        if(!isFramingClassClaim(claimText,{frame}))continue;
-        const failures=framingWallFailures(claimText,{survivingText,
-          survivingSubjects,questionText,spanTexts});
-        if(failures.length){
-          framingFallbacks.push({partId:part.id,
-            claimId:candidate.answer.claimId,failures});
-          continue;
-        }
-        const retainedAnswer={...candidate.answer,sourceIds:[],
-          renderedText:candidate.answer.renderedText||candidate.answer.text};
-        acceptedAnswers.push(retainedAnswer);
-        candidate.decision.accepted=true;
-        candidate.decision.claimStatus='answered';
-        candidate.decision.validationReason=null;
-        candidate.decision.framingRescue=true;
-        const issueIndex=supportIssues.indexOf(candidate.issue);
-        if(issueIndex>=0)supportIssues.splice(issueIndex,1);
-        framingRescues.push({partId:part.id,
-          claimId:candidate.answer.claimId,answer:retainedAnswer});
-        rescuedAny=true;
-      }
-      if(rescuedAny){
-        // Restore draft order: rescued claims re-enter at their
-        // composed positions, not at the part's tail.
-        const byClaimId=new Map(acceptedAnswers.map(answer=>[answer.claimId,answer]));
-        const ordered=(answerPart?.answers||[])
-          .map(answer=>byClaimId.get(answer.claimId)).filter(Boolean);
-        acceptedAnswers.length=0;
-        acceptedAnswers.push(...ordered);
-      }
     }
     const acceptedClaimIds=new Set(acceptedAnswers.map(answer=>answer.claimId));
     const plannedRequirements=part.requirements||[];
@@ -5304,43 +3495,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
       directAnswerCovered,...(reviewerPart?.repairable===true?{repairable:true}:{}),reason:''};
   });
-  // Batch 33 (B33-5 (c)): the unified veto census for this
-  // normalization — every gate suppression and restoration derived
-  // from the records above, plus the polarity demotions that stood
-  // (support issues carrying the polarity ground for pairs that
-  // were not accepted). Flip vetoes happen after normalization and
-  // are mirrored onto the trace at contract assembly.
-  const vetoCensus=[
-    ...gateDemotionsSuppressed.map(entry=>({partId:entry.partId,
-      claimId:entry.claimId,sourceId:entry.sourceId,layer:'gate',
-      ground:entry.reason,outcome:'suppressed',
-      ...(entry.kind?{kind:entry.kind}:{})})),
-    ...gateRestorations.map(entry=>({partId:entry.partId,
-      claimId:entry.claimId,sourceId:entry.sourceId,
-      layer:entry.kind==='polarity-agreement'?'polarity':'gate',
-      ground:entry.reason,outcome:'restored',
-      ...(entry.kind?{kind:entry.kind}:{})})),
-    ...supportIssues.filter(issue=>
-      issue.reason==='source-contradicts-claim-polarity').map(issue=>({
-      partId:issue.partId,claimId:issue.claimId,sourceId:issue.sourceId,
-      layer:'polarity',ground:issue.reason,outcome:'demoted'})),
-    // Batch 34 (B34-3): the swap demotions join the census as
-    // gate-layer demotions on the mismatch ground. Batch 35
-    // (B35-1): only B35-3-verified demotions join — record-only
-    // findings are not vetoes and stay out of the census (they
-    // remain visible in boundarySubjectChecks for the precision
-    // audit the re-arming condition requires).
-    ...boundarySubjectChecks.filter(entry=>entry.outcome==='demoted')
-      .map(entry=>({partId:entry.partId,
-      claimId:entry.claimId,sourceId:entry.sourceId,layer:'gate',
-      ground:'source-subject-attribution-mismatch',outcome:'demoted',
-      kind:'boundary-subject',via:entry.via})),
-    // Batch 34 (B34-7): the apparatus-only framing demotions join
-    // the census the same way, on their own ground.
-    ...apparatusFramingChecks.map(entry=>({partId:entry.partId,
-      claimId:entry.claimId,sourceId:entry.sourceId,layer:'gate',
-      ground:'framing-claim-apparatus-only',outcome:'demoted',
-      kind:'apparatus-framing'}))];
   // Batch 35 (B35-4): the production-firing ledger for B34-7.
   // classifySpanRegion DOES run on the production route (the
   // B34-7 gate calls it inside this function), but batch 34
@@ -5367,7 +3521,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     ...(boundarySubjectChecks.length?{boundarySubjectChecks}:{}),
     ...(apparatusFramingChecks.length?{apparatusFramingChecks}:{}),
     ...(spanRegionClassifications.length?{spanRegionClassifications}:{}),
-    ...(vetoCensus.length?{vetoCensus}:{}),
     ...(contextSupportUnmeasuredParts.length?{contextSupportUnmeasured:contextSupportUnmeasuredParts}:{})};
 }
 
@@ -5375,50 +3528,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
 // module level — batch 24 defined them inside the review block, but
 // the split-on-timeout fallback for answer-re-review (below) and the
 // review stage now share both.
-const REVIEW_SPLIT_CLAIM_THRESHOLD=10;
-function mergeSplitReviewHalves(first,second,partId){
-  const statusRank={unanswered:0,partial:1,answered:2};
-  const worseStatus=(left,right)=>{
-    const a=hasRecognizedStatus(left)?normalizeStatus(left):'partial';
-    const b=hasRecognizedStatus(right)?normalizeStatus(right):'partial';
-    return statusRank[a]<=statusRank[b]?a:b;
-  };
-  const firstPart=(first?.parts||[]).find(part=>part.partId===partId)||first?.parts?.[0];
-  const secondPart=(second?.parts||[]).find(part=>part.partId===partId)||second?.parts?.[0];
-  let mergedPart=null;
-  if(firstPart&&secondPart){
-    const coverage=new Map();
-    for(const entry of [...(firstPart.requirementCoverage||[]),
-                         ...(secondPart.requirementCoverage||[])]){
-      const existing=coverage.get(entry?.requirementId);
-      if(!existing){coverage.set(entry?.requirementId,entry);continue;}
-      coverage.set(entry.requirementId,{...existing,
-        status:existing.status==='answered'||entry.status==='answered'?'answered':
-          worseStatus(existing.status,entry.status)==='unanswered'&&
-          entry.status==='unanswered'?'unanswered':'partial',
-        answerClaimIds:[...new Set([...(existing.answerClaimIds||[]),
-          ...(entry.answerClaimIds||[])])]});
-    }
-    const scaffoldingByClaim=new Map();
-    for(const link of [...(firstPart.scaffoldingLinks||[]),
-                        ...(secondPart.scaffoldingLinks||[])])
-      if(link?.claimId&&!scaffoldingByClaim.has(link.claimId))
-        scaffoldingByClaim.set(link.claimId,link);
-    mergedPart={...firstPart,
-      status:worseStatus(firstPart.status,secondPart.status),
-      answerStatus:worseStatus(firstPart.answerStatus||firstPart.status,
-        secondPart.answerStatus||secondPart.status),
-      repairable:firstPart.repairable===true||secondPart.repairable===true,
-      requirementCoverage:[...coverage.values()],
-      directAnswerClaimIds:[...new Set([...(firstPart.directAnswerClaimIds||[]),
-        ...(secondPart.directAnswerClaimIds||[])])],
-      retainedContextClaimIds:[...new Set([...(firstPart.retainedContextClaimIds||[]),
-        ...(secondPart.retainedContextClaimIds||[])])],
-      scaffoldingLinks:[...scaffoldingByClaim.values()]};
-  }else mergedPart=firstPart||secondPart||null;
-  return {parts:mergedPart?[mergedPart]:[],
-    claims:[...(first?.claims||[]),...(second?.claims||[])]};
-}
 
 const VALIDATION_REASON_CODES=new Set([
   'invalid-citation-format','unknown-source-id',
@@ -5522,12 +3631,6 @@ function compactSourceContext(pageText,scopeText,limit=800){
   return context;
 }
 
-function repairAnswerChanged(beforeParts,afterParts){
-  const signature=parts=>JSON.stringify((parts||[]).map(part=>({partId:part.partId,
-    answers:(part.answers||[]).map(answer=>({text:String(answer.text||'').replace(/\s+/gu,' ').trim(),
-      sourceIds:[...new Set(answer.sourceIds||[])].sort()}))})));
-  return signature(beforeParts)!==signature(afterParts);
-}
 
 function reviewPayloadMetrics(payload,serializedPayload,systemPrompt){
   const parts=Array.isArray(payload?.parts)?payload.parts:[];
@@ -5791,17 +3894,6 @@ export function introducesDuplicatedParagraph(originalAnswers,candidateAnswers){
 // decisions that carry at least one accepted span. A claim with no entry
 // here has no source linkage in the contract and is exempt from citation
 // checks.
-export function acceptedLinkedSourcesByClaim(reviewDecisions,partId){
-  const linked=new Map();
-  for(const decision of reviewDecisions||[]){
-    if(decision?.partId!==partId||decision?.accepted!==true||!decision?.sourceId)continue;
-    if(!Array.isArray(decision.acceptedSpanIds)||!decision.acceptedSpanIds.length)continue;
-    const sources=linked.get(decision.claimId)||new Set();
-    sources.add(decision.sourceId);
-    linked.set(decision.claimId,sources);
-  }
-  return linked;
-}
 
 function normalizedProseSurface(text){
   return normalizedClauseSurface(String(text||'')
@@ -6404,7 +4496,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   // shared calls are composition (plus the optional expansion), the
   // source-decision repair, and the answer repair. The hard cap keeps
   // pathological plans bounded; calls past the cap fail closed per part.
-  const callLimit=Math.min(60,3+(options.expand===true?1:0)+plan.parts.length*9);
+  const callLimit=Math.min(60,3+plan.parts.length*9);
   // (Any finite injected value is honored, including 0 or negative,
   // so tests can force refusals from the first optional call.)
   const optionalStageBudgetMs=Number.isFinite(options.buildOptionalStageBudgetMs)?
@@ -6622,28 +4714,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       throw error;
     }
   }
-  // Batch 30 (B30-1): the answer-re-review stages keep their packets
-  // as they are (the gate-phase delta packets are small by
-  // construction), but a deadline failure on a packet that exceeds the
-  // split threshold gains the review stage's fallback: one retry as
-  // two claim halves, merged through the same split merge. Below the
-  // threshold the failure propagates exactly as before.
-  const runReReviewWithSplitFallback=async(packet,{partId,optional=false,kind='initial'}={})=>{
-    try{
-      return await run('answer-re-review',REVIEW_PROMPT,packet.reviewPayload,
-        parseReviewJson,{partId,optional,kind});
-    }catch(error){
-      if(error?.code!=='inference-deadline-exceeded'||
-         packet.reviewClaims.length<=REVIEW_SPLIT_CLAIM_THRESHOLD)throw error;
-      const claims=packet.reviewClaims,midpoint=Math.ceil(claims.length/2);
-      const halfPayloads=[claims.slice(0,midpoint),claims.slice(midpoint)]
-        .map(halfClaims=>compactReviewPayload(question,packet.reviewParts,halfClaims));
-      const halves=await Promise.all(halfPayloads.map(halfPayload=>
-        run('answer-re-review',REVIEW_PROMPT,halfPayload,parseReviewJson,
-          {partId,optional,kind:'split'})));
-      return mergeSplitReviewHalves(halves[0],halves[1],partId);
-    }
-  };
   const pageById=new Map(sources.map(source=>[source.id,{id:source.id,bookId:source.bookId,
     title:source.title,page:source.page,sha256:source.sha256,text:source.text??source.preview,
     ...(Array.isArray(source.candidatePartIds)?{candidatePartIds:source.candidatePartIds}:{}),
@@ -6655,57 +4725,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   // unrelated retrieved result from tempting the composer into that failure.
   const composerSourceIds=new Set(plan.parts.flatMap(part=>part.candidateSourceIds||[]));
   const validatedAnswers=[];let review=null,reviewFailure=null,failure=null,reviewedLibraryClaims=false;
-  // Batch 25 (B25-L2): per-part repair-cycle ledger across the whole
-  // build. Batch 5 (L3) consolidated cycles WITHIN the gate phase, but
-  // the answer-repair phase and each gate could still cycle the same
-  // part independently (production parts saw three stacked
-  // repair+re-review rounds). A part may now undergo at most two
-  // repair+re-review cycles in total across all phases, and a further
-  // cycle is allowed only when the previous cycle changed the part's
-  // outcome class — its status, answer status, accepted claim set,
-  // cited source set, or requirement coverage, as captured by
-  // repairOutcomeSignature. A cycle counts when a repair produced a
-  // candidate and a re-review judged it. Blocked cycles are recorded
-  // in the ledger and the caller proceeds with the unrepaired state;
-  // the enforcement itself never throws past its caller. Declared at
-  // build scope: the answer-repair phase (inside the review try), the
-  // gate choke points, and the trace write all share it.
-  const repairCycleLedger=new Map();
-  const pendingRepairCycles=new Map();
-  const repairOutcomeSignature=partLike=>JSON.stringify({
-    status:partLike?.status||'',answerStatus:partLike?.answerStatus||'',
-    claims:(partLike?.answers||[]).map(answer=>answer.claimId).slice().sort(),
-    cited:[...new Set((partLike?.answers||[])
-      .flatMap(answer=>answer.sourceIds||[]))].sort(),
-    coverage:(partLike?.requirementCoverage||[])
-      .map(item=>item.requirementId+':'+item.status).sort()});
-  const completedRepairCycles=partId=>(repairCycleLedger.get(partId)||[])
-    .filter(entry=>!entry.outcome);
-  const recordRepairCycle=(partId,phase,outcomeChanged)=>{
-    const entries=repairCycleLedger.get(partId)||[];
-    entries.push({phase,outcomeChanged:!!outcomeChanged});
-    repairCycleLedger.set(partId,entries);
-  };
-  const repairCycleCapReached=partId=>{
-    const completed=completedRepairCycles(partId);
-    return completed.length>=2&&
-      completed[completed.length-1].outcomeChanged!==true;
-  };
-  const recordSkippedRepairCycle=(partId,phase)=>{
-    const entries=repairCycleLedger.get(partId)||[];
-    entries.push({phase,outcomeChanged:false,
-      outcome:'skipped-repair-cycle-cap'});
-    repairCycleLedger.set(partId,entries);
-  };
   const composerPacketSpansByPart=new Map(plan.parts.map(part=>[part.id,new Map()]));
   // Parts whose review failed (call-level failure after the compact retry,
   // or an incomplete per-part review contract) while other parts reviewed
   // normally. They keep their validated draft at partial status instead
   // of discarding every part's verdicts.
   const failedReviewParts=[];
-  // Batch 8 (B8-1): the scaffolding repair round's outcome, read again
-  // when the final trace is assembled.
-  let scaffoldingRepairTrace={attempted:false,resolved:0};
   // Batch 8 (B8-2): the rejection archive. B7-2's containment read only
   // the final review round's state, so a claim whose citations were
   // rejected before an adopted repair — and whose proposition the repair
@@ -6896,32 +4921,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     let draft=composed;
     if(composed.invalidPartHeadingSequence)failure={stage:'compose',code:'model-output-invalid-format',
       message:'The answer draft used numeric part headings that did not match the complete planned sequence.'};
-    if(options.expand===true&&composed.parts.some(part=>part.text.trim())){
-      // Keep this experiment between the first draft and evidence review. The
-      // expander sees only the original verified windows and existing draft;
-      // ordinary public requests never enable this extra inference call.
-      try{
-        const expanded=await run('expand',EXPANSION_PROMPT,{question,plan,
-          parts:composed.parts.map(part=>({partId:part.partId,text:part.text})),
-          evidence:composePayload.evidence},response=>parsePartAnswers(response,plan,'expand'),
-          {optional:true});
-        if(expanded.invalidPartHeadingSequence){
-          recordHeadingRecovery(expanded,'expand');
-          throw new ModelFormatError('expand',
-            'The expansion used numeric part headings that did not match the complete planned sequence.');
-        }
-        draft=expanded;
-        recordHeadingRecovery(draft,'expand');
-        trace.expansion={attempted:true,changed:draft.parts.some((part,index)=>
-          part.text.trim()!==composed.parts[index]?.text.trim())};
-      }catch(error){
-        // Expansion is an experiment, not a dependency of the baseline answer.
-        // If it errors or returns malformed output, retain the valid first draft
-        // and let the normal evidence review judge that draft.
-        trace.expansion={attempted:true,changed:false,fallback:'original-draft-retained',
-          failureCode:error?.failureCode||'expansion-failed'};
-      }
-    }
     const explicitRefusalPartIds=new Set(draft.parts.filter(part=>
       isExplicitEvidenceRefusalOnly(part.text)).map(part=>part.partId));
     // A single-part answer can be assigned unambiguously even if the model
@@ -6947,13 +4946,13 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         .map(part=>({partId:part.partId,reason:'hypothetical-inference-missing'})),
     ];
     validatedAnswers.push(...checked.parts);
-    if(draft.recoveredLegacyRecords)trace.recovery={stage:options.expand?'expand':'compose',code:'legacy-record-format',recovered:true};
+    if(draft.recoveredLegacyRecords)trace.recovery={stage:'compose',code:'legacy-record-format',recovered:true};
     if(draft.recoveredWithoutHeading){
-      trace.recovery={stage:options.expand?'expand':'compose',code:'missing-part-heading',recovered:true};
+      trace.recovery={stage:'compose',code:'missing-part-heading',recovered:true};
       if(!checked.parts.some(part=>part.answers.length)&&!modelReportedNoEvidence)failure={stage:'compose',code:'model-output-invalid-format',
         message:'The answer draft omitted the question-part heading and no usable answer could be recovered.'};
     }
-    if(draft.missingAllHeadings&&!modelReportedNoEvidence)failure={stage:options.expand?'expand':'compose',code:'model-output-invalid-format',
+    if(draft.missingAllHeadings&&!modelReportedNoEvidence)failure={stage:'compose',code:'model-output-invalid-format',
       message:'The answer draft omitted all planned question-part headings.'};
     const anyDraftText=draft.parts.some(part=>part.text.trim());
     if(!failure&&!modelReportedNoEvidence&&anyDraftText&&!checked.parts.some(part=>part.answers.length))
@@ -6976,67 +4975,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           error.code:'review-request-failed';
       const packetsByPart=new Map(),rawReviewByPart=new Map(),reviewRetryParts=[];
       const partialReviewResponseParts=new Set(),completedPartialReviewParts=new Set();
-      // Batch 24 (B24-3): split review for large parts. Review timeouts
-      // concentrate in the largest per-part calls; a part whose packet
-      // holds more than ten source-linked claims is reviewed as two
-      // concurrent calls over claim halves — the same spans ride in
-      // both payloads, so no included claim loses span content — and
-      // the halves' raw reviews merge deterministically by claim ID.
-      // Part-level fields merge conservatively: the worse status wins,
-      // requirement coverage unions its answer claims per requirement,
-      // and direct-answer/retained/scaffolding lists union. A deadline
-      // failure in a half follows the same review-only retry path for
-      // that half; a half that still fails fails the part's review,
-      // exactly as an unsplit failure does today. (Batch 30 (B30-1):
-      // the threshold and the merge now live at module level, shared
-      // with the answer-re-review split fallback.)
       const attemptPartReview=async(checkedPart)=>{
         const partId=checkedPart.partId;
         let packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question});
         const runReviewCall=(payload,kind)=>run('review',REVIEW_PROMPT,payload,
           parseReviewJson,{partId,kind});
-        const runSplitReview=async(splitPacket,halfKind='split')=>{
-          const claims=splitPacket.reviewClaims;
-          const midpoint=Math.ceil(claims.length/2);
-          const halfPayloads=[claims.slice(0,midpoint),claims.slice(midpoint)]
-            .map(halfClaims=>compactReviewPayload(question,splitPacket.reviewParts,halfClaims));
-          const halves=await Promise.all(halfPayloads.map(async(halfPayload,halfIndex)=>{
-            try{return await runReviewCall(halfPayload,halfKind);}
-            catch(halfError){
-              if(reviewFailureCode(halfError)!=='inference-deadline-exceeded')
-                throw halfError;
-              const retryEntry={partId,reason:'inference-deadline-exceeded',
-                applied:false,mode:'review-only',samePacket:true,
-                splitHalf:halfIndex+1};
-              reviewRetryParts.push(retryEntry);
-              if(usage.calls>=callLimit){
-                retryEntry.outcome='not-attempted-call-budget';
-                if(halfError&&typeof halfError==='object')
-                  halfError.reviewOnlyRetryExhausted=true;
-                throw halfError;
-              }
-              try{
-                const retried=await runReviewCall(halfPayload,'retry');
-                retryEntry.applied=true;
-                retryEntry.outcome='recovered';
-                return retried;
-              }catch(retryError){
-                retryEntry.outcome='failed-again';
-                retryEntry.retryFailureCode=reviewFailureCode(retryError);
-                if(retryError&&typeof retryError==='object')
-                  retryError.reviewOnlyRetryExhausted=true;
-                throw retryError;
-              }
-            }
-          }));
-          return mergeSplitReviewHalves(halves[0],halves[1],partId);
-        };
-        const runPacketReview=(splitPacket,{singleKind='initial',halfKind='split'}={})=>
-          splitPacket.reviewClaims.length>REVIEW_SPLIT_CLAIM_THRESHOLD?
-            runSplitReview(splitPacket,halfKind):
-            runReviewCall(splitPacket.reviewPayload,singleKind);
+        // Redesign Stage A: one review call per part — the split
+        // review (B24-3) is deleted; a part is audited as composed.
         try{
-          const rawReview=await runPacketReview(packet);
+          const rawReview=await runReviewCall(packet.reviewPayload,'initial');
           return {packet,rawReview};
         }catch(firstReviewError){
           // A streamed provider can emit a complete JSON review before the
@@ -7062,23 +5009,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             failureCode==='inference-deadline-exceeded';
           if(failureCode==='inference-deadline-exceeded'&&
              !firstReviewError?.reviewOnlyRetryExhausted){
-            // Batch 30 (B30-1): split-on-timeout. Batch 29's profile
-            // showed timed-out monolithic reviews as the largest single
-            // waste pool (10 attempts ≈ 600 s of stage time): the retry
-            // resent the identical packet and died at the same wall.
-            // When the failed attempt was a single call over two or
-            // more claims, the retry instead reviews the part's claims
-            // as two halves through the split machinery — same spans,
-            // same claims, smaller calls — and merges the halves'
-            // verdicts. One split-retry level: a half that also times
-            // out follows the existing same-half retry inside the split
-            // path, and a part with fewer than two claims (nothing to
-            // split) keeps the same-packet retry unchanged.
-            const splitRetry=packet.reviewClaims.length>=2&&
-              packet.reviewClaims.length<=REVIEW_SPLIT_CLAIM_THRESHOLD;
+            // Redesign Stage A: the review-only retry reuses the
+            // original packet unchanged (the split-on-timeout variant
+            // died with the split review). A review deadline never
+            // restarts composition or trims/rebuilds the packet.
             const retryEntry={partId,reason:failureCode,applied:false,
-              mode:'review-only',samePacket:!splitRetry,
-              ...(splitRetry?{splitRetry:true}:{})};
+              mode:'review-only',samePacket:true};
             reviewRetryParts.push(retryEntry);
             if(usage.calls>=callLimit){
               retryEntry.outcome='not-attempted-call-budget';
@@ -7086,12 +5022,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               throw firstReviewError;
             }
             try{
-              // Reuse the original plan, composed claims, packet, and any
-              // successful sibling reviews. A review deadline never restarts
-              // composition or trims/rebuilds this part's evidence packet.
-              const retriedReview=splitRetry?
-                await runSplitReview(packet,'split-retry'):
-                await runPacketReview(packet,{singleKind:'retry'});
+              const retriedReview=await runReviewCall(packet.reviewPayload,'retry');
               retryEntry.applied=true;
               retryEntry.outcome='recovered';
               return {packet,rawReview:retriedReview};
@@ -7103,10 +5034,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               throw retryError;
             }
           }
-          // Batch 24 (B24-3): a split half that already exhausted its
-          // review-only retry throws with reviewOnlyRetryExhausted set;
-          // the part's review has failed and must not fall through to
-          // the compact-packet retry below.
+          // A part whose review-only retry already exhausted throws
+          // with reviewOnlyRetryExhausted set; the part's review has
+          // failed and must not fall through to the compact retry.
           if(failureCode==='inference-deadline-exceeded'&&
              firstReviewError?.reviewOnlyRetryExhausted)throw firstReviewError;
           // Batch 29 (B29-4): the same suppression counter as the
@@ -7125,7 +5055,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           reviewRetryParts.push(retryEntry);
           packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question,
             packetSpanLimit:4});
-          const rawReview=await runPacketReview(packet,{singleKind:'retry'});
+          const rawReview=await runReviewCall(packet.reviewPayload,'retry');
           retryEntry.applied=true;
           return {packet,rawReview};
         }
@@ -7261,29 +5191,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         }
         return mergeSingles();
       };
-      // Re-normalize one part after a rescue iteration changed its raw
-      // review, reusing the cached singles of every other part. The
-      // part's context is rebuilt from the CURRENT cached singles of
-      // the parts before it (their post-rescue state — the rescue loop
-      // walks plan order, so earlier parts are final by now), which is
-      // exactly the context a full pass would give it at this moment.
-      // Parts AFTER it keep their cached singles: their context input
-      // is the pre-flip state until their own rescue iteration (if
-      // any) re-normalizes them — the conservative reading recorded in
-      // the batch-30 checkpoint.
-      const renormalizePart=(partId)=>{
-        let context=[];
-        for(const part of plan.parts){
-          if(part.id===partId)break;
-          if(issueExcludedPartIds.has(part.id))continue;
-          const single=singlesByPart.get(part.id);
-          if(single&&!single.issues.length)
-            context.push(...(single.parts[0]?.answers||[]));
-        }
-        const part=plan.parts.find(item=>item.id===partId);
-        singlesByPart.set(partId,computePartSingle(part,context));
-        return mergeSingles();
-      };
       try{
         if(!rawReviewByPart.size)throw failedReviewParts[0].error;
         review=normalizeAllParts();
@@ -7293,1130 +5200,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               .filter(partId=>completedPartialReviewParts.has(partId)),
             contractValidated:true,
             providerInferenceCancellation:'unconfirmed'};
-        const missingDecisions=[...new Map(review.supportIssues
-          .filter(issue=>issue.reason==='missing-claim-source-decision')
-          .map(issue=>[issue.claimId+'|'+issue.sourceId,issue])).values()];
-        let repairTrace=null;
-        // Batch 10 (B10-2): the repair used to be all-or-nothing — more
-        // than six missing decisions meant NO repair, and missing
-        // decisions alongside other review issues left no trace at all
-        // (batch 9's Kierkegaard case: 8 missing decisions, zero
-        // record). The limit now degrades: up to six decisions are
-        // attempted, chosen round-robin across parts, and every
-        // non-attempt is traced. Decisions the subset leaves out keep
-        // the recovered decision's fail-closed treatment (partial, no
-        // spans) in the re-normalized review.
-        if(missingDecisions.length&&review.issues.length){
-          repairTrace={attempted:false,requestedCount:missingDecisions.length,
-            applied:false,reason:'repair-blocked-by-review-issues'};
-        }else if(missingDecisions.length){
-          const subset=missingDecisions.length<=6?missingDecisions:
-            roundRobinMissingDecisions(missingDecisions,6);
-          const subsetTaken=subset.length<missingDecisions.length;
-          const requested=subset.map(issue=>{
-            const claim=reviewClaims.find(item=>item.claimId===issue.claimId);
-            const partEvidence=reviewParts.find(item=>item.partId===issue.partId);
-            const sourceEvidence=partEvidence?.evidence.find(item=>item.id===issue.sourceId);
-            const claimSpanIds=new Set(claim?.sourceEvidence
-              ?.find(item=>item.sourceId===issue.sourceId)?.spanIds||[]);
-            const spans=(sourceEvidence?.spans||[]).filter(span=>
-              claimSpanIds.has(span.spanId)&&
-              String(span.spanId||'').startsWith(issue.sourceId+'-'));
-            return {partId:issue.partId,question:partEvidence?.question||'',
-              claimId:issue.claimId,claimText:claim?.text||'',
-              sourceId:issue.sourceId,sourceTitle:sourceEvidence?.title||'',
-              sourcePage:sourceEvidence?.page||null,
-              spans:spans.map(({spanId,text})=>({spanId,text})),
-              spanIds:spans.map(span=>span.spanId)};
-          }).filter(item=>item.claimText&&item.spans.length);
-          if(requested.length===subset.length){
-            try{
-              const repair=await run('review-repair',REVIEW_REPAIR_PROMPT,
-                {question,decisions:requested},parseReviewJson);
-              // mergeReviewRepairs works on one claims list; merge through
-              // a combined view of the per-part raw reviews, then split the
-              // repaired claims back into the part reviews they came from.
-              const combinedRawReview={claims:[...rawReviewByPart.values()]
-                .flatMap(raw=>Array.isArray(raw?.claims)?raw.claims:[])};
-              const merged=mergeReviewRepairs(combinedRawReview,requested,repair);
-              repairTrace={attempted:true,requestedCount:missingDecisions.length,
-                ...(subsetTaken?{attemptedCount:requested.length}:{}),
-                applied:merged.ok,reason:merged.ok?'complete':merged.reason};
-              if(merged.ok){
-                const repairedClaims=new Map(merged.review.claims
-                  .map(claim=>[claim.claimId,claim]));
-                for(const [partId,raw] of rawReviewByPart)
-                  rawReviewByPart.set(partId,{...raw,
-                    claims:(Array.isArray(raw?.claims)?raw.claims:[])
-                      .map(claim=>repairedClaims.get(claim.claimId)||claim)});
-                review=normalizeAllParts();
-              }
-            }catch(error){
-              repairTrace={attempted:true,requestedCount:missingDecisions.length,
-                ...(subsetTaken?{attemptedCount:requested.length}:{}),
-                applied:false,reason:error.code||'repair-call-failed'};
-            }
-          }else repairTrace={attempted:false,requestedCount:missingDecisions.length,
-            ...(subsetTaken?{attemptedCount:requested.length}:{}),
-            applied:false,reason:'repair-evidence-unavailable'};
-        }
-        if(repairTrace)trace.reviewRepair=repairTrace;
-        // Batch 24 (B24-1): zero-accept rescue re-review. A
-        // source-required part (the batch-22 linkage definition, fixed
-        // on the plan by linkEvidenceToParts) with at least one
-        // source-linked decision and no accepted one is a certain
-        // containment death; give its rejected pairs one binary
-        // in-substance re-judgment before the citation gate and
-        // containment see the review. Flips augment the part's raw
-        // review decisions and the review is re-normalized, so every
-        // downstream flow sees the rescued decisions in the ordinary
-        // shape. A failed, invalid, or budget-blocked rescue changes
-        // nothing.
-        // Batch 25 (B25-Q2): the trigger widens from zero-accept parts
-        // to any source-required part whose requirement coverage is
-        // incomplete after the first normalization — the sub-total
-        // loss class (a part keeping one or two claims and dropping
-        // the rest) never reached rescue under the zero-accept rule.
-        // Batch 25 (B25-Q1): after flips, the part-level contract is
-        // recomputed deterministically (see recomputeRescuedPartContract
-        // below); batch 24 flipped claim decisions but left the
-        // original review's requirement coverage and part status in
-        // place, so rescued parts still read as unanswered and their
-        // prose was dropped at assembly.
-        const recomputeRescuedPartContract=partId=>{
-          const mergedPart=review.parts.find(item=>item.partId===partId);
-          const mergedDecision=review.partDecisions.find(item=>item.partId===partId);
-          if(!mergedPart||!mergedDecision)return null;
-          const rawPart=(rawReviewByPart.get(partId)?.parts||[])
-            .find(item=>String(item?.partId||'')===partId);
-          const planPart=plan.parts.find(item=>item.id===partId);
-          const acceptedClaimIds=new Set((mergedPart.answers||[])
-            .map(answer=>answer.claimId));
-          // Batch 28 (B28-2): prefer a non-empty reviewer nomination;
-          // an empty raw list falls back to the merged decision's set,
-          // which carries the B28-2 derived set when normalization
-          // derived one (an empty array would otherwise shadow it and
-          // re-strand the part at recompute).
-          const directAnswerIds=rawPart?.directAnswerClaimIds?.length?
-            rawPart.directAnswerClaimIds:
-            mergedDecision.directAnswerClaimIds||[];
-          const directAnswerDerived=!(rawPart?.directAnswerClaimIds?.length)&&
-            mergedDecision.directAnswerDerived===true;
-          const before={finalStatus:mergedDecision.finalStatus,
-            requirements:Object.fromEntries((mergedDecision.requirementCoverage||[])
-              .map(item=>[item.requirementId,item.status]))};
-          let requirementCoverage=null,requirementsComplete;
-          if((planPart?.requirements||[]).length){
-            requirementCoverage=planPart.requirements.map(requirement=>{
-              const original=(rawPart?.requirementCoverage||[])
-                .find(item=>item.requirementId===requirement.id);
-              const mapped=original?.answerClaimIds||[];
-              const mappedAccepted=mapped.filter(id=>acceptedClaimIds.has(id));
-              // Where the reviewer mapped no claims to the requirement
-              // (the production shape), the part's now-accepted
-              // direct-answer claims stand in as its coverage.
-              const effective=mapped.length?mappedAccepted:
-                directAnswerIds.filter(id=>acceptedClaimIds.has(id));
-              let status;
-              if(!effective.length)
-                status=original?.status==='unanswered'?'unanswered':'partial';
-              // A requirement the reviewer marked partial stays partial
-              // when fewer than half its mapped claims are now accepted.
-              else if(original?.status==='partial'&&mapped.length>0&&
-                 mappedAccepted.length*2<mapped.length)
-                status='partial';
-              else status='answered';
-              return {requirementId:requirement.id,text:requirement.text,status,
-                answerClaimIds:effective};
-            });
-            requirementsComplete=requirementCoverage
-              .every(item=>item.status==='answered');
-          }
-          // Batch 30 (B30-2): the derivation itself is shared with
-          // normalizeReview and the delta merge through
-          // derivePartContract; this site's input rules (the raw-list
-          // preference above, the effective coverage mapping) are
-          // unchanged.
-          const contract=derivePartContract({reviewerStatus:rawPart?.status,
-            reviewerAnswerStatus:rawPart?.answerStatus,
-            directAnswerIds,
-            invalidDirectAnswerClaimIds:rawPart?.invalidDirectAnswerClaimIds,
-            acceptedClaimIds,acceptedCount:acceptedClaimIds.size,
-            requirementCoverage,
-            comparisonComplete:!review.supportIssues.some(issue=>
-              issue.partId===partId&&
-              issue.reason==='comparison-support-missing-source-group'),
-            derivedDirectAnswer:directAnswerDerived});
-          const acceptedDirectAnswerIds=contract.acceptedDirectAnswerIds;
-          const directAnswerCovered=contract.directAnswerCovered;
-          const derived=contract;
-          mergedPart.status=derived.status;
-          mergedPart.answerStatus=derived.answerStatus;
-          mergedPart.acceptedDirectAnswerClaimIds=acceptedDirectAnswerIds;
-          mergedPart.directAnswerCovered=directAnswerCovered;
-          mergedDecision.finalStatus=derived.status;
-          mergedDecision.finalAnswerStatus=derived.answerStatus;
-          mergedDecision.acceptedDirectAnswerClaimIds=acceptedDirectAnswerIds;
-          mergedDecision.directAnswerCovered=directAnswerCovered;
-          if(requirementCoverage){
-            mergedPart.requirementCoverage=requirementCoverage;
-            mergedPart.requirementsComplete=requirementsComplete;
-            mergedDecision.requirementCoverage=requirementCoverage;
-            mergedDecision.requirementsComplete=requirementsComplete;
-            // Re-attach requirement IDs to the part's answers and
-            // evidence, mirroring normalizeReview's bookkeeping.
-            const requirementClaimIds=new Map();
-            for(const coverage of requirementCoverage)
-              for(const claimId of coverage.answerClaimIds){
-                const ids=requirementClaimIds.get(claimId)||[];
-                ids.push(coverage.requirementId);
-                requirementClaimIds.set(claimId,ids);
-              }
-            for(const answer of mergedPart.answers||[])
-              answer.requirementIds=[...new Set(requirementClaimIds.get(answer.claimId)||[])];
-            for(const selection of mergedPart.evidence||[]){
-              const ids=requirementClaimIds.get(selection.claimId)||[];
-              if(ids.length)selection.requirementIds=[...new Set(ids)];
-              else delete selection.requirementIds;
-            }
-          }
-          return {partId,before,after:{finalStatus:derived.status,
-            requirements:Object.fromEntries((requirementCoverage||[])
-              .map(item=>[item.requirementId,item.status]))}};
-        };
-        {
-          const rescueTrace={parts:[]};
-          const flippedPartIds=new Set();
-          for(const part of plan.parts){
-            if(part.sourceRequired!==true)continue;
-            const partDecisions=review.reviewDecisions.filter(decision=>
-              decision.partId===part.id&&decision.sourceId);
-            if(!partDecisions.length)continue;
-            const zeroAccept=!partDecisions.some(decision=>decision.accepted===true);
-            const partDecision=review.partDecisions.find(item=>item.partId===part.id);
-            const coverageIncomplete=(partDecision?.requirementCoverage||[])
-              .some(item=>item.status!=='answered');
-            if(!zeroAccept&&!coverageIncomplete)continue;
-            const rejectedDecisions=partDecisions
-              .filter(decision=>decision.accepted!==true);
-            if(!rejectedDecisions.length)continue;
-            const entry={partId:part.id,claims:[],flipped:0,callLatencyMs:0,
-              // Batch 27 (B27-3): every requested pair is recorded
-              // with what the packet actually carried, so a failed
-              // flip can be attributed to the packet or the response
-              // from data. Batch 26 traced outcomes only, which left
-              // packet-vs-compliance indistinguishable.
-              requestedPairs:[],
-              trigger:zeroAccept?'zero-accept':'coverage-incomplete'};
-            rescueTrace.parts.push(entry);
-            const seenPairs=new Set(),requested=[];
-            for(const decision of rejectedDecisions){
-              const key=decision.claimId+'|'+decision.sourceId;
-              if(seenPairs.has(key))continue;
-              seenPairs.add(key);
-              const claim=reviewClaims.find(item=>item.claimId===decision.claimId);
-              const answer=checked.parts.find(item=>item.partId===part.id)?.answers
-                .find(item=>item.claimId===decision.claimId);
-              const claimText=claim?.text||answer?.text||'';
-              const evidenceEntry=packetsByPart.get(part.id)?.reviewParts
-                .find(item=>item.partId===part.id)?.evidence
-                .find(item=>item.id===decision.sourceId);
-              const hintIds=new Set(claim?.sourceEvidence
-                ?.find(item=>item.sourceId===decision.sourceId)?.spanIds||[]);
-              let spans=(evidenceEntry?.spans||[])
-                .filter(span=>hintIds.has(span.spanId));
-              if(!spans.length)spans=evidenceEntry?.spans||[];
-              spans=spans.slice(0,MAX_REVIEW_SPANS_PER_SOURCE);
-              if(!claimText||!spans.length)continue;
-              const requestedEntry={claimId:decision.claimId,sourceId:decision.sourceId,
-                claimText,spans:spans.map(({spanId,text,head})=>({spanId,text,
-                  // Batch 33 (B33-1): the pair's spans carry their
-                  // heads to the rescue reviewer as subject context,
-                  // exactly as in the review packet.
-                  ...(head?{head}:{})}))};
-              // Batch 27 (B27-4): the pair's outstanding clause
-              // findings join the packet from the FIRST
-              // normalization's own records — the clause findings that
-              // normalization recorded for this pair (review.clauseFindings)
-              // plus any claim-clause-not-supported support issue's
-              // clause text — replacing the batch-26 recomputation,
-              // which re-ran clause normalization here with different
-              // inputs (packet claim text, a separately looked-up span
-              // map) than the normalization whose demotion the flip
-              // must survive, so the list the rescue judged could
-              // diverge from the list that vetoed it. (The support
-              // issues alone carry only the first demoting clause and
-              // only when the source was answered, so the recorded
-              // findings are the primary source; the issues union in
-              // for completeness.) Clauses without traceable text
-              // cannot be judged or matched and stay outstanding
-              // (they keep vetoing, fail-closed).
-              {
-                const outstandingBySurface=new Map();
-                const addOutstanding=text=>{
-                  const surface=normalizedClauseSurface(text||'');
-                  if(surface&&!outstandingBySurface.has(surface))
-                    outstandingBySurface.set(surface,{text:String(text).trim()});
-                };
-                for(const finding of review.clauseFindings||[]){
-                  if(finding.partId===part.id&&finding.claimId===decision.claimId&&
-                     finding.sourceId===decision.sourceId&&
-                     finding.status!=='answered')addOutstanding(finding.text);
-                }
-                for(const issue of review.supportIssues||[]){
-                  if(issue.partId===part.id&&issue.claimId===decision.claimId&&
-                     issue.sourceId===decision.sourceId&&
-                     issue.reason==='claim-clause-not-supported')
-                    addOutstanding(issue.clauseText);
-                }
-                const outstandingClauses=[...outstandingBySurface.values()];
-                if(outstandingClauses.length)
-                  requestedEntry.outstandingClauses=outstandingClauses;
-              }
-              // Batch 26 (B26-2): a pair rejected on an attribution
-              // finding carries the finding, the claim-side names an
-              // anchor may match, and (non-enumerably, so it never
-              // reaches the model) the pair source's byline authors
-              // for the deterministic anchor validation.
-              if(RESCUE_ATTRIBUTION_REASONS.has(decision.validationReason||'')){
-                requestedEntry.attributionFinding={reason:decision.validationReason};
-                const pairSource=sources.find(source=>source.id===decision.sourceId);
-                const anchorCandidates=[...new Set([
-                  specificClaimSpeaker(claimText),
-                  ...claimPersonSubjects(claimText)].filter(Boolean))];
-                let provenanceVoice=null;
-                if(decision.validationReason==='pseudonymous-voice-unidentified'){
-                  const voice=sourceProvenance(pairSource,plan,
-                    pairSource?.scopeText||pairSource?.text||pairSource?.preview||'')
-                    ?.workVoice;
-                  if(voice?.kind==='pseudonymous-author'&&voice.name){
-                    provenanceVoice=voice;
-                    if(!anchorCandidates.includes(voice.name))
-                      anchorCandidates.push(voice.name);
-                  }
-                }
-                requestedEntry.anchorCandidates=anchorCandidates;
-                // Batch 34 (B34-3): the pair's support boundary
-                // rides along non-enumerably for the boundary key
-                // in parseRescueDecisions — the record the parity
-                // side consumes, kept out of the model's packet
-                // exactly like the byline authors above.
-                Object.defineProperty(requestedEntry,'supportBoundaryText',{
-                  value:decision.supportBoundary||''});
-                // Batch 30 (B30-4): the two-key restoration material,
-                // attached non-enumerably like the byline authors so
-                // it never reaches the model: the pair source's full
-                // packet span set (the antecedent key — the pair's own
-                // request spans above are hint-filtered and capped,
-                // the antecedent may live in any packet span of the
-                // source) and the provenance voice name (the voice
-                // key).
-                if(decision.validationReason==='subject-not-named-in-span'||
-                   decision.validationReason==='source-subject-attribution-missing')
-                  Object.defineProperty(requestedEntry,'packetSourceSpans',{
-                    value:(evidenceEntry?.spans||[])
-                      .map(span=>({spanId:span.spanId,text:span.text,
-                        ...(span.head?{head:span.head}:{})}))});
-                if(provenanceVoice)
-                  Object.defineProperty(requestedEntry,'provenanceVoiceName',{
-                    value:provenanceVoice.name});
-                Object.defineProperty(requestedEntry,'anchorBylineAuthors',{
-                  value:catalogIdentity(pairSource?.title||'').authors||[]});
-              }
-              // Batch 27 (B27-3): trace the request itself — the
-              // outstanding clauses sent (count and texts), whether an
-              // attribution finding rode along, and the span count.
-              entry.requestedPairs.push({claimId:requestedEntry.claimId,
-                sourceId:requestedEntry.sourceId,
-                outstandingClauseCount:(requestedEntry.outstandingClauses||[]).length,
-                outstandingClauses:(requestedEntry.outstandingClauses||[])
-                  .map(clause=>clause.text),
-                attributionFindingSent:Boolean(requestedEntry.attributionFinding),
-                spanCount:requestedEntry.spans.length});
-              requested.push(requestedEntry);
-            }
-            if(!requested.length){entry.outcome='no-rescuable-decisions';continue;}
-            if(usage.calls>=callLimit){
-              entry.outcome='not-attempted-call-budget';continue;
-            }
-            const rescueStartedAt=Date.now();
-            try{
-              const rescue=await run('review-rescue',RESCUE_REVIEW_PROMPT,
-                {question,partId:part.id,decisions:requested},
-                parseReviewJson,{partId:part.id});
-              entry.callLatencyMs=Date.now()-rescueStartedAt;
-              let parsed=parseRescueDecisions(rescue,requested);
-              let appliedRequested=requested;
-              if(!parsed.ok){
-                // Batch 27 (B27-5): a rescue response that fails
-                // strict parsing gets ONE retry, re-asking only the
-                // pairs whose verdicts failed validation (the parse
-                // names them in failedPairs; a response-level failure
-                // re-asks every pair), with their FULL span sets and
-                // the compact retry instruction. This replaces the
-                // batch-25 compact retry, which capped spans at two
-                // per pair — when the validating fragment lived in a
-                // later span, the retry was structurally incapable of
-                // succeeding (the two production rescue deaths in
-                // batch 26). A call failure or timeout does NOT retry
-                // (handled by the catch below).
-                entry.attempts=[{outcome:'invalid-response',reason:parsed.reason,
-                  callLatencyMs:entry.callLatencyMs}];
-                if(usage.calls>=callLimit){
-                  entry.attempts.push({outcome:'not-attempted-call-budget'});
-                  entry.outcome='invalid-response';entry.reason=parsed.reason;
-                  continue;
-                }
-                const failedKeys=Array.isArray(parsed.failedPairs)&&
-                  parsed.failedPairs.length?new Set(parsed.failedPairs):null;
-                const retryRequested=failedKeys?
-                  requested.filter(item=>
-                    failedKeys.has(item.claimId+'|'+item.sourceId)):requested;
-                const retryScope=failedKeys?'failed-pairs':'all-pairs';
-                const retryStartedAt=Date.now();
-                const retryRescue=await run('review-rescue',RESCUE_REVIEW_RETRY_PROMPT,
-                  {question,partId:part.id,decisions:retryRequested},
-                  parseReviewJson,{partId:part.id,kind:'retry'});
-                const retryLatencyMs=Date.now()-retryStartedAt;
-                entry.callLatencyMs+=retryLatencyMs;
-                const retryParsed=parseRescueDecisions(retryRescue,retryRequested);
-                if(retryParsed.ok){
-                  const mergedDecisions=failedKeys?
-                    new Map([...(parsed.decisions||[]),...retryParsed.decisions]):
-                    retryParsed.decisions;
-                  // The merged map must carry a verdict for every
-                  // requested pair before anything is applied — a
-                  // pair no parse judged stays unflipped by keeping
-                  // the whole rescue invalid (fail-closed).
-                  if(!requested.every(item=>
-                    mergedDecisions.has(item.claimId+'|'+item.sourceId))){
-                    entry.attempts.push({outcome:'invalid-response',
-                      reason:'missing-decision',
-                      callLatencyMs:retryLatencyMs,retryScope,
-                      retriedPairCount:retryRequested.length,fullSpans:true});
-                    entry.outcome='invalid-response';entry.reason='missing-decision';
-                    continue;
-                  }
-                  entry.attempts.push({outcome:'completed',
-                    callLatencyMs:retryLatencyMs,retryScope,
-                    retriedPairCount:retryRequested.length,fullSpans:true});
-                  parsed={ok:true,decisions:mergedDecisions};
-                  entry.outcome='completed-after-retry';
-                }else if(parsed.reason==='clause-verdicts-missing'||
-                         retryParsed.reason==='clause-verdicts-missing'||
-                         parsed.reason==='clause-not-cleared'||
-                         retryParsed.reason==='clause-not-cleared'){
-                  // Batch 27 (B27-4): after the retry, a verdict
-                  // that still omits its listed clause entries is
-                  // recorded as not-supported with reason
-                  // clause-verdicts-missing; it never flips. Batch 29
-                  // (B29-2): the same disposition covers a verdict
-                  // whose clause entries are present but non-clearing
-                  // (reason clause-not-cleared, flag clauseNotCleared)
-                  // — the two failure kinds share the retry and the
-                  // recording, and the recorded reason names the
-                  // omission kind when either parse had one. This
-                  // downgrade applies only when every requested pair
-                  // carries an individual verdict from one of the two
-                  // parses — a pair no parse judged keeps the whole
-                  // rescue invalid (fail-closed, exactly as before).
-                  const clauseFailureReason=
-                    (parsed.reason==='clause-verdicts-missing'||
-                     retryParsed.reason==='clause-verdicts-missing')?
-                    'clause-verdicts-missing':'clause-not-cleared';
-                  const merged=new Map(parsed.decisions||[]);
-                  for(const [key,decision] of retryParsed.decisions||[])
-                    merged.set(key,decision);
-                  const coversAll=requested.every(item=>
-                    merged.has(item.claimId+'|'+item.sourceId));
-                  if(!coversAll){
-                    entry.attempts.push({outcome:'invalid-response',
-                      reason:clauseFailureReason,
-                      callLatencyMs:retryLatencyMs,retryScope,
-                      retriedPairCount:retryRequested.length,fullSpans:true});
-                    entry.outcome='invalid-response';
-                    entry.reason=clauseFailureReason;
-                    continue;
-                  }
-                  for(const [key,decision] of merged)
-                    if(decision.clauseVerdictsMissing||decision.clauseNotCleared)
-                      merged.set(key,{...decision,verdict:'not-supported'});
-                  entry.attempts.push({outcome:clauseFailureReason,
-                    callLatencyMs:retryLatencyMs,retryScope,
-                    retriedPairCount:retryRequested.length,fullSpans:true});
-                  parsed={ok:true,decisions:merged};
-                  entry.outcome='completed-after-retry';
-                }else{
-                  entry.attempts.push({outcome:'invalid-response',
-                    reason:retryParsed.reason,
-                    callLatencyMs:retryLatencyMs,retryScope,
-                    retriedPairCount:retryRequested.length,fullSpans:true});
-                  entry.outcome='invalid-response';entry.reason=retryParsed.reason;
-                  continue;
-                }
-              }else entry.outcome='completed';
-              const raw=rawReviewByPart.get(part.id);
-              const flippedClaimIds=new Set();
-              for(const item of appliedRequested){
-                const verdict=parsed.decisions.get(item.claimId+'|'+item.sourceId);
-                const claimRecord={claimId:item.claimId,sourceId:item.sourceId,
-                  verdict:verdict.verdict,fragment:verdict.fragment,
-                  ...(verdict.elements?{elements:verdict.elements}:{}),
-                  ...(verdict.elementDowngrade?{elementDowngrade:true}:{}),
-                  // Batch 29 (B29-2): the per-clause outcomes ride
-                  // the trace claim, and a verdict recorded
-                  // not-supported after the retry for non-clearing
-                  // clause entries carries its own reason, distinct
-                  // from both a judged not-supported and an omission.
-                  ...(verdict.clauseOutcomes?
-                    {clauseOutcomes:verdict.clauseOutcomes}:{}),
-                  ...(verdict.clauseNotCleared?
-                    {clauseNotCleared:true,reason:'clause-not-cleared'}:{}),
-                  // Batch 27 (B27-4): a verdict recorded
-                  // not-supported after the retry for omitting its
-                  // listed clause entries carries the reason in the
-                  // trace, distinct from a judged not-supported.
-                  ...(verdict.clauseVerdictsMissing?
-                    {clauseVerdictsMissing:true,reason:'clause-verdicts-missing'}:{}),
-                  ...(verdict.clearedClauses?{clearedClauses:verdict.clearedClauses}:{}),
-                  ...(verdict.anchor?{anchor:verdict.anchor}:{}),
-                  ...(verdict.anchorFunctionWordDiscarded?
-                    {anchorFunctionWordDiscarded:true}:{}),
-                  ...(verdict.attributionHeld?{attributionHeld:true}:{}),
-                  // Batch 30 (B30-4): a pair restored by the two-key
-                  // path carries which key completed, so validation
-                  // can census restorations separately from ordinary
-                  // anchor-validated flips.
-                  ...(verdict.restoredByAntecedent?
-                    {restoredByAntecedent:true}:{}),
-                  ...(verdict.restoredByVoiceAnchor?
-                    {restoredByVoiceAnchor:true}:{}),
-                  // Batch 34 (B34-3): a pair restored by the
-                  // boundary key carries the subject the boundary
-                  // recorded, so the rescue trace shows which key
-                  // released the hold.
-                  ...(verdict.restoredByBoundarySubject?
-                    {restoredByBoundarySubject:verdict.restoredByBoundarySubject}:{})};
-                // Batch 26 (B26-4): an attribution-held pair never
-                // flips; its veto is known already, so record it here
-                // rather than in the post-normalization pass below.
-                if(verdict.attributionHeld)
-                  claimRecord.flipVeto={layer:'attribution',held:true,
-                    reason:item.attributionFinding?.reason||'attribution'};
-                entry.claims.push(claimRecord);
-                if(verdict.verdict!=='supported'||!raw)continue;
-                if(!Array.isArray(raw.claims))raw.claims=[];
-                let claimEntry=raw.claims.find(candidate=>
-                  String(candidate?.claimId||'')===item.claimId);
-                if(!claimEntry){
-                  claimEntry={claimId:item.claimId,status:'partial',sources:[]};
-                  raw.claims.push(claimEntry);
-                }
-                if(!Array.isArray(claimEntry.sources))claimEntry.sources=[];
-                let sourceDecision=claimEntry.sources.find(candidate=>
-                  String(candidate?.sourceId||'')===item.sourceId);
-                if(!sourceDecision){
-                  sourceDecision={sourceId:item.sourceId};
-                  claimEntry.sources.push(sourceDecision);
-                }
-                sourceDecision.status='answered';
-                sourceDecision.spanIds=item.spans.map(span=>span.spanId);
-                sourceDecision.rescueAccepted=true;
-                // Batch 26 (B26-1): record the pair's clause
-                // clearances on the raw claim, where re-normalization
-                // consumes them for this source decision only.
-                if(verdict.clearedClauses?.length){
-                  if(!Array.isArray(claimEntry.rescueClauseClearances))
-                    claimEntry.rescueClauseClearances=[];
-                  for(const cleared of verdict.clearedClauses){
-                    const surface=normalizedClauseSurface(cleared.text);
-                    if(!claimEntry.rescueClauseClearances.some(existing=>
-                      String(existing?.sourceId||'')===item.sourceId&&
-                      normalizedClauseSurface(existing?.text||'')===surface))
-                      claimEntry.rescueClauseClearances.push({
-                        sourceId:item.sourceId,text:cleared.text,
-                        fragment:cleared.fragment});
-                  }
-                }
-                // Batch 26 (B26-2): a validated anchor satisfies the
-                // attribution guard with evidence. Subject findings
-                // name the subject; speaker findings name the speaker
-                // (and a reviewer attribution of conflict/unclear is
-                // superseded by the anchored re-judgment). Provenance
-                // findings (pseudonymous voice, editorial mediation)
-                // are computed from the claim text itself and take no
-                // field writes — the flip stands or falls by the
-                // guard's own rules at re-normalization.
-                if(verdict.anchor){
-                  const findingReason=item.attributionFinding?.reason||'';
-                  if(findingReason.includes('subject')){
-                    sourceDecision.subjectAttributionStatus='supported';
-                    sourceDecision.attributedSubject=verdict.anchor;
-                  }else if(findingReason&&
-                    !findingReason.includes('pseudonymous')&&
-                    !findingReason.includes('editorial')){
-                    sourceDecision.attributedSpeaker=verdict.anchor;
-                    if(['conflict','unclear','not_applicable','missing',undefined]
-                      .includes(sourceDecision.attributionStatus))
-                      sourceDecision.attributionStatus='supported';
-                  }
-                }
-                // Batch 30 (B30-4): a two-key restoration is recorded
-                // on the raw decision, so re-normalization can
-                // neutralize exactly the demotion the restoration
-                // answers — the subject-not-named / subject-missing
-                // demotion for an antecedent restoration, the
-                // pseudonymous-voice demotion for a voice-anchor
-                // restoration — and no other gate.
-                if(verdict.restoredByAntecedent)
-                  sourceDecision.gateRestoration='antecedent';
-                if(verdict.restoredByVoiceAnchor)
-                  sourceDecision.gateRestoration='voice-anchor';
-                flippedClaimIds.add(item.claimId);
-                entry.flipped++;
-              }
-              // The rescue verdict judges the claim as written against
-              // its source, so a flipped claim whose source decisions
-              // are now all answered takes the claim-level 'answered'
-              // status too — normalization's group-coverage and
-              // attribution checks still apply on top of it.
-              if(raw&&flippedClaimIds.size){
-                for(const claimEntry of raw.claims||[]){
-                  if(!flippedClaimIds.has(String(claimEntry?.claimId||'')))continue;
-                  if(Array.isArray(claimEntry.sources)&&claimEntry.sources.length&&
-                     claimEntry.sources.every(decision=>decision?.status==='answered'))
-                    claimEntry.status='answered';
-                }
-              }
-              if(entry.flipped){
-                flippedPartIds.add(part.id);
-                // Batch 30 (B30-2): only this part's decisions changed
-                // in this iteration (the rescue judges one part's
-                // pairs), so only this part is re-normalized — the
-                // other parts' cached singles are reused as they are.
-                review=renormalizePart(part.id);
-              }
-            }catch(error){
-              entry.callLatencyMs=Date.now()-rescueStartedAt;
-              if(entry.attempts)entry.attempts.push({outcome:'call-failed',
-                failureCode:typeof error?.code==='string'?error.code:
-                  'rescue-call-failed'});
-              entry.outcome='call-failed';
-              entry.failureCode=typeof error?.code==='string'?error.code:
-                'rescue-call-failed';
-            }
-          }
-          if(rescueTrace.parts.length)trace.rescueReview=rescueTrace;
-          // Batch 25 (B25-Q1): propagate flips into the part-level
-          // contract of every part the rescue changed, so assembly
-          // sees the rescued part's recomputed requirement coverage
-          // and final status — not the original review's.
-          if(flippedPartIds.size){
-            const recomputeTrace={parts:[]};
-            for(const part of plan.parts){
-              if(!flippedPartIds.has(part.id))continue;
-              const record=recomputeRescuedPartContract(part.id);
-              if(record)recomputeTrace.parts.push(record);
-            }
-            if(recomputeTrace.parts.length)trace.contractRecompute=recomputeTrace;
-          }
-          // Batch 26 (B26-4): record every flip's post-normalization
-          // outcome in the rescue trace itself. Batch 25's flips all
-          // died at re-normalization (clause demotions, attribution
-          // vetoes) while the rescue trace reported only that they
-          // flipped; acceptance had to be reconstructed from three
-          // other trace sections after the fact. A flip whose final
-          // decision is not accepted now carries the vetoing layer
-          // and the decision's recorded reason.
-          for(const entry of rescueTrace.parts){
-            for(const claim of entry.claims){
-              if(claim.flipVeto||claim.verdict!=='supported')continue;
-              const finalDecision=(review.reviewDecisions||[]).find(decision=>
-                decision.partId===entry.partId&&decision.claimId===claim.claimId&&
-                decision.sourceId===claim.sourceId);
-              if(finalDecision?.accepted===true){
-                claim.flipOutcome='accepted';
-              }else{
-                const reason=finalDecision?.validationReason||'decision-not-recorded';
-                // The clause demotion surfaces on the decision only
-                // as the generic not-supported reason; the demotion
-                // itself is recorded in the final review's support
-                // issues, which is the reliable layer signal.
-                const clauseVeto=reason==='claim-clause-not-supported'||
-                  (review.supportIssues||[]).some(issue=>
-                    issue.partId===entry.partId&&issue.claimId===claim.claimId&&
-                    issue.sourceId===claim.sourceId&&
-                    issue.reason==='claim-clause-not-supported');
-                claim.flipOutcome='vetoed';
-                claim.flipVeto={reason,
-                  layer:clauseVeto?'clause':
-                    reason==='source-contradicts-claim-polarity'?'polarity':
-                    /attribution|pseudonymous|editorial-source/.test(reason)?
-                      'attribution':'other'};
-                // Batch 33 (B33-5 (c)): the flip veto joins the
-                // unified veto census mirrored onto the trace below.
-                (review.flipVetoCensus||(review.flipVetoCensus=[]))
-                  .push({partId:entry.partId,claimId:claim.claimId,
-                    sourceId:claim.sourceId,layer:claim.flipVeto.layer,
-                    ground:reason,outcome:'vetoed'});
-              }
-            }
-          }
-        }
-        const acceptedClaimIdsByPart=new Map(review.parts.map(part=>[
-          part.partId,new Set((part.answers||[]).map(answer=>answer.claimId))]));
-        const repairCandidates=review.issues.length?[]:review.parts.filter(part=>
-          ((!part.directAnswerCovered&&part.directAnswerClaimIds.length>0)||
-           (part.answerStatus!=='answered'&&part.repairable===true)||
-           (part.requirementCoverage||[]).some(item=>item.status!=='answered'))&&
-          checked.parts.some(answerPart=>answerPart.partId===part.partId&&answerPart.answers.length))
-          .map(part=>{
-            const acceptedIds=acceptedClaimIdsByPart.get(part.partId)||new Set();
-            const claimIssues=review.supportIssues.filter(issue=>issue.partId===part.partId&&
-              issue.claimId&&!acceptedIds.has(issue.claimId));
-            const missingRequirements=(part.requirementCoverage||[])
-              .filter(item=>item.status!=='answered')
-              .map(item=>{
-                const requirement=(plan.parts.find(planned=>planned.id===part.partId)?.requirements||[])
-                  .find(candidate=>candidate.id===item.requirementId);
-                return {requirementId:item.requirementId,text:requirement?.text||'',
-                  ...(requirement?.questionAnchor?{questionAnchor:requirement.questionAnchor}:{})};
-              });
-            const targetClaimIds=[...new Set([
-              ...claimIssues.map(issue=>issue.claimId),
-              ...part.directAnswerClaimIds.filter(claimId=>!acceptedIds.has(claimId))
-            ])];
-            return {...part,targetClaimIds,missingRequirements,
-              addCoverage:missingRequirements.length>0||
-                (part.answerStatus!=='answered'&&part.repairable===true)||
-                (!part.directAnswerCovered&&!targetClaimIds.length)};
-          }).filter(part=>part.targetClaimIds.length||part.addCoverage);
-        const allRepairTargets=repairCandidates.filter(part=>part.repairable===true);
-        if(repairCandidates.length&&!allRepairTargets.length){
-          trace.answerRepair={attempted:false,partIds:repairCandidates.map(part=>part.partId),
-            applied:false,reason:'reviewer-did-not-mark-repairable',
-            triggerReasons:repairCandidates.map(part=>({partId:part.partId,reasons:[
-              ...(!part.directAnswerCovered?[part.directAnswerClaimIds.length?
-                'direct-answer-not-supported':'direct-answer-not-identified']:[]),
-              ...(part.missingRequirements.length?['uncovered-answer-requirement']:[]),
-              ...(part.answerStatus!=='answered'?['incomplete-answer-'+part.answerStatus]:[])
-            ]}))};
-        }
-        // Batch 5 (L4): futility skip for the synthesis-deficit pattern —
-        // the direct answer is covered, no claim is targeted, and the only
-        // deficit is a partially covered requirement. That deficit is a
-        // missing synthesis/coverage judgment, not missing prose: across
-        // runs 45–50 this repair was attempted repeatedly and never once
-        // adopted, because a rewrite cannot manufacture the citations a
-        // synthesis requirement is missing. Skip those parts and spend
-        // the repair only where it can change the outcome.
-        const isSynthesisDeficit=part=>{
-          if(!part.directAnswerCovered||part.targetClaimIds.length)return false;
-          const missing=(part.requirementCoverage||[])
-            .filter(item=>item.status!=='answered');
-          return missing.length>0&&missing.every(item=>item.status==='partial');
-        };
-        const futileRepairParts=allRepairTargets.filter(isSynthesisDeficit);
-        // Batch 25 (B25-L2): parts already at the cross-phase repair
-        // cap are excluded from this phase's targets; they proceed
-        // unrepaired and the skip is recorded in the ledger.
-        const repairTargets=allRepairTargets.filter(part=>!isSynthesisDeficit(part))
-          .filter(part=>{
-            if(!repairCycleCapReached(part.partId))return true;
-            recordSkippedRepairCycle(part.partId,'answer-repair');
-            return false;
-          });
-        if(futileRepairParts.length&&!repairTargets.length){
-          trace.answerRepair={attempted:false,
-            partIds:futileRepairParts.map(part=>part.partId),
-            applied:false,reason:'synthesis-deficit-repair-skipped',
-            triggerReasons:futileRepairParts.map(part=>({partId:part.partId,
-              reasons:['uncovered-answer-requirement']}))};
-        }
-        if(repairTargets.length){
-          const targetIds=new Set(repairTargets.map(part=>part.partId));
-          // Batch 25 (B25-L2): outcome-class signatures before this
-          // phase's cycle, compared after adoption below.
-          const repairBeforeSignatures=new Map(repairTargets.map(part=>[
-            part.partId,repairOutcomeSignature(
-              review.parts.find(item=>item.partId===part.partId))]));
-          const targetPlan={...plan,parts:plan.parts.filter(part=>targetIds.has(part.id))};
-          const targetAnswers=checked.parts.filter(part=>targetIds.has(part.partId));
-          const targetReviewParts=reviewParts.filter(part=>targetIds.has(part.partId));
-          const directIds=new Set(repairTargets.flatMap(part=>part.directAnswerClaimIds));
-          const repairPayload={question,parts:repairTargets.map(part=>{
-            const answerPart=targetAnswers.find(item=>item.partId===part.partId);
-            const targetClaimIds=new Set(part.targetClaimIds);
-            return {partId:part.partId,question:plan.parts.find(item=>item.id===part.partId)?.question||'',
-              requirements:plan.parts.find(item=>item.id===part.partId)?.requirements||[],
-              directAnswerClaimIds:part.directAnswerClaimIds,
-              repair:{replaceClaimIds:part.targetClaimIds,addCoverage:part.addCoverage,
-                missingRequirements:part.missingRequirements,
-                supportIssues:review.supportIssues.filter(issue=>issue.partId===part.partId)},
-              claims:(answerPart?.answers||[]).map(answer=>({claimId:answer.claimId,text:answer.text,
-                citedSourceIds:answer.sourceIds,targeted:targetClaimIds.has(answer.claimId),
-                initialReview:review.reviewDecisions.filter(item=>item.claimId===answer.claimId)
-                  .map(item=>({sourceId:item.sourceId,status:item.sourceStatus,
-                    accepted:item.accepted===true,reason:item.validationReason||null,
-                    evidenceRole:item.evidenceRole||'unclear',
-                    supportBoundary:item.supportBoundary||''}))})),
-              evidence:targetReviewParts.find(item=>item.partId===part.partId)?.evidence||[]};
-          }),directAnswerClaimIds:[...directIds]};
-          const answerRepairTrace={attempted:true,partIds:[...targetIds],
-            targetClaimIds:repairTargets.map(part=>({partId:part.partId,claimIds:part.targetClaimIds,
-              addCoverage:part.addCoverage})),applied:false,
-            triggerReasons:repairTargets.map(part=>({partId:part.partId,reasons:[
-              ...(!part.directAnswerCovered?[part.directAnswerClaimIds.length?
-                'direct-answer-not-supported':'direct-answer-not-identified']:[]),
-              ...(part.missingRequirements.length?['uncovered-answer-requirement']:[]),
-              ...(part.answerStatus!=='answered'&&part.repairable===true?
-                ['repairable-answer-completeness-'+part.answerStatus]:[]),
-            ]})),
-            initialSupportIssues:review.supportIssues.filter(issue=>targetIds.has(issue.partId)),
-            ...(futileRepairParts.length?
-              {skippedFutilePartIds:futileRepairParts.map(part=>part.partId)}:{})};
-          try{
-            const patches=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>{
-              const parsed=parseAnswerRepairJson(response);
-              const responseRecovery=parsed?.[ANSWER_REPAIR_JSON_RECOVERY];
-              if(responseRecovery)answerRepairTrace.responseRecovery=responseRecovery;
-              if(!Array.isArray(parsed?.parts)||parsed.parts.length!==repairTargets.length)
-                throw new ModelFormatError('answer-repair','Answer repair returned an incomplete part list.','answer-repair-invalid');
-              const patchesByPart=new Map();
-              for(const item of parsed.parts){
-                const partId=String(item?.partId||'').toUpperCase();
-                const target=repairTargets.find(part=>part.partId===partId);
-                if(!target||patchesByPart.has(partId)||!Array.isArray(item?.replacements)||
-                   !Array.isArray(item?.additions)||
-                   Object.keys(item).some(key=>!['partId','replacements','additions'].includes(key)))
-                  throw new ModelFormatError('answer-repair','Answer repair returned an invalid or unrequested part.','answer-repair-invalid');
-                const replacementById=new Map();
-                for(const replacement of item.replacements){
-                  const claimId=String(replacement?.claimId||'').toUpperCase();
-                  const text=typeof replacement?.text==='string'?replacement.text.trim():'';
-                  if(!target.targetClaimIds.includes(claimId)||replacementById.has(claimId)||
-                     !text||text.length>8000||/[\r\n]/u.test(text)||
-                     Object.keys(replacement).some(key=>!['claimId','text'].includes(key))||
-                     splitCitedSentenceUnits(text).length!==1)
-                    throw new ModelFormatError('answer-repair','Answer repair returned an invalid or unrequested claim patch.','answer-repair-invalid');
-                  replacementById.set(claimId,text);
-                }
-                if(replacementById.size!==target.targetClaimIds.length||
-                   target.targetClaimIds.some(claimId=>!replacementById.has(claimId))||
-                   item.additions.some(text=>typeof text!=='string'||!text.trim()||
-                     text.trim().length>8000||/[\r\n]/u.test(text)||
-                     splitCitedSentenceUnits(text).length!==1)||
-                   [...replacementById.values(),...item.additions].reduce((sum,text)=>sum+text.length,0)>8000||
-                   (!target.addCoverage&&item.additions.length))
-                  throw new ModelFormatError('answer-repair','Answer repair returned incomplete or unrequested claim patches.','answer-repair-invalid');
-                patchesByPart.set(partId,{replacements:replacementById,additions:item.additions.map(text=>text.trim())});
-              }
-              if(patchesByPart.size!==repairTargets.length)
-                throw new ModelFormatError('answer-repair','Answer repair omitted a requested part.','answer-repair-invalid');
-              return patchesByPart;
-            });
-            const repairedDraftParts=targetPlan.parts.map(part=>{
-              const original=targetAnswers.find(item=>item.partId===part.id);
-              const patch=patches.get(part.id);
-              const answers=(original?.answers||[]).map(answer=>{
-                const replacement=patch.replacements.get(answer.claimId);
-                return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
-              });
-              const nextParagraph=Math.max(-1,...answers.map(answer=>answer.paragraphIndex||0))+1;
-              for(const text of patch.additions)
-                answers.push({text,renderedText:text,sourceIds:[],paragraphIndex:nextParagraph});
-              return {partId:part.id,text:renderAnswerParagraphs(answers)};
-            });
-            const repairedChecked=validatePartAnswers(repairedDraftParts,sources,targetPlan,question);
-            if(repairedChecked.parts.some(part=>!part.answers.length))
-              throw new ModelFormatError('answer-repair','Repaired answer did not pass citation validation.','answer-repair-invalid');
-            if(!repairAnswerChanged(targetAnswers,repairedChecked.parts)){
-              answerRepairTrace.reason='answer-repair-no-material-change';
-              trace.answerRepair=answerRepairTrace;
-            }else{
-              // Re-review follows the same per-part split as the initial
-              // review: one concurrent call per repaired part, normalized
-              // in plan order.
-              // Batch 28 (B28-2): the per-part re-reviews settle
-              // independently. Batch 27's Orwell failure ran them under
-              // one Promise.all, so a single part's deadline aborted
-              // every sibling's re-review and the whole repair was
-              // discarded even where it had succeeded. A part whose
-              // re-review call fails is recorded with its own failure
-              // and simply never enters the adoption set below; the
-              // adoption rule itself is unchanged.
-              const settledReReviews=await Promise.allSettled(repairedChecked.parts.map(async repairedPart=>{
-                const packet=buildReviewPacket([repairedPart],
-                  {sources,pageById,plan:targetPlan,question,
-                   priorRejectionsByPart:priorRejectionsByPart()});
-                const rawReview=await runReReviewWithSplitFallback(packet,
-                  {partId:repairedPart.partId});
-                return {repairedPart,packet,rawReview};
-              }));
-              const repairedPackets=[],reReviewFailures=[];
-              settledReReviews.forEach((settled,index)=>{
-                if(settled.status==='fulfilled')repairedPackets.push(settled.value);
-                else reReviewFailures.push({partId:repairedChecked.parts[index].partId,
-                  reason:typeof settled.reason?.code==='string'?
-                    settled.reason.code:'answer-re-review-failed'});
-              });
-              if(reReviewFailures.length)
-                answerRepairTrace.reReviewFailures=reReviewFailures;
-              // Batch 5 (L4): adoption is per part. Adoption used to be
-              // all-or-nothing — one part whose re-review still failed
-              // discarded every other part's successful repair. Now a part
-              // is adopted iff its own re-review is issue-free with the
-              // direct answer covered and answered; only when NO part is
-              // adoptable does the repair fail as before.
-              const perPartReReviews=new Map();
-              let reReviewContext=[];
-              for(const targetPart of targetPlan.parts){
-                const entry=repairedPackets.find(item=>item.repairedPart.partId===targetPart.id);
-                if(!entry)continue;
-                const single=normalizeReview(entry.rawReview,
-                  {...targetPlan,parts:[targetPart]},[entry.repairedPart],sources,
-                  entry.packet.reviewSpanMapsByPart,question,entry.packet.reviewClaims,
-                  reReviewContext,archiveEntriesByPart(),composerPacketSpansByPart);
-                perPartReReviews.set(targetPart.id,{single,rePart:single.parts[0]});
-                reReviewContext.push(...(single.parts[0]?.answers||[]));
-              }
-              const adoptedPartIds=[],rejectedRepairParts=[];
-              for(const targetPart of targetPlan.parts){
-                const outcome=perPartReReviews.get(targetPart.id);
-                const rePart=outcome?.rePart;
-                if(outcome&&!outcome.single.issues.length&&rePart&&
-                   rePart.directAnswerCovered&&rePart.answerStatus==='answered')
-                  adoptedPartIds.push(targetPart.id);
-                else rejectedRepairParts.push({partId:targetPart.id,
-                  reason:!outcome||outcome.single.issues.length?
-                    'answer-re-review-incomplete':'answer-re-review-unsupported'});
-              }
-              // Batch 25 (B25-L2): every target part that received a
-              // re-review consumed one cross-phase repair cycle,
-              // recorded before the no-adoption throw below so failed
-              // cycles count too.
-              for(const targetPart of targetPlan.parts){
-                const outcome=perPartReReviews.get(targetPart.id);
-                if(!outcome)continue;
-                recordRepairCycle(targetPart.id,'answer-repair',
-                  adoptedPartIds.includes(targetPart.id)&&
-                  repairOutcomeSignature(outcome.rePart)!==
-                    repairBeforeSignatures.get(targetPart.id));
-              }
-              if(!adoptedPartIds.length)
-                throw new ModelFormatError('answer-re-review','Repaired direct answer did not pass independent review.',
-                  // Batch 28 (B28-2/B28-3): when a re-review call
-                  // itself failed, its own code names the failure (the
-                  // re-review deadline), not the generic incomplete
-                  // label — the same code the old all-or-nothing
-                  // Promise.all surfaced through the outer catch.
-                  reReviewFailures[0]?.reason||
-                  (rejectedRepairParts.some(item=>item.reason==='answer-re-review-incomplete')?
-                    'answer-re-review-incomplete':'answer-re-review-unsupported'));
-              const adoptedIds=new Set(adoptedPartIds);
-              // Batch 8 (B8-2): an adopted repair was judged by a real
-              // review round; its rejections join the archive before
-              // the deterministic gates and containment run.
-              for(const targetPart of targetPlan.parts){
-                if(!adoptedIds.has(targetPart.id))continue;
-                const entry=repairedPackets.find(item=>item.repairedPart.partId===targetPart.id);
-                const outcome=perPartReReviews.get(targetPart.id);
-                if(entry&&outcome)archiveRoundRejections(outcome.single,[entry.repairedPart]);
-              }
-              const repairedReview={parts:[],issues:[],warnings:[],supportIssues:[],
-                recovered:[],reviewDecisions:[],partDecisions:[]};
-              for(const targetPart of targetPlan.parts){
-                if(!adoptedIds.has(targetPart.id))continue;
-                const {single}=perPartReReviews.get(targetPart.id);
-                repairedReview.parts.push(...single.parts);
-                repairedReview.warnings.push(...single.warnings);
-                repairedReview.supportIssues.push(...single.supportIssues);
-                repairedReview.recovered.push(...single.recovered);
-                repairedReview.reviewDecisions.push(...single.reviewDecisions);
-                repairedReview.partDecisions.push(...single.partDecisions);
-              }
-              for(const repairedPart of repairedChecked.parts){
-                if(!adoptedIds.has(repairedPart.partId))continue;
-                const currentIndex=validatedAnswers.findIndex(item=>item.partId===repairedPart.partId);
-                if(currentIndex>=0)validatedAnswers[currentIndex]=repairedPart;
-              }
-              trace.rejected.push(...repairedChecked.rejected);
-              trace.citationRepairs.push(...repairedChecked.citationRepairs);
-              trace.citationFormatRepairs.push(...repairedChecked.citationFormatRepairs);
-              trace.quoteRepairs.push(...repairedChecked.quoteRepairs);
-              review.parts=review.parts.map(part=>repairedReview.parts.find(item=>item.partId===part.partId)||part);
-              review.reviewDecisions=[...review.reviewDecisions.filter(item=>!adoptedIds.has(item.partId)),
-                ...repairedReview.reviewDecisions];
-              review.partDecisions=[...review.partDecisions.filter(item=>!adoptedIds.has(item.partId)),
-                ...repairedReview.partDecisions];
-              review.supportIssues=[...review.supportIssues.filter(item=>!adoptedIds.has(item.partId)),
-                ...repairedReview.supportIssues];
-              // Batch 34 (B34-1): the adopted parts' layer-1 framing
-              // rescues replace the originals in the restore pool,
-              // mirroring the decisions merge above.
-              review.framingRescues=[...(review.framingRescues||[])
-                .filter(item=>!adoptedIds.has(item.partId)),
-                ...(repairedReview.framingRescues||[])];
-              review.framingFallbacks=[...(review.framingFallbacks||[])
-                .filter(item=>!adoptedIds.has(item.partId)),
-                ...(repairedReview.framingFallbacks||[])];
-              // Batch 34 (B34-3): the adopted parts' swap records
-              // replace the originals the same way.
-              review.boundarySubjectChecks=[...(review.boundarySubjectChecks||[])
-                .filter(item=>!adoptedIds.has(item.partId)),
-                ...(repairedReview.boundarySubjectChecks||[])];
-              // Batch 34 (B34-7): the adopted parts' apparatus
-              // records replace the originals the same way.
-              review.apparatusFramingChecks=[...(review.apparatusFramingChecks||[])
-                .filter(item=>!adoptedIds.has(item.partId)),
-                ...(repairedReview.apparatusFramingChecks||[])];
-              // Batch 35 (B35-4): the adopted parts' region census
-              // replaces the originals the same way.
-              review.spanRegionClassifications=[...(review.spanRegionClassifications||[])
-                .filter(item=>!adoptedIds.has(item.partId)),
-                ...(repairedReview.spanRegionClassifications||[])];
-              review.warnings=[...review.warnings.filter(item=>!adoptedIds.has(item.partId)),
-                ...repairedReview.warnings];
-              answerRepairTrace.applied=true;
-              answerRepairTrace.reReviewedPartCount=adoptedPartIds.length;
-              answerRepairTrace.adoptedPartIds=adoptedPartIds;
-              if(rejectedRepairParts.length)
-                answerRepairTrace.rejectedParts=rejectedRepairParts;
-            }
-          }catch(error){
-            answerRepairTrace.reason=error.code||'answer-repair-failed';
-          }
-          trace.answerRepair=answerRepairTrace;
-        }
-        // Batch 8 (B8-1): scaffolding decision completeness. A frame
-        // claim (first or last in its part) that the reviewer retained
-        // with no scaffolding link and no omission never received the
-        // disposition the scaffolding class exists to force. One
-        // compact round — in the REVIEW_REPAIR_PROMPT pattern — must
-        // choose link, context, or omit for each. Candidates are
-        // bounded to plausible restatements: the part must hold at
-        // least one natively accepted cited claim, and the frame claim
-        // must share at least two content terms with the part's
-        // accepted cited claims (a frame claim sharing no vocabulary
-        // with them cannot restate them, so no link decision is
-        // missing). Parts the answer repair adopted are skipped: their
-        // re-review was a fresh decision point with a fresh packet, and
-        // this round reads the initial packets. A failed or unusable
-        // round changes nothing — the claims ship as context, exactly
-        // as they would have before batch 8.
-        {
-          const answerRepairAdopted=new Set(trace.answerRepair?.adoptedPartIds||[]);
-          const requested=[];
-          for(const part of plan.parts){
-            if(answerRepairAdopted.has(part.id))continue;
-            const reviewPart=review.parts.find(item=>item.partId===part.id);
-            const packetPart=packetsByPart.get(part.id)?.reviewParts?.[0];
-            if(!reviewPart||!packetPart)continue;
-            const frameIds=new Set((packetPart.contextClaims||[])
-              .filter(claim=>claim.frame===true).map(claim=>claim.claimId));
-            if(!frameIds.size)continue;
-            const nativeCitedIds=new Set((reviewPart.evidence||[])
-              .filter(entry=>entry.reviewLinked!==true).map(entry=>entry.claimId));
-            const acceptedClaims=reviewPart.answers
-              .filter(answer=>(answer.sourceIds||[]).length&&nativeCitedIds.has(answer.claimId))
-              .map(answer=>({claimId:answer.claimId,text:answer.text,
-                sourceIds:[...answer.sourceIds]}));
-            if(!acceptedClaims.length)continue;
-            const acceptedTerms=new Set();
-            for(const claim of acceptedClaims)
-              for(const term of fallbackEvidenceTerms(claim.text))acceptedTerms.add(term);
-            const frameClaims=[];
-            for(const answer of reviewPart.answers){
-              if(!frameIds.has(answer.claimId))continue;
-              if((answer.sourceIds||[]).length)continue;
-              let shared=0;
-              for(const term of fallbackEvidenceTerms(answer.text))
-                if(acceptedTerms.has(term))shared++;
-              if(shared<2)continue;
-              frameClaims.push({claimId:answer.claimId,text:answer.text});
-            }
-            if(frameClaims.length)requested.push({partId:part.id,frameClaims,acceptedClaims,reviewPart});
-          }
-          if(requested.length&&usage.calls>=callLimit){
-            scaffoldingRepairTrace={attempted:false,resolved:0,reason:'call-budget-exceeded'};
-          }else if(requested.length){
-            scaffoldingRepairTrace={attempted:true,resolved:0};
-            try{
-              const repair=await run('scaffolding-repair',SCAFFOLDING_REPAIR_PROMPT,
-                {question,parts:requested.map(({partId,frameClaims,acceptedClaims})=>({
-                  partId,frameClaims,
-                  acceptedClaims:acceptedClaims.map(({claimId,text,sourceIds})=>({claimId,text,sourceIds}))}))},
-                parseReviewJson,{optional:true});
-              const expected=new Map();
-              for(const item of requested)for(const claim of item.frameClaims)
-                expected.set(item.partId+'|'+claim.claimId,item);
-              const decisions=Array.isArray(repair?.decisions)?repair.decisions:[];
-              const seen=new Set();let usable=decisions.length===expected.size;
-              const parsed=[];
-              for(const decision of decisions){
-                const partId=String(decision?.partId||'').toUpperCase();
-                const claimId=String(decision?.claimId||'');
-                const key=partId+'|'+claimId;
-                const item=expected.get(key);
-                const action=String(decision?.action||'');
-                const supportClaimIds=Array.isArray(decision?.supportClaimIds)?
-                  [...new Set(decision.supportClaimIds.filter(id=>typeof id==='string'))]:[];
-                if(!item||seen.has(key)||!['link','context','omit'].includes(action)||
-                   (action==='link'&&(!supportClaimIds.length||
-                     supportClaimIds.some(id=>!item.acceptedClaims.some(claim=>claim.claimId===id))))){
-                  usable=false;break;
-                }
-                seen.add(key);
-                parsed.push({item,claimId,action,supportClaimIds});
-              }
-              if(usable&&seen.size===expected.size){
-                for(const {item,claimId,action,supportClaimIds} of parsed){
-                  const reviewPart=item.reviewPart;
-                  if(action==='context'){scaffoldingRepairTrace.resolved++;continue;}
-                  if(action==='omit'){
-                    reviewPart.answers=reviewPart.answers
-                      .filter(answer=>answer.claimId!==claimId);
-                    reviewPart.evidence=(reviewPart.evidence||[])
-                      .filter(entry=>entry.claimId!==claimId);
-                    // Batch 34 (B34-6): record WHICH claim was
-                    // omitted — the assembly-loss reconciliation
-                    // reads this, so an omitted frame claim is not
-                    // mistaken for an unexplained loss and restored.
-                    scaffoldingRepairTrace.omitted=[
-                      ...(scaffoldingRepairTrace.omitted||[]),
-                      {partId:reviewPart.partId,claimId}];
-                    // Mirror B7-2's honesty rule: omitting a claim the
-                    // reviewer named as a direct answer downgrades the
-                    // part rather than reporting it fully answered.
-                    if((reviewPart.directAnswerClaimIds||[]).includes(claimId)&&
-                       reviewPart.answerStatus==='answered')
-                      reviewPart.answerStatus='partial';
-                    scaffoldingRepairTrace.resolved++;continue;
-                  }
-                  const nativeCitedIds=new Set((reviewPart.evidence||[])
-                    .filter(entry=>entry.reviewLinked!==true).map(entry=>entry.claimId));
-                  const result=attachScaffoldingToPart(reviewPart,
-                    [{claimId,supportClaimIds}],{citedIds:nativeCitedIds,
-                    rejectedClaims:rejectionArchive
-                      .filter(entry=>entry.partId===reviewPart.partId)});
-                  reviewPart.scaffoldingInvalidLinks=
-                    (reviewPart.scaffoldingInvalidLinks||0)+result.invalidLinks;
-                  if(result.invalidLinkDetails.length)
-                    reviewPart.scaffoldingInvalidLinkDetails=
-                      [...(reviewPart.scaffoldingInvalidLinkDetails||[]),
-                        ...result.invalidLinkDetails];
-                  if(result.attached.length){
-                    reviewPart.reviewScaffolding=
-                      [...(reviewPart.reviewScaffolding||[]),...result.attached];
-                    scaffoldingRepairTrace.resolved++;
-                  }
-                }
-              }
-            }catch(error){
-              scaffoldingRepairTrace.reason=error.code||'scaffolding-repair-call-failed';
-            }
-          }
-        }
         const syntaxRecoveries=plan.parts.flatMap(part=>{
           const recovery=rawReviewByPart.get(part.id)?.[REVIEW_JSON_RECOVERY];
           return recovery?[{stage:'review',...recovery}]:[];
@@ -8454,25 +5237,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // measurable trace number, not an anecdote.
           ...(review.subjectExtractionBlindSpots?
             {subjectExtractionBlindSpots:review.subjectExtractionBlindSpots}:{}),
-          // Batch 30 (B30-4): the two-key restorations this build's
-          // final normalization applied, so validation can census
-          // them (kind, pair, and the demotion reason neutralized).
-          ...(review.gateRestorations?.length?
-            {gateRestorations:review.gateRestorations}:{}),
-          // Batch 31 (B31-2): the demotions this build's gate
-          // suppressed via the antecedent / voice test, so validation
-          // can census suppressed against stood demotions and audit
-          // each direction.
-          ...(review.gateDemotionsSuppressed?.length?
-            {gateDemotionsSuppressed:review.gateDemotionsSuppressed}:{}),
-          // Batch 34 (B34-1 layer 1): framing claims rescued from
-          // the part-level context purge, so validation can census
-          // the rescue against the demoted-but-supported count.
-          ...(review.framingRescues?.length?
-            {framingRescues:review.framingRescues.map(entry=>({
-              partId:entry.partId,claimId:entry.claimId}))}:{}),
-          ...(review.framingFallbacks?.length?
-            {framingFallbacks:review.framingFallbacks}:{}),
           // Batch 34 (B34-3): the in-span subject-swap demotions.
           ...(review.boundarySubjectChecks?.length?
             {boundarySubjectChecks:review.boundarySubjectChecks}:{}),
@@ -8486,13 +5250,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             {spanRegionClassifications:review.spanRegionClassifications}:{}),
           ...(review.contextSupportUnmeasured?.length?
             {contextSupportUnmeasured:review.contextSupportUnmeasured}:{}),
-          // Batch 33 (B33-5 (c)): the unified veto census also
-          // lives at trace level, where the flip vetoes (recorded
-          // after the final normalization) join the contract's
-          // gate-side census.
-          ...((review.vetoCensus?.length||review.flipVetoCensus?.length)?
-            {vetoCensus:[...(review.vetoCensus||[]),
-              ...(review.flipVetoCensus||[])]}:{}),
           ...(failedReviewParts.length?{failedParts:failedReviewParts
             .map(item=>({partId:item.partId,code:item.code}))}:{})};
         // Per-part contract problems fail only their own part (recorded in
@@ -8508,12 +5265,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         trace.reviewContract={valid:false,issues:[reviewFailure.code]};
       }
     }
-    // Batch 33 (B33-5 (c)): the trace-level veto census — the final
-    // normalization's contract census plus any flip vetoes recorded
-    // against it during rescue processing.
-    if(review&&(review.vetoCensus?.length||review.flipVetoCensus?.length))
-      trace.vetoCensus=[...(review.vetoCensus||[]),
-        ...(review.flipVetoCensus||[])];
     trace.claimSpanFit||={method:'normalized-content-term-coverage-v1',threshold:0.65,
       rejectedClauseCount:0,composerPacketCovered:0,reviewPacketOnlyCovered:0,
       neitherPacketCovered:0,measurableClauseCount:0,unmeasurableClauseCount:0,
@@ -8723,1198 +5474,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         ...(reviewed?.requirementCoverage?{requirementCoverage:reviewed.requirementCoverage,
           requirementsComplete:reviewed.requirementsComplete===true}:{})};
     });
-    // Shared machinery for the deterministic post-review gates below
-    // (citation-presence gate, assembly audit).
-    // Each gate gets at most one repair per part: a targeted answer-repair
-    // call whose patch is re-validated and independently re-reviewed before
-    // anything from it may ship. All of these calls count against the call
-    // budget like every other stage.
-    const buildClaimRepairPayload=(item,{targets,addCoverage,supportIssues,extraClaims=[]})=>{
-      const planPart=item.part;
-      const linkedIds=(planPart.candidateSourceIds||[]).filter(id=>pageById.has(id));
-      // The repair needs spans from every source supplied for the part, not
-      // only the ones the draft happened to cite, so harvest the packet
-      // evidence through a synthetic checked part that cites them all; only
-      // its evidence list is used.
-      const harvestPacket=buildReviewPacket([{partId:planPart.id,question:planPart.question,
-        answers:item.answers.map(answer=>({...answer,sourceIds:linkedIds}))}],
-        {sources,pageById,plan,question});
-      const reviewedPart=review?.parts.find(part=>part.partId===planPart.id);
-      const initialReviewFor=claimId=>(review?.reviewDecisions||[])
-        .filter(decision=>decision.claimId===claimId)
-        .map(decision=>({sourceId:decision.sourceId,status:decision.sourceStatus,
-          accepted:decision.accepted===true,reason:decision.validationReason||null,
-          evidenceRole:decision.evidenceRole||'unclear',
-          supportBoundary:decision.supportBoundary||''}));
-      // Batch 25 (B25-Q4): when the citation-presence gate fired, the
-      // payload previously carried only the bare violation reason
-      // ('citation-gate-missing-citation') — nothing told the repair
-      // model that the targeted claims, which the review had accepted
-      // as uncited context, must GAIN a citation, and
-      // ANSWER_REPAIR_PROMPT's citation rule is conditional on a claim
-      // being "source-derived". Production repairs therefore returned
-      // the targeted claims still uncited (candidateCitationCount 0
-      // across all batch-24 firings). The gate path now carries an
-      // explicit directive plus the citable linked source IDs, as
-      // payload data — the prompt's general text is unchanged.
-      const citationGateIssue=(supportIssues||[])
-        .some(issue=>issue?.reason==='citation-gate-missing-citation');
-      return {question,parts:[{partId:planPart.id,question:planPart.question,
-        requirements:planPart.requirements||[],
-        directAnswerClaimIds:reviewedPart?.directAnswerClaimIds||[],
-        repair:{replaceClaimIds:targets,addCoverage,missingRequirements:[],supportIssues,
-          ...(citationGateIssue?{
-            citationDirective:'CITATION REQUIRED: this part failed the citation-presence check. Every replacement for a targeted claim MUST cite at least one source from linkedSourceIds, using that source\'s [S#] marker, placed so the citation supports the replacement sentence. A replacement without one of these citations does not repair this part.',
-            linkedSourceIds:linkedIds}:{})},
-        claims:[...item.answers.map(answer=>({claimId:answer.claimId,text:answer.text,
-          citedSourceIds:answer.sourceIds||[],targeted:targets.includes(answer.claimId),
-          initialReview:initialReviewFor(answer.claimId)})),...extraClaims],
-        evidence:harvestPacket.reviewParts[0]?.evidence||[]}],
-        directAnswerClaimIds:reviewedPart?.directAnswerClaimIds||[]};
-    };
-    const parseClaimRepairPatches=(response,{partId,targets,restorableIds=[],
-      requireAllTargets=true,allowAdditions=false,onStep=()=>{}})=>{
-      onStep('response-json-parse');
-      const parsed=parseAnswerRepairJson(response);
-      const rawResponse=typeof response==='string'?response:
-        typeof response?.response==='string'?response.response:JSON.stringify(response||{});
-      const replacements=(Array.isArray(parsed?.parts)?parsed.parts:[])
-        .flatMap(part=>Array.isArray(part?.replacements)?part.replacements:[]);
-      const allowedReplacementFields=new Set(['claimId','text']);
-      const allowedPartFields=new Set(['partId','replacements','additions']);
-      const responseShape={responseBytes:Buffer.byteLength(rawResponse,'utf8'),
-        partCount:Array.isArray(parsed?.parts)?parsed.parts.length:0,
-        replacementCount:replacements.length,
-        duplicateClaimIdKeyCount:Math.max(0,
-          (rawResponse.match(/"claimId"\s*:/gu)||[]).length-replacements.length),
-        unexpectedPartFields:[...new Set((parsed?.parts||[]).flatMap(part=>
-          Object.keys(part||{}).filter(key=>!allowedPartFields.has(key))))].slice(0,8),
-        unexpectedReplacementFields:[...new Set(replacements.flatMap(replacement=>
-          Object.keys(replacement||{}).filter(key=>!allowedReplacementFields.has(key))))].slice(0,8)};
-      onStep('response-shape-analysis',responseShape);
-      onStep('patch-schema-validation');
-      const patchPart=Array.isArray(parsed?.parts)&&parsed.parts.length===1?
-        parsed.parts[0]:null;
-      const additions=Array.isArray(patchPart?.additions)?patchPart.additions:[];
-      if(!patchPart||String(patchPart?.partId||'').toUpperCase()!==partId||
-         !Array.isArray(patchPart?.replacements)||
-         Object.keys(patchPart).some(key=>!['partId','replacements','additions'].includes(key)))
-        throw new ModelFormatError('answer-repair','Gate repair returned an invalid part patch.','answer-repair-invalid');
-      if(!allowAdditions&&additions.length)
-        throw new ModelFormatError('answer-repair','Gate repair returned unrequested additions.','answer-repair-invalid');
-      const allowed=new Set([...targets,...restorableIds]);
-      const replacementById=new Map();
-      for(const replacement of patchPart.replacements){
-        const claimId=String(replacement?.claimId||'').toUpperCase();
-        const text=typeof replacement?.text==='string'?replacement.text.trim():'';
-        if(!allowed.has(claimId)||replacementById.has(claimId)||
-           !text||text.length>8000||/[\r\n]/u.test(text)||
-           Object.keys(replacement).some(key=>!['claimId','text'].includes(key))||
-           splitCitedSentenceUnits(text).length!==1)
-          throw new ModelFormatError('answer-repair','Gate repair returned an invalid claim patch.','answer-repair-invalid');
-        replacementById.set(claimId,text);
-      }
-      if(requireAllTargets&&targets.some(claimId=>!replacementById.has(claimId)))
-        throw new ModelFormatError('answer-repair','Gate repair omitted a targeted claim.','answer-repair-invalid');
-      const additionTexts=additions.map(text=>typeof text==='string'?text.trim():'');
-      if(additionTexts.some(text=>!text||text.length>8000||/[\r\n]/u.test(text)||
-         splitCitedSentenceUnits(text).length!==1))
-        throw new ModelFormatError('answer-repair','Gate repair returned an invalid addition.','answer-repair-invalid');
-      return {replacements:replacementById,additions:additionTexts};
-    };
-    // Run one gate repair for a part and return the validated candidate part;
-    // throws when the repair is unusable, unchanged, or rejected by the
-    // caller's candidate check. Callers decide adoption after re-review.
-    const repairPartCandidate=async(item,{targets,supportIssues,addCoverage=false,
-      extraClaims=[],restorableIds=[],requireAllTargets=true,allowAdditions=false,
-      applyPatches,validateCandidate,phase='gate-repair'})=>{
-      const planPart=item.part;
-      // Batch 25 (B25-L2): every gate-phase repair routes through
-      // this choke point, so the cross-phase cap is enforced here.
-      // The refusal is an ordinary ModelFormatError: each gate's
-      // existing catch records it as a repair refusal and proceeds
-      // with the unrepaired state.
-      if(repairCycleCapReached(planPart.id)){
-        recordSkippedRepairCycle(planPart.id,phase);
-        const capError=new ModelFormatError('answer-repair',
-          'Part has reached the cross-phase repair-cycle cap.','repair-cycle-cap');
-        capError.repairCycleCap={partId:planPart.id,phase};
-        throw capError;
-      }
-      const singlePlan={...plan,parts:[planPart]};
-      let repairStep='repair-payload-build',repairPayload=null,repairResponseShape=null;
-      const inputShape=()=>({partId:planPart.id,targetCount:targets.length,
-        answerCount:item.answers.length,linkedSourceCount:(planPart.candidateSourceIds||[]).length,
-        repairPayloadBytes:repairPayload?Buffer.byteLength(JSON.stringify(repairPayload),'utf8'):null});
-      try{
-        repairPayload=buildClaimRepairPayload(item,
-          {targets,addCoverage,supportIssues,extraClaims});
-        repairStep='provider-call';
-        const patches=await run('answer-repair',ANSWER_REPAIR_PROMPT,repairPayload,response=>
-          parseClaimRepairPatches(response,{partId:planPart.id,targets,restorableIds,
-            requireAllTargets,allowAdditions,onStep:(step,shape)=>{
-              repairStep=step;if(shape)repairResponseShape=shape;}}),
-          {partId:planPart.id,optional:true});
-        repairStep='patch-application';
-        const repairedAnswers=applyPatches(patches);
-        repairStep='candidate-validation';
-        const repairedChecked=validatePartAnswers(
-          [{partId:planPart.id,text:renderAnswerParagraphs(repairedAnswers)}],
-          sources,singlePlan,question);
-        const candidate=repairedChecked.parts[0];
-        repairStep='candidate-usability-check';
-        if(!candidate?.answers.length||
-           !repairAnswerChanged([{partId:planPart.id,answers:item.answers}],repairedChecked.parts))
-          throw new ModelFormatError('answer-repair','Gate repair produced no usable changed answer.','answer-repair-invalid');
-        repairStep='citation-candidate-check';
-        if(validateCandidate){
-          const candidateCheck=validateCandidate(candidate);
-          if(candidateCheck===false||candidateCheck?.valid===false){
-            const error=new ModelFormatError('answer-repair',
-              'Gate repair did not resolve the targeted violation.','answer-repair-invalid');
-            if(candidateCheck&&typeof candidateCheck==='object'&&candidateCheck.diagnostics)
-              error.citationGateCandidateCheck=candidateCheck.diagnostics;
-            throw error;
-          }
-        }
-        // Batch 25 (B25-L2): a validated candidate means this part
-        // has consumed a repair cycle; it is finalized in
-        // adoptRepairedPart (adopted) or flushed unadopted at the
-        // end of the build.
-        pendingRepairCycles.set(planPart.id,
-          {phase,before:repairOutcomeSignature(item)});
-        return candidate;
-      }catch(error){
-        if(error&&typeof error==='object'){
-          error.citationGateFailureStep=error.citationGateFailureStep||repairStep;
-          error.citationGateInputShape=error.citationGateInputShape||inputShape();
-          if(repairResponseShape)error.citationGateResponseShape=repairResponseShape;
-        }
-        throw error;
-      }
-    };
-    // Batch 8 (B8-5): parts whose shipped content rests on a gate
-    // re-review rather than on the initial review's part decision; the
-    // coverage check below counts them as covered by that re-review.
-    const reReviewedAdoptedPartIds=new Set();
-    // Batch 25 (B25-L1): delta re-review trace entries, one per
-    // re-review call, written to trace.deltaReReview below.
-    const deltaReReviewTrace=[];
-    const deltaTextKey=text=>String(text||'')
-      .replace(/\[[A-Za-z]+\d+\]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
-    const reReviewPartCandidate=async(item,candidate)=>{
-      const planPart=item.part;
-      const singlePlan={...plan,parts:[planPart]};
-      // Batch 25 (B25-L1): delta re-review. The whole-part re-review
-      // was the single largest review cost in batch 24's stage
-      // profile (median 36.8 s) although a repair typically changes
-      // one or two claims. The re-review packet now contains only
-      // the claims whose normalized text or citation set differs
-      // from the pre-repair part, plus any unchanged claim sharing an
-      // answer sentence with a changed one (adjacent in the same
-      // paragraph, or text-contained). Unchanged claims keep their
-      // prior decisions: the merged result is assembled at the
-      // decisions level and the part-level fields are recomputed over
-      // the FULL claim set with the same derivation the normal path
-      // uses (derivePartStatuses / deriveDirectAnswerCovered), so no
-      // verdict is dropped and no part field describes only the delta
-      // subset. When every claim changed (or none did), the full
-      // re-review runs as before.
-      // Batch 26 (B26-3): claim identity across the re-segmentation
-      // is TEXTUAL, not positional. B25-L1 compared prior and
-      // candidate by array index because the candidate is
-      // re-segmented with fresh positional IDs (B9-5); batch 25's
-      // production traces showed 30 of 41 re-review decisions
-      // misaligned whenever a repair shifted the segmentation (a
-      // heading split from its bullet, a claim merged or re-inserted)
-      // — verdicts attached to the wrong texts while every trace
-      // layer reported the lost claims shipped. Candidate and prior
-      // claims are now matched by normalized-text identity: an exact
-      // normalized match, or containment of the shorter text in the
-      // longer at a length ratio of at least 0.6 (and at least 24
-      // normalized characters, so short generic sentences cannot
-      // match by containment). A candidate matching more than one
-      // prior, or a prior matching more than one candidate, makes the
-      // mapping ambiguous and the part falls back to the whole-part
-      // re-review below rather than merging positionally. Unmapped
-      // candidates are new claims (always re-reviewed); unmapped
-      // priors are removed claims. The mapping is recorded in the
-      // delta trace so a re-review decision's claimId can always be
-      // reconciled to the text it judged.
-      const priorAnswers=item.answers||[];
-      const candidateAnswers=candidate.answers||[];
-      const citationKey=answer=>[...new Set(answer.sourceIds||[])].sort().join(',');
-      const candidateKeys=candidateAnswers.map(answer=>deltaTextKey(answer.text));
-      const priorKeys=priorAnswers.map(answer=>deltaTextKey(answer.text));
-      const identityMatch=(candidateKey,priorKey)=>{
-        if(!candidateKey||!priorKey)return false;
-        if(candidateKey===priorKey)return true;
-        const shorter=Math.min(candidateKey.length,priorKey.length);
-        const longer=Math.max(candidateKey.length,priorKey.length);
-        if(shorter<24)return false;
-        return shorter/longer>=0.6&&
-          (candidateKey.includes(priorKey)||priorKey.includes(candidateKey));
-      };
-      const candidateToPrior=new Map(),priorToCandidate=new Map();
-      let ambiguousMapping=false;
-      candidateAnswers.forEach((_,candidateIndex)=>{
-        const matches=[];
-        priorAnswers.forEach((_,priorIndex)=>{
-          if(identityMatch(candidateKeys[candidateIndex],priorKeys[priorIndex]))
-            matches.push(priorIndex);
-        });
-        if(matches.length>1)ambiguousMapping=true;
-        else if(matches.length===1)candidateToPrior.set(candidateIndex,matches[0]);
-      });
-      priorAnswers.forEach((_,priorIndex)=>{
-        const matches=[];
-        candidateAnswers.forEach((_,candidateIndex)=>{
-          if(identityMatch(candidateKeys[candidateIndex],priorKeys[priorIndex]))
-            matches.push(candidateIndex);
-        });
-        if(matches.length>1)ambiguousMapping=true;
-        else if(matches.length===1)priorToCandidate.set(priorIndex,matches[0]);
-      });
-      for(const [candidateIndex,priorIndex] of candidateToPrior)
-        if(priorToCandidate.get(priorIndex)!==candidateIndex)ambiguousMapping=true;
-      const claimMapping=candidateAnswers.map((answer,candidateIndex)=>({
-        candidateClaimId:answer.claimId,
-        priorClaimId:candidateToPrior.has(candidateIndex)?
-          priorAnswers[candidateToPrior.get(candidateIndex)].claimId:null}));
-      const newClaimIds=candidateAnswers
-        .filter((_,index)=>!candidateToPrior.has(index)).map(answer=>answer.claimId);
-      const removedClaimIds=priorAnswers
-        .filter((_,index)=>!priorToCandidate.has(index)).map(answer=>answer.claimId);
-      const priorClaimIdToCandidateClaimId=new Map();
-      for(const [candidateIndex,priorIndex] of candidateToPrior)
-        priorClaimIdToCandidateClaimId.set(priorAnswers[priorIndex].claimId,
-          candidateAnswers[candidateIndex].claimId);
-      const changedIndexes=new Set();
-      candidateAnswers.forEach((answer,index)=>{
-        const priorIndex=candidateToPrior.get(index);
-        if(priorIndex===undefined){changedIndexes.add(index);return;}
-        const prior=priorAnswers[priorIndex];
-        if(deltaTextKey(answer.text)!==deltaTextKey(prior.text)||
-           citationKey(answer)!==citationKey(prior))
-          changedIndexes.add(index);
-      });
-      candidateAnswers.forEach((answer,index)=>{
-        if(changedIndexes.has(index))return;
-        const ownText=deltaTextKey(answer.text);
-        for(const other of changedIndexes){
-          const changed=candidateAnswers[other];
-          if(!changed)continue;
-          const sameParagraph=(changed.paragraphIndex??0)===(answer.paragraphIndex??0)&&
-            Math.abs(other-index)===1;
-          const changedText=deltaTextKey(changed.text);
-          if(sameParagraph||(ownText&&changedText&&
-             (changedText.includes(ownText)||ownText.includes(changedText)))){
-            changedIndexes.add(index);break;
-          }
-        }
-      });
-      const deltaClaimIds=candidateAnswers
-        .filter((_,index)=>changedIndexes.has(index)).map(answer=>answer.claimId);
-      const carriedClaimIds=candidateAnswers
-        .filter((_,index)=>!changedIndexes.has(index)).map(answer=>answer.claimId);
-      // Batch 26 (B26-3): carried claims are keyed in the merge by
-      // their PRIOR claim IDs (the namespace their decisions and
-      // accepted answers live in) and translated to candidate IDs
-      // only when the merged record is written.
-      const carriedPriorClaimIds=new Set();
-      candidateAnswers.forEach((_,index)=>{
-        if(!changedIndexes.has(index))
-          carriedPriorClaimIds.add(priorAnswers[candidateToPrior.get(index)].claimId);
-      });
-      const useDelta=!ambiguousMapping&&deltaClaimIds.length>0&&carriedClaimIds.length>0;
-      if(!useDelta){
-        const packet=buildReviewPacket([candidate],{sources,pageById,plan:singlePlan,question,
-          priorRejectionsByPart:priorRejectionsByPart()});
-        const rawReview=await runReReviewWithSplitFallback(packet,
-          {partId:planPart.id,optional:true});
-        const reReview=normalizeReview(rawReview,singlePlan,[candidate],sources,
-          packet.reviewSpanMapsByPart,question,packet.reviewClaims,[],archiveEntriesByPart(),
-          composerPacketSpansByPart);
-        reReview.deltaReview={deltaClaimIds:candidateAnswers.map(answer=>answer.claimId),
-          carriedClaimIds:[],claimMapping,newClaimIds,removedClaimIds,
-          ...(ambiguousMapping?{mappingFallback:'ambiguous-claim-mapping'}:{})};
-        deltaReReviewTrace.push({partId:planPart.id,...reReview.deltaReview});
-        // Batch 8 (B8-2): a gate re-review is a review round like any
-        // other; its rejections join the archive before containment runs.
-        archiveRoundRejections(reReview,[candidate]);
-        return {reReview,rePart:reReview.parts[0]};
-      }
-      const deltaCandidate={...candidate,
-        answers:candidateAnswers.filter((_,index)=>changedIndexes.has(index))};
-      const packet=buildReviewPacket([deltaCandidate],{sources,pageById,plan:singlePlan,question,
-        priorRejectionsByPart:priorRejectionsByPart()});
-      const rawReview=await runReReviewWithSplitFallback(packet,
-        {partId:planPart.id,optional:true,kind:'delta'});
-      const deltaReview=normalizeReview(rawReview,singlePlan,[deltaCandidate],sources,
-        packet.reviewSpanMapsByPart,question,packet.reviewClaims,[],archiveEntriesByPart(),
-        composerPacketSpansByPart);
-      const deltaPart=deltaReview.parts[0];
-      // Merge at the decisions level: carried claims keep the
-      // decisions of record (the part's adopted re-review decisions
-      // when it was repaired before, else the main review's).
-      // Batch 26 (B26-3): carried records live in the PRIOR claim-ID
-      // namespace. They are selected by prior ID and rewritten to the
-      // candidate ID of the claim they map to, so the merged part is
-      // uniformly in the candidate namespace and no record is ever
-      // selected by a positional coincidence of IDs.
-      const priorDecisions=(item.reReviewDecisions?.length?
-        item.reReviewDecisions:(review?.reviewDecisions||[]))
-        .filter(decision=>decision.partId===planPart.id);
-      const mergedDecisions=[
-        ...priorDecisions.filter(decision=>carriedPriorClaimIds.has(decision.claimId))
-          .map(decision=>({...decision,
-            claimId:priorClaimIdToCandidateClaimId.get(decision.claimId)||
-              decision.claimId})),
-        ...(deltaReview.reviewDecisions||[])];
-      const priorReviewPart=review?.parts.find(part=>part.partId===planPart.id);
-      const carriedAnswerById=new Map(),carriedEvidenceById=new Map();
-      for(const answer of priorReviewPart?.answers||[])
-        if(carriedPriorClaimIds.has(answer.claimId))carriedAnswerById.set(answer.claimId,answer);
-      for(const entry of priorReviewPart?.evidence||[])
-        if(carriedPriorClaimIds.has(entry.claimId))carriedEvidenceById.set(entry.claimId,entry);
-      if(item.reReviewDecisions?.length){
-        // The part was adopted from an earlier re-review: its shipped
-        // answers/evidence are the newer record for carried claims.
-        for(const answer of item.answers||[])
-          if(carriedPriorClaimIds.has(answer.claimId))carriedAnswerById.set(answer.claimId,answer);
-        for(const entry of item.evidence||[])
-          if(carriedPriorClaimIds.has(entry.claimId))carriedEvidenceById.set(entry.claimId,entry);
-      }
-      const deltaAnswerById=new Map((deltaPart?.answers||[])
-        .map(answer=>[answer.claimId,answer]));
-      const deltaEvidenceByClaim=new Map();
-      for(const entry of deltaPart?.evidence||[]){
-        const list=deltaEvidenceByClaim.get(entry.claimId)||[];
-        list.push(entry);deltaEvidenceByClaim.set(entry.claimId,list);
-      }
-      const mergedAnswers=[],mergedEvidence=[];
-      for(const [candidateIndex,answer] of candidateAnswers.entries()){
-        // Batch 26 (B26-3): a changed claim takes the delta review's
-        // record (candidate namespace); a carried claim takes the
-        // prior record for the claim it MAPS to, rewritten to the
-        // candidate ID — never the record whose ID merely coincides
-        // with the candidate's position.
-        if(changedIndexes.has(candidateIndex)){
-          const accepted=deltaAnswerById.get(answer.claimId);
-          if(accepted)mergedAnswers.push(accepted);
-          mergedEvidence.push(...(deltaEvidenceByClaim.get(answer.claimId)||[]));
-        }else{
-          const priorClaimId=priorAnswers[candidateToPrior.get(candidateIndex)].claimId;
-          const carried=carriedAnswerById.get(priorClaimId);
-          if(carried)mergedAnswers.push({...carried,claimId:answer.claimId});
-          const carriedEvidence=carriedEvidenceById.get(priorClaimId);
-          if(carriedEvidence)mergedEvidence.push({...carriedEvidence,
-            claimId:answer.claimId});
-        }
-      }
-      const acceptedClaimIds=new Set(mergedAnswers.map(answer=>answer.claimId));
-      const candidateClaimIds=new Set(candidateAnswers.map(answer=>answer.claimId));
-      const rawDeltaPart=(Array.isArray(rawReview?.parts)?rawReview.parts:[])
-        .find(entry=>String(entry?.partId||'')===planPart.id);
-      const priorPartDecision=(review?.partDecisions||[])
-        .find(entry=>entry.partId===planPart.id);
-      const directAnswerIds=[...new Set([
-        ...(priorPartDecision?.directAnswerClaimIds||[])
-          .map(id=>priorClaimIdToCandidateClaimId.get(id)).filter(Boolean),
-        ...(rawDeltaPart?.directAnswerClaimIds||[]).map(String)])]
-        .filter(id=>candidateClaimIds.has(id));
-      const acceptedDirectAnswerIds=directAnswerIds
-        .filter(id=>acceptedClaimIds.has(id));
-      // The pre-repair invalid direct-answer nominations survive in
-      // the main review's support issues (the raw review object is
-      // scoped to the review phase and not visible here); the delta
-      // review contributes any nomination outside the candidate set.
-      const invalidDirectAnswerClaimIds=[...new Set([
-        ...(review?.supportIssues||[])
-          .filter(issue=>issue.partId===planPart.id&&
-            issue.reason==='invalid-direct-answer-claim-id'&&issue.claimId)
-          .map(issue=>issue.claimId),
-        ...(rawDeltaPart?.directAnswerClaimIds||[]).map(String)
-          .filter(id=>!candidateClaimIds.has(id))])];
-      let requirementCoverage,requirementsComplete;
-      if((planPart.requirements||[]).length){
-        requirementCoverage=planPart.requirements.map(requirement=>{
-          const priorCoverage=(priorPartDecision?.requirementCoverage||[])
-            .find(entry=>entry.requirementId===requirement.id);
-          const deltaCoverage=(rawDeltaPart?.requirementCoverage||[])
-            .find(entry=>entry.requirementId===requirement.id);
-          const mapped=[...new Set([
-            ...(priorCoverage?.answerClaimIds||[])
-              .map(id=>priorClaimIdToCandidateClaimId.get(id)).filter(Boolean),
-            ...(deltaCoverage?.answerClaimIds||[]).map(String)])]
-            .filter(id=>candidateClaimIds.has(id));
-          const mappedAccepted=mapped.filter(id=>acceptedClaimIds.has(id));
-          const reviewerAnswered=priorCoverage?.status==='answered'||
-            deltaCoverage?.status==='answered';
-          const status=reviewerAnswered&&mappedAccepted.length?'answered':
-            mappedAccepted.length?'partial':
-            (priorCoverage?.status==='unanswered'||
-             deltaCoverage?.status==='unanswered')?'unanswered':'partial';
-          return {requirementId:requirement.id,text:requirement.text,status,
-            answerClaimIds:mappedAccepted};
-        });
-        requirementsComplete=requirementCoverage
-          .every(entry=>entry.status==='answered');
-        const requirementClaimIds=new Map();
-        for(const coverage of requirementCoverage)
-          for(const claimId of coverage.answerClaimIds){
-            const ids=requirementClaimIds.get(claimId)||[];
-            ids.push(coverage.requirementId);
-            requirementClaimIds.set(claimId,ids);
-          }
-        for(const answer of mergedAnswers)
-          answer.requirementIds=[...new Set(requirementClaimIds.get(answer.claimId)||[])];
-        for(const selection of mergedEvidence){
-          const ids=requirementClaimIds.get(selection.claimId)||[];
-          if(ids.length)selection.requirementIds=[...new Set(ids)];
-          else delete selection.requirementIds;
-        }
-      }
-      const comparisonComplete=comparisonReviewEvidenceComplete(planPart,plan,
-        sources,mergedEvidence);
-      // Batch 30 (B30-2): the derivation itself is shared with
-      // normalizeReview and the rescue recompute through
-      // derivePartContract; this site's input rules (the prior/delta
-      // ID remapping above, its coverage status rule) are unchanged.
-      const contract=derivePartContract({
-        reviewerStatus:rawDeltaPart?.status||priorPartDecision?.reviewerStatus,
-        reviewerAnswerStatus:rawDeltaPart?.answerStatus||
-          priorPartDecision?.reviewerAnswerStatus,
-        directAnswerIds,invalidDirectAnswerClaimIds,
-        acceptedClaimIds,acceptedCount:mergedAnswers.length,
-        requirementCoverage:requirementCoverage||null,comparisonComplete});
-      const directAnswerCovered=contract.directAnswerCovered;
-      const derived=contract;
-      const deltaScaffolding=deltaPart?.reviewScaffolding||[];
-      const deltaScaffoldingIds=new Set(deltaScaffolding.map(entry=>entry.claimId));
-      const mergedScaffolding=[
-        ...(priorReviewPart?.reviewScaffolding||[])
-          .filter(entry=>carriedPriorClaimIds.has(entry.claimId)&&
-            !deltaScaffoldingIds.has(
-              priorClaimIdToCandidateClaimId.get(entry.claimId)))
-          .map(entry=>({...entry,
-            claimId:priorClaimIdToCandidateClaimId.get(entry.claimId)||entry.claimId,
-            supportClaimIds:(entry.supportClaimIds||[])
-              .map(id=>priorClaimIdToCandidateClaimId.get(id)).filter(Boolean)})),
-        ...deltaScaffolding];
-      const mergedPart={partId:planPart.id,status:derived.status,
-        answerStatus:derived.answerStatus,answers:mergedAnswers,
-        evidence:mergedEvidence,
-        ...(requirementCoverage?{requirementCoverage,requirementsComplete}:{}),
-        directAnswerClaimIds:directAnswerIds,
-        acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,
-        invalidDirectAnswerClaimIds,directAnswerCovered,
-        reviewScaffolding:mergedScaffolding,
-        scaffoldingInvalidLinks:(priorReviewPart?.scaffoldingInvalidLinks||0)+
-          (deltaPart?.scaffoldingInvalidLinks||0),
-        scaffoldingInvalidLinkDetails:[
-          ...(priorReviewPart?.scaffoldingInvalidLinkDetails||[])
-            .filter(entry=>carriedPriorClaimIds.has(entry.claimId)),
-          ...(deltaPart?.scaffoldingInvalidLinkDetails||[])]};
-      const mergedPartDecision={partId:planPart.id,
-        reviewerStatus:rawDeltaPart?.status||priorPartDecision?.reviewerStatus||'unanswered',
-        finalStatus:derived.status,
-        reviewerAnswerStatus:rawDeltaPart?.answerStatus||
-          priorPartDecision?.reviewerAnswerStatus||'unanswered',
-        finalAnswerStatus:derived.answerStatus,
-        ...(requirementCoverage?{requirementsComplete,requirementCoverage}:{}),
-        directAnswerClaimIds:directAnswerIds,
-        acceptedDirectAnswerClaimIds:acceptedDirectAnswerIds,directAnswerCovered};
-      const reReview={parts:[mergedPart],issues:deltaReview.issues,
-        warnings:deltaReview.warnings||[],
-        supportIssues:[
-          ...(review?.supportIssues||[]).filter(issue=>
-            issue.partId===planPart.id&&issue.claimId&&
-            carriedPriorClaimIds.has(issue.claimId))
-            .map(issue=>({...issue,
-              claimId:priorClaimIdToCandidateClaimId.get(issue.claimId)||
-                issue.claimId})),
-          ...(deltaReview.supportIssues||[])],
-        recovered:deltaReview.recovered||[],
-        reviewDecisions:mergedDecisions,partDecisions:[mergedPartDecision],
-        deltaReview:{deltaClaimIds,carriedClaimIds,claimMapping,
-          newClaimIds,removedClaimIds}};
-      deltaReReviewTrace.push({partId:planPart.id,deltaClaimIds,carriedClaimIds,
-        claimMapping,newClaimIds,removedClaimIds});
-      // Batch 8 (B8-2): as above — the merged round's rejections join
-      // the archive before containment runs (the archive dedups
-      // carried claims by part + normalized text).
-      archiveRoundRejections(reReview,[candidate]);
-      return {reReview,rePart:mergedPart};
-    };
-    const adoptRepairedPart=(item,rePart,reReview)=>{
-      item.answers=rePart.answers;
-      item.evidence=rePart.evidence;
-      item.status=rePart.status;
-      item.answerStatus=rePart.answerStatus;
-      // Batch 8 (B8-1): the re-review's own scaffolding decisions govern
-      // the shipped part.
-      item.reviewScaffolding=rePart.reviewScaffolding||[];
-      item.scaffoldingInvalidLinks=rePart.scaffoldingInvalidLinks||0;
-      item.scaffoldingInvalidLinkDetails=rePart.scaffoldingInvalidLinkDetails||[];
-      // Batch 9 (B9-5): keep the re-review's claim decisions as the
-      // shipped part's acceptance record. The repair candidate was
-      // re-segmented with fresh positional claim IDs, so these decisions
-      // — keyed to the FINAL shipped IDs — are the only trace that the
-      // adopted claims were ever reviewed; discarding them is how
-      // batch 8 shipped a cited claim with zero review records under a
-      // verified outcome (the idea-of-progress P4-C6 shape).
-      if(reReview)item.reReviewDecisions=reReview.reviewDecisions||[];
-      // Batch 34 (B34-1 layer 2): the re-review's layer-1 framing
-      // rescues are the shipped part's restore pool for the assembly
-      // antecedent guard, keyed to this part exactly as its
-      // decisions are.
-      if(reReview)item.framingRescues=reReview.framingRescues||[];
-      // (Plan parts carry `id`; this previously added item.part.partId —
-      // undefined — so the adopted set never matched a part. B9-5.)
-      reReviewedAdoptedPartIds.add(item.part.id);
-      if(rePart.requirementCoverage){
-        item.requirementCoverage=rePart.requirementCoverage;
-        item.requirementsComplete=rePart.requirementsComplete===true;
-      }
-      // Batch 25 (B25-L2): finalize the pending repair cycle now
-      // that the part's shipped state reflects the re-review.
-      const pendingCycle=pendingRepairCycles.get(item.part.id);
-      if(pendingCycle){
-        pendingRepairCycles.delete(item.part.id);
-        recordRepairCycle(item.part.id,pendingCycle.phase,
-          repairOutcomeSignature(item)!==pendingCycle.before);
-      }
-    };
-    // Batch 5 (L3): gate-phase consolidation. The three deterministic gates
-    // below used to each run their own repair + re-review cycle for the same
-    // part when several fired in sequence (worst case ~180 s of stacked
-    // cycles). A part now gets at most ONE repair cycle across the whole
-    // gate phase: the first gate that repairs a part consumes its cycle,
-    // and later gates evaluate the repaired result as-is. Every consumption
-    // is recorded in trace.gateRepairCycles.
-    const gateRepairCycles=[];
-    const gateRepairConsumed=new Set();
-    // Citation-presence gate. A source-based part can survive review with no
-    // citations at all when the composer writes uncited prose and the reviewer
-    // accepts it as general context (run #42's Dostoevsky case): the part then
-    // ships as fully supported although nothing in it is actually sourced.
-    // Catch that here, once the final parts are known: one targeted repair
-    // tries to restore citations from the part's supplied sources and the
-    // repair is independently re-reviewed; a part that still has no linked
-    // citation is downgraded to partial instead of shipping as supported.
-    // General-context parts and parts with no linked sources are exempt.
-    // Batch 11 (B11-4): the trigger no longer requires status 'answered'.
-    // Batch 10's field shape is a part that is partial precisely BECAUSE
-    // review dropped its citations (claim-source-not-supported) while its
-    // retained context prose ships — the answered-only trigger excluded
-    // exactly the population the gate exists for. Any part with shipped
-    // answers, a linked source, and no rendered citation to a linked
-    // source is now a candidate; everything downstream (harvest, repair,
-    // citation floor, re-review, adoption, the partial disposition on
-    // failure) is unchanged. Entries record preGateStatus so widened
-    // firings stay countable separately from the original population.
-    const citationGateEntries=[];
-    const gateCandidates=parts.filter(item=>{
-      if(!item.answers.length||item.part.sourceRequired!==true)return false;
-      const linkedIds=(item.part.candidateSourceIds||[]).filter(id=>pageById.has(id));
-      if(!linkedIds.length)return false;
-      const citedIds=new Set(citationIds(renderAnswerParagraphs(item.answers)));
-      return !linkedIds.some(id=>citedIds.has(id));
-    });
-    if(gateCandidates.length){
-      const applyCitationGate=async(item)=>{
-        const planPart=item.part;
-        const entry={partId:planPart.id,action:'downgraded',
-          preGateStatus:item.status};
-        citationGateEntries.push(entry);
-        const linkedIds=(planPart.candidateSourceIds||[]).filter(id=>pageById.has(id));
-        const targetClaimIds=item.answers.filter(answer=>!answer.sourceIds?.length)
-          .map(answer=>answer.claimId);
-        const targets=targetClaimIds.length?targetClaimIds:
-          item.answers.map(answer=>answer.claimId);
-        let repairedPart=null;
-        try{
-          repairedPart=await repairPartCandidate(item,{
-            targets,phase:'citation-presence',
-            supportIssues:[{partId:planPart.id,reason:'citation-gate-missing-citation'}],
-            applyPatches:({replacements})=>item.answers.map(answer=>{
-              const replacement=replacements.get(answer.claimId);
-              return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
-            }),
-            validateCandidate:candidate=>{
-              const repairedCitedIds=new Set(citationIds(renderAnswerParagraphs(candidate.answers)));
-              const missingLinkedSourceIds=linkedIds.filter(id=>!repairedCitedIds.has(id));
-              // Batch 25 (B25-Q4): the gate's trigger and disposition
-              // only require the part to GAIN a linked citation (a
-              // part still citing nothing linked is downgraded), but
-              // this check demanded a citation to EVERY linked source
-              // — every batch-24 firing failed it with zero candidate
-              // citations recorded against the full linked set.
-              // A candidate is now valid when it cites at least one
-              // linked source and introduces no citation outside the
-              // part's allowed source scope. The diagnostics keep
-              // recording the full missing list (now informational).
-              const allowedIds=new Set((planPart.candidateSourceIds||[]).length?
-                planPart.candidateSourceIds:linkedIds);
-              const citedLinkedCount=linkedIds
-                .filter(id=>repairedCitedIds.has(id)).length;
-              const foreignCitationIds=[...repairedCitedIds]
-                .filter(id=>!allowedIds.has(id));
-              return {valid:citedLinkedCount>0&&!foreignCitationIds.length,
-                diagnostics:{
-                  linkedSourceCount:linkedIds.length,candidateCitationCount:repairedCitedIds.size,
-                  missingLinkedSourceIds}};
-            }});
-        }catch(error){
-          const expectedRefusal=error instanceof ModelFormatError||error?.code==='build-time-budget';
-          const className=String(error?.name||'Error').slice(0,80);
-          const message=String(error?.message||error).replace(/\bBearer\s+\S+/giu,'Bearer [redacted]')
-            .slice(0,240);
-          entry.action=expectedRefusal?'repair-refused':'repair-threw';
-          entry.repairFailure={stage:'answer-repair',errorClass:className,
-            ...(error?.failureCode||error?.code?
-              {code:String(error.failureCode||error.code).slice(0,80)}:{}),
-            failureStep:String(error?.citationGateFailureStep||'unknown').slice(0,80),
-            message,inputShape:error?.citationGateInputShape||{partId:planPart.id},
-            ...(error?.citationGateResponseShape?{responseShape:error.citationGateResponseShape}:{}),
-            ...(error?.citationGateCandidateCheck?
-              {candidateCheck:error.citationGateCandidateCheck}:{})};
-          entry.refusal={stage:'repair',...(error?.failureCode||error?.code?
-            {code:String(error.failureCode||error.code).slice(0,80)}:{}),
-            reason:expectedRefusal?'invalid-repair-candidate':'repair-threw'};
-        }
-        if(repairedPart){
-          try{
-            const {reReview,rePart}=await reReviewPartCandidate(item,repairedPart);
-            const reCitedIds=new Set(citationIds(renderAnswerParagraphs(rePart?.answers||[])));
-            const linkedCitationPresent=linkedIds.some(id=>reCitedIds.has(id));
-            if(!reReview.issues.length&&rePart?.answers.length&&
-               rePart.answerStatus!=='unanswered'&&linkedCitationPresent){
-              adoptRepairedPart(item,rePart,reReview);
-              entry.action='repair-applied';
-            }else{
-              entry.refusal={stage:'re-review',issues:reReview.issues.map(issue=>({
-                code:String(issue?.code||'unknown').slice(0,100),
-                ...(issue?.partId?{partId:String(issue.partId).slice(0,20)}:{}),
-                ...(issue?.claimId?{claimId:String(issue.claimId).slice(0,40)}:{})})),
-                reReviewStatus:rePart?.status||'missing',
-                reReviewAnswerStatus:rePart?.answerStatus||'missing',linkedCitationPresent};
-            }
-          }catch(error){
-            // The repair text exists but could not be independently
-            // re-reviewed; it does not ship, and the part is downgraded.
-            const message=String(error?.message||error).replace(/\bBearer\s+\S+/giu,'Bearer [redacted]').slice(0,200);
-            entry.refusal={stage:'re-review',...(error?.failureCode||error?.code?
-              {code:String(error.failureCode||error.code).slice(0,80)}:{}),
-              issues:[],reReviewStatus:'failed',reReviewAnswerStatus:'unanswered',
-              linkedCitationPresent:false,errorClass:String(error?.name||'Error').slice(0,80),message};
-          }
-        }else if(!entry.refusal){
-          entry.refusal={stage:'repair',reason:'no-validated-candidate'};
-        }
-        if(entry.action!=='repair-applied')item.status='partial';
-        gateRepairCycles.push({partId:planPart.id,gate:'citation-presence'});
-        gateRepairConsumed.add(planPart.id);
-      };
-      await Promise.allSettled(gateCandidates.map(applyCitationGate));
-      const planOrder=new Map(plan.parts.map((part,index)=>[part.id,index]));
-      citationGateEntries.sort((a,b)=>planOrder.get(a.partId)-planOrder.get(b.partId));
-      trace.citationGate=citationGateEntries;
-    }
-    trace.citationGateSummary={firings:citationGateEntries.length,
-      adoptions:citationGateEntries.filter(entry=>entry.action==='repair-applied').length,
-      outcomes:{
-        adopted:citationGateEntries.filter(entry=>entry.action==='repair-applied').length,
-        repairRefused:citationGateEntries.filter(entry=>entry.action==='repair-refused'||
-          entry.refusal?.reason==='no-validated-candidate').length,
-        repairThrew:citationGateEntries.filter(entry=>entry.action==='repair-threw').length,
-        reReviewRefused:citationGateEntries.filter(entry=>entry.refusal?.stage==='re-review').length
-      }};
-    // Batch 29 (B29-4): the claim-level citation gate that used
-    // to run here was deleted — its trace field was emitted in
-    // 0 of 128 audited cases (one lifetime firing in 27 runs at
-    // the batch-11 anchor), and the assembly coverage audit
-    // below remains the deterministic post-review guard for
-    // accepted claims that fail to reach the reader.
-    // Assembly coverage audit. The review contract can accept a claim that
-    // then never reaches the reader — markdown normalization can drop its
-    // line during rendering — and an answer can end mid-structure in ways
-    // the legacy unfinished-ending check does not cover. Audit the assembled
-    // parts against the contract before the answer is finalized: every
-    // accepted direct-answer claim must be represented in the final text
-    // (its linked citation marker in the part's segment, or its own text),
-    // and the answer must not end mid-structure. One repair round runs for
-    // the affected parts; violations that persist downgrade the affected
-    // parts to partial so completeness is never reported as full over a
-    // known gap. The legacy unfinished-ending failure below still supersedes
-    // for endings it covers when no repair could fix them.
-    if(review&&!reviewFailure){
-      // Segments are judged after markdown normalization, exactly as they
-      // will ship: normalization can drop a claim's line, and a claim that
-      // does not survive it is not represented however the draft looked.
-      const segmentOf=item=>normalizeAnswerMarkdown(renderAnswerParagraphs(item.answers));
-      const includedNow=()=>parts.filter(item=>
-        item.answerStatus!=='unanswered'&&item.answers.length);
-      const draftAnswersFor=partId=>
-        validatedAnswers.find(part=>part.partId===partId)?.answers||[];
-      const claimTextFor=(partId,claimId)=>
-        draftAnswersFor(partId).find(answer=>answer.claimId===claimId)?.text||
-        (review.reviewDecisions||[]).find(decision=>
-          decision.partId===partId&&decision.claimId===claimId)?.claimText||'';
-      // Batch 5 (C): assembly seam scan. Beyond missing claims and bad
-      // endings, the shipped text can carry assembly seams the batch-4
-      // audit never looked for: unbalanced ** on a prose line (a broken
-      // bold fragment — markdown normalization silently deletes such lines
-      // only in lists, so in prose they ship as-is), a raw span ID token
-      // (S1-Q3 shape) leaking into prose, and a heading line repeated
-      // verbatim (a spliced duplicate). List lines are exempt from the
-      // bold check, mirroring normalizeAnswerMarkdown's own list handling.
-      // Batch 6 (B6-5) adds the splice artifacts phase 2 shipped unflagged:
-      // list markers spliced into a paragraph line, a colon line that ends
-      // a part without the list it announced, and a part opening on a
-      // lowercase fragment.
-      // Batch 6 (B6-5): a list marker is legitimate only at the start of a
-      // list line. On a prose line, a marker that follows a completed
-      // sentence — or two markers in the one line — is a bullet spliced
-      // into a paragraph (the phase-2 Machiavelli shape). Emphasis and
-      // bold markers never have whitespace after the marker, so the
-      // marker-plus-space shape does not touch them.
-      const inlineListMarkerSplice=line=>{
-        const trimmed=String(line||'').trim();
-        if(!trimmed||/^(?:[-*•]|\d+[.)])\s+/.test(trimmed))return false;
-        const markers=[...trimmed.matchAll(/[*•](?=\s)/g)]
-          .filter(match=>match.index>0&&/\s/.test(trimmed[match.index-1]));
-        if(markers.length>=2)return true;
-        if(!markers.length)return false;
-        return /[.!?…]["'”’)]?\s$/.test(trimmed.slice(0,markers[0].index));
-      };
-      const seamScan=segment=>{
-        const found=[];
-        const lines=String(segment||'').split('\n');
-        for(const line of lines){
-          const trimmed=line.trim();
-          if(!trimmed||/^(?:[-*•]|\d+[.)])\s+/.test(trimmed))continue;
-          if(((trimmed.match(/\*\*/g)||[]).length)%2===1){
-            found.push('unbalanced-bold');break;
-          }
-        }
-        if(/\bS[1-9]\d*-Q[1-9]\d*\b/.test(segment))found.push('raw-span-id-in-prose');
-        if(lines.some(line=>inlineListMarkerSplice(line)))
-          found.push('inline-list-marker-splice');
-        const contentLines=lines.map(line=>line.trim()).filter(Boolean);
-        // A colon line announces a list; when the next content line is not
-        // a list line — or there is no next line — the assembly delivered
-        // prose instead (batch 6 caught only the segment-final shape; the
-        // phase-2 progress case showed the same artifact mid-segment, the
-        // colon line followed by an ordinary paragraph). Heading and label
-        // lines are not introductions, and a colon line that a real list
-        // follows is legitimate.
-        const isListLine=line=>/^(?:[-*•]|\d+[.)])\s+/.test(line);
-        for(let index=0;index<contentLines.length;index++){
-          const line=contentLines[index];
-          if(!line.endsWith(':')||headingKeyOf(line)||isListLine(line))continue;
-          const next=contentLines[index+1];
-          if(next===undefined||!isListLine(next)){
-            found.push('dangling-list-introduction');break;
-          }
-        }
-        // A verbatim source fragment spliced at a part's head opens
-        // mid-sentence: the first content line (headings and bold labels
-        // excluded) begins with a lowercase letter.
-        const firstContentLine=contentLines.find(line=>
-          !headingKeyOf(line)&&!line.startsWith('**'));
-        if(firstContentLine&&/^[a-z]/.test(firstContentLine))
-          found.push('lowercase-segment-opening');
-        return found;
-      };
-      const headingKeyOf=line=>{
-        const trimmed=String(line||'').trim();
-        if(/^#{1,6}\s+\S/.test(trimmed))return normalizedProseSurface(trimmed);
-        if(/^\*\*[^*\n]{2,100}:\*\*$/.test(trimmed))return normalizedProseSurface(trimmed);
-        return '';
-      };
-      const auditViolations=answerText=>{
-        const violations=[];
-        for(const item of includedNow()){
-          const segment=segmentOf(item);
-          const segmentNormalized=normalizedProseSurface(segment);
-          // Representation is now judged against the claim's OWN part
-          // segment, not the whole answer: the old whole-answer haystack
-          // let one part's text “represent” another part's missing claim.
-          // A claim present before markdown normalization but absent after
-          // it is flagged normalizationDropped — normalization deleted its
-          // line (the known unbalanced-** list-line deletion).
-          const rawSegmentNormalized=normalizedProseSurface(
-            renderAnswerParagraphs(item.answers));
-          for(const type of seamScan(segment))
-            violations.push({partId:item.part.id,type});
-          const decision=(review.partDecisions||[]).find(entry=>entry.partId===item.part.id);
-          if(!decision)continue;
-          const segmentCitations=new Set(citationIds(segment));
-          const linked=acceptedLinkedSourcesByClaim(review.reviewDecisions,item.part.id);
-          for(const claimId of decision.acceptedDirectAnswerClaimIds||[]){
-            const linkedSources=linked.get(claimId);
-            const markerSources=linkedSources&&linkedSources.size?linkedSources:
-              new Set(draftAnswersFor(item.part.id)
-                .find(answer=>answer.claimId===claimId)?.sourceIds||[]);
-            if([...markerSources].some(id=>segmentCitations.has(id)))continue;
-            const claimText=claimTextFor(item.part.id,claimId);
-            if(claimTextAppears(claimText,segmentNormalized))continue;
-            violations.push({partId:item.part.id,claimId,type:'accepted-claim-not-represented',
-              ...(claimTextAppears(claimText,rawSegmentNormalized)?
-                {normalizationDropped:true}:{})});
-          }
-        }
-        const headingOccurrences=new Map();
-        for(const item of includedNow()){
-          const flagged=new Set();
-          for(const line of segmentOf(item).split('\n')){
-            const key=headingKeyOf(line);
-            if(!key)continue;
-            const count=(headingOccurrences.get(key)||0)+1;
-            headingOccurrences.set(key,count);
-            if(count>=2&&!flagged.has(key)){
-              flagged.add(key);
-              violations.push({partId:item.part.id,type:'duplicated-heading',heading:key});
-            }
-          }
-        }
-        if(answerText&&hasAssemblyEndingViolation(answerText)){
-          const lastIncluded=includedNow().at(-1);
-          if(lastIncluded)violations.push({partId:lastIncluded.part.id,type:'unfinished-ending'});
-        }
-        return violations;
-      };
-      const assembleNow=()=>normalizeAnswerMarkdown(
-        includedNow().map(item=>segmentOf(item)).join('\n\n'));
-      const violations=auditViolations(assembleNow());
-      const auditRecord={violations,action:'none'};
-      if(violations.length){
-        auditRecord.action='downgraded';
-        const missingByPart=new Map();
-        for(const violation of violations){
-          if(violation.type!=='accepted-claim-not-represented')continue;
-          const list=missingByPart.get(violation.partId)||[];
-          list.push(violation.claimId);
-          missingByPart.set(violation.partId,list);
-        }
-        const endingPartId=violations.find(violation=>
-          violation.type==='unfinished-ending')?.partId;
-        const affectedPartIds=[...new Set(violations.map(violation=>violation.partId))];
-        let anyAdopted=false;
-        const repairAssemblyPart=async(partId)=>{
-          const item=parts.find(entry=>entry.part.id===partId);
-          if(!item)return;
-          // Batch 5 (L3): a part that already consumed its one gate repair
-          // cycle in an earlier gate keeps its violations (and the honest
-          // downgrade below) instead of stacking a second cycle.
-          if(gateRepairConsumed.has(partId)){
-            (auditRecord.repairSkippedPartIds??=[]).push(partId);
-            return;
-          }
-          gateRepairCycles.push({partId,gate:'assembly-audit'});
-          gateRepairConsumed.add(partId);
-          const missing=missingByPart.get(partId)||[];
-          const isEndingPart=partId===endingPartId;
-          const endingTargets=isEndingPart&&item.answers.length?
-            [item.answers.at(-1).claimId]:[];
-          // Batch 5 (C): seam violations target the claims whose rendered
-          // text carries the seam; a duplicated heading has no single
-          // culprit claim, so the part's last claim (where the repeated
-          // heading sits) is targeted.
-          const seamTypes=[...new Set(violations
-            .filter(violation=>violation.partId===partId&&
-              ['unbalanced-bold','raw-span-id-in-prose','duplicated-heading',
-               'inline-list-marker-splice','dangling-list-introduction',
-               'lowercase-segment-opening']
-                .includes(violation.type))
-            .map(violation=>violation.type))];
-          const duplicatedHeadings=violations
-            .filter(violation=>violation.partId===partId&&
-              violation.type==='duplicated-heading')
-            .map(violation=>violation.heading);
-          let danglingCarrierTargeted=false;
-          const seamTargets=item.answers.filter(answer=>{
-            const rendered=answer.renderedText||answer.text||'';
-            if(seamTypes.includes('unbalanced-bold')&&rendered.split('\n').some(line=>{
-              const trimmed=line.trim();
-              return trimmed&&!/^(?:[-*•]|\d+[.)])\s+/.test(trimmed)&&
-                ((trimmed.match(/\*\*/g)||[]).length)%2===1;
-            }))return true;
-            if(seamTypes.includes('raw-span-id-in-prose')&&
-               /\bS[1-9]\d*-Q[1-9]\d*\b/.test(rendered))return true;
-            if(seamTypes.includes('inline-list-marker-splice')&&
-               rendered.split('\n').some(line=>inlineListMarkerSplice(line)))return true;
-            // Batch 7 (B7-6.1): the dangling introduction can sit in any
-            // claim now that the scan is not limited to the segment's end;
-            // target the claim whose rendered text carries the colon line.
-            if(seamTypes.includes('dangling-list-introduction')&&
-               rendered.split('\n').some(line=>{
-                 const trimmed=line.trim();
-                 return trimmed.endsWith(':')&&!headingKeyOf(trimmed)&&
-                   !/^(?:[-*•]|\d+[.)])\s+/.test(trimmed);
-               })){danglingCarrierTargeted=true;return true;}
-            return false;
-          }).map(answer=>answer.claimId);
-          if(seamTypes.includes('duplicated-heading')&&item.answers.length)
-            seamTargets.push(item.answers.at(-1).claimId);
-          // Batch 6 (B6-5): the dangling introduction sits in the part's
-          // last claim (where the segment ends) and the lowercase opening
-          // in its first claim (where the segment begins); target those
-          // claims the same way a duplicated heading targets the last one.
-          // Batch 7 (B7-6.1): the last claim is now only the fallback, for
-          // a colon line that normalization merged across a claim boundary.
-          if(seamTypes.includes('dangling-list-introduction')&&item.answers.length&&
-             !danglingCarrierTargeted)
-            seamTargets.push(item.answers.at(-1).claimId);
-          if(seamTypes.includes('lowercase-segment-opening')&&item.answers.length)
-            seamTargets.push(item.answers[0].claimId);
-          const targets=[...new Set([...endingTargets,...seamTargets])];
-          const extraClaims=missing.map(claimId=>({
-            claimId,text:claimTextFor(partId,claimId),
-            citedSourceIds:draftAnswersFor(partId)
-              .find(answer=>answer.claimId===claimId)?.sourceIds||[],
-            targeted:true,
-            initialReview:(review.reviewDecisions||[])
-              .filter(decision=>decision.claimId===claimId)
-              .map(decision=>({sourceId:decision.sourceId,status:decision.sourceStatus,
-                accepted:decision.accepted===true,reason:decision.validationReason||null}))}));
-          let candidate=null;
-          try{
-            candidate=await repairPartCandidate(item,{
-              targets,phase:'assembly-audit',
-              addCoverage:missing.length>0,
-              supportIssues:[
-                ...missing.map(claimId=>({partId,claimId,
-                  reason:'assembly-audit-claim-not-represented'})),
-                ...seamTypes.map(type=>({partId,
-                  reason:'assembly-audit-seam-'+type})),
-                ...(isEndingPart?[{partId,reason:'assembly-audit-unfinished-ending'}]:[])],
-              extraClaims,
-              restorableIds:missing,
-              requireAllTargets:targets.length>0,
-              allowAdditions:true,
-              applyPatches:({replacements,additions})=>{
-                const answers=item.answers.map(answer=>{
-                  const replacement=replacements.get(answer.claimId);
-                  return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
-                });
-                const draftOrder=draftAnswersFor(partId);
-                const presentIds=new Set(answers.map(answer=>answer.claimId));
-                for(const draftAnswer of draftOrder){
-                  if(!missing.includes(draftAnswer.claimId)||
-                     presentIds.has(draftAnswer.claimId))continue;
-                  const replacement=replacements.get(draftAnswer.claimId);
-                  if(!replacement)continue;
-                  const draftIndex=draftOrder.indexOf(draftAnswer);
-                  let insertAt=answers.length;
-                  for(let index=0;index<answers.length;index++){
-                    const otherIndex=draftOrder.findIndex(entry=>
-                      entry.claimId===answers[index].claimId);
-                    if(otherIndex>draftIndex){insertAt=index;break;}
-                  }
-                  answers.splice(insertAt,0,{...draftAnswer,text:replacement,
-                    renderedText:replacement});
-                }
-                const nextParagraph=Math.max(-1,...answers.map(answer=>
-                  answer.paragraphIndex||0))+1;
-                for(const text of additions)
-                  answers.push({text,renderedText:text,sourceIds:[],
-                    paragraphIndex:nextParagraph});
-                return answers;
-              }});
-          }catch(error){
-            candidate=null;
-          }
-          if(!candidate)return;
-          try{
-            const {reReview,rePart}=await reReviewPartCandidate(item,candidate);
-            if(reReview.issues.length||!rePart||!rePart.answers.length||
-               rePart.answerStatus==='unanswered')return;
-            const candidateSegment=segmentOf(rePart);
-            const candidateCitations=new Set(citationIds(candidateSegment));
-            const candidateNormalized=normalizedProseSurface(candidateSegment);
-            const candidateDecision=(reReview.partDecisions||[])
-              .find(entry=>entry.partId===partId);
-            const candidateLinked=acceptedLinkedSourcesByClaim(reReview.reviewDecisions,partId);
-            const unresolved=(candidateDecision?.acceptedDirectAnswerClaimIds||[])
-              .some(claimId=>{
-                const linkedSources=candidateLinked.get(claimId);
-                if(linkedSources&&[...linkedSources].some(id=>candidateCitations.has(id)))
-                  return false;
-                const text=candidate.answers.find(answer=>answer.claimId===claimId)?.text||
-                  claimTextFor(partId,claimId);
-                return !claimTextAppears(text,candidateNormalized);
-              });
-            if(unresolved)return;
-            const originalLinked=acceptedLinkedSourcesByClaim(review.reviewDecisions,partId);
-            const missingResolved=missing.every(claimId=>{
-              const linkedSources=originalLinked.get(claimId);
-              if(linkedSources&&[...linkedSources].some(id=>candidateCitations.has(id)))
-                return true;
-              return claimTextAppears(claimTextFor(partId,claimId),candidateNormalized);
-            });
-            if(!missingResolved)return;
-            if(isEndingPart&&hasAssemblyEndingViolation(candidateSegment))return;
-            // Batch 5 (C): a seam repair is adopted only when the candidate
-            // segment is actually free of the targeted seam types (for a
-            // duplicated heading, free of the repeated heading line).
-            if(seamTypes.length){
-              const candidateSeams=seamScan(candidateSegment);
-              if(seamTypes.some(type=>type!=='duplicated-heading'&&
-                 candidateSeams.includes(type)))return;
-              if(duplicatedHeadings.length&&candidateSegment.split('\n')
-                .some(line=>duplicatedHeadings.includes(headingKeyOf(line))))return;
-            }
-            adoptRepairedPart(item,rePart,reReview);
-            anyAdopted=true;
-          }catch(error){
-            // The repair could not be independently re-reviewed; it does
-            // not ship, and the violation stands.
-          }
-        };
-        await Promise.allSettled(affectedPartIds.map(repairAssemblyPart));
-        const remaining=auditViolations(assembleNow());
-        if(!remaining.length&&anyAdopted){
-          auditRecord.action='repair-applied';
-        }else{
-          for(const partId of new Set(remaining.map(violation=>violation.partId))){
-            const item=parts.find(entry=>entry.part.id===partId);
-            if(item&&item.answerStatus==='answered')item.answerStatus='partial';
-          }
-        }
-      }
-      trace.assemblyAudit=auditRecord;
-    }
-    // Batch 10 (B10-4): depth repair, ported into the v2 pipeline.
-    // Batch 9's per-part depth assessment and repair (B9-1c) was built
-    // only into the legacy gateway pipeline (composeVerifiedAnswer);
-    // the v2 pipeline that serves all live and evaluation traffic never
-    // had it — batch 9's depth gains were its planner/composer
-    // additions alone, and every batch-9 evaluation record carried
-    // depthRepair:null. The trigger mirrors the legacy
-    // assessDevelopment per-part condition, evaluated on v2's part and
-    // claim structures: when the answer's total word count meets the
-    // development floor (180 words standard, 120 for comparisons) and
-    // the answer has multiple parts (or is a comparison), a part is
-    // thin when it is supported, or partial with at least one shipped
-    // cited claim, and its cited claims are a single claim or total
-    // under 45 cited words. Each thin part (at most two, in plan order)
-    // gets one targeted repair cycle through the same machinery as the
-    // other gates — so the L3 one-cycle rule applies and containment,
-    // which runs after this block, sees the final adopted text.
-    // Adoption goes through adoptRepairedPart, so the re-review's
-    // decisions are recorded, and additionally requires the re-reviewed
-    // part to carry MORE cited words than the original: a repair that
-    // does not develop is not adopted.
-    depthRepair={triggered:false,reasons:[],applied:false,partIds:[]};
-    if(review&&!reviewFailure){
-      const countWords=text=>String(text||'').trim().split(/\s+/u)
-        .filter(Boolean).length;
-      const citedClaimsOf=item=>item.answers
-        .filter(answer=>(answer.sourceIds||[]).length);
-      const citedWordsOf=item=>citedClaimsOf(item)
-        .reduce((sum,answer)=>sum+countWords(answer.text),0);
-      const shippedParts=parts.filter(item=>
-        item.answerStatus!=='unanswered'&&item.answers.length);
-      const totalWords=shippedParts.reduce((sum,item)=>sum+
-        item.answers.reduce((partSum,answer)=>partSum+countWords(answer.text),0),0);
-      const wordFloor=plan?.intent==='compare'?120:180;
-      const thinParts=[];
-      if(totalWords>=wordFloor&&(shippedParts.length>=2||plan?.intent==='compare')){
-        for(const item of shippedParts){
-          const cited=citedClaimsOf(item);
-          const eligible=item.status==='answered'||
-            (item.status==='partial'&&cited.length>=1);
-          if(!eligible)continue;
-          if(cited.length===1||citedWordsOf(item)<45)thinParts.push(item);
-        }
-      }
-      if(thinParts.length){
-        depthRepair.triggered=true;
-        depthRepair.reasons=thinParts.map(item=>'thin-part:'+item.part.id);
-        const adoptedPartIds=[];
-        const applyDepthRepair=async(item)=>{
-          const planPart=item.part;
-          gateRepairCycles.push({partId:planPart.id,gate:'depth-repair'});
-          gateRepairConsumed.add(planPart.id);
-          const targets=citedClaimsOf(item).map(answer=>answer.claimId);
-          const originalCitedWords=citedWordsOf(item);
-          let candidate=null;
-          try{
-            candidate=await repairPartCandidate(item,{
-              targets,phase:'depth-repair',
-              addCoverage:true,
-              allowAdditions:true,
-              requireAllTargets:true,
-              supportIssues:[{partId:planPart.id,reason:'depth-repair-thin-part',
-                instruction:'This part is underdeveloped: it is carried by a single cited sentence or only a few cited words. Develop this part from the evidence supplied for it — explain the mechanism or reasoning behind its position, give the decisive example or image the passages offer for it, and contrast it with the neighbouring position where the supplied evidence supports the contrast. Add sentences only where they develop the same position from the same evidence, cite only the sources supplied for this part, and keep every added claim beside its citation. Do not merely restate the position, do not invent support, and do not pad.'}],
-              applyPatches:({replacements,additions})=>{
-                const answers=item.answers.map(answer=>{
-                  const replacement=replacements.get(answer.claimId);
-                  return replacement?{...answer,text:replacement,renderedText:replacement}:answer;
-                });
-                const nextParagraph=Math.max(-1,...answers.map(answer=>
-                  answer.paragraphIndex||0))+1;
-                for(const text of additions)
-                  answers.push({text,renderedText:text,sourceIds:[],
-                    paragraphIndex:nextParagraph});
-                return answers;
-              },
-              validateCandidate:candidate=>
-                candidate.answers.filter(answer=>(answer.sourceIds||[]).length)
-                  .reduce((sum,answer)=>sum+countWords(answer.text),0)>originalCitedWords});
-          }catch(error){
-            candidate=null;
-          }
-          if(!candidate)return;
-          try{
-            const {reReview,rePart}=await reReviewPartCandidate(item,candidate);
-            if(reReview.issues.length||!rePart||!rePart.answers.length||
-               rePart.answerStatus==='unanswered')return;
-            const reCitedWords=rePart.answers
-              .filter(answer=>(answer.sourceIds||[]).length)
-              .reduce((sum,answer)=>sum+countWords(answer.text),0);
-            if(reCitedWords<=originalCitedWords)return;
-            // Batch 11 (B11-8): the cited-words test cannot see
-            // duplication — batch 10's narrators repair carried more
-            // cited words partly by repeating a paragraph pair
-            // verbatim, and was adopted. A candidate that introduces a
-            // duplicated paragraph is not development; refuse it and
-            // record the refusal beside the other depth-repair outcomes.
-            if(introducesDuplicatedParagraph(item.answers,rePart.answers)){
-              depthRepair.refusals??=[];
-              depthRepair.refusals.push(
-                {partId:planPart.id,reason:'duplicate-paragraph'});
-              return;
-            }
-            adoptRepairedPart(item,rePart,reReview);
-            adoptedPartIds.push(planPart.id);
-          }catch(error){
-            // The developed text could not be independently
-            // re-reviewed; the original part ships unchanged.
-          }
-        };
-        const repairableThinParts=thinParts
-          .filter(item=>!gateRepairConsumed.has(item.part.id)).slice(0,2);
-        await Promise.allSettled(repairableThinParts.map(applyDepthRepair));
-        const planOrder=new Map(plan.parts.map((part,index)=>[part.id,index]));
-        adoptedPartIds.sort((a,b)=>planOrder.get(a)-planOrder.get(b));
-        depthRepair.applied=adoptedPartIds.length>0;
-        depthRepair.partIds=adoptedPartIds;
-      }
-    }
-    if(gateRepairCycles.length)trace.gateRepairCycles=gateRepairCycles;
-    if(deltaReReviewTrace.length)trace.deltaReReview=deltaReReviewTrace;
-    // Batch 25 (B25-L2): candidates that were produced and re-reviewed
-    // but never adopted close out as no-change cycles (their shipped
-    // state never moved), then the ledger is written to the trace.
-    for(const [partId,pending] of pendingRepairCycles)
-      recordRepairCycle(partId,pending.phase,false);
-    pendingRepairCycles.clear();
-    if(repairCycleLedger.size)
-      trace.repairCycleLedger=Object.fromEntries(repairCycleLedger);
+    // Redesign Stage A: the gate repair machinery that used to sit
+    // here (citation-presence gate, assembly-audit repair, depth
+    // repair, and their shared repair/re-review machinery) is
+    // DELETED. The single audit's verdicts stand as rendered; no
+    // post-review cycle re-judges or rewrites a part.
     // Batch 7 (B7-2/B7-3): two deterministic passes over the shipped parts
     // run here, after every gate and before the context-claim second look.
     // Neither makes a model call, and both read only the review contract,
@@ -10345,8 +5909,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       for(const item of parts){
         if(!item.answers.length)continue;
         const failedEntry=failedReviewParts.find(failed=>failed.partId===item.part.id);
-        const covered=decidedPartIds.has(item.part.id)||
-          reReviewedAdoptedPartIds.has(item.part.id);
+        const covered=decidedPartIds.has(item.part.id);
         if(!failedEntry&&covered)continue;
         gaps.push({partId:item.part.id,
           code:failedEntry?.code||'missing-part-decision'});
@@ -10365,7 +5928,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         invalidLinks:parts.reduce((sum,item)=>sum+(item.scaffoldingInvalidLinks||0),0),
         ...(scaffoldingInvalidLinkDetails.length?
           {invalidLinkDetails:scaffoldingInvalidLinkDetails}:{}),
-        repairRound:scaffoldingRepairTrace};
+        // Redesign Stage A: there is no scaffolding repair round;
+        // the record stays so the trace shape is stable.
+        repairRound:{attempted:false,resolved:0}};
     }
     // Batch 9 (B9-5): the traceability invariant, checked after every
     // attachment mechanism (inheritance, second look, gate adoptions)
@@ -10610,20 +6175,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       }
       postReviewAuditFaultInjected=true;
     }
-    // Batch 34 (B34-1 layer 2): the assembly antecedent guard runs
-    // over the final parts before the first answer build, the last
-    // point where a paragraph can still be re-anchored, restored,
-    // or demoted with disclosure. Later stages (labels, audits) see
-    // the guarded state exactly as they see containment's.
-    const antecedentGuard=applyAssemblyAntecedentGuard(parts,{
-      reviewDecisions:[...parts.flatMap(item=>item.reReviewDecisions||[]),
-        ...(review?.reviewDecisions||[])],
-      restorable:[...(review?.framingRescues||[]),
-        ...parts.flatMap(item=>item.framingRescues||[])],
-      draftParts:validatedAnswers});
-    if(antecedentGuard.restored.length||antecedentGuard.rewritten.length||
-       antecedentGuard.removed.length)
-      trace.assemblyAntecedentGuard=antecedentGuard;
     // Batch 34 (B34-2 (i)): disclosure protection. Snapshot the
     // disclosure/gap claims the review contract of record ACCEPTED
     // (uncited context claims whose text states an absence — the
@@ -10688,93 +6239,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       reviewDecisions:review?.reviewDecisions||[],
       validatedAnswers,rejectionArchive,trace});
     if(assemblyLoss.length)trace.assemblyLoss=assemblyLoss;
-    // Batch 35 (B35-7): synthesis provenance. A unit that ships
-    // CITED on attached evidence (scaffolding/inheritance) while
-    // its own decision record is context-only inherits the
-    // strictest disposition of the claims whose substance it
-    // carries: when its text substantially reproduces (the archive
-    // containment measure) a CITED claim this same part dropped at
-    // assembly, the unit is removed — the dropped claim's failed
-    // evidence may not re-enter wearing a synthesis claim's
-    // citations. (Phase-3 P&P SP2: the dropped cited claim's
-    // "scandalous" characterization shipped inside a context claim
-    // carrying [S1, S6].) Removal here feeds the final coverage
-    // reconciliation, so the part discloses the loss downstream.
-    {
-      const droppedCitedByPart=new Map();
-      const draftByPart=new Map((validatedAnswers||[])
-        .map(part=>[part.partId,new Map((part.answers||[])
-          .map(answer=>[answer.claimId,answer]))]));
-      for(const loss of assemblyLoss){
-        if(loss.disposition==='restored'||
-           loss.reason==='renumbered-substance-shipped')continue;
-        const draft=draftByPart.get(loss.partId)?.get(loss.claimId);
-        const wasCited=(draft?.sourceIds||[]).length>0||
-          (review?.reviewDecisions||[]).some(decision=>
-            decision.partId===loss.partId&&decision.claimId===loss.claimId&&
-            decision.sourceId);
-        if(!draft||!wasCited)continue;
-        const list=droppedCitedByPart.get(loss.partId)||[];
-        list.push({claimId:loss.claimId,text:draft.text||''});
-        droppedCitedByPart.set(loss.partId,list);
-      }
-      const sourcedAccepted=new Set((review?.reviewDecisions||[])
-        .filter(decision=>decision.accepted===true&&decision.sourceId)
-        .map(decision=>decision.partId+'|'+decision.claimId));
-      const synthesisDropped=[];
-      if(droppedCitedByPart.size)for(const item of parts){
-        const dropped=droppedCitedByPart.get(item.part?.id);
-        if(!dropped?.length||!item.answers?.length)continue;
-        // The part's surviving cited vocabulary: terms any shipped
-        // claim with its own accepted source establishes.
-        const establishedTerms=new Set();
-        for(const answer of item.answers){
-          if(!sourcedAccepted.has(item.part.id+'|'+answer.claimId))continue;
-          for(const term of fallbackEvidenceTerms(answer.text))
-            establishedTerms.add(term);
-        }
-        item.answers=item.answers.filter(answer=>{
-          if(!(answer.sourceIds||[]).length)return true;
-          if(sourcedAccepted.has(item.part.id+'|'+answer.claimId))return true;
-          const terms=fallbackEvidenceTerms(answer.text);
-          if(!terms.size)return true;
-          for(const entry of dropped){
-            if(entry.claimId===answer.claimId)continue;
-            const other=fallbackEvidenceTerms(entry.text);
-            if(!other.size)continue;
-            let shared=0;
-            const sharedTerms=[];
-            for(const term of terms)if(other.has(term)){shared++;sharedTerms.push(term);}
-            const containment=shared/Math.min(terms.size,other.size);
-            if(containment>=0.5){
-              synthesisDropped.push({partId:item.part.id,
-                claimId:answer.claimId,droppedClaimId:entry.claimId,
-                basis:'containment',
-                containment:Math.round(containment*1000)/1000});
-              return false;
-            }
-            // The production shape measured 0.22 containment: the
-            // synthesis carried ONE distinctive term of the dropped
-            // claim ('scandalous') that no surviving cited claim of
-            // the part establishes. A cited-shipping context unit
-            // may not introduce a dropped claim's distinctive term
-            // that the part's surviving evidence nowhere carries.
-            const distinctive=sharedTerms
-              .filter(term=>!establishedTerms.has(term)).sort();
-            if(distinctive.length){
-              synthesisDropped.push({partId:item.part.id,
-                claimId:answer.claimId,droppedClaimId:entry.claimId,
-                basis:'distinctive-term',term:distinctive[0],
-                containment:Math.round(containment*1000)/1000});
-              return false;
-            }
-          }
-          return true;
-        });
-      }
-      if(synthesisDropped.length)
-        trace.synthesisProvenanceDropped=synthesisDropped;
-    }
     let included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
     let answer=sanitizeInternalAnswerIds(normalizeAnswerMarkdown(
       included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n')));
@@ -11081,6 +6545,24 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           requirementIds:unanswered.map(entry=>entry.requirementId)});
         labelByPartId.set(item.part.id,item.part.question);
       }
+      // Redesign Stage A (brief point 5): assembly-loss disclosure.
+      // reconcileAssemblyLoss records accepted claims that never
+      // reached the shipped part. Explained losses (containment,
+      // inheritance, failed siblings, restorations) carry their own
+      // records, but an UNEXPLAINED loss was, through batch 35,
+      // visible only in this trace — the reader saw a shorter
+      // answer with no notice. A part carrying an unexplained loss
+      // now gets the same verified-passages label as an uncited
+      // part, and the disclosure is recorded in the final trace.
+      const assemblyLossDisclosures=[];
+      for(const loss of assemblyLoss){
+        if(loss.reason!=='unexplained')continue;
+        const item=included.find(candidate=>candidate.part.id===loss.partId);
+        if(!item)continue;
+        assemblyLossDisclosures.push({partId:loss.partId,claimId:loss.claimId});
+        if(!labelByPartId.has(loss.partId))
+          labelByPartId.set(loss.partId,item.part.question);
+      }
       const labeledParts=included.filter(item=>labelByPartId.has(item.part.id));
       // Batch 33 (B33-3): absent-part disclosure. The B11-5/B32-7
       // label covers parts that ship UNCITED; it does not cover parts
@@ -11121,6 +6603,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             {claimLevelUncitedLabels:claimLevelUncited}:{}),
           ...(unansweredRequirementLabels.length?
             {unansweredRequirementLabels}:{}),
+          ...(assemblyLossDisclosures.length?
+            {assemblyLossDisclosures}:{}),
           ...(absentParts.length?
             {absentPartLabelsInAnswer:absentParts.map(item=>item.part.id)}:{})};
       }
@@ -11259,6 +6743,93 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     if(options.transportDiagnostics===true){
       trace.timingSummary=buildTimingSummary(trace.stageTimings||[],performance.now()-timingStarted);
     }
+    // Redesign Stage A: the deterministic final checks that act on
+    // or observe the SHIPPED text, run once, here, after every
+    // label is applied. (1) Raw span-ID leaks are stripped, not
+    // merely flagged. (2) Byline/header direction and (3)
+    // pronoun-orphan scans are RECORD-ONLY: they write trace
+    // fields and never touch the output; under the standing rule
+    // they can earn removal power only at >=80% measured
+    // precision. (4) Every recorded disclosure label is verified
+    // verbatim against the shipped text.
+    if(answer){
+      const stripped=stripSpanIdLeaks(answer);
+      if(stripped.count)answer=stripped.text;
+      trace.final={...(trace.final||{}),spanIdLeaksStripped:stripped.count};
+      const nameInText=(name,text)=>{
+        const tokens=String(name||'').split(/\s+/).filter(Boolean);
+        if(!tokens.length)return false;
+        const surname=tokens[tokens.length-1].replace(/[^\p{L}'-]/gu,'');
+        if(surname.length<3)return false;
+        return new RegExp('\\b'+surname.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','iu')
+          .test(String(text||''));
+      };
+      const bylineDirectionFlags=[];
+      for(const item of included){
+        for(const ans of item.answers||[]){
+          for(const sourceId of ans.sourceIds||[]){
+            const source=sources.find(value=>String(value.id)===String(sourceId));
+            if(!source)continue;
+            const byline=letterBylineForSource(source);
+            if(!byline)continue;
+            const titleAuthor=String(source.title||'').split(' — ').pop().trim();
+            let creditedName=null;
+            if(nameInText(byline.recipient,ans.text))creditedName=byline.recipient;
+            else if(titleAuthor&&titleAuthor!==byline.sender&&
+              /^\p{Lu}/u.test(titleAuthor)&&titleAuthor.split(/\s+/).length>=2&&
+              nameInText(titleAuthor,ans.text)&&
+              !personNamesMatch(titleAuthor,byline.sender))
+              creditedName=titleAuthor;
+            if(creditedName&&!nameInText(byline.sender,ans.text))
+              bylineDirectionFlags.push({partId:item.part.id,
+                claimId:ans.claimId,sourceId:String(sourceId),
+                creditedName,bylineAuthor:byline.sender});
+          }
+        }
+      }
+      trace.final={...(trace.final||{}),bylineDirectionFlags};
+      const pronounOrphanFlags=[];
+      const partTextById=new Map(included.map(item=>[item.part.id,
+        unwrapBoldWrappedParagraphs(renderAnswerParagraphs(item.answers)).text]));
+      const establishedNames=new Set();
+      const namePattern=/\b(\p{Lu}\p{Ll}+)\s+(\p{Lu}\p{Ll}+)\b/gu;
+      String(answer).split(/\n\n+/).forEach((paragraph,paragraphIndex)=>{
+        const opening=assemblyOpeningPronoun(paragraph);
+        if(opening&&!establishedNames.size){
+          let partId=null;
+          for(const [id,text] of partTextById)
+            if(text.includes(paragraph.slice(0,60))){partId=id;break;}
+          pronounOrphanFlags.push({partId,paragraphIndex,
+            pronoun:opening.pronoun});
+        }
+        for(const match of paragraph.matchAll(namePattern)){
+          establishedNames.add(match[0]);
+          establishedNames.add(match[2]);
+        }
+      });
+      trace.final={...(trace.final||{}),pronounOrphanFlags};
+      const recordedFinal=trace.final||{};
+      const labelTextFor=(partId)=>
+        'Retrieved passages could not be verified as supporting this part of the question: '+
+        ((parts.find(item=>item.part.id===partId)?.part.question)||'');
+      const labelChecks=[];
+      for(const partId of recordedFinal.uncitedPartLabelsInAnswer||[])
+        labelChecks.push({partId,kind:'uncited-part',text:labelTextFor(partId)});
+      for(const entry of recordedFinal.claimLevelUncitedLabels||[])
+        labelChecks.push({partId:entry.partId,kind:'claim-level-uncited',text:labelTextFor(entry.partId)});
+      for(const entry of recordedFinal.unansweredRequirementLabels||[])
+        labelChecks.push({partId:entry.partId,kind:'unanswered-requirement',text:labelTextFor(entry.partId)});
+      for(const entry of recordedFinal.assemblyLossDisclosures||[])
+        labelChecks.push({partId:entry.partId,kind:'assembly-loss',text:labelTextFor(entry.partId)});
+      for(const partId of recordedFinal.absentPartLabelsInAnswer||[])
+        labelChecks.push({partId,kind:'absent-part',
+          text:'This part of the question could not be answered from the library: '+
+            ((parts.find(item=>item.part.id===partId)?.part.question)||'')});
+      const missingLabels=labelChecks.filter(check=>!answer.includes(check.text));
+      trace.final={...(trace.final||{}),disclosureLabelVerification:{
+        checked:labelChecks.length,
+        missing:missingLabels.map(({partId,kind})=>({partId,kind}))}};
+    }
     trace.final={...(trace.final||{}),answer,questionParts,coverage,answerCompleteness,
       failure:failure?.code==='answer-citation-validation-failed'?
         {...failure,validationReasons:validationReasonCodes(trace.rejected)}:
@@ -11289,19 +6860,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       trace.answerRepair?.reason&&
       trace.answerRepair.reason!=='answer-repair-no-material-change')?
       {code:trace.answerRepair.reason,stage:'answer-repair'}:null;
-    // Batch 34 (B34-8 (ii)): final dispositions on the veto census,
-    // computed at final assembly from the shipped set and the
-    // shipped text. The trace mirrors hold the same entry objects,
-    // so annotating review's census lists in place lands the
-    // disposition in every mirror at once. This runs here, at the
-    // single exit funnel, so partition salvage and final-audit
-    // suppression — both of which can still drop claims after the
-    // first answer build — are reflected in the dispositions.
-    if(review){
-      for(const list of [review.vetoCensus,review.flipVetoCensus])
-        if(list?.length)finalizeVetoCensus(list,{parts,answerText:answer,
-          reviewDecisions:review.reviewDecisions||[]});
-    }
     const noText=!answer;
     return {outcome:answer?((salvage||unreviewed||unvalidatedPartsDropped||hasReviewCoverageGaps||hasUntracedCitedClaims)?'unverified-source-draft':used.size?'verified-source-draft':'general-context-answer'):
         failure?'generation-failed':'insufficient-evidence',
