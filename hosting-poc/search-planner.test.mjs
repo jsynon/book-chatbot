@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {handleRequest,planSearchQueries,planSearchGapQueries,composeVerifiedAnswer,validConversationHistory} from './public-gateway.mjs';
+import {handleRequest,planSearchQueries,planSearchGapQueries,composeVerifiedAnswer,validConversationHistory,periodDictionVariantQuery,characterNamesInText} from './public-gateway.mjs';
 import {catalogFallbackPlan,normalizePlan} from './reader-contract.mjs';
 
 const HOST='https://antilogicalism-companion-public.jsynon.workers.dev';
@@ -128,9 +128,18 @@ test('conditional gap planner returns optional distinct search terms and sees bo
    {partId:'P1',query:'empirical knowledge of external world'},
    {partId:'P1',query:'reality existence perception'}]})}}],usage:{neurons:2}};
  }});
- assert.deepEqual(response.queries,['empirical knowledge of external world','reality existence perception']);
+ // Stage B (B1b): the second lead gains a traced period-diction
+ // variant (reality → real, existence → existent) that inherits
+ // its part link; the model's own leads are untouched.
+ assert.deepEqual(response.queries,['empirical knowledge of external world','reality existence perception',
+  'real existent perception']);
  assert.deepEqual(response.queryPartLinks,[{query:'empirical knowledge of external world',partIds:['P1']},
-  {query:'reality existence perception',partIds:['P1']}]);
+  {query:'reality existence perception',partIds:['P1']},
+  {query:'real existent perception',partIds:['P1']}]);
+ assert.deepEqual(response.queryExpansions,[{sourceQuery:'reality existence perception',
+  variantQuery:'real existent perception',
+  terms:[{term:'reality',variants:['real']},{term:'existence',variants:['existent']}],
+  partIds:['P1'],status:'added'}]);
  assert.equal(response.usage.neurons,2);
 });
 test('gap planning receives compact diagnostics when only shared part terms matched',async()=>{
@@ -149,8 +158,12 @@ test('gap planning receives compact diagnostics when only shared part terms matc
   return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
    {partId:'P2',query:'Odysseus courage endurance heroic conduct'}]})}}]};
  }});
- assert.deepEqual(result.queries,['Odysseus courage endurance heroic conduct']);
- assert.deepEqual(result.queryPartLinks,[{query:'Odysseus courage endurance heroic conduct',partIds:['P2']}]);
+ // Stage B (B1b): the lead gains its traced period-diction
+ // variant (endurance → endurant) with the part link inherited.
+ assert.deepEqual(result.queries,['Odysseus courage endurance heroic conduct',
+  'Odysseus courage endurant heroic conduct']);
+ assert.deepEqual(result.queryPartLinks,[{query:'Odysseus courage endurance heroic conduct',partIds:['P2']},
+  {query:'Odysseus courage endurant heroic conduct',partIds:['P2']}]);
 });
 test('conditional gap planner rejects malformed and repeated original queries',async()=>{
  const result=await planSearchGapQueries('What is knowledge?','',{
@@ -174,7 +187,12 @@ test('pilot planner route keeps conditional gap output separate from the answer 
  }}),environment,async(...args)=>{verificationCalls++;return verify(...args);});
  assert.equal(response.status,200);
  const result=await response.json();
- assert.deepEqual(result.queries,['experience and perception','external world knowledge']);
+ // Stage B (B1b): the reply also carries the traced variant of
+ // the first lead (experience → experient); the gap output still
+ // has no plan.
+ assert.deepEqual(result.queries,['experience and perception','external world knowledge',
+  'experient and perception']);
+ assert.equal(result.queryExpansions.length,1);
  assert.equal(result.plan,undefined);
  assert.equal(calls,1);assert.equal(verificationCalls,1);
 });
@@ -763,4 +781,93 @@ test('contextual-source guidance is general and does not hardcode simulation thi
  assert.match(systemPrompt,/do not spend every query on synonyms of that label/i);
  assert.match(systemPrompt,/underlying concepts, assumptions, or kinds of reasoning/i);
  assert.doesNotMatch(systemPrompt,/Descartes.*Berkeley.*Hume/i);
+});
+
+// Stage B (B1b): period-diction variant generation is derived
+// from each query's own terms — productive spelling pairs and
+// stem alternations, never a per-book dictionary.
+test('stage B B1b periodDictionVariantQuery: spelling pairs and stem alternations from the query terms',()=>{
+ assert.deepEqual(periodDictionVariantQuery('division of labor and intelligence'),
+  {variantQuery:'division of labour and intelligent',
+   terms:[{term:'labor',variants:['labour']},{term:'intelligence',variants:['intelligent']}]});
+ assert.deepEqual(periodDictionVariantQuery('centre of honour'),
+  {variantQuery:'center of honor',
+   terms:[{term:'centre',variants:['center']},{term:'honour',variants:['honor']}]});
+ assert.deepEqual(periodDictionVariantQuery('mentality and stupidity'),
+  {variantQuery:'mental and stupid',
+   terms:[{term:'mentality',variants:['mental']},{term:'stupidity',variants:['stupid']}]});
+ // Agent nouns and plain terms gain no false period form.
+ assert.equal(periodDictionVariantQuery('author error doctor'),null);
+ assert.equal(periodDictionVariantQuery('substance and circumstance'),null);
+ assert.equal(periodDictionVariantQuery('growth of power and fear'),null);
+});
+
+test('stage B B1b plan: part queries gain traced period-diction variants, originals untouched',async()=>{
+ const smithQuestion='How does Smith say the division of labor affects workers?';
+ const result=await planSearchQueries(smithQuestion,'',{
+  run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   resolvedQuestion:smithQuestion,intent:'explain',
+   sources:[{label:'Adam Smith',role:'primary'}],
+   parts:[{question:'How does the division of labor affect workers?'}],
+   queries:['division of labor consequences workers','labor effects on the mind']})}}],
+   usage:{neurons:2}})});
+ const part=result.plan.parts[0];
+ assert.ok(part.searchQueries.includes('division of labor consequences workers'),
+  'the planner query itself is retained');
+ assert.ok(part.searchQueries.includes('division of labour consequences workers'),
+  'the period-spelling variant (labor → labour) rides alongside it');
+ assert.ok(part.searchQueries.includes('labour effects on the mind'));
+ assert.deepEqual(result.plan.queryExpansions.map(entry=>
+  [entry.partId,entry.sourceQuery,entry.variantQuery,entry.status]),
+  [['P1','division of labor consequences workers','division of labour consequences workers','added'],
+   ['P1','labor effects on the mind','labour effects on the mind','added']]);
+ assert.deepEqual(result.plan.queryExpansions[0].terms,[{term:'labor',variants:['labour']}]);
+});
+
+// Stage B (B1c): character anchors come from the plan's own part
+// text — mid-sentence capitals only, titles stripped, the scoped
+// book's author and title never mistaken for characters.
+test('stage B B1c characterNamesInText: mid-sentence names, titles stripped, author excluded',()=>{
+ const excluded=new Set(['crime','and','punishment','fyodor','dostoevsky']);
+ assert.deepEqual(characterNamesInText(
+  'How does Sonya challenge Raskolnikov in the novel?',excluded),
+  ['Sonya','Raskolnikov']);
+ assert.deepEqual(characterNamesInText(
+  'Prince Andrei feels the sky open. What does Pierre see?',new Set()),
+  ['Andrei','Pierre']);
+ assert.deepEqual(characterNamesInText(
+  'Dostoevsky wrote about guilt. The author Fyodor Dostoevsky appears in letters.',
+  excluded),[]);
+ assert.deepEqual(characterNamesInText(
+  'How is guilt shown in chapter twelve?',excluded),[]);
+});
+
+test('stage B B1c plan: a single-book plan gains character-anchored name queries behind the lead query',async()=>{
+ const result=await planSearchQueries(question,'Crime and Punishment — Fyodor Dostoevsky',{
+  run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   resolvedQuestion:question,intent:'explain',
+   sources:[{label:'Crime and Punishment',role:'primary'}],
+   parts:[{question:'How does Sonya challenge Raskolnikov when they meet?'}],
+   queries:['Raskolnikov extraordinary man theory','Sonya challenge confession scene']})}}],
+  usage:{neurons:2}})});
+ assert.deepEqual(result.plan.characterAnchoredQueries,[
+  {partId:'P1',name:'Sonya',query:'Sonya'},
+  {partId:'P1',name:'Raskolnikov',query:'Raskolnikov'}]);
+ const queries=result.plan.parts[0].searchQueries;
+ assert.equal(queries[1],'Sonya','the first anchor sits directly behind the part’s lead query');
+ assert.ok(queries.includes('Raskolnikov'));
+});
+
+test('stage B B1c gap: a book-scoped weak part naming a character gains linked name leads',async()=>{
+ const result=await planSearchGapQueries(question,'Crime and Punishment — Fyodor Dostoevsky',{
+  weakParts:[{partId:'P1',part:'What does Sonya say to Raskolnikov about confession?',overlap:0}],
+  originalQueries:['confession theory'],candidates:[]
+ },{run:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({queries:[
+   {partId:'P1',query:'confession guilt suffering'}]})}}]})});
+ assert.deepEqual(result.characterAnchoredQueries,[
+  {partId:'P1',name:'Sonya',query:'Sonya'},
+  {partId:'P1',name:'Raskolnikov',query:'Raskolnikov'}]);
+ assert.ok(result.queries.includes('Sonya'));
+ assert.deepEqual(result.queryPartLinks.find(link=>link.query==='Sonya'),
+  {query:'Sonya',partIds:['P1']});
 });

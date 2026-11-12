@@ -581,6 +581,74 @@ export function enforceSubmittedBookDiversity(selectedCandidateIds,candidates,
     selectionDroppedFacets};
 }
 
+/* Stage B (B1a): facet-anchor reservation for deterministic
+ * packing. B34-4's diversity pass represents facet-top pages by
+ * DISPLACEMENT, late in the chain, and only against expendable
+ * pages; the phase-3 Darcy case showed a facet's anchor page can
+ * still miss the packet when the round-robin fill takes the slots
+ * first (a single-book pool degenerates the round-robin to pool
+ * order). Reservation runs the other way: each facet's rank-1 page
+ * is SEEDED into the selected set before the round-robin filling,
+ * so the fill spends its remaining slots around the anchors.
+ * Targets are ordered by facet multiplicity (a page topping
+ * several facets is the pool's consensus strongest, B34-4's
+ * ordering), then facet order, then pool order. The reservation
+ * is driven only by the facet ranks the retrieval record carries;
+ * when the pool carries no facetRanks the reservation is empty
+ * and says so — the eval harness's current submissions carry
+ * none, which the trace records honestly instead of the mechanism
+ * pretending to fire. Part-linkage filtering and the submitted
+ * bookkeeping are the caller's (it owns the plan); statuses here
+ * are 'reserved' or 'cap-deferred'. */
+export function facetAnchorReservations(candidates,{limit=MAX_SELECTOR_SOURCES}={}){
+  const rows=(Array.isArray(candidates)?candidates:[])
+    .filter(row=>row&&typeof row.id==='string');
+  const facetTopPage=new Map();
+  for(const row of rows){
+    if(!Array.isArray(row.facetRanks))continue;
+    for(const entry of row.facetRanks){
+      if(!entry||!Number.isFinite(entry.rank))continue;
+      const current=facetTopPage.get(entry.facet);
+      if(!current||entry.rank<current.rank)
+        facetTopPage.set(entry.facet,{row,rank:entry.rank});
+    }
+  }
+  if(!facetTopPage.size)return {hasFacetRanks:false,seedCandidateIds:[],reservations:[]};
+  const facetOrder=(left,right)=>{
+    const a=Number(left),b=Number(right);
+    if(Number.isFinite(a)&&Number.isFinite(b))return a-b;
+    return String(left).localeCompare(String(right),undefined,{numeric:true});
+  };
+  const pageFacets=new Map();
+  for(const [facet,{row}] of facetTopPage){
+    const list=pageFacets.get(row.id)||[];
+    list.push(facet);pageFacets.set(row.id,list);
+  }
+  const rowById=new Map(rows.map(row=>[row.id,row]));
+  const targets=[...pageFacets.entries()]
+    .map(([candidateId,facets])=>({candidateId,
+      facets:[...facets].sort(facetOrder),row:rowById.get(candidateId)}))
+    .sort((left,right)=>right.facets.length-left.facets.length||
+      facetOrder(left.facets[0],right.facets[0])||
+      rows.indexOf(left.row)-rows.indexOf(right.row));
+  const seedCandidateIds=[],reservations=[];
+  for(const target of targets){
+    let status;
+    if(seedCandidateIds.includes(target.candidateId))status='reserved';
+    else if(seedCandidateIds.length<limit){
+      seedCandidateIds.push(target.candidateId);status='reserved';
+    }else status='cap-deferred';
+    const partIds=[...new Set([
+      ...(Array.isArray(target.row?.candidatePartIds)?target.row.candidatePartIds:[]),
+      ...(Array.isArray(target.row?.retrievedPartHints)?target.row.retrievedPartHints:[])])];
+    for(const facet of target.facets)
+      reservations.push({facet,candidateId:target.candidateId,
+        ...(partIds.length?{partIds}:{}),status});
+  }
+  reservations.sort((left,right)=>facetOrder(left.facet,right.facet));
+  return {hasFacetRanks:true,seedCandidateIds,reservations};
+}
+
 export function orderPacketForPacking(selectedCandidateIds,parts,packetFloorLinks=[]){
   const selected=[...new Set(Array.isArray(selectedCandidateIds)?selectedCandidateIds:[])];
   const planParts=Array.isArray(parts)?parts:[];
