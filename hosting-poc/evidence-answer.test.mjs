@@ -9083,7 +9083,8 @@ test('redesign Stage A: the byline-direction flag is recorded and never acted on
   'the claim ships: the flag is record-only and removes nothing');
  assert.deepEqual(result.trace.final.bylineDirectionFlags,
   [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
-    creditedName:'Cicero',bylineAuthor:'Servius Sulpicius'}]);
+    creditedName:'Cicero',bylineAuthor:'Servius Sulpicius',
+    creditedRole:'recipient'}]);
 });
 
 test('redesign Stage A: the pronoun-orphan flag is recorded and never acted on',async()=>{
@@ -9494,4 +9495,174 @@ test('stage B B3: a build with no assembly losses still reports the zero count',
   'the summary is emitted even when nothing was lost');
  assert.equal(result.trace.final.assemblyLossDisclosures,undefined,
   'no loss, no disclosure');
+});
+
+// ---------------------------------------------------------------------------
+// Stage C record-only bundle: passage-window subject presence,
+// cross-work citations, byline-trigger widening, widened orphan
+// scan. Every flag is telemetry: shipped text is asserted
+// unchanged in each test.
+// ---------------------------------------------------------------------------
+
+test('stage C item 1: the Conrad shape flags — the attributed name is in the span but outside the passage window',async()=>{
+ // Production shape (phase-2 validation, both selected passes):
+ // the manager's words ship as Kurtz's while Kurtz is named only
+ // elsewhere in the same long span. The span below is one review
+ // span of four sentences; the claim draws on sentence 1 (its own
+ // quoted phrase), Kurtz is named only in sentence 4.
+ const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
+  page:64,url:'https://example.test/conrad#page=64',
+  text:'The manager smiled, a smile like a door opening into a darkness he had in his keeping. The brickmaker nodded beside him. A clerk muttered over the accounts. Later, talk turned to Kurtz of the Inner Station.',
+  preview:'The manager smiled at the river.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Joseph Conrad',role:'primary',bookIds:['315']}],
+  parts:[{id:'P1',question:'How is Kurtz presented through the eyes of others at the station?',
+   sourceBookIds:['315'],searchQueries:['manager smile darkness Kurtz'],
+   candidateSourceIds:['S1']}],queries:['Kurtz presentation']};
+ const ai=makeAI([
+  answer('PART P1\nKurtz wore a smile "like a door opening into a darkness he had in his keeping" as he watched the river. [S1]\n'+
+   'Kurtz of the Inner Station was the name on everyone\'s lips at the post. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(
+  'How is Kurtz presented through the eyes of others at the station?',
+  [source],ai,[],{plan,catalog:{315:'Heart of Darkness — Joseph Conrad'},trace:true});
+ assert.match(result.answer,/Kurtz wore a smile/,
+  'the claim ships: the window check is record-only and removes nothing');
+ const flags=result.trace.final.passageWindowSubjectFlags;
+ assert.equal(flags.length,1,'only the window-missing claim flags; the claim whose window names Kurtz does not');
+ assert.equal(flags[0].partId,'P1');
+ assert.equal(flags[0].claimId,'P1-C1');
+ assert.equal(flags[0].sourceId,'S1');
+ assert.equal(flags[0].name,'Kurtz');
+ assert.equal(flags[0].nameInSpan,true,'the name IS in the span — outside the window');
+ assert.match(flags[0].windowText,/door opening into a darkness/);
+ assert.doesNotMatch(flags[0].windowText,/Kurtz/);
+ assert.match(flags[0].matchedSentence,/manager smiled/);
+});
+
+test('stage C item 2: the Hobbes shape flags — a claim about one author cited to the other author\'s book inside a compare part',async()=>{
+ // Production shape (phase-2 validation): claims about Hobbes
+ // shipped cited to a Rousseau span. The part legitimately holds
+ // both books, so part scope cannot decide; the claim's single
+ // named subject can.
+ const hobbesSource={id:'S1',bookId:'163',title:'Leviathan — Thomas Hobbes',
+  page:120,url:'https://example.test/hobbes#page=120',
+  text:'Covenants without the sword are but words, and of no strength to secure a man at all. Authority rests on the covenant each man makes with every other man.',
+  preview:'Covenants without the sword are but words.'};
+ const rousseauSource={id:'S2',bookId:'552',title:'Discourse on Inequality — Jean-Jacques Rousseau',
+  page:88,url:'https://example.test/rousseau#page=88',
+  text:'The first man who, having enclosed a piece of ground, bethought himself of saying this is mine, and found people simple enough to believe him, was the real founder of civil society. Natural man lived solitary and free, troubling himself little about his fellows.',
+  preview:'The first man who enclosed a piece of ground.'};
+ const plan={version:'reader-evidence-v2',intent:'compare',
+  sources:[{label:'Thomas Hobbes',role:'primary',bookIds:['163']},
+   {label:'Jean-Jacques Rousseau',role:'primary',bookIds:['552']}],
+  parts:[{id:'P1',question:'How do Hobbes and Rousseau each ground political authority?',
+   sourceBookIds:['163','552'],searchQueries:['Hobbes Rousseau authority covenant'],
+   candidateSourceIds:['S1','S2']}],queries:['Hobbes Rousseau authority']};
+ const ai=makeAI([
+  answer('PART P1\nHobbes argues that political authority rests on the covenant each man makes with every other. [S2]\n'+
+   'Rousseau argues that civil society began when the first man enclosed a piece of ground and called it his own. [S2]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(
+  'How do Hobbes and Rousseau each ground political authority?',
+  [hobbesSource,rousseauSource],ai,[],
+  {plan,catalog:{163:'Leviathan — Thomas Hobbes',552:'Discourse on Inequality — Jean-Jacques Rousseau'},trace:true});
+ assert.match(result.answer,/Hobbes argues that political authority rests on the covenant/,
+  'the claim ships: the cross-work check is record-only');
+ const flags=result.trace.final.crossWorkCitationFlags;
+ assert.equal(flags.length,1,'only the Hobbes-on-Rousseau claim flags');
+ assert.deepEqual(flags[0],{partId:'P1',claimId:'P1-C1',sourceId:'S2',
+  spanId:'S2-Q1',basis:'claim-subject',spanBookId:'552',
+  partBookIds:['163','552'],claimSubject:'Hobbes'});
+});
+
+test('stage C item 3: the Trajan shape flags — furniture ahead of the byline, and the credited name is the volume author',async()=>{
+ // Production shape (phase 3): the span head carries site
+ // furniture (banner repeating the volume title, a bracketed
+ // contents link, a roman-numeral letter number) ahead of
+ // "Trajan To Pliny", inside a volume titled for Cicero; the
+ // shipped claim credited Cicero with Trajan's letter.
+ const source={id:'S1',bookId:'81',title:'Letters of Marcus Tullius Cicero',
+  page:212,url:'https://example.test/cicero-letters#page=212',
+  text:'Online Library of Liberty: Letters of Marcus Tullius Cicero   [Back to Table of Contents]  LXXII  Trajan To Pliny  The question concerning children who were exposed by their parents, and afterwards preserved by others, and educated in a state of servitude, though born free, has been frequently discussed; I am of opinion that the claims of those who assert their right of freedom should be allowed.',
+  preview:'Trajan to Pliny, on children exposed by their parents.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Marcus Tullius Cicero',role:'primary',bookIds:['81']}],
+  parts:[{id:'P1',question:'What ruling does the letter give on children exposed by their parents?',
+   sourceBookIds:['81'],searchQueries:['exposed children freedom servitude'],
+   candidateSourceIds:['S1']}],queries:['exposed children ruling']};
+ const ai=makeAI([
+  answer('PART P1\nCicero discusses the legal rights of children who were exposed by their parents, arguing for their right to freedom regardless of their upbringing in servitude. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(
+  'What ruling does the letter give on children exposed by their parents?',
+  [source],ai,[],{plan,catalog:{81:'Letters of Marcus Tullius Cicero'},trace:true});
+ assert.match(result.answer,/Cicero discusses the legal rights/,
+  'the claim ships: the widened byline check is still record-only');
+ assert.deepEqual(result.trace.final.bylineDirectionFlags,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
+    creditedName:'Cicero',bylineAuthor:'Trajan',
+    creditedRole:'volume-author'}]);
+});
+
+test('stage C item 4: the widened orphan scan catches a mid-part pronoun whose recorded subject was never established',async()=>{
+ // Production shape (phase-3 guilt AP2): "She observes that
+ // Benjamin Disraeli's 'good conscience'…" shipped with the
+ // referent (Arendt) named nowhere — her naming claim was
+ // audit-omitted. The original scan is paragraph-initial and
+ // answer-global, so it stayed silent; the widened scan checks
+ // every sentence opening against the names established earlier
+ // in the same part, using the claim's recorded subject.
+ const source={id:'S1',bookId:'200',title:'Essays on Conscience — Sigmund Freud',
+  page:31,url:'https://example.test/conscience#page=31',
+  text:'The super-ego becomes exceptionally severe and unkind, reproaching the ego with the utmost violence in melancholia. A good conscience may rest on nothing more than the accident of a fortunate birth. Guilt is the price the ego pays to the super-ego for its failures.',
+  preview:'The super-ego becomes exceptionally severe.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Sigmund Freud',role:'primary',bookIds:['200']}],
+  parts:[{id:'P1',question:'How do writers explain the severity and the quieting of conscience?',
+   sourceBookIds:['200'],searchQueries:['super-ego severe conscience guilt'],
+   candidateSourceIds:['S1']}],queries:['conscience severity']};
+ // The review stub records each claim's subject in BOTH subject
+ // fields: normalizeReview carries attributedSpeaker onto the
+ // decision record unconditionally, while attributedSubject is
+ // recorded only when the claim text itself yields an extractable
+ // subject — and "She observes…" yields none (that record gap is
+ // documented in the Stage C checkpoint). The scan's subject
+ // lookup reads subject-then-speaker, the project's own order.
+ const subjectsByClaim={'P1-C1':'Sigmund Freud','P1-C2':'Hannah Arendt',
+  'P1-C3':'Sigmund Freud'};
+ const reviewPart=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const part=payload.parts[0];
+  return {response:JSON.stringify({parts:[{partId:part.partId,status:'answered',
+    answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[sourceId+'-Q1'],subjectAttributionStatus:'supported',
+     attributedSubject:subjectsByClaim[claim.claimId]||'',
+     attributedSpeaker:subjectsByClaim[claim.claimId]||''}))}))})};
+ };
+ const ai=makeAI([
+  answer('PART P1\nSigmund Freud argues that the super-ego becomes exceptionally severe and unkind in melancholia. [S1]\n'+
+   'She observes that Benjamin Disraeli\'s "good conscience" was due to his having been born an Englishman. [S1]\n'+
+   'He argues that guilt is the price the ego pays to the super-ego for its failures. [S1]'),
+  reviewPart],{decorateReview:false});
+ const result=await composeEvidenceAnswer(
+  'How do writers explain the severity and the quieting of conscience?',
+  [source],ai,[],{plan,catalog:{200:'Essays on Conscience — Sigmund Freud'},trace:true});
+ assert.match(result.answer,/She observes that Benjamin Disraeli/,
+  'the sentence ships: the widened scan is record-only');
+
+ assert.deepEqual(result.trace.final.pronounOrphanFlags,[],
+  'the original scan stays silent here, exactly as in production');
+ const wide=result.trace.final.pronounOrphanFlagsWide;
+ assert.equal(wide.length,1,'only the unestablished-subject opening flags; the Freud-anchored "He argues" does not');
+ assert.equal(wide[0].partId,'P1');
+ assert.equal(wide[0].claimId,'P1-C2');
+ assert.equal(wide[0].openingType,'pronoun');
+ assert.equal(wide[0].pronoun,'She');
+ assert.equal(wide[0].recordedSubject,'Hannah Arendt');
+ assert.deepEqual(wide[0].establishedNamesBefore,['Sigmund Freud']);
+ assert.match(wide[0].opening,/^She observes that Benjamin Disraeli/);
 });
