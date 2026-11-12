@@ -2705,7 +2705,11 @@ test('unknown-only required answer citation stays rejected and cannot be replace
  assert.equal(result.questionParts[0].status,'partial');
  assert.match(result.answer,/earlier injustice\. \[S1\]/);
  assert.doesNotMatch(result.answer,/nothing born remains constant/);
- assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'unknown-source-id',sentenceIndex:1}]);
+ // Stage B (B5): the rejection record carries the rejected sentence
+ // text and the specific failing element (the unknown ID itself).
+ assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'unknown-source-id',
+  text:'Fortune changes because nothing born remains constant. [S12]',
+  failingElement:{unknownIds:['S12']},sentenceIndex:1}]);
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.partId==='P1'&&issue.reason==='direct-answer-claim-missing'));
  assert.deepEqual(result.trace.citationRepairs,[]);
@@ -2751,7 +2755,9 @@ test('parenthetical source IDs normalize into the verified citation path and unk
  const invalid=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],invalidAI,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(invalid.outcome,'generation-failed');
- assert.deepEqual(invalid.trace.rejected,[{partId:'P1',reason:'unknown-source-id'}]);
+ assert.deepEqual(invalid.trace.rejected,[{partId:'P1',reason:'unknown-source-id',
+  text:'Hume links causal necessity to repeated conjunction [S99].',
+  failingElement:{unknownIds:['S99']}}]);
  assert.doesNotMatch(invalid.answer,/\(S99\)|\[S99\]/);
  assert.deepEqual(invalid.citations,[]);
 });
@@ -2769,7 +2775,9 @@ test('abbreviations stay inside cited sentences when source filtering rejects th
  const result=await composeEvidenceAnswer('How does Elizabeth’s view of Darcy change?',
   [source],ai,[],{plan,catalog:{900:title},trace:true});
  assert.equal(ai.calls.length,2);
- assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'source-not-linked-to-question-part',sentenceIndex:1}],
+ assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'source-not-linked-to-question-part',
+  text:'The "general prejudice against Mr. Darcy" is so strong that attempting to view him in an "amiable light" is a difficult task [S3].',
+  failingElement:{unlinkedIds:['S3']},sentenceIndex:1}],
   'the whole abbreviation-bearing sentence is rejected as one unit');
  assert.doesNotMatch(result.answer,/general prejudice against Mr\.?\s*Her journey/,
   'rejecting an unlinked citation must not leave the abbreviation fragment in the final answer');
@@ -2814,7 +2822,9 @@ test('an invalid citation on an initialism-bearing direct answer still leaves th
  assert.equal(result.questionParts[0].status,'partial');
  assert.doesNotMatch(result.answer,/W\.E\.B\. Du Bois defines/);
  assert.match(result.answer,/divided identity with conflicting strivings\. \[S3\]/);
- assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'unknown-source-id',sentenceIndex:1}]);
+ assert.deepEqual(result.trace.rejected,[{partId:'P1',reason:'unknown-source-id',
+  text:'W.E.B. Du Bois defines double consciousness as viewing oneself through other people’s eyes. [S99]',
+  failingElement:{unknownIds:['S99']},sentenceIndex:1}]);
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.partId==='P1'&&issue.reason==='direct-answer-claim-missing'));
 });
@@ -3690,7 +3700,7 @@ test('a review request failure is retried once per part like other review-output
 
 
 
-test('source-required containment drops one peripheral uncited part but suppresses an uncited majority (batch 22)',async()=>{
+test('source-required containment ships uncited parts labeled beside cited siblings; only a zero-cited answer suppresses (batch 22 shape, Stage B B0 rule)',async()=>{
  const runFixture=async(uncitedPartIds)=>{
   const plan={...twoSidePlan};
   const parts=plan.parts;
@@ -3724,20 +3734,46 @@ test('source-required containment drops one peripheral uncited part but suppress
   return composeEvidenceAnswer('How do Hume and Kant differ about causal necessity?',
    [hume,kant],ai,[],{plan,catalog,trace:true});
  };
+ // Stage B (B0): containment disposes per part. The batch-22 rule
+ // dropped the peripheral part and suppressed the whole answer at
+ // an uncited majority; validation showed that rule destroying
+ // good answers (phase-2 Hobbes, phase-3 solitude), so an uncited
+ // source-required part now keeps its reviewed answers and ships
+ // labeled whenever any sibling part is cited — and even an
+ // uncited MAJORITY ships on one cited part. Suppression remains
+ // only at zero cited parts (the third fixture).
  const peripheral=await runFixture(['P2']);
  assert.equal(peripheral.outcome,'verified-source-draft');
- assert.deepEqual(peripheral.trace.sourceRequiredContainment.droppedPartIds,['P2']);
- assert.equal(peripheral.questionParts.find(part=>part.partId==='P2').answerStatus,'unanswered');
+ assert.deepEqual(peripheral.trace.sourceRequiredContainment.droppedPartIds,[]);
+ assert.equal(peripheral.trace.sourceRequiredContainment.disposition,
+  'answer-level-shipped-with-uncited-parts');
+ assert.deepEqual(peripheral.trace.sourceRequiredContainment.citedPartIds,['P1','P3']);
+ assert.equal(peripheral.trace.sourceRequiredContainment.uncitedFraction,1/3);
+ assert.deepEqual(peripheral.trace.sourceRequiredContainment.partDispositions
+  .find(entry=>entry.partId==='P2'),
+  {partId:'P2',sourceRequired:true,cited:false,disposition:'shipped-labeled'});
+ assert.notEqual(peripheral.questionParts.find(part=>part.partId==='P2').answerStatus,'unanswered',
+  'the uncited part is disposed of on its own — it ships, labeled');
  assert.match(peripheral.missing,/How does Kant explain causal necessity/);
  assert.match(peripheral.answer,/Hume connects necessity to custom/);
  assert.match(peripheral.answer,/whereas Kant treats causality/);
- assert.doesNotMatch(peripheral.answer,/Kant treats causality as an a priori category of relation/);
+ assert.match(peripheral.answer,/Kant presents causal order through the structure of human understanding/,
+  'the uncited part keeps its reviewed answers under the label');
+ assert.match(peripheral.answer,
+  /Retrieved passages could not be verified as supporting this part of the question/);
  const majority=await runFixture(['P1','P2']);
- assert.equal(majority.outcome,'generation-failed');
- assert.equal(majority.trace.sourceRequiredContainment.disposition,'suppressed-not-strict-minority');
+ assert.equal(majority.outcome,'verified-source-draft');
+ assert.equal(majority.trace.sourceRequiredContainment.disposition,
+  'answer-level-shipped-with-uncited-parts');
  assert.deepEqual(majority.trace.sourceRequiredContainment.uncitedPartIds,['P1','P2']);
- assert.doesNotMatch(majority.answer,/whereas Kant treats causality/,
-  'a cited sibling does not make the uncited majority safe to ship');
+ assert.equal(majority.trace.sourceRequiredContainment.uncitedFraction,2/3);
+ assert.match(majority.answer,/whereas Kant treats causality/,
+  'one cited part carries the answer; the uncited majority ships labeled, not suppressed');
+ const zeroCited=await runFixture(['P1','P2','P3']);
+ assert.equal(zeroCited.outcome,'generation-failed');
+ assert.equal(zeroCited.trace.sourceRequiredContainment.disposition,'suppressed-no-cited-parts');
+ assert.deepEqual(zeroCited.trace.sourceRequiredContainment.citedPartIds,[]);
+ assert.equal(zeroCited.failureCode,'source-required-no-cited-parts');
 });
 
 test('review-only retry reuses composition and succeeds after a review deadline (batch 22)',async()=>{
@@ -3872,7 +3908,16 @@ test('flat reviewer decisions retain exact provenance and source-encoded spans',
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[source],ai,[],{
   plan:{...onePartPlan,sources:[{label:'Hume commentary',role:'commentary',bookIds:['35']}]},catalog,trace:true});
- assert.equal(result.coverage,'full');
+ // Stage B (B2): this fixture's page IS an editor's introduction
+ // (its provenance assertions below say so), and the claim rests
+ // entirely on it while presenting the content as Hume's own
+ // position. Apparatus spans never count as substantive support,
+ // so the part is uncited for containment; with no other part the
+ // answer suppresses. The provenance behavior this test exists
+ // for is unchanged and still asserted below.
+ assert.equal(result.coverage,'none');
+ assert.deepEqual(result.trace.sourceRequiredContainment.apparatusExcludedSourceIds,['S1']);
+ assert.equal(result.trace.sourceRequiredContainment.disposition,'suppressed-no-cited-parts');
  assert.equal(reviewPayload.claims[0].claimId,'P1-C1');
  assert.equal(reviewPayload.claims[0].text,'Hume says necessity arises from custom after repeated conjunction.');
  assert.deepEqual(reviewPayload.claims[0].sourceIds,['S1']);
@@ -4635,7 +4680,9 @@ test('rejection containment drops a softened rewrite of a rejected claim (B7-2)'
  // the rewrite's 6 shared terms over the smaller term set (its own 7),
  // not the one-sided 6/12 = 0.5 this fixture recorded before.
  assert.deepEqual(result.trace.rejectionContainment,
-  [{partId:'P1',claimId:'P1-C3',matchedRejectedClaimId:'P1-C2',containment:0.857}],
+  [{partId:'P1',claimId:'P1-C3',
+   claimText:'The crossing suggests that empires decline as luxury corrupts citizens.',
+   matchedRejectedClaimId:'P1-C2',containment:0.857}],
   'the uncited rewrite covers most of its own terms from the rejected claim');
  assert.doesNotMatch(result.answer,/empires decline as luxury corrupts citizens/,
   'the post-rejection rewrite does not ship');
@@ -4718,7 +4765,9 @@ test('rejection containment drops a softened rewrite whose terms mostly live ins
   [vidalSalt],ai,[],{plan:vidalPlan,catalog:batch4Catalog,trace:true});
  assert.equal(ai.calls.length,2,'containment is deterministic and makes no model call');
  assert.deepEqual(result.trace.rejectionContainment,
-  [{partId:'P1',claimId:'P1-C3',matchedRejectedClaimId:'P1-C2',containment:0.857}],
+  [{partId:'P1',claimId:'P1-C3',
+   claimText:'The crossing suggests that empires decline as luxury corrupts citizens.',
+   matchedRejectedClaimId:'P1-C2',containment:0.857}],
   'the softened rewrite is measured against the smaller term set and drops');
  assert.doesNotMatch(result.answer,/empires decline as luxury corrupts citizens/,
   'the softened post-rejection rewrite does not ship');
@@ -6715,11 +6764,14 @@ test('batch 30 B30-5: the Smith shape ships — an unselected part stays general
  assert.notEqual(p2.status,'unsupported');
 });
 
-test('batch 30 B30-5: a per-part selected source keeps the part source-required and containment still fires',async()=>{
+test('batch 30 B30-5 converse, Stage B B0 rule: a source-required uncited part ships labeled beside its cited sibling',async()=>{
  // Converse: selection recorded direct support for P2 as well, so
- // P2 IS source-required; its uncited claim fails the citation gate,
- // the repair stays uncited, and the 2-part containment suppresses
- // the whole answer exactly as before this batch.
+ // P2 IS source-required and its claim stays uncited. Under the
+ // batch-30/31 rules this 2-part shape suppressed the whole answer
+ // (P2 was not a strict minority, and the plan is not book-scoped
+ // here). Stage B (B0) disposes per part instead: P1 is cited, so
+ // the answer ships and P2 ships labeled — the suppression this
+ // fixture used to assert is exactly the phase-3 solitude loss.
  const refuseRepair=({messages})=>{
   const payload=parsePayload(messages);
   return {response:JSON.stringify({parts:[{partId:payload.parts[0].partId,
@@ -6736,11 +6788,15 @@ test('batch 30 B30-5: a per-part selected source keeps the part source-required 
   ai,[],{plan:b30SmithPlan,
    catalog:{...catalog,'260':'The Wealth of Nations — Adam Smith'},trace:true});
  assert.equal(result.trace.sourceRequiredContainment.disposition,
-  'suppressed-not-strict-minority');
+  'answer-level-shipped-with-uncited-parts');
  assert.deepEqual(result.trace.sourceRequiredContainment.uncitedPartIds,['P2']);
- assert.equal(result.outcome,'generation-failed');
- assert.doesNotMatch(result.answer,/increases productivity by dexterity/,
-  'the cited part is contained with the uncited source-required part');
+ assert.deepEqual(result.trace.sourceRequiredContainment.citedPartIds,['P1']);
+ assert.equal(result.trace.sourceRequiredContainment.uncitedFraction,1/2);
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.match(result.answer,/increases productivity by dexterity/,
+  'the cited part ships; the uncited source-required part no longer contains it');
+ assert.match(result.answer,
+  /Retrieved passages could not be verified as supporting this part of the question/);
 });
 
 // ---------------------------------------------------------------------------
@@ -6798,9 +6854,10 @@ test('batch 31 B31-1: the Smith shape ships — a book-scoped answer with one ci
 });
 
 test('batch 31 B31-1: a book-scoped plan with zero cited parts still suppresses',async()=>{
- // The answer-level floor: book scope relaxes WHICH parts must be
- // cited, not WHETHER any must. With no cited source-required part
- // the per-part suppression applies exactly as before.
+ // The answer-level floor (unchanged by Stage B's B0, which makes
+ // the answer-level rule universal): WHICH parts must be cited is
+ // relaxed, not WHETHER any must. With zero cited parts anywhere
+ // the suppression applies exactly as before.
  const refuseRepair=({messages})=>{
   const payload=parsePayload(messages);
   return {response:JSON.stringify({parts:[{partId:payload.parts[0].partId,
@@ -6819,20 +6876,29 @@ test('batch 31 B31-1: a book-scoped plan with zero cited parts still suppresses'
    catalog:{...catalog,'260':'The Wealth of Nations — Adam Smith'},selectedBookId:'260',trace:true});
  assert.equal(result.outcome,'generation-failed');
  const containment=result.trace.sourceRequiredContainment;
- assert.equal(containment.disposition,'suppressed-not-strict-minority');
- assert.equal(containment.level,'per-part',
-  'the fall-through to the per-part rule is recorded as such');
- assert.deepEqual(containment.uncitedBookScopedPartIds,[]);
+ // Stage B (B0): the suppression disposition names its actual
+ // trigger — zero cited parts — and containment now evaluates at
+ // answer level for every plan, book-scoped or not.
+ assert.equal(containment.disposition,'suppressed-no-cited-parts');
+ assert.equal(containment.level,'answer');
+ assert.deepEqual(containment.citedPartIds,[]);
+ assert.equal(containment.uncitedFraction,1);
+ assert.deepEqual(containment.uncitedBookScopedPartIds,['P1','P2'],
+  'book-scope provenance is recorded even on the suppression path');
+ assert.equal(result.failureCode,'source-required-no-cited-parts');
  assert.doesNotMatch(result.answer,/increases productivity by dexterity/);
 });
 
-test('batch 31 B31-1: an all-books two-part plan keeps per-part containment (one uncited part still suppresses)',async()=>{
+test('batch 31 B31-1 pilot (iii), Stage B B0 rule: an all-books two-part plan ships its cited part and labels the uncited one',async()=>{
  // Pilot (iii): the two parts are scoped to DIFFERENT books, so
- // the plan is not book-scoped; one uncited source-required part
- // of two is not a strict minority and the whole answer is
- // contained exactly as before this batch. (A two-book explain
- // plan: normalization adds no synthetic comparison part, so the
- // plan that reaches containment is exactly these two parts.)
+ // the plan is not book-scoped; under B31-1 one uncited
+ // source-required part of two was not a strict minority and the
+ // whole answer was contained. Stage B (B0) removes the
+ // book-scope distinction: containment is answer-level for every
+ // plan, so the cited part ships and the uncited part ships
+ // labeled. (A two-book explain plan: normalization adds no
+ // synthetic comparison part, so the plan that reaches containment
+ // is exactly these two parts.)
  const plan={version:'reader-evidence-v2',intent:'explain',
   sources:[{label:'David Hume',role:'primary',bookIds:['35']},
    {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
@@ -6873,14 +6939,17 @@ test('batch 31 B31-1: an all-books two-part plan keeps per-part containment (one
   'How does Hume explain causal necessity and how does Kant explain it?',
   [{...hume,candidatePartIds:['P1']},{...kant,candidatePartIds:['P2']}],
   ai,[],{plan,catalog,trace:true});
- assert.equal(result.outcome,'generation-failed');
+ assert.equal(result.outcome,'verified-source-draft');
  const containment=result.trace.sourceRequiredContainment;
- assert.equal(containment.level,'per-part');
- assert.equal(containment.disposition,'suppressed-not-strict-minority');
+ assert.equal(containment.level,'answer');
+ assert.equal(containment.disposition,'answer-level-shipped-with-uncited-parts');
  assert.deepEqual(containment.uncitedPartIds,['P2']);
- assert.deepEqual(containment.uncitedBookScopedPartIds,[]);
- assert.doesNotMatch(result.answer,/Hume connects necessity to custom/,
-  'the cited sibling is contained with the uncited part, as before');
+ assert.deepEqual(containment.uncitedBookScopedPartIds,[],
+  'book-scope provenance is still recorded — this plan is not book-scoped');
+ assert.match(result.answer,/Hume connects necessity to custom/,
+  'the cited sibling ships; it is no longer contained with the uncited part');
+ assert.match(result.answer,
+  /Retrieved passages could not be verified as supporting this part of the question: How does Kant explain causal necessity\?/);
 });
 
 test('batch 31 B31-1: a book-scoped three-part plan ships with two uncited parts labeled (no minority arithmetic at answer level)',async()=>{
@@ -7503,13 +7572,14 @@ test('batch 33 B33-8: an all-uncited part still gets a review packet — the can
  assert.equal(result.trace.reviewContract.supportIssues.some(item=>
   item.reason==='part-level-context-not-supported'),false,
   'no part-level-context-not-supported kills remain for the part');
- // Shipment of this exact shape is then governed by B31-1's
- // zero-cited containment rule (a book-scoped answer with no
- // verified citation still suppresses) — a separate approved
- // policy, outside B33-8's scope. What B33-8 changes is that the
- // refusal no longer rests on an unmeasured review.
+ // Shipment of this exact shape is then governed by the
+ // zero-cited containment rule (an answer with no verified
+ // citation still suppresses; B31-1's floor, universal since
+ // Stage B's B0) — a separate approved policy, outside B33-8's
+ // scope. What B33-8 changes is that the refusal no longer rests
+ // on an unmeasured review.
  assert.equal(result.trace.sourceRequiredContainment.disposition,
-  'suppressed-not-strict-minority');
+  'suppressed-no-cited-parts');
 });
 
 
@@ -8669,8 +8739,16 @@ test('batch 35 B35-6 pilot (disclosure generation): a requirement ending unanswe
   [source],ai,[],{plan,catalog:{258:'War and Peace — Leo Tolstoy'},trace:true});
  assert.match(result.answer,/aggregate of innumerable individual acts/,
   'the supported claim still ships');
- assert.match(result.answer,/Retrieved passages could not be verified as supporting this part of the question: What do Tolstoy’s passages describe of Prince Andrei’s battlefield experiences in the war\?/,
-  'the unanswered requirement generates the part’s disclosure label');
+ // Stage B (B4): the label's subject is the unmet REQUIREMENT,
+ // not the whole part question — the part DID ship verified
+ // content, and the old whole-question wording claimed it hadn't.
+ assert.match(result.answer,/Retrieved passages could not be verified as supporting this part of the question: Describe Prince Andrei’s battlefield experiences\./,
+  'the unanswered requirement generates the part’s disclosure label, scoped to the requirement');
+ assert.doesNotMatch(result.answer,/could not be verified as supporting this part of the question: What do Tolstoy/);
+ assert.deepEqual(result.trace.final?.disclosureLabels,
+  [{partId:'P1',kind:'unanswered-requirement',
+   text:'Retrieved passages could not be verified as supporting this part of the question: Describe Prince Andrei’s battlefield experiences.'}],
+  'the exact label text is recorded for verbatim verification');
  assert.deepEqual(result.trace.final?.unansweredRequirementLabels,
   [{partId:'P1',requirementIds:['P1-R1']}],
   'the generated disclosure is on the trace');
@@ -9024,4 +9102,301 @@ test('redesign Stage A: the pronoun-orphan flag is recorded and never acted on',
   'the claim ships: the flag is record-only and removes nothing');
  assert.deepEqual(result.trace.final.pronounOrphanFlags,
   [{partId:'P1',paragraphIndex:0,pronoun:'He'}]);
+});
+
+// ---------------------------------------------------------------------------
+// Stage B tranche 1 (B0 solitude shape, B2, B5, B6): pilot-route tests.
+// ---------------------------------------------------------------------------
+
+test('stage B B0: the solitude shape ships — a cited part carries the answer while the uncited source-required part is labeled, not containing',async()=>{
+ // Phase-3 solitude AP1: one part's evidence honestly did not
+ // support it, and the old strict-minority rule suppressed the
+ // whole build including the other part's fully supported draft.
+ // Here P1 ships cited; P2 is source-required and its claim
+ // stays uncited — under B0 it ships labeled instead of vetoing.
+ const p1Source={...hume,candidatePartIds:['P1'],
+  candidatePartSupport:[{partId:'P1',support:'context'}]};
+ const p2Source={...kant,candidatePartIds:['P2'],
+  candidatePartSupport:[{partId:'P2',support:'direct'}]};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',
+   sourceBookIds:[],searchQueries:['Hume necessity custom'],
+   candidateSourceIds:['S1']},
+   {id:'P2',question:'How does Kant explain causal necessity?',
+   sourceBookIds:['40'],searchQueries:['Kant causality a priori'],
+   candidateSourceIds:['S2']}],
+  queries:['Hume necessity custom','Kant causality a priori']};
+ const reviewAll=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const reviewParts=payload.parts.map(part=>{
+   const contextIds=(part.contextClaims||[]).map(claim=>claim.claimId);
+   const claimIds=payload.claims.filter(claim=>claim.partId===part.partId)
+    .map(claim=>claim.claimId);
+   return {partId:part.partId,status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:[...claimIds,...contextIds],
+    retainedContextClaimIds:contextIds};
+  });
+  return {response:JSON.stringify({parts:reviewParts,
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const draft='PART P1\nHume links necessity to custom and regular conjunction. [S1]\n\n'+
+  'PART P2\nKant presents causal order through the structure of human understanding.';
+ const ai=makeAI([answer(draft),reviewAll,answer(draft),reviewAll],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer(
+  'How does Hume explain causal necessity and how does Kant explain it?',
+  [p1Source,p2Source],ai,[],{plan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ const containment=result.trace.sourceRequiredContainment;
+ assert.equal(containment.disposition,'answer-level-shipped-with-uncited-parts');
+ assert.deepEqual(containment.partDispositions.find(entry=>entry.partId==='P1'),
+  {partId:'P1',sourceRequired:true,cited:true,disposition:'shipped-cited'});
+ assert.deepEqual(containment.partDispositions.find(entry=>entry.partId==='P2'),
+  {partId:'P2',sourceRequired:true,cited:false,disposition:'shipped-labeled'});
+ assert.equal(containment.uncitedFraction,1/2);
+ assert.match(result.answer,/Hume links necessity to custom/);
+ assert.match(result.answer,/Kant presents causal order/,
+  'the uncited source-required part ships its reviewed prose');
+ // Stage B (B4): the uncited source-required part opens with the
+ // general-context framing line, ahead of its prose.
+ assert.match(result.answer,
+  /No library passages could be verified for this part of the question; what follows is general knowledge\.\nKant presents causal order/);
+ assert.deepEqual(result.trace.final.generalContextFraming,
+  [{scope:'part',partId:'P2'}]);
+ assert.match(result.answer,
+  /Retrieved passages could not be verified as supporting this part of the question: How does Kant explain causal necessity\?/);
+});
+
+test('stage B B5: an invalid-citation-format rejection records the sentence text and the failing token',async()=>{
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1, S2a]\n'+
+   'Hume also treats custom as the great guide of human life. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ const record=result.trace.rejected.find(item=>item.reason==='invalid-citation-format');
+ assert.ok(record,'the malformed citation group is rejected at validation');
+ assert.match(record.text,/Hume links necessity to custom and regular conjunction/);
+ assert.deepEqual(record.failingElement.invalidIds,['S2a'],
+  'the record names the exact token that failed the format check');
+ assert.deepEqual(record.failingElement.groups,['[S1, S2a]']);
+ assert.match(result.answer,/great guide of human life/,
+  'the well-formed sentence is untouched');
+});
+
+test('stage B B2: a contents-page citation does not count as substantive support for containment',async()=>{
+ // The phase-2 Hobbes shape in miniature: the part's only cited
+ // source is a table-of-contents page. The reviewer accepts the
+ // claim, but contents leaders are apparatus — the source is
+ // excluded from the part's support, the part counts uncited,
+ // and (a sibling being cited) it ships labeled under B0.
+ const toc={id:'S3',bookId:'40',title:catalog[40],page:7,url:'https://example.test/kant#page=7',
+  text:'Contents\nChapter One: The Categories of Relation . . . 12\nChapter Two: The Deductions of the Understanding . . . 27\nChapter Three: The Schematism of the Concepts . . . 41',
+  preview:'Contents of the work.',candidatePartIds:['P2']};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',
+   sourceBookIds:['35'],searchQueries:['Hume necessity custom'],
+   candidateSourceIds:['S1']},
+   {id:'P2',question:'How is Kant’s work organized?',
+   sourceBookIds:['40'],searchQueries:['Kant categories deductions'],
+   candidateSourceIds:['S3']}],
+  queries:['Hume necessity custom','Kant categories deductions']};
+ const reviewAll=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const reviewParts=payload.parts.map(part=>({partId:part.partId,
+   status:'answered',answerStatus:'answered',
+   directAnswerClaimIds:payload.claims.filter(claim=>claim.partId===part.partId)
+    .map(claim=>claim.claimId),retainedContextClaimIds:[]}));
+  return {response:JSON.stringify({parts:reviewParts,
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const draft='PART P1\nHume links necessity to custom and regular conjunction. [S1]\n\n'+
+  'PART P2\nKant organizes the work around the categories of relation and the deductions that follow. [S3]';
+ const ai=makeAI([answer(draft),reviewAll,answer(draft),reviewAll],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer(
+  'How does Hume explain causal necessity, and how is Kant’s work organized?',
+  [hume,toc],ai,[],{plan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ const containment=result.trace.sourceRequiredContainment;
+ assert.deepEqual(containment.apparatusExcludedSourceIds,['S3']);
+ assert.deepEqual(containment.uncitedPartIds,['P2'],
+  'the contents-cited part counts uncited for containment');
+ const p2Disposition=containment.partDispositions.find(entry=>entry.partId==='P2');
+ assert.deepEqual(p2Disposition.apparatusExcludedSourceIds,['S3']);
+ assert.equal(p2Disposition.disposition,'shipped-labeled');
+ assert.match(result.answer,/Retrieved passages could not be verified as supporting this part of the question/);
+});
+
+test('stage B B2: shipped apparatus citations are recorded with their framing, and the packet marks apparatus spans',async()=>{
+ // The edition's introduction occupies its own page; the work's
+ // text begins on the next. Claims resting on the introduction
+ // page's span are recorded as apparatus citations — one framed
+ // as the edition's introduction (framed:true), one presenting
+ // the editor's survey as the author's own act (framed:false).
+ // The introduction source is apparatus-only, so containment
+ // excludes it; the part still counts cited through the text
+ // page, the answer ships, and nothing is removed: the record
+ // is the measurement, per the standing record-only rule.
+ const introPage={id:'S4',bookId:'99',title:'Essays on Causation — David Hume',page:11,
+  url:'https://example.test/essays#page=11',
+  text:'Editor’s Introduction\nThe editor presents the author’s argument as a defence of custom against rationalist accounts of causation, surveying the essays in the order of their composition and noting where the author revised his views for the second edition.',
+  preview:'The edition’s introduction.',candidatePartIds:['P1']};
+ const textPage={id:'S5',bookId:'99',title:'Essays on Causation — David Hume',page:12,
+  url:'https://example.test/essays#page=12',
+  text:'Our idea of necessity and causation arises entirely from the uniformity observable in nature, where similar objects are constantly conjoined together, and the mind is determined by custom to infer one from the other, so that causal reasoning rests on experienced conjunction rather than on any impression of necessary connection in the objects themselves.',
+  preview:'The work’s opening text.',candidatePartIds:['P1']};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['99']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',
+   sourceBookIds:['99'],searchQueries:['Hume necessity custom'],
+   candidateSourceIds:['S4','S5']}],
+  queries:['Hume necessity custom']};
+ let reviewPayload;
+ const reviewMixed=(_model,{messages})=>{
+  reviewPayload=parsePayload(messages);
+  const spanByMarker=marker=>reviewPayload.spanCatalog
+   .find(span=>span.text.includes(marker));
+  const spanForClaim={
+   'P1-C1':spanByMarker('editor presents'),
+   'P1-C2':spanByMarker('editor presents'),
+   'P1-C3':spanByMarker('uniformity observable')};
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C3'],
+    retainedContextClaimIds:[]}],
+   claims:reviewPayload.claims.map(claim=>{const sourceId=claim.sourceIds[0];
+    return {claimId:claim.claimId,status:'answered',
+     sources:[{sourceId,status:'answered',
+      spanIds:[spanForClaim[claim.claimId].spanId]}]};})})};
+ };
+ const ai=makeAI([answer('PART P1\nThe edition’s introduction presents the argument as a defence of custom against rationalist accounts. [S4]\n'+
+   'The author surveys the essays in the order of their composition. [S4]\n'+
+   'Hume holds that our idea of necessity arises from the uniformity observable in nature and the mind’s determination by custom. [S5]'),
+  reviewMixed],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [introPage,textPage],ai,[],{plan,catalog:{...catalog,99:introPage.title},trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ const introSpan=reviewPayload.spanCatalog.find(span=>span.text.includes('editor presents'));
+ const bodySpan=reviewPayload.spanCatalog.find(span=>span.text.includes('uniformity observable'));
+ assert.equal(introSpan.region,'apparatus',
+  'the packet catalog marks the introduction span as apparatus for the audit');
+ assert.equal(bodySpan.region,undefined,
+  'the work’s own prose carries no apparatus marker');
+ assert.deepEqual(result.trace.final.apparatusCitations,[
+  {partId:'P1',claimId:'P1-C1',sourceId:'S4',framed:true},
+  {partId:'P1',claimId:'P1-C2',sourceId:'S4',framed:false}],
+  'both introduction-resting claims are recorded; the body claim is not');
+ assert.deepEqual(result.trace.sourceRequiredContainment.apparatusExcludedSourceIds,['S4'],
+  'the apparatus-only introduction source is excluded from the support count');
+ assert.deepEqual(result.trace.sourceRequiredContainment.citedPartIds,['P1'],
+  'the part still counts cited through its text-page source');
+});
+
+const b6TolstoySource={id:'S1',bookId:'258',title:'War and Peace — Leo Tolstoy',
+ page:901,url:'https://example.test/warpeace#page=901',
+ text:'The life of nations is not contained in the lives of a few men, for the connection between those men and the nations has not been found. What moves nations is not the will of heroes but the sum of innumerable individual acts, each too small to direct the whole.',
+ preview:'The life of nations is not contained in the lives of a few men.'};
+const b6TolstoyPlan={version:'reader-evidence-v2',intent:'explain',
+ sources:[{label:'Leo Tolstoy',role:'primary',bookIds:['258']}],
+ parts:[{id:'P1',question:'How does Tolstoy explain historical movement?',
+  sourceBookIds:['258'],searchQueries:['Tolstoy nations movement'],
+  candidateSourceIds:['S1']}],
+ queries:['Tolstoy nations movement']};
+const b6ReviewAcceptingCitedOnly=(_model,{messages})=>{
+ const payload=parsePayload(messages);
+ const cited=payload.claims.filter(claim=>(claim.sourceIds||[]).length);
+ return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:cited.map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}],
+  claims:cited.map(claim=>({claimId:claim.claimId,status:'answered',
+   sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+    spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+};
+
+test('stage B B6: the Tolstoy shape — a naming sentence removed as context is retained when the part opens on a pronoun',async()=>{
+ const ai=makeAI([answer('PART P1\nTolstoy frames historical movement as the aggregate of innumerable individual acts rather than the will of heroes.\n'+
+   'He contends that the life of nations is not contained within the lives of a few prominent men. [S1]'),
+  b6ReviewAcceptingCitedOnly],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Tolstoy explain historical movement?',
+  [b6TolstoySource],ai,[],{plan:b6TolstoyPlan,
+   catalog:{258:'War and Peace — Leo Tolstoy'},trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.deepEqual(result.trace.final.namingSentenceRetentions,
+  [{partId:'P1',claimId:'P1-C1',name:'Tolstoy',
+   sentence:'Tolstoy frames historical movement as the aggregate of innumerable individual acts rather than the will of heroes.'}]);
+ assert.match(result.answer,/^Tolstoy frames historical movement/,
+  'the retained naming sentence heads the part');
+ assert.match(result.answer,/He contends that the life of nations/,
+  'the cited claim still ships after it');
+ assert.deepEqual(result.trace.final.pronounOrphanFlags,[],
+  'no orphan ships: the flag’s own shape is cured by the retention');
+});
+
+test('stage B B6: the Aurelius shape — a bigram naming sentence removed as context is retained',async()=>{
+ const source={id:'S1',bookId:'18',title:'Meditations — Marcus Aurelius',
+  page:64,url:'https://example.test/meditations#page=64',
+  text:'Each impression that arrives should be tested before it is accepted, for the mind adds judgments to events and then suffers from its own additions more than from the events themselves.',
+  preview:'Each impression should be tested before it is accepted.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Marcus Aurelius',role:'primary',bookIds:['18']}],
+  parts:[{id:'P1',question:'How does Marcus Aurelius counsel treating impressions?',
+   sourceBookIds:['18'],searchQueries:['Aurelius impressions judgment'],
+   candidateSourceIds:['S1']}],
+  queries:['Aurelius impressions judgment']};
+ const ai=makeAI([answer('PART P1\nMarcus Aurelius writes his meditations as exercises addressed to himself, testing each impression before assent.\n'+
+   'He treats each impression as material for judgment rather than as a command. [S1]'),
+  b6ReviewAcceptingCitedOnly],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Marcus Aurelius counsel treating impressions?',
+  [source],ai,[],{plan,catalog:{18:'Meditations — Marcus Aurelius'},trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.deepEqual(result.trace.final.namingSentenceRetentions,
+  [{partId:'P1',claimId:'P1-C1',name:'Marcus Aurelius',
+   sentence:'Marcus Aurelius writes his meditations as exercises addressed to himself, testing each impression before assent.'}]);
+ assert.match(result.answer,/^Marcus Aurelius writes his meditations/);
+});
+
+test('stage B B6 negative control: a naming claim removed as an unsupported CITED claim is never retained',async()=>{
+ const reviewRejectingC1=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C2'],
+    retainedContextClaimIds:[]}],
+   claims:[{claimId:'P1-C1',status:'unsupported',
+     sources:[{sourceId:'S1',status:'unsupported',spanIds:[]}]},
+    {claimId:'P1-C2',status:'answered',
+     sources:[{sourceId:'S1',status:'answered',
+      spanIds:[payload.claims.find(claim=>claim.claimId==='P1-C2')
+       .sourceEvidence[0].spanIds[0]]}]}]})};
+ };
+ const ai=makeAI([answer('PART P1\nTolstoy frames historical movement as the aggregate of innumerable individual acts. [S1]\n'+
+   'He contends that the life of nations is not contained within the lives of a few prominent men. [S1]'),
+  reviewRejectingC1],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Tolstoy explain historical movement?',
+  [b6TolstoySource],ai,[],{plan:b6TolstoyPlan,
+   catalog:{258:'War and Peace — Leo Tolstoy'},trace:true});
+ assert.equal(result.trace.final.namingSentenceRetentions,undefined,
+  'retention is for context removals only — an unsupported removal stays removed');
+ assert.match(result.answer,/^He contends that the life of nations/,
+  'the pronoun opening ships as-is (the record-only flag’s domain)');
+});
+
+test('stage B B6 negative control: no pronoun opening, no retention — and a name established by an earlier part blocks retention',async()=>{
+ const ai=makeAI([answer('PART P1\nTolstoy frames historical movement as the aggregate of innumerable individual acts.\n'+
+   'Tolstoy contends that the life of nations is not contained within the lives of a few prominent men. [S1]'),
+  b6ReviewAcceptingCitedOnly],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How does Tolstoy explain historical movement?',
+  [b6TolstoySource],ai,[],{plan:b6TolstoyPlan,
+   catalog:{258:'War and Peace — Leo Tolstoy'},trace:true});
+ assert.equal(result.trace.final.namingSentenceRetentions,undefined,
+  'the part opens by naming its subject — nothing is orphaned, nothing retained');
+ assert.match(result.answer,/^Tolstoy contends that the life of nations/);
 });

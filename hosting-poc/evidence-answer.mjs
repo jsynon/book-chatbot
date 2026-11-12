@@ -140,7 +140,7 @@ export const COMPOSER_PROMPT=`Answer the reader's exact question with a clear, u
 // Review source-derived claims against exact spans, while uncited context is
 // judged collectively at the part level. The reviewer names the direct claim
 // IDs so coverage is not tied to the first sentence or extra context rows.
-export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode and a requirements list with stable requirement IDs and verbatim questionAnchor fields. Use each anchor to preserve the exact requested subject and relation while judging the answer; matching its words is not enough to mark it answered. For every listed requirement, decide whether the complete answer addresses it directly; map it to the smallest set of answer claim IDs that fulfills it. Mark it partial or unanswered when the relevant claim is merely topical or leaves the requested relation unexplained. Qualified general-knowledge claims may fulfill a requirement even without library evidence, but source-derived claims must still pass the ordinary exact-span review. Each part/source evidence entry lists the spanIds allowed for that part and source; exact span text appears once in the top-level spanCatalog. Read a span's text from spanCatalog, and use it only when its ID is listed in the current part's evidence entry. A spanCatalog entry may also carry a head: the passage text immediately before that span. Read the head as context that can identify the span's subject; it is not citable evidence and cannot by itself support a claim. Source title, page, provenance, and source group are stored once in sourceCatalog; look them up using sourceDetailsId when present, otherwise use the evidence entry's id. A claim's sourceEvidence lists cited source IDs and likely span hints; source-group identity is not repeated there. If sourceContexts contains an entry whose sourceId matches an evidence entry's id, read that background text as context, not exact claim evidence. Never borrow a span from another part merely because the same span ID is listed there. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. Distinguish a work's own position from a reported view, narrative voice, or editorial context. For each cited source decision, return an evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary that states what the accepted span establishes and the relevant limit; these are review findings, not substitutes for exact-span validation. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Check that the response gives the kind of concrete, question-specific explanation the reader asked for; broad generalities that could fit unrelated topics are not a complete answer when the question calls for specific examples, perspectives, mechanisms, or contrasts. Apply this to relevance and usefulness without demanding citations for independent background or every factual sentence. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. When a claim says how one thing affects or relates to another, the span must support that connection; merely mentioning both things or a related consequence is not enough. A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means. Do not infer an author-wide theory from a character's line, isolated example, or passing theme unless the supplied span supports that broader scope. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author, speaker, or other person. For every source-derived claim that assigns an action, belief, motive, state, or trait to a named person, verify that the cited span and its supplied source context identify that person as the subject; do not transfer a statement or action from another or unidentified person merely because both appear in the same work. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
+export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode and a requirements list with stable requirement IDs and verbatim questionAnchor fields. Use each anchor to preserve the exact requested subject and relation while judging the answer; matching its words is not enough to mark it answered. For every listed requirement, decide whether the complete answer addresses it directly; map it to the smallest set of answer claim IDs that fulfills it. Mark it partial or unanswered when the relevant claim is merely topical or leaves the requested relation unexplained. Qualified general-knowledge claims may fulfill a requirement even without library evidence, but source-derived claims must still pass the ordinary exact-span review. Each part/source evidence entry lists the spanIds allowed for that part and source; exact span text appears once in the top-level spanCatalog. Read a span's text from spanCatalog, and use it only when its ID is listed in the current part's evidence entry. A spanCatalog entry may also carry a head: the passage text immediately before that span. Read the head as context that can identify the span's subject; it is not citable evidence and cannot by itself support a claim. A spanCatalog entry may also carry region: "apparatus": the span is edition apparatus — an introduction, preface, contents page, or translator's or editor's matter — not the work's own text. A claim resting on an apparatus span must present the material as the edition's editorial framing; a claim that presents apparatus content as the work's own text or as its author's own words is misattributed as written. Source title, page, provenance, and source group are stored once in sourceCatalog; look them up using sourceDetailsId when present, otherwise use the evidence entry's id. A claim's sourceEvidence lists cited source IDs and likely span hints; source-group identity is not repeated there. If sourceContexts contains an entry whose sourceId matches an evidence entry's id, read that background text as context, not exact claim evidence. Never borrow a span from another part merely because the same span ID is listed there. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. Distinguish a work's own position from a reported view, narrative voice, or editorial context. For each cited source decision, return an evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary that states what the accepted span establishes and the relevant limit; these are review findings, not substitutes for exact-span validation. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Check that the response gives the kind of concrete, question-specific explanation the reader asked for; broad generalities that could fit unrelated topics are not a complete answer when the question calls for specific examples, perspectives, mechanisms, or contrasts. Apply this to relevance and usefulness without demanding citations for independent background or every factual sentence. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. When a claim says how one thing affects or relates to another, the span must support that connection; merely mentioning both things or a related consequence is not enough. A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means. Do not infer an author-wide theory from a character's line, isolated example, or passing theme unless the supplied span supports that broader scope. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author, speaker, or other person. For every source-derived claim that assigns an action, belief, motive, state, or trait to a named person, verify that the cited span and its supplied source context identify that person as the subject; do not transfer a statement or action from another or unidentified person merely because both appear in the same work. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
 
 Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context. If a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim, it needs a source ID and exact span support. Merely mentioning a work or person in independent background does not require a citation. Mark uncited source-derived claims partial or unanswered; independent background and synthesis may remain uncited. Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness; the supplied passages cannot establish its truth, so do not treat their silence as disproof.
 
@@ -360,7 +360,7 @@ const STUDY_NOTE_RANGE_KEY=/^\s*\d+(?:\.\d+)?(?:[–—-]\d+(?:\.\d+)?)?\s*:\s+(
 const STUDY_NOTE_RANGE_REF=/\b\d+\.\d+[a-z]?(?:[–—-]\d+(?:\.\d+)?[a-z]?)\b/u;
 const STUDY_NOTE_GLOSS=/(?:^|\|\s*|;\s*)[a-z]\s+(?:Meaning of Heb|Or)\b/u;
 const STUDY_NOTE_CROSS_REF=/\b\d+(?:\.\d+)?(?:[–—-]\d+(?:\.\d+)?)?n(?![a-z])/u;
-export function classifySpanRegion(span,source){
+export function classifySpanRegion(span,source,{structuralOnly=false}={}){
   const text=String(span?.text||'');
   const head=String(span?.head||'');
   const headingLine=line=>{
@@ -375,8 +375,15 @@ export function classifySpanRegion(span,source){
   const firstLine=text.split(/\r?\n|\s*\|\s*/u)[0]||'';
   if(headingLine(firstLine))return 'apparatus';
   if(APPARATUS_TOC_LEADERS.test(text)&&/\b\d{1,4}\b/u.test(text))return 'apparatus';
+  // The short-page leg is a title-page signal for full book pages.
+  // Stage B (B2): the containment support count skips it
+  // (structuralOnly) — shortness alone is not positive evidence of
+  // the classes B2 names (contents pages, introductions,
+  // translator/editorial matter), and a short page can be genuine
+  // text (an aphorism, a short poem). The census and the packet
+  // marker keep the full classification.
   const pageText=String(source?.text||'').trim();
-  if(pageText&&pageText.length<150)return 'apparatus';
+  if(!structuralOnly&&pageText&&pageText.length<150)return 'apparatus';
   if(STUDY_NOTE_RANGE_KEY.test(text))return 'apparatus';
   if(STUDY_NOTE_RANGE_REF.test(text))return 'apparatus';
   if(STUDY_NOTE_GLOSS.test(text))return 'apparatus';
@@ -426,6 +433,16 @@ export const BATCH35_FIRING_FIELDS=[
   // prose, and the disclosure-label verbatim verification record.
   'final.spanIdLeaksStripped',
   'final.disclosureLabelVerification',
+  // Stage B tranche 1: B0's per-part containment dispositions,
+  // B2's shipped apparatus citations, B4's recorded label texts
+  // and general-context framing, and B6's naming-sentence
+  // retentions. (B5 rides the existing `rejected` trace field —
+  // its records gained text/failingElement fields.)
+  'sourceRequiredContainment.partDispositions',
+  'final.apparatusCitations',
+  'final.disclosureLabels',
+  'final.generalContextFraming',
+  'final.namingSentenceRetentions',
 ];
 
 // Batch 33 (B33-1): a head is continuous prose, not a window — the
@@ -1492,9 +1509,20 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
       const isRequiredAnswer=paragraphIndex===0&&sentenceIndex===0;
       const groups=citationGroups(unit),groupsWithIds=groups.filter(group=>group.looksLikeCitation);
       const normalizedSpanIds=[];
-      let checkedUnit=unit,reason='';
-      const reject=(why)=>{
-        rejected.push({partId:part.id,reason:why,...(units.length>1?{sentenceIndex:sentenceIndex+1}:{})});
+      let checkedUnit=unit,reason='',failingElement=null;
+      // Stage B (B5): every rejection record carries the rejected
+      // sentence text and, where the reason has one, the specific
+      // failing element — through batch 35 the records held only
+      // {partId, reason, sentenceIndex}, which made the
+      // invalid-citation-format cascade (guilt AP1: 13 rejections,
+      // citations stripped, general-context fallback) unjudgeable
+      // from the artifact. Records only; nothing about what is
+      // rejected changes.
+      const reject=(why,element)=>{
+        rejected.push({partId:part.id,reason:why,
+          text:String(unit||'').slice(0,320),
+          ...(element?{failingElement:element}:{}),
+          ...(units.length>1?{sentenceIndex:sentenceIndex+1}:{})});
       };
       if(!reason){
         const replacements=[];
@@ -1509,9 +1537,14 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
         }
         for(const {group,ids} of replacements.reverse())
           checkedUnit=checkedUnit.slice(0,group.start)+'['+ids.join(', ')+']'+checkedUnit.slice(group.end);
-        if(citationGroups(checkedUnit).filter(group=>group.looksLikeCitation)
-          .some(group=>!group.ids.length||group.ids.some(id=>!/^S[1-9]\d*$/.test(id))))
+        const malformedGroups=citationGroups(checkedUnit).filter(group=>group.looksLikeCitation)
+          .filter(group=>!group.ids.length||group.ids.some(id=>!/^S[1-9]\d*$/.test(id)));
+        if(malformedGroups.length){
           reason='invalid-citation-format';
+          failingElement={groups:malformedGroups.map(group=>String(group.raw||'').slice(0,80)),
+            invalidIds:[...new Set(malformedGroups.flatMap(group=>group.ids)
+              .filter(id=>!/^S[1-9]\d*$/.test(id)))]};
+        }
       }
       // A model sometimes mistakes a printed page number for a Worker source
       // ID (for example, turning source S5 on page 12 into S5, S12). Drop an
@@ -1522,7 +1555,8 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
         for(const group of citationGroups(checkedUnit).filter(item=>item.looksLikeCitation)){
           const known=group.ids.filter(id=>sourceById.has(id));
           const unknown=group.ids.filter(id=>!sourceById.has(id));
-          if(unknown.length&&!known.length){reason='unknown-source-id';break;}
+          if(unknown.length&&!known.length){reason='unknown-source-id';
+            failingElement={unknownIds:[...unknown]};break;}
           if(unknown.length)replacements.push({group,known,unknown});
         }
         if(!reason&&replacements.length){
@@ -1532,13 +1566,17 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
       }
       const checkedGroups=citationGroups(checkedUnit).filter(group=>group.looksLikeCitation);
       const ids=[...new Set(checkedGroups.flatMap(group=>group.ids))];
-      if(!reason&&ids.some(id=>!allowed.has(id)))reason='source-not-linked-to-question-part';
+      if(!reason&&ids.some(id=>!allowed.has(id))){reason='source-not-linked-to-question-part';
+        failingElement={unlinkedIds:ids.filter(id=>!allowed.has(id))};}
       if(!reason&&Array.isArray(part.sourceBookIds)&&part.sourceBookIds.length&&ids.some(id=>
-        !part.sourceBookIds.map(String).includes(String(sourceById.get(id)?.bookId||''))))reason='source-outside-question-scope';
+        !part.sourceBookIds.map(String).includes(String(sourceById.get(id)?.bookId||'')))){
+        reason='source-outside-question-scope';
+        failingElement={outOfScopeIds:ids.filter(id=>
+          !part.sourceBookIds.map(String).includes(String(sourceById.get(id)?.bookId||'')))};}
       let prose=checkedUnit;
       for(const group of checkedGroups)prose=prose.replace(group.raw,'');
       prose=prose.replace(/\s+([,.;!?])/g,'$1').replace(/\s{2,}/g,' ').trim();
-      if(prose.length<8){reject('answer-text-too-short');continue;}
+      if(prose.length<8){reject('answer-text-too-short',{proseLength:prose.length});continue;}
       const sourceGroups=authorSourceGroupsForPart(part,plan);
       const inference=hypotheticalInferenceWording(prose);
       if(!reason&&!hypotheticalQuestion&&crossAuthorComparison&&sourceGroups.length>=2&&
@@ -1553,14 +1591,17 @@ function validatePartAnswers(draftParts,sources,plan,question=''){
           if(!completeCitationGroup)reason='hypothetical-inference-missing-source-group-citation';
         }
       }
-      if(reason){reject(reason);continue;}
+      if(reason){reject(reason,failingElement);continue;}
       const quoteRepair=removeUnsupportedQuoteMarks(checkedUnit,sources);
       checkedUnit=quoteRepair.text;
       // Validate while citations are still beside the sentences they support.
       // Aggregating them at the paragraph end first can make an exact quote
       // look uncited when later sentences intervene.
-      if(!auditFinalAnswer(checkedUnit,sources).ok){
-        reject('quotation-citation-mismatch');continue;
+      const sentenceAudit=auditFinalAnswer(checkedUnit,sources);
+      if(!sentenceAudit.ok){
+        reject('quotation-citation-mismatch',{quoteFailures:(sentenceAudit.quoteFailures||[])
+          .map(failure=>String(failure.text||'').slice(0,120))});
+        continue;
       }
       const claimId=part.id+'-C'+(answers.length+1);
       // Store the same repaired prose that review/rendering will use. Later
@@ -3511,7 +3552,10 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       for(const span of bySpan.values())
         spanRegionClassifications.push({partId,sourceId,
           spanId:String(span?.spanId||''),
-          region:classifySpanRegion(span,source)});
+          region:classifySpanRegion(span,source),
+          // Stage B (B2): the structural-only classification the
+          // containment support count reads (see classifySpanRegion).
+          structuralRegion:classifySpanRegion(span,source,{structuralOnly:true})});
     }
   }
   return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions,
@@ -3596,7 +3640,11 @@ function compactReviewPayload(question,parts,claims){
         // Batch 33 (B33-1): the span's head rides the catalog as
         // context for identifying the span's subject; it is not a
         // citable span and cannot support a claim.
-        ...(span.head?{head:span.head}:{})});
+        ...(span.head?{head:span.head}:{}),
+        // Stage B (B2): the apparatus region marker rides the
+        // catalog with the span so the audit sees it at judgment
+        // time, not only in the packet entry.
+        ...(span.region==='apparatus'?{region:'apparatus'}:{})});
     if(typeof contextText==='string'&&contextText)
       sourceContexts.set(evidence.id,{sourceId:evidence.id,text:contextText});
     return {...metadata,...(sourceDetailsId!==sourceId?{sourceDetailsId}:{}),
@@ -3727,8 +3775,12 @@ function buildReviewPacket(answerParts,{sources,pageById,plan,question,
       const provenance=sourceProvenance(source,plan,spanText);
       return {id:page.id,title:page.title,page:page.page,provenance,
         ...(sourceVoiceGuidance(provenance)?{attributionRequirement:sourceVoiceGuidance(provenance)}:{}),
-        spans:orderedSpans.map(({spanId,text,head})=>({spanId,text,
-          ...(head?{head}:{})})),
+        spans:orderedSpans.map(span=>({spanId:span.spanId,text:span.text,
+          ...(span.head?{head:span.head}:{}),
+          // Stage B (B2): apparatus spans are marked for the audit —
+          // the reviewer judges claims resting on them under the
+          // editorial-framing requirement (see REVIEW_PROMPT).
+          ...(classifySpanRegion(span,source)==='apparatus'?{region:'apparatus'}:{})})),
         ...(selectionSupport.length?{selectionSupport}:{}),
         ...(source?.scopeText?{contextText:compactSourceContext(page.text,source.scopeText)}:{})};
     });
@@ -5621,6 +5673,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               overlapRatio(sibling.terms)>=matched.containment))continue;
             drops.push(answer.claimId);
             containment.push({partId,claimId:answer.claimId,
+              // Stage B (B5): the dropped claim's own text rides
+              // the record — ID-only records made these drops as
+              // unjudgeable as the validation rejections.
+              claimText:String(answer.text||'').slice(0,320),
               matchedRejectedClaimId:matched.claimId,
               containment:Math.round(matched.containment*1000)/1000,
               ...(matched.viaArchive?{viaArchive:true}:{})});
@@ -6090,81 +6146,213 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // after gate repairs and re-reviews have had their chance. The mode was
     // fixed from the validated plan; omission of citations cannot turn a
     // source-required part into general context.
+    //
+    // Stage B (B0): containment disposes PER PART, generalizing the
+    // batch-31 (B31-1) answer-level rule from book-scoped plans to
+    // every plan. The old per-part rule suppressed the whole answer
+    // whenever uncited source-required parts were not a strict
+    // minority, and dropped them when they were; validation showed
+    // the suppression destroying two fully reviewed answers
+    // (phase-2 Hobbes AP1 — exactly half the parts uncited; phase-3
+    // solitude AP1 — the uncited part's evidence honestly did not
+    // support it and its cited sibling died with it). Now: when at
+    // least one part of the answer carries a linked citation, the
+    // answer ships and each uncited source-required part is
+    // disposed of on its own — it keeps its reviewed answers and is
+    // labeled downstream by the B11-5 uncited-with-packet treatment
+    // (the label block below unions this record's uncited parts at
+    // level 'answer'), never vetoing cited parts. Whole-answer
+    // suppression remains only when ZERO parts are cited: an answer
+    // with no verified citation anywhere is general knowledge
+    // dressed as sourced, which is what containment exists to
+    // prevent. The uncited fraction and per-part dispositions are
+    // traced on every record so the rule change is measurable.
+    // Stage B (B2): apparatus spans never count as a part's
+    // substantive support. A cited source is apparatus-only for a
+    // part when every packet span of that source for that part
+    // classifies 'apparatus' under classifySpanRegion (B34-7) —
+    // the phase-2 Hobbes packet's only Leviathan span was a table
+    // of contents and it counted as the part's evidence. The count
+    // reads the census's structuralRegion (the B2 classes are
+    // structural: contents leaders, apparatus headings, study-note
+    // typography — bare page shortness is not positive evidence of
+    // any of them); the direct-classification fallback covers
+    // unreviewed paths. A source with no classifiable spans keeps
+    // the old behavior.
+    const regionCensus=new Map();
+    for(const entry of review?.spanRegionClassifications||
+      trace.reviewContract?.spanRegionClassifications||[]){
+      const key=entry.partId+'|'+entry.sourceId;
+      const tally=regionCensus.get(key)||{total:0,apparatus:0};
+      tally.total++;
+      if((entry.structuralRegion||entry.region)==='apparatus')tally.apparatus++;
+      regionCensus.set(key,tally);
+    }
+    const apparatusOnlyForPart=(partId,sourceId)=>{
+      const tally=regionCensus.get(partId+'|'+sourceId);
+      if(tally&&tally.total)return tally.apparatus===tally.total;
+      const source=sources.find(item=>String(item.id)===String(sourceId));
+      if(!source)return false;
+      const spans=buildReviewSpans(source.id,
+        source.scopeText||source.text||source.preview||'')
+        .filter(span=>!isHeadingOnlySpan(span.text));
+      if(!spans.length)return false;
+      return spans.every(span=>
+        classifySpanRegion(span,source,{structuralOnly:true})==='apparatus');
+    };
+    const apparatusExcludedByPartId=new Map();
     const sourceRequiredUncited=[];
+    const linkedIdsByPartId=new Map();
     for(const item of parts||[]){
-      if(item.part.sourceRequired!==true||item.answerStatus==='unanswered'||!item.answers.length)continue;
+      if(item.answerStatus==='unanswered'||!item.answers.length)continue;
       const citedIds=new Set(citationIds(renderAnswerParagraphs(item.answers)));
       const allowedIds=new Set((item.part.candidateSourceIds||[]).map(String));
       // The contract here is an inline citation linked to an allowed source.
       // Exact-span support remains the review contract's responsibility;
       // unreviewed diagnostic drafts may still carry a linked source marker.
       const linkedIds=new Set([...citedIds].filter(id=>allowedIds.has(String(id))));
-      if(!linkedIds.size)sourceRequiredUncited.push(item);
+      const apparatusExcluded=[...linkedIds]
+        .filter(id=>apparatusOnlyForPart(item.part.id,String(id)));
+      for(const id of apparatusExcluded)linkedIds.delete(id);
+      if(apparatusExcluded.length)
+        apparatusExcludedByPartId.set(item.part.id,apparatusExcluded);
+      linkedIdsByPartId.set(item.part.id,linkedIds);
+      if(item.part.sourceRequired===true&&!linkedIds.size)sourceRequiredUncited.push(item);
     }
-    if(sourceRequiredUncited.length){
-      // Batch 31 (B31-1): book-scoped plans evaluate containment at
-      // the ANSWER level. A plan is book-scoped when every part's
-      // book scope resolves to the same single book: on the selected
-      // route options.selectedBookId names that book and any part
-      // scoped outside it (or scoped to several books) disqualifies
-      // the plan; without a selected book, every part must carry a
-      // singleton scope and all singletons must agree. Mixed or
-      // absent scope is NOT book-scoped and keeps the per-part rule
-      // below byte-for-byte. At answer level the answer ships when
-      // at least one source-required part is cited; uncited parts
-      // keep their reviewed answers and are labeled downstream by
-      // the B11-5 uncited-with-packet treatment (trace +
-      // missing-segment wording), not by a parallel label system.
-      // Zero cited parts suppresses exactly as the per-part rule.
-      const selectedBookId=String(options.selectedBookId||'').trim();
-      const partScopes=(plan.parts||[]).map(part=>new Set(
-        (Array.isArray(part.sourceBookIds)?part.sourceBookIds:[]).map(String)));
-      let bookScoped=false;
-      if(selectedBookId){
-        bookScoped=partScopes.length>0&&partScopes.every(scope=>
-          [...scope].every(id=>id===selectedBookId));
-      }else if(partScopes.length&&partScopes.every(scope=>scope.size===1)){
-        bookScoped=new Set(partScopes.map(scope=>[...scope][0])).size===1;
+    const citedPartIds=(parts||[]).filter(item=>
+      (linkedIdsByPartId.get(item.part.id)?.size||0)>0).map(item=>item.part.id);
+    // Book-scope provenance, retained as a trace distinction only:
+    // B31-1's scoping no longer changes the rule, but the shipped
+    // census still names which uncited parts were book-scoped.
+    const selectedBookId=String(options.selectedBookId||'').trim();
+    const partScopes=(plan.parts||[]).map(part=>new Set(
+      (Array.isArray(part.sourceBookIds)?part.sourceBookIds:[]).map(String)));
+    let bookScoped=false;
+    if(selectedBookId){
+      bookScoped=partScopes.length>0&&partScopes.every(scope=>
+        [...scope].every(id=>id===selectedBookId));
+    }else if(partScopes.length&&partScopes.every(scope=>scope.size===1)){
+      bookScoped=new Set(partScopes.map(scope=>[...scope][0])).size===1;
+    }
+    const suppressForContainment=sourceRequiredUncited.length>0&&!citedPartIds.length;
+    if(suppressForContainment){
+      for(const item of parts||[]){
+        item.status='unanswered';item.answerStatus='unanswered';
+        item.answers=[];item.evidence=[];
       }
-      const citedSourceRequired=(parts||[]).filter(item=>
-        item.part.sourceRequired===true&&item.answerStatus!=='unanswered'&&
-        item.answers.length&&!sourceRequiredUncited.includes(item));
-      if(bookScoped&&citedSourceRequired.length){
-        trace.sourceRequiredContainment={totalParts:plan.parts.length,
-          sourceRequiredPartIds:plan.parts.filter(part=>part.sourceRequired===true).map(part=>part.id),
-          uncitedPartIds:sourceRequiredUncited.map(item=>item.part.id),
-          droppedPartIds:[],disposition:'answer-level-shipped-with-uncited-parts',
-          level:'answer',
-          uncitedBookScopedPartIds:sourceRequiredUncited.map(item=>item.part.id)};
-      }else{
-        const strictMinority=sourceRequiredUncited.length*2<plan.parts.length;
-        if(strictMinority){
-          for(const item of sourceRequiredUncited){
-            item.status='unanswered';item.answerStatus='unanswered';
-            item.answers=[];item.evidence=[];
+      failure={stage:'source-required-containment',
+        code:'source-required-no-cited-parts',
+        message:'No part of the answer carried a linked citation, so the answer was suppressed.'};
+    }
+    const partDispositions=(parts||[]).map(item=>{
+      const linked=linkedIdsByPartId.get(item.part.id);
+      return {partId:item.part.id,sourceRequired:item.part.sourceRequired===true,
+        cited:Boolean(linked&&linked.size),
+        ...(apparatusExcludedByPartId.has(item.part.id)?
+          {apparatusExcludedSourceIds:apparatusExcludedByPartId.get(item.part.id)}:{}),
+        disposition:!linked?'not-shipped':
+          suppressForContainment?'suppressed-with-answer':
+          sourceRequiredUncited.includes(item)?'shipped-labeled':
+          linked.size?'shipped-cited':'shipped-context'};
+    });
+    trace.sourceRequiredContainment={totalParts:plan.parts.length,
+      sourceRequiredPartIds:plan.parts.filter(part=>part.sourceRequired===true).map(part=>part.id),
+      uncitedPartIds:sourceRequiredUncited.map(item=>item.part.id),
+      droppedPartIds:[],level:'answer',
+      uncitedBookScopedPartIds:bookScoped?
+        sourceRequiredUncited.map(item=>item.part.id):[],
+      citedPartIds,
+      apparatusExcludedSourceIds:[...new Set(
+        [...apparatusExcludedByPartId.values()].flat())],
+      uncitedFraction:plan.parts.length?
+        sourceRequiredUncited.length/plan.parts.length:0,
+      partDispositions,
+      disposition:!sourceRequiredUncited.length?'all-shipped-source-parts-cited':
+        suppressForContainment?'suppressed-no-cited-parts':
+        'answer-level-shipped-with-uncited-parts'};
+    // Stage B (B6): post-audit naming-sentence retention. Three
+    // consecutive validation runs shipped the same side effect:
+    // the audit removed a part's only sentence naming its subject
+    // (as context, not as unsupported), and the part then opened
+    // on a pronoun with no antecedent — Hobbes (run 1), Aurelius
+    // (run 2), Tolstoy (phase 3; the record-only orphan flag
+    // caught all it could reach and the harm shipped anyway).
+    // This deterministic guard runs on the assembled part state:
+    // when a shipping part's first paragraph opens on a pronoun,
+    // and the audit removed a CONTEXT claim from that part whose
+    // text names a person the opening sentence does not name (and
+    // no earlier shipped part established), the removed claim's
+    // naming sentence is retained at the part's head. Narrow by
+    // construction: cited-claim removals never qualify (they were
+    // removed as unsupported, not as context), a sentence carrying
+    // quotation marks never qualifies (its quote cannot be
+    // re-verified here), and at most one sentence per part is
+    // retained. Fully traced; the orphan flag stays record-only.
+    const namingSentenceRetentions=[];
+    if(review&&!reviewFailure&&!suppressForContainment){
+      const removedContextByPart=new Map();
+      for(const decision of review.reviewDecisions||[]){
+        if(decision.contextOnly!==true||decision.accepted)continue;
+        if(decision.validationReason!=='context-claim-not-retained')continue;
+        const list=removedContextByPart.get(decision.partId)||[];
+        list.push(decision);removedContextByPart.set(decision.partId,list);
+      }
+      const nameAppearsIn=(name,surname,text)=>{
+        const esc=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+        return new RegExp('\\b'+esc(name)+'\\b','u').test(text)||
+          (surname!==name&&new RegExp('\\b'+esc(surname)+'\\b','u').test(text));
+      };
+      const openerStopwords=new Set(['The','This','That','It','In','On','For',
+        'When','While','As','But','And','He','She','They','His','Her','Their',
+        'There','Here','One','Such','Both','Each','Every','Many','Some']);
+      const candidateNameFor=text=>{
+        const bigram=text.match(/\b(\p{Lu}\p{Ll}+)\s+(\p{Lu}\p{Ll}+)\b/u);
+        if(bigram)return {name:bigram[0],surname:bigram[2]};
+        const firstWord=(text.trim().match(/^\p{Lu}\p{Ll}{2,}/u)||[])[0];
+        if(firstWord&&!openerStopwords.has(firstWord))
+          return {name:firstWord,surname:firstWord};
+        return null;
+      };
+      const establishedBefore=new Set();
+      const nameBigramPattern=/\b(\p{Lu}\p{Ll}+)\s+(\p{Lu}\p{Ll}+)\b/gu;
+      for(const item of parts||[]){
+        const removed=removedContextByPart.get(item.part.id);
+        if(removed&&item.answers.length){
+          const partText=unwrapBoldWrappedParagraphs(
+            renderAnswerParagraphs(item.answers)).text;
+          const firstParagraph=partText.split(/\n\n+/)[0]||'';
+          if(assemblyOpeningPronoun(firstParagraph)){
+            const openingSentence=firstParagraph.split(/(?<=[.!?])\s+/u)[0]||'';
+            for(const decision of removed){
+              if(item.answers.some(answer=>answer.claimId===decision.claimId))continue;
+              const claimText=String(decision.claimText||'');
+              const candidate=candidateNameFor(claimText);
+              if(!candidate)continue;
+              if(nameAppearsIn(candidate.name,candidate.surname,openingSentence))continue;
+              if(establishedBefore.has(candidate.name)||
+                establishedBefore.has(candidate.surname))continue;
+              const sentence=(claimText.split(/(?<=[.!?])\s+/u)
+                .find(part=>nameAppearsIn(candidate.name,candidate.surname,part))||'').trim();
+              if(!sentence||/["“”]/u.test(sentence))continue;
+              item.answers.unshift({claimId:decision.claimId,text:sentence,
+                renderedText:sentence,sourceIds:[],paragraphIndex:0});
+              namingSentenceRetentions.push({partId:item.part.id,
+                claimId:decision.claimId,name:candidate.name,sentence});
+              break;
+            }
           }
-        }else{
-          for(const item of parts||[]){
-            item.status='unanswered';item.answerStatus='unanswered';
-            item.answers=[];item.evidence=[];
-          }
-          failure={stage:'source-required-containment',
-            code:'source-required-uncited-parts-not-strict-minority',
-            message:'Uncited source-required parts were not a strict minority of the answer.'};
         }
-        trace.sourceRequiredContainment={totalParts:plan.parts.length,
-          sourceRequiredPartIds:plan.parts.filter(part=>part.sourceRequired===true).map(part=>part.id),
-          uncitedPartIds:sourceRequiredUncited.map(item=>item.part.id),
-          droppedPartIds:strictMinority?sourceRequiredUncited.map(item=>item.part.id):[],
-          disposition:strictMinority?'dropped-strict-minority':'suppressed-not-strict-minority',
-          level:'per-part',uncitedBookScopedPartIds:[]};
+        if(item.answers.length){
+          const shippedText=unwrapBoldWrappedParagraphs(
+            renderAnswerParagraphs(item.answers)).text;
+          for(const match of shippedText.matchAll(nameBigramPattern)){
+            establishedBefore.add(match[0]);establishedBefore.add(match[2]);
+          }
+        }
       }
-    }else{
-      trace.sourceRequiredContainment={totalParts:plan.parts.length,
-        sourceRequiredPartIds:plan.parts.filter(part=>part.sourceRequired===true).map(part=>part.id),
-        uncitedPartIds:[],droppedPartIds:[],disposition:'all-shipped-source-parts-cited',
-        level:'per-part',uncitedBookScopedPartIds:[]};
     }
+    if(namingSentenceRetentions.length)
+      trace.final={...(trace.final||{}),namingSentenceRetentions};
     if(options.postReviewAuditPartId&&!postReviewAuditFaultInjected){
       const targetIds=new Set(Array.isArray(options.postReviewAuditPartId)?
         options.postReviewAuditPartId:[options.postReviewAuditPartId]);
@@ -6465,13 +6653,22 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // its B11-5 record unchanged.
     if(answer&&!assemblySuppressed){
       const labelByPartId=new Map();
-      for(const entry of uncitedPartsWithPacket)
+      // Stage B (B4): the trigger kind of each part's label is
+      // recorded with it — the label TEXT is generated per unmet
+      // requirement at application time (labelSubjectFor below)
+      // and recorded verbatim in trace.final.disclosureLabels.
+      const labelKindByPartId=new Map();
+      for(const entry of uncitedPartsWithPacket){
         labelByPartId.set(entry.partId,entry.question);
+        labelKindByPartId.set(entry.partId,'uncited-part');
+      }
       if(trace.sourceRequiredContainment?.level==='answer')
         for(const partId of trace.sourceRequiredContainment.uncitedPartIds||[]){
           const item=(parts||[]).find(candidate=>candidate.part.id===partId);
-          if(item&&!labelByPartId.has(partId))
+          if(item&&!labelByPartId.has(partId)){
             labelByPartId.set(partId,item.part.question);
+            labelKindByPartId.set(partId,'uncited-part');
+          }
         }
       // Batch 34 (B34-2 (ii)): the claim-level label test — B33-3's
       // test applied one level down, where the Faust hole actually
@@ -6522,8 +6719,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         if(!uncited.length)continue;
         claimLevelUncited.push({partId:item.part.id,
           claimIds:uncited.map(answer=>answer.claimId)});
-        if(!labelByPartId.has(item.part.id))
+        if(!labelByPartId.has(item.part.id)){
           labelByPartId.set(item.part.id,item.part.question);
+          labelKindByPartId.set(item.part.id,'claim-level-uncited');
+        }
       }
       // Batch 35 (B35-6): disclosure GENERATION from the final
       // reconciliation. A requirement that ends 'unanswered' in
@@ -6544,6 +6743,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         unansweredRequirementLabels.push({partId:item.part.id,
           requirementIds:unanswered.map(entry=>entry.requirementId)});
         labelByPartId.set(item.part.id,item.part.question);
+        labelKindByPartId.set(item.part.id,'unanswered-requirement');
       }
       // Redesign Stage A (brief point 5): assembly-loss disclosure.
       // reconcileAssemblyLoss records accepted claims that never
@@ -6560,8 +6760,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         const item=included.find(candidate=>candidate.part.id===loss.partId);
         if(!item)continue;
         assemblyLossDisclosures.push({partId:loss.partId,claimId:loss.claimId});
-        if(!labelByPartId.has(loss.partId))
+        if(!labelByPartId.has(loss.partId)){
           labelByPartId.set(loss.partId,item.part.question);
+          labelKindByPartId.set(loss.partId,'assembly-loss');
+        }
       }
       const labeledParts=included.filter(item=>labelByPartId.has(item.part.id));
       // Batch 33 (B33-3): absent-part disclosure. The B11-5/B32-7
@@ -6583,18 +6785,76 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       const absentParts=(parts||[]).filter(item=>!includedIds.has(item.part.id));
       if(labeledParts.length||absentParts.length){
         const includedById=new Map(included.map(item=>[item.part.id,item]));
+        // Stage B (B4): label subjects are the part's UNVERIFIED
+        // requirements, not the whole part question — validation
+        // showed whole-part "could not be verified" labels shipping
+        // above substantive cited content when only one requirement
+        // of the part was unmet (phase-3 guilt/love/solitude AP2).
+        // A requirement is unverified when the final reconciliation
+        // leaves it unanswered, or when none of its shipped
+        // answering claims carries a citation. The part question
+        // remains the subject when the part records no requirements
+        // or no requirement qualifies (a claim-level gap on a
+        // direct-answer claim serving no requirement).
+        const labelSubjectFor=(item,{absent=false}={})=>{
+          const requirements=item.part.requirements||[];
+          if(!requirements.length)return item.part.question;
+          const coverageById=new Map((item.requirementCoverage||[])
+            .map(entry=>[entry.requirementId,entry]));
+          const shippedById=new Map((item.answers||[])
+            .map(answer=>[answer.claimId,answer]));
+          const unverified=requirements.filter(requirement=>{
+            if(absent)return true;
+            const coverage=coverageById.get(requirement.id);
+            if(!coverage||coverage.status==='unanswered')return true;
+            const answering=(coverage.answerClaimIds||[])
+              .map(id=>shippedById.get(id)).filter(Boolean);
+            if(!answering.length)return true;
+            return answering.every(answer=>
+              !citationIds(answer.renderedText||'').length);
+          });
+          if(!unverified.length)return item.part.question;
+          return unverified
+            .map(requirement=>String(requirement.text||item.part.question))
+            .join('; ');
+        };
+        // Stage B (B4): part-level general-context framing. A
+        // shipped source-required part carrying no citation at all
+        // is a general-context disposition at part level; it opens
+        // with the framing line instead of disclosing only in a
+        // trailing label. Suppressed when NO included part is cited
+        // — that is the answer-level disposition, framed once at
+        // the head of the answer below.
+        const anyCitedIncluded=included.some(item=>
+          citationIds(renderAnswerParagraphs(item.answers)).length>0);
+        const disclosureLabels=[];
+        const generalContextFraming=[];
         answer=sanitizeInternalAnswerIds(normalizeAnswerMarkdown(
           (parts||[]).map(item=>{
             const shipped=includedById.get(item.part.id);
-            if(!shipped)
-              return 'This part of the question could not be answered '+
-                'from the library: '+item.part.question;
+            if(!shipped){
+              const text='This part of the question could not be answered '+
+                'from the library: '+labelSubjectFor(item,{absent:true});
+              disclosureLabels.push({partId:item.part.id,
+                kind:'absent-part',text});
+              return text;
+            }
             const unwrapped=unwrapBoldWrappedParagraphs(
               renderAnswerParagraphs(shipped.answers));
-            if(!labelByPartId.has(item.part.id))return unwrapped.text;
-            return unwrapped.text+'\n\n'+
-              'Retrieved passages could not be verified as supporting this part of the question: '+
-              labelByPartId.get(item.part.id);
+            let segment=unwrapped.text;
+            if(anyCitedIncluded&&item.part.sourceRequired===true&&
+              shipped.answers.length&&
+              !citationIds(unwrapped.text).length){
+              segment='No library passages could be verified for this part of the question; '+
+                'what follows is general knowledge.\n\n'+segment;
+              generalContextFraming.push({scope:'part',partId:item.part.id});
+            }
+            if(!labelByPartId.has(item.part.id))return segment;
+            const text='Retrieved passages could not be verified as supporting this part of the question: '+
+              labelSubjectFor(item);
+            disclosureLabels.push({partId:item.part.id,
+              kind:labelKindByPartId.get(item.part.id)||'uncited-part',text});
+            return segment+'\n\n'+text;
           }).join('\n\n')));
         trace.final={...(trace.final||{}),
           ...(labeledParts.length?
@@ -6606,7 +6866,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           ...(assemblyLossDisclosures.length?
             {assemblyLossDisclosures}:{}),
           ...(absentParts.length?
-            {absentPartLabelsInAnswer:absentParts.map(item=>item.part.id)}:{})};
+            {absentPartLabelsInAnswer:absentParts.map(item=>item.part.id)}:{}),
+          ...(disclosureLabels.length?{disclosureLabels}:{}),
+          ...(generalContextFraming.length?{generalContextFraming}:{})};
       }
     }
     // Batch 34 (B34-2 (i)): the disclosure invariant, verified on
@@ -6684,9 +6946,17 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // final reconciliation; an answer carrying an unanswered (or
     // partial) requirement must not report full coverage even when
     // every part's claims shipped (the W&P SP1 report).
-    const coverage=questionParts.every(part=>part.status==='supported'&&
+    const computedCoverage=questionParts.every(part=>part.status==='supported'&&
       (!part.requirements?.length||part.requirementsComplete===true))?'full':
       questionParts.some(part=>part.status!=='unsupported')?'partial':'none';
+    // Stage B (B4): coverage honesty — 'full' is computed from
+    // cited-claim reality, never from the plan alone. A
+    // zero-citation answer reported coverage 'full' in production
+    // (phase-3 war AP2: a general-context answer whose trace
+    // claimed full coverage). evidenceIds are already filtered to
+    // citations actually rendered in the shipped text.
+    const coverage=computedCoverage==='full'&&
+      !questionParts.some(part=>part.evidenceIds.length)?'partial':computedCoverage;
     const answerCompleteness=questionParts.length&&questionParts.every(part=>part.answerStatus==='answered')?'full':
       questionParts.some(part=>part.answerStatus==='answered'||part.answerStatus==='partial')?'partial':'none';
     // Batch 11 (B11-5): a part that shipped with packet-linked
@@ -6788,6 +7058,38 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         }
       }
       trace.final={...(trace.final||{}),bylineDirectionFlags};
+      // Stage B (B2): shipped claims resting on apparatus spans,
+      // recorded with a deterministic framing assessment — the
+      // claim must present the material as the edition's
+      // introduction/editorial matter (the audit judges this under
+      // the REVIEW_PROMPT requirement; this record is the
+      // measurement that would earn a deterministic check its
+      // power, and it has none in this tranche).
+      const apparatusCitations=[];
+      const apparatusFramingMarker=/\b(introduction|preface|foreword|afterword|editors?|editorial|edition|translators?|commentary|commentator)\b/iu;
+      for(const item of included){
+        for(const ans of item.answers||[]){
+          for(const support of item.evidence||[]){
+            if(support.claimId!==ans.claimId)continue;
+            const censusEntry=(review?.spanRegionClassifications||[])
+              .find(entry=>entry.partId===item.part.id&&
+                String(entry.sourceId)===String(support.sourceId)&&
+                entry.spanId===String(support.spanId||''));
+            let region=censusEntry?.region;
+            if(!region){
+              const source=sources.find(value=>String(value.id)===String(support.sourceId));
+              if(source)region=classifySpanRegion({text:support.quote||'',head:''},source);
+            }
+            if(region!=='apparatus')continue;
+            if(apparatusCitations.some(entry=>entry.partId===item.part.id&&
+              entry.claimId===ans.claimId&&entry.sourceId===String(support.sourceId)))continue;
+            apparatusCitations.push({partId:item.part.id,claimId:ans.claimId,
+              sourceId:String(support.sourceId),
+              framed:apparatusFramingMarker.test(String(ans.text||''))});
+          }
+        }
+      }
+      trace.final={...(trace.final||{}),apparatusCitations};
       const pronounOrphanFlags=[];
       const partTextById=new Map(included.map(item=>[item.part.id,
         unwrapBoldWrappedParagraphs(renderAnswerParagraphs(item.answers)).text]));
@@ -6808,27 +7110,31 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         }
       });
       trace.final={...(trace.final||{}),pronounOrphanFlags};
-      const recordedFinal=trace.final||{};
-      const labelTextFor=(partId)=>
-        'Retrieved passages could not be verified as supporting this part of the question: '+
-        ((parts.find(item=>item.part.id===partId)?.part.question)||'');
-      const labelChecks=[];
-      for(const partId of recordedFinal.uncitedPartLabelsInAnswer||[])
-        labelChecks.push({partId,kind:'uncited-part',text:labelTextFor(partId)});
-      for(const entry of recordedFinal.claimLevelUncitedLabels||[])
-        labelChecks.push({partId:entry.partId,kind:'claim-level-uncited',text:labelTextFor(entry.partId)});
-      for(const entry of recordedFinal.unansweredRequirementLabels||[])
-        labelChecks.push({partId:entry.partId,kind:'unanswered-requirement',text:labelTextFor(entry.partId)});
-      for(const entry of recordedFinal.assemblyLossDisclosures||[])
-        labelChecks.push({partId:entry.partId,kind:'assembly-loss',text:labelTextFor(entry.partId)});
-      for(const partId of recordedFinal.absentPartLabelsInAnswer||[])
-        labelChecks.push({partId,kind:'absent-part',
-          text:'This part of the question could not be answered from the library: '+
-            ((parts.find(item=>item.part.id===partId)?.part.question)||'')});
+      // Stage B (B4): verification checks the label texts actually
+      // recorded at application time (trace.final.disclosureLabels)
+      // — since subjects became requirement-scoped, reconstruction
+      // from the part question could no longer reproduce them.
+      const labelChecks=(trace.final?.disclosureLabels||[])
+        .map(entry=>({partId:entry.partId,kind:entry.kind,text:entry.text}));
       const missingLabels=labelChecks.filter(check=>!answer.includes(check.text));
       trace.final={...(trace.final||{}),disclosureLabelVerification:{
         checked:labelChecks.length,
         missing:missingLabels.map(({partId,kind})=>({partId,kind}))}};
+    }
+    // Stage B (B4): the general-context disposition discloses
+    // itself UP FRONT. A shipped answer carrying no citation
+    // anywhere (and no downgrade flag — the exact condition the
+    // outcome computation below calls 'general-context-answer')
+    // opens with the framing line instead of presenting general
+    // knowledge in a sourced register with the notice trailing
+    // (phase-3 war AP2). Inserted after the final checks so label
+    // verification and the orphan scan see the pre-framing text.
+    if(answer&&!used.size&&
+      !(salvage||unreviewed||unvalidatedPartsDropped||hasReviewCoverageGaps||hasUntracedCitedClaims)){
+      answer='No library passages could be verified for this question; '+
+        'what follows is general knowledge.\n\n'+answer;
+      trace.final={...(trace.final||{}),generalContextFraming:[
+        ...(trace.final?.generalContextFraming||[]),{scope:'answer'}]};
     }
     trace.final={...(trace.final||{}),answer,questionParts,coverage,answerCompleteness,
       failure:failure?.code==='answer-citation-validation-failed'?

@@ -617,7 +617,13 @@ test('a valid empty evidence selection can review a useful single-part answer wi
  const result=await response.json();
  assert.equal(response.status,200);
  assert.equal(result.outcome,'general-context-answer');
- assert.equal(result.coverage,'full');
+ // Stage B (B4): coverage is computed from cited-claim reality —
+ // a zero-citation answer may not report 'full' (the phase-3 war
+ // AP2 shape), and the general-context disposition opens with the
+ // up-front framing line instead of disclosing only in a notice.
+ assert.equal(result.coverage,'partial');
+ assert.match(result.answer,/^No library passages could be verified for this question; what follows is general knowledge\./,
+  'the general-context answer opens with the framing line');
  assert.match(result.answer,/no established evidence/);
  assert.match(result.answer,/Related ideas.*do not establish a literal simulation/);
  assert.deepEqual(result.citations,[]);
