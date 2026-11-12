@@ -3422,6 +3422,93 @@ function addSelectedEvidenceSource(answerSources,source,{candidateId,candidatePa
   return {added:true,totalBytes:totalBytes+bytes,source:answerSources.at(-1)};
 }
 
+// Batch 35 (B35-7): final-list diversity verification. B34-4's bar ran
+// inside the selector chain only, so the deterministic-fallback path
+// (and any future path) submitted unverified lists in silence. This
+// runs on the PACKED list every path converges on: while one book
+// holds two or more slots and an unpacked candidate from a book not
+// otherwise submitted exists (and plan scope allows it), the later
+// duplicate is swapped for that candidate through the same packing
+// helper (budget and overlap rules unchanged). The outcome is always
+// recorded — verified, repaired, exhausted, or not-run with a reason —
+// so a multi-book case never lacks a diversity record again. The
+// paired-snapshot path is evaluation tooling that must reproduce a
+// recorded selection exactly, so it is verified record-only.
+export function verifySubmittedBookDiversityFinal(answerSources,{pool=[],plan=null,
+  question='',repair=true}={}){
+  const sources=Array.isArray(answerSources)?answerSources:[];
+  const rows=(Array.isArray(pool)?pool:[]).filter(row=>row&&row.bookId!==undefined);
+  const submittedBooks=()=>{const counts=new Map();
+    for(const source of sources){const book=String(source.bookId||'');
+      counts.set(book,(counts.get(book)||0)+1);}
+    return counts;};
+  const finish=(record,list=sources)=>({record,sources:list});
+  if(sources.length<2)return finish({status:'not-run',
+    reason:'fewer-than-two-submitted'});
+  const poolBooks=new Set(rows.map(row=>String(row.bookId||'')));
+  if(poolBooks.size<2)return finish({status:'not-run',reason:'single-book-pool'});
+  const counts=submittedBooks();
+  const duplicateBooks=[...counts.entries()].filter(([,n])=>n>=2)
+    .map(([book])=>book);
+  if(!duplicateBooks.length)return finish({status:'verified',
+    distinctBooks:counts.size,submittedCount:sources.length});
+  if(!repair)return finish({status:'not-run',reason:'record-only-path',
+    duplicateBookIds:duplicateBooks});
+  const scopeAllows=book=>{const parts=Array.isArray(plan?.parts)?plan.parts:[];
+    return !parts.length||parts.some(part=>!Array.isArray(part.sourceBookIds)||
+      !part.sourceBookIds.length||part.sourceBookIds.map(String).includes(book));};
+  const submittedLocators=new Set(sources.map(source=>
+    String(source.bookId||'')+':'+String(source.page)));
+  const swaps=[];
+  let working=[...sources];
+  for(let guard=0;guard<8;guard++){
+    const current=new Map();
+    for(const source of working){const book=String(source.bookId||'');
+      current.set(book,(current.get(book)||0)+1);}
+    const duplicate=[...current.entries()].find(([,n])=>n>=2)?.[0];
+    if(duplicate===undefined)break;
+    const submittedNow=new Set(current.keys());
+    const fillIndex=rows.findIndex(row=>{
+      const book=String(row.bookId||'');
+      return !submittedNow.has(book)&&scopeAllows(book)&&
+        !submittedLocators.has(book+':'+String(row.page));});
+    if(fillIndex<0)break;
+    const fill=rows[fillIndex];
+    const dupIndex=working.map((source,index)=>({source,index}))
+      .filter(entry=>String(entry.source.bookId||'')===duplicate)
+      .at(-1).index;
+    const removed=working[dupIndex];
+    const rest=working.filter((_,index)=>index!==dupIndex);
+    const totalBytes=rest.reduce((sum,source)=>
+      sum+new TextEncoder().encode(source.text||'').byteLength,0);
+    const candidatePartIds=(Array.isArray(plan?.parts)?plan.parts:[])
+      .filter(part=>!Array.isArray(part.sourceBookIds)||!part.sourceBookIds.length||
+        part.sourceBookIds.map(String).includes(String(fill.bookId)))
+      .map(part=>part.id);
+    const packed=addSelectedEvidenceSource(rest,fill,{
+      candidateId:'C'+(fillIndex+1),candidatePartIds,duplicateTrace:[],
+      budget:35000,totalBytes,question});
+    if(!packed.source)break;
+    working=rest;
+    working.forEach((source,index)=>{source.id='S'+(index+1);});
+    submittedLocators.add(String(fill.bookId||'')+':'+String(fill.page));
+    swaps.push({removedCandidateId:removed.candidateId||null,
+      removedBookId:String(removed.bookId||''),
+      ...(packed.added?{addedCandidateId:'C'+(fillIndex+1),
+        addedBookId:String(fill.bookId||'')}:
+        {addedCandidateId:null,mergedIntoCandidateId:packed.source.candidateId||null})});
+  }
+  const finalCounts=new Map();
+  for(const source of working){const book=String(source.bookId||'');
+    finalCounts.set(book,(finalCounts.get(book)||0)+1);}
+  const remaining=[...finalCounts.entries()].filter(([,n])=>n>=2)
+    .map(([book])=>book);
+  if(remaining.length)return finish({status:'exhausted',swaps,
+    remainingDuplicateBookIds:remaining},working);
+  return finish({status:swaps.length?'repaired':'verified',swaps,
+    distinctBooks:finalCounts.size,submittedCount:working.length},working);
+}
+
 // AI-assisted SOURCE DISCOVERY ONLY. No facts, page numbers, citations or
 // book excerpts here: the website still retrieves the original v48 text and
 // the existing answer endpoint must independently verify exact SHA-256 pages.
@@ -4152,6 +4239,16 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           console.warn('Reader pilot evidence selection fell back to retrieval order',
             inferenceFailureDiagnostics(error));
         }
+        // Batch 35 (B35-7): verify the FINAL submitted list against
+        // the duplicate-book bar on every path that converged here —
+        // selector, deterministic fallback, and (record-only) the
+        // paired snapshot — and repair before verification. The record
+        // lands on the selection trace either way; silence is over.
+        const diversityFinal=verifySubmittedBookDiversityFinal(answerSources,{
+          pool:selectionCandidates,plan,question:data.question,
+          repair:sourceSelectionStatus!=='paired-snapshot'});
+        answerSources=diversityFinal.sources;
+        if(selectionTrace)selectionTrace.diversityFinal=diversityFinal.record;
         // Verify exactly the packed pages now — and no others — before
         // they reach composition. A verification failure here returns the
         // same source-verification failure the up-front check produced.
@@ -4162,7 +4259,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         if(evaluationAuthorized&&data.selectionOnly===true){
           return reply({selectionOnly:true,sourceSelectionStatus,
             sourceSelection:{status:sourceSelectionStatus,candidateCount:sourceSelectionCandidateCount,
-              pages:sourceSelectionPages,usage:sourceSelectionUsage},
+              pages:sourceSelectionPages,usage:sourceSelectionUsage,
+              ...(selectionTrace?.diversityFinal?{diversityFinal:selectionTrace.diversityFinal}:{})},
             selectionSnapshot:answerSources.map(source=>({bookId:source.bookId,page:source.page,
               candidateId:source.candidateId,candidatePartIds:source.candidatePartIds||[],
               candidatePartSupport:source.candidatePartSupport||[]})),

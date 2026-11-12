@@ -2536,3 +2536,34 @@ test('evidence-v2 route: a failed depth re-review keeps the original thin part (
  assert.doesNotMatch(result.answer,/multiplied its suffering/,
   'the unreviewed developed text does not');
 });
+
+test('batch 35 B35-7 pilot: the selection trace carries a diversityFinal record on the fallback path instead of silence',async()=>{
+ const token='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {response:'PART P1\nThe growth of Athenian power inspired fear in Sparta. [S1]'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return depthReview(JSON.parse(input.messages[1].content));
+  }
+  return {response:'{}'};
+ };
+ // A throwing selector forces the deterministic-fallback path —
+ // batch 34's silent path.
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN: token},model,
+  selector:async()=>{throw new Error('selector down');}});
+ const first=pilot.fixture.body.sources[0];
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
+  sources:[{...first,page:38},{...first,page:39}],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ const selectionStage=(result.trace.stages||[]).find(stage=>stage.stage==='evidence-selection');
+ assert.ok(selectionStage,'the selection stage is traced');
+ assert.equal(selectionStage.status,'deterministic-fallback');
+ assert.deepEqual(selectionStage.diversityFinal,{status:'not-run',reason:'single-book-pool'},
+  'the fallback path records why the bar did not run instead of staying silent');
+});

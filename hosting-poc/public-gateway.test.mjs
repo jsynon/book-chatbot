@@ -2760,3 +2760,49 @@ test('depth repair per-part condition stays off below the word floor (batch 9 B9
  assert.equal(call,2,'no repair call runs below the word floor');
  assert.deepEqual(result.depthRepair,{triggered:false,reasons:[],applied:false});
 });
+
+import {verifySubmittedBookDiversityFinal} from './public-gateway.mjs';
+test('batch 35 B35-7: final-list diversity verification repairs a duplicate on the packed list and records it',()=>{
+ const text=(n)=>('Passage '+n+' discusses ambition, courts, and the slow machinery of '+
+  'provincial government in terms no other page repeats here.').slice(0,140);
+ const pool=[{bookId:'A',page:1,text:text(1)},{bookId:'A',page:2,text:text(2)},
+  {bookId:'B',page:3,text:text(3)},{bookId:'C',page:4,text:text(4)}];
+ const submitted=[{...pool[0],id:'S1',candidateId:'C1'},{...pool[1],id:'S2',candidateId:'C2'},
+  {...pool[2],id:'S3',candidateId:'C3'}];
+ const plan={parts:[{id:'P1',question:'q'}]};
+ const {record,sources}=verifySubmittedBookDiversityFinal(submitted,{pool,plan,question:'q'});
+ assert.equal(record.status,'repaired');
+ assert.equal(record.swaps.length,1);
+ assert.equal(record.swaps[0].removedBookId,'A');
+ assert.equal(record.swaps[0].addedBookId,'C');
+ assert.deepEqual(sources.map(s=>s.bookId),['A','B','C'],
+  'the later duplicate is swapped for the unpacked distinct book');
+ assert.deepEqual(sources.map(s=>s.id),['S1','S2','S3'],'source ids renumber cleanly');
+});
+test('batch 35 B35-7: final-list diversity verification records verified, exhausted, record-only, and not-run outcomes',()=>{
+ const text=(n)=>('Passage '+n+' treats of harbours, tariffs, and the customs houses '+
+  'of northern ports in its own vocabulary entirely.').slice(0,140);
+ const pool=[{bookId:'A',page:1,text:text(1)},{bookId:'B',page:2,text:text(2)}];
+ const plan={parts:[{id:'P1',question:'q'}]};
+ const clean=verifySubmittedBookDiversityFinal(
+  [{...pool[0],id:'S1',candidateId:'C1'},{...pool[1],id:'S2',candidateId:'C2'}],{pool,plan});
+ assert.equal(clean.record.status,'verified');
+ const stuck=verifySubmittedBookDiversityFinal(
+  [{...pool[0],id:'S1',candidateId:'C1'},{...pool[0],page:9,id:'S2',candidateId:'C9',text:text(9)},
+   {...pool[1],id:'S3',candidateId:'C2'}],{pool,plan});
+ assert.equal(stuck.record.status,'exhausted',
+  'a duplicate with every pool book already submitted is recorded, not silent');
+ assert.deepEqual(stuck.record.remainingDuplicateBookIds,['A']);
+ const snapshot=verifySubmittedBookDiversityFinal(
+  [{...pool[0],id:'S1',candidateId:'C1'},{...pool[0],page:9,id:'S2',candidateId:'C9',text:text(9)}],
+  {pool,plan,repair:false});
+ assert.equal(snapshot.record.status,'not-run');
+ assert.equal(snapshot.record.reason,'record-only-path');
+ assert.equal(snapshot.sources.length,2,'the record-only path never mutates the list');
+ const single=verifySubmittedBookDiversityFinal(
+  [{...pool[0],id:'S1',candidateId:'C1'},{...pool[0],page:9,id:'S2',candidateId:'C9',text:text(9)}],
+  {pool:[pool[0]],plan});
+ assert.deepEqual(single.record,{status:'not-run',reason:'single-book-pool'});
+ const one=verifySubmittedBookDiversityFinal([{...pool[0],id:'S1',candidateId:'C1'}],{pool,plan});
+ assert.deepEqual(one.record,{status:'not-run',reason:'fewer-than-two-submitted'});
+});
