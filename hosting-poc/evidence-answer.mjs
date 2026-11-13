@@ -4474,29 +4474,6 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
     const list=archiveByPart.get(entry.partId)||[];
     list.push(entry);archiveByPart.set(entry.partId,list);
   }
-  // Stage B (B3): for a claim dropped as partial, record whether
-  // its per-source decisions unanimously accepted with 'answered'
-  // status. The phase-3 census showed this pattern on all 24
-  // partial losses (22 single-source), which makes it the class a
-  // future verdict-reconciliation proposal would act on; per the
-  // standing rule it is MEASURED here first (record-only) and
-  // earns any gate change only at >=80% audited precision — the
-  // claim-level 'partial' can encode a scope judgment the source
-  // decisions do not (the Wuthering Heights 'conflict of interest'
-  // fixture), so the gate itself does not move in this tranche.
-  const unanimousPartialIds=new Set();
-  {
-    const rowsByClaim=new Map();
-    for(const entry of reviewDecisions||[]){
-      if(!entry.sourceId)continue;
-      const key=entry.partId+'|'+entry.claimId;
-      const rows=rowsByClaim.get(key)||[];
-      rows.push(entry);rowsByClaim.set(key,rows);
-    }
-    for(const [key,rows] of rowsByClaim)
-      if(rows.length&&rows.every(row=>row.accepted===true&&
-        row.sourceStatus==='answered'))unanimousPartialIds.add(key);
-  }
   const restatesRejected=(partId,text)=>{
     const terms=fallbackEvidenceTerms(text);
     if(!terms.size)return false;
@@ -4571,9 +4548,7 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
           if(item.answerStatus==='answered')item.answerStatus='partial';
         }
       }
-      losses.push({partId,claimId,reason,disposition,
-        ...(reason==='claim-partial-not-shipped'&&
-          unanimousPartialIds.has(key)?{unanimousSourceSupport:true}:{})});
+      losses.push({partId,claimId,reason,disposition});
     }
   }
   return losses;
