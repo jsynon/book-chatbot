@@ -4,6 +4,13 @@
 // linkage currently differ. Compare both copies before changing shared plan
 // or citation behavior; this Worker copy also owns server-side quote cleanup.
 export const CONTRACT_VERSION='reader-evidence-v2';
+// A validated plan source whose book set is wider than any single
+// author's presence in the catalog is a collective credit (an anthology
+// byline shared by unrelated works), not a scope. Measured on v49: the
+// widest genuine author byline is Plato at 22 books, while a collective
+// "Various authors" set validated to 55. The limit is a catalog
+// property, not a per-question choice; see stageB3-checkpoint.
+export const COLLECTIVE_SOURCE_BOOK_LIMIT=24;
 export function citationIds(text){
   return [...new Set([...String(text||'').matchAll(/\[([^\]]+)\]/g)]
     .flatMap(match=>match[1].match(/\bS\d+\b/g)||[]))];
@@ -207,6 +214,17 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   }).filter(source=>source.bookIds.length);
   if(!sources.length&&fallback.sources.length)sources.push(...fallback.sources.slice(0,8));
   if(selectedBookId)sources.splice(0,sources.length,{label:catalog[selectedBookId],role:'primary',bookIds:[selectedBookId]});
+  // Collective sources stay in the plan as leads (their queries remain
+  // search facets) but never hard-scope a part, a question-named match,
+  // or a comparison side: scoping to an anthology byline's full set
+  // silently excludes every book outside it, including the ones the
+  // reader's question is actually about.
+  const collectiveSourceIndexes=new Set(sources
+    .map((source,index)=>source.bookIds.length>COLLECTIVE_SOURCE_BOOK_LIMIT?index:-1)
+    .filter(index=>index>=0));
+  const collectiveSources=sources
+    .filter((source,index)=>collectiveSourceIndexes.has(index))
+    .map(source=>({label:source.label,bookCount:source.bookIds.length}));
   const intent=['explain','compare','interpret','locate'].includes(planInput.intent)?planInput.intent:'explain';
   const queries=Array.isArray(planInput.queries)?planInput.queries.slice(0,4).map(q=>bounded(q,160)).filter(Boolean):[];
   const exactQuestionAnchor=(candidate,partQuestion)=>{
@@ -309,7 +327,8 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     return [...String(text||'').matchAll(/(?<![\p{L}\p{N}])([\p{Lu}][\p{L}\p{N}-]{2,})(?:['’]s)?(?![\p{L}\p{N}])/gu)]
       .some(match=>match.index>0&&!catalogTokens.has(identityText(match[1])));
   });
-  const counterfactualSources=sources.filter(source=>['primary','subject'].includes(source.role)&&source.bookIds.length);
+  const counterfactualSources=sources.filter((source,index)=>['primary','subject'].includes(source.role)&&source.bookIds.length&&
+    !collectiveSourceIndexes.has(index));
   if(hypotheticalAuthorResponse&&counterfactualSources.length===2){
     counterfactualSources.sort((a,b)=>sourceMentionIndex(a)-sourceMentionIndex(b));
     const [stance,object]=counterfactualSources;
@@ -329,10 +348,11 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
       normalizedParts=[{id:'P1',question:resolvedQuestion}];
   }
   const questionNamedSources=sources.map((source,index)=>({source,index,phrases:sourcePhrases(source)}))
-    .filter(group=>group.phrases.some(phrase=>containsSourcePhrase(resolvedQuestion,phrase)));
+    .filter(group=>!collectiveSourceIndexes.has(group.index)&&
+      group.phrases.some(phrase=>containsSourcePhrase(resolvedQuestion,phrase)));
   const partSourceGroups=normalizedParts.map(part=>{
     let matches=sources.map((source,index)=>({source,index,phrases:sourcePhrases(source)}))
-      .filter(group=>group.phrases.some(phrase=>
+      .filter(group=>!collectiveSourceIndexes.has(group.index)&&group.phrases.some(phrase=>
         containsSourcePhrase(part.question,phrase)&&containsSourcePhrase(resolvedQuestion,phrase)));
     // For an author asking about another thinker, the answer belongs to the
     // named primary author unless the plan explicitly makes this a comparison.
@@ -350,7 +370,7 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     // works volume even when the individual work is not a catalog entry.
     // Preserve that explicit work request when the planner supplied its
     // validated primary author as the sole source lead.
-    if(!matches.length&&!selectedBookId&&sources.length===1&&
+    if(!matches.length&&!selectedBookId&&sources.length===1&&!collectiveSourceIndexes.has(0)&&
        namesAWorkInCollection(sources[0],resolvedQuestion)&&
        namesAWorkInCollection(sources[0],part.question))
       matches=sources.map((source,index)=>({source,index}));
@@ -378,8 +398,8 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
     });
     return narrowed.length?[...new Set(narrowed)]:null;
   });
-  const comparisonSources=sources.filter(source=>['primary','subject'].includes(source.role)&&
-    source.bookIds.length&&(selectedBookId?
+  const comparisonSources=sources.filter((source,index)=>['primary','subject'].includes(source.role)&&
+    source.bookIds.length&&!collectiveSourceIndexes.has(index)&&(selectedBookId?
       source.bookIds.some(id=>String(id)===String(selectedBookId)):
       questionNamedSources.some(group=>group.source===source)));
   const hasPlannedComparison=normalizedParts.some((part,index)=>comparisonPattern.test(part.question)&&
@@ -450,6 +470,8 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
        ...(syntheticComparison||sourceSidePart?[]:[contextualQuery])])].slice(0,5)};
   });
   return {version:CONTRACT_VERSION,resolvedQuestion,intent,
-    sources,parts:partsWithSources,scope:bounded(planInput.scope,200),
+    sources,parts:partsWithSources,
+    ...(collectiveSources.length?{collectiveSources}:{}),
+    scope:bounded(planInput.scope,200),
     clarification:bounded(planInput.clarification,240),queries};
 }

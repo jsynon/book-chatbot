@@ -2402,6 +2402,36 @@ test('author-wide questions retain the author works unless the reader names a di
  assert.deepEqual(scoped.parts[0].sourceBookIds,['140']);
 });
 
+test('a collective byline source stays a lead and never hard-scopes a part (B.3)',()=>{
+ const catalog={};
+ for(let i=1;i<=30;i++)catalog[String(100+i)]='Anthology Volume '+i+' — Various authors';
+ catalog['163']='Leviathan — Thomas Hobbes';
+ const question='What do various authors argue about wealth and luxury?';
+ const plan=normalizePlan({intent:'explain',sources:[
+  {label:'Various authors',role:'primary',bookIds:Object.keys(catalog).filter(id=>id!=='163')}],
+  parts:['What do various authors argue about wealth and luxury?'],
+  queries:['wealth luxury trade']},question,catalog);
+ assert.deepEqual(plan.collectiveSources,[{label:'Various authors',bookCount:30}]);
+ assert.equal(plan.parts[0].sourceBookIds,null,
+  'a part matched only by a collective source must stay unscoped');
+ const mixed=normalizePlan({intent:'explain',sources:[
+  {label:'Various authors',role:'primary',bookIds:Object.keys(catalog).filter(id=>id!=='163')},
+  {label:'Thomas Hobbes',role:'primary',bookIds:['163']}],
+  parts:['What does Thomas Hobbes argue about power?'],queries:['Hobbes power']},
+  'What do various authors and Thomas Hobbes argue about wealth and power?',catalog);
+ assert.deepEqual(mixed.parts[0].sourceBookIds,['163'],
+  'a genuine author source keeps its scope alongside a collective lead');
+ const platoCatalog={};
+ for(let i=1;i<=22;i++)platoCatalog[String(200+i)]='Dialogue '+i+' — Plato';
+ const plato=normalizePlan({intent:'explain',sources:[
+  {label:'Plato',role:'primary',bookIds:Object.keys(platoCatalog)}],
+  parts:['What does Plato argue about justice?'],queries:['Plato justice']},
+  'What does Plato argue about justice?',platoCatalog);
+ assert.equal(plato.collectiveSources,undefined);
+ assert.equal(plato.parts[0].sourceBookIds.length,22,
+  'the widest genuine author byline in the catalog still scopes');
+});
+
 test('three-author comparison keeps source coverage and synthesis while dropping a repeated wrapper',()=>{
  const question='How do Augustine, Aquinas, and Kant differ in their understanding of moral responsibility?';
  const catalog={
@@ -8305,12 +8335,11 @@ test('batch 34 B34-6 pilot (Wuthering): accepted claims lost to containment and 
   {partId:'P1',claimId:'P1-C10',reason:'rejection-containment',disposition:'traced'},
   'the disclosure loss is reconciled as containment');
  assert.deepEqual(lossFor('P1-C6'),
-  {partId:'P1',claimId:'P1-C6',reason:'claim-partial-not-shipped',disposition:'traced',
-   unanimousSourceSupport:true},
+  {partId:'P1',claimId:'P1-C6',reason:'claim-partial-not-shipped',disposition:'traced'},
   'the partial-gated loss is reconciled as the ship-gate, not unexplained; '+
-  'Stage B (B3) adds the record-only unanimity flag — this fixture is the '+
-  'ambiguous case it must not act on (the source decision accepted while '+
-  'the reviewer boundary denies the claim’s ‘conflict of interest’ framing)');
+  'this fixture is the ambiguous case a verdict gate must not act on (the '+
+  'source decision accepted while the reviewer boundary denies the claim’s '+
+  '‘conflict of interest’ framing)');
  assert.equal((result.trace.assemblyDisclosureRestored||[])
   .some(entry=>entry.claimId==='P1-C10'),false,
   'B34-2 does not restore a containment-dropped disclosure');
@@ -9600,9 +9629,8 @@ test('stage B B3: a partial-gated loss is disclosed in requirement terms, counte
  const losses=result.trace.assemblyLoss||[];
  assert.equal(losses.length,1,'exactly one loss is recorded');
  assert.deepEqual(losses[0],{partId:'P2',claimId:'P2-C2',
-  reason:'claim-partial-not-shipped',disposition:'traced',
-  unanimousSourceSupport:true},
-  'the loss record names the gate and the unanimous source support');
+  reason:'claim-partial-not-shipped',disposition:'traced'},
+  'the loss record names the gate that withheld the claim');
  assert.deepEqual(result.trace.assemblyLossSummary,
   {total:1,restored:0,byReason:{'claim-partial-not-shipped':1},byPart:{P2:1}},
   'the loss count is a first-class trace number');
