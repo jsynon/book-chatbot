@@ -848,17 +848,17 @@ test('compact review cannot verify a sentence unless every cited source has a se
  assert.equal(result.evidenceMap.length,0);
  assert.equal(ai.calls.length,2,'an incomplete source checklist does not trigger an unmarked repair');
 });
-test('review truncation gets one compact retry, then suppresses when the only part remains unvalidated',async()=>{
+test('review truncation gets two compact retries in a single-part answer (Stage B.2), then suppresses when the only part remains unvalidated',async()=>{
  const truncated={choices:[{finish_reason:'length',message:{content:'{"parts":[{"partId":"P1"'}}],
    usage:{neurons:3,prompt_tokens:500,completion_tokens:1800}};
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
-  truncated,truncated]);
+  truncated,truncated,truncated]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
- assert.equal(ai.calls.length,3,'the truncated review is retried once and no further call is made');
+ assert.equal(ai.calls.length,4,'the truncated review is retried twice (B.2 single-part) and no further call is made');
  assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'review-output-truncated',applied:false,
-  parts:[{partId:'P1',reason:'review-output-truncated',applied:false}]});
+  parts:[{partId:'P1',reason:'review-output-truncated',applied:false,attempts:2,retryFailureCode:'review-output-truncated'}]});
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.reviewStatus,'review-format-failed');
  assert.equal(result.failureCode,'review-output-truncated');
@@ -2172,19 +2172,24 @@ test('review sees a bounded per-source packet and cannot select an unsent full-s
  assert.equal(omitted.ai.calls.length,2,'a missing evidence packet fails closed in the single audit and triggers no further call (redesign Stage A)');
 });
 
-test('review deadline failure gets one in-place retry and stays fail-closed after both attempts',async()=>{
+test('review deadline failure in a single-part answer gets two in-place retries (Stage B.2) and stays fail-closed after all attempts',async()=>{
+ // Stage B.2 supersedes the one-retry contract for single-part
+ // answers: with no sibling part to degrade to, the review gets
+ // a second retry before the answer is lost. (Multi-part answers
+ // keep one retry per part; their B.1 degradation fixtures are
+ // the regression tests for that side.)
  const timeout=()=>Object.assign(new Error('Inference deadline exceeded'),{
   stage:'review',code:'inference-deadline-exceeded',startedAt:Date.now()-45000
  });
- const ai=makeAI([answer('PART P1\nHume links causal expectation to custom and regular conjunction. [S1]'),timeout(),timeout()]);
+ const ai=makeAI([answer('PART P1\nHume links causal expectation to custom and regular conjunction. [S1]'),timeout(),timeout(),timeout()]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
- assert.equal(ai.calls.length,3,'composition runs once; only the review call is retried');
+ assert.equal(ai.calls.length,4,'composition runs once; the review call is retried twice');
  assert.deepEqual(result.trace.reviewRetry,{attempted:true,mode:'review-only',
   reason:'inference-deadline-exceeded',applied:false,outcome:'failed-again',
   parts:[{partId:'P1',reason:'inference-deadline-exceeded',applied:false,
-   mode:'review-only',samePacket:true,outcome:'failed-again',retryFailureCode:'inference-deadline-exceeded'}]});
+   mode:'review-only',samePacket:true,outcome:'failed-again',attempts:2,retryFailureCode:'inference-deadline-exceeded'}]});
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.coverage,'none');
  assert.equal(result.trace.answerRetry,undefined,'review timeout does not trigger a whole-build retry');
@@ -3268,7 +3273,7 @@ test('reviewer contract errors suppress a one-part draft when review is incomple
 test('malformed reviewer JSON fails closed and suppresses the one-part draft',async()=>{
  const malformed={response:'{"parts":[{"partId":"P1","status":"answered","reason":"The phrase "denial of self" is supported.","claims":[]}]}' };
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
-  malformed,malformed]);
+  malformed,malformed,malformed]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.outcome,'generation-failed');
@@ -3277,8 +3282,8 @@ test('malformed reviewer JSON fails closed and suppresses the one-part draft',as
  assert.equal(result.answer,'I could not complete a reliable answer this time. Please try again.');
  assert.deepEqual(result.trace.reviewContract.issues,['model-output-invalid-format']);
  assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false,
-  parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false}]});
- assert.equal(ai.calls.length,3,'a malformed review gets one compact retry and no further call');
+  parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false,attempts:2,retryFailureCode:'model-output-invalid-format'}]});
+ assert.equal(ai.calls.length,4,'a malformed review gets two compact retries (B.2 single-part) and no further call');
 });
 
 test('the exact run 9 Wollstonecraft reviewer response parses after repeated unmatched closers are removed',()=>{
@@ -3324,7 +3329,7 @@ test('run 9 repeated-unmatched-closer recovery still validates the full review a
 test('run 48 reviewer typo fails closed and suppresses a one-part draft (B7-5b)',async()=>{
  const typo={response:'{"parts":[{"partId":"P1","status":"partial"}],"claims":[{"claimId":"P1-C1","status":"unanswered","spansBySource:{}}'};
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
-  typo,typo]);
+  typo,typo,typo]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.outcome,'generation-failed');
@@ -3352,8 +3357,8 @@ test('run 48 reviewer typo fails closed and suppresses a one-part draft (B7-5b)'
   'the unvalidated part is removed before answer assembly');
  assert.equal(result.trace.reviewContract.issues[0],'model-output-invalid-format');
  assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false,
-  parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false}]});
- assert.equal(ai.calls.length,3);
+  parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false,attempts:2,retryFailureCode:'model-output-invalid-format'}]});
+ assert.equal(ai.calls.length,4);
 });
 
 test('a truncated first review succeeds on one compact retry with a smaller span packet',async()=>{
@@ -3388,7 +3393,7 @@ test('a truncated first review succeeds on one compact retry with a smaller span
  assert.equal(retryPacket.spanCatalog.length,4,'the retry reviews a compact four-span packet');
 });
 
-test('a review that fails both attempts suppresses the sole unvalidated part',async()=>{
+test('a review that fails every attempt suppresses the sole unvalidated part (B.2: three attempts for a single part)',async()=>{
  const matching='A just decision applies a rule impartially, while a merciful response tempers the consequence with compassion.';
  const unrelated='Harvest festivals in the valley traditionally begin after the first frost and continue for nine days of feasting.';
  const source={id:'S1',bookId:'72',title:'Justice and Mercy',page:1,
@@ -3398,12 +3403,12 @@ test('a review that fails both attempts suppresses the sole unvalidated part',as
    sourceBookIds:['72'],candidateSourceIds:['S1']}]};
  const invalid={response:'{invalid-json'};
  const ai=makeAI([answer('PART P1\nJustice applies a rule impartially, while mercy tempers consequences with compassion. [S1]'),
-  invalid,invalid]);
+  invalid,invalid,invalid]);
  const result=await composeEvidenceAnswer('How can justice and mercy come into conflict?',[source],ai,[],
   {plan,catalog:{...catalog,72:'Justice and Mercy'},trace:true});
- assert.equal(ai.calls.length,3);
+ assert.equal(ai.calls.length,4);
  assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false,
-  parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false}]});
+  parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false,attempts:2,retryFailureCode:'model-output-invalid-format'}]});
  assert.equal(result.reviewStatus,'review-format-failed');
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.coverage,'none');
@@ -5985,7 +5990,7 @@ test('batch 24 rescue never fires for a part with an accepted claim',async()=>{
 test('batch 24 review-stage failure after the in-build review retry does not whole-build retry',async()=>{
  const requestFailed=()=>new Error('Review request failed');
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
-  requestFailed(),requestFailed(),
+  requestFailed(),requestFailed(),requestFailed(),
   answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
   review([['P1','answered']])]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
@@ -5997,7 +6002,7 @@ test('batch 24 review-stage failure after the in-build review retry does not who
   'the in-build review retry ran before the failure');
  assert.equal(result.trace.answerRetry,undefined,
   'batch 24 (B24-4): no whole-build retry follows an attempted review retry');
- assert.equal(ai.calls.length,3,'compose, the failed review, and its compact retry — no second build');
+ assert.equal(ai.calls.length,4,'compose, the failed review, and its two compact retries (B.2 single-part) — no second build');
 });
 
 test('batch 24 compose-stage transient failure still whole-build retries',async()=>{
@@ -9076,11 +9081,15 @@ test('redesign Stage A: a reviewer-misattributed claim is removed whole by the a
  assert.equal(ai.calls.length,3,'compose plus one audit call per part; nothing follows the audit');
 });
 
-test('redesign Stage A: the byline-direction flag is recorded and never acted on',async()=>{
- // The batch-35 Death shape as a fixture: Sulpicius writes TO
+test('stage B.2 gate: a claim crediting a letter to its recipient is removed, and the removal is recorded',async()=>{
+ // The phase-3 Death shape as a fixture: Sulpicius writes TO
  // Cicero; the draft credits Cicero with the letter's content.
- // The reviewer is the judge and accepts the claim; Stage A only
- // records the direction flag for later precision measurement.
+ // The reviewer is the judge and accepts the claim. Stage A only
+ // recorded the direction flag; the flag then measured 3/3
+ // precision in the Stage B.1 validation, so B.2 gives it a
+ // narrow gate: recipient- and volume-author-role credits are
+ // removed whole. This fixture's only claim is gated, so the
+ // whole answer is suppressed and the removal is recorded.
  const source={id:'S1',bookId:'80',title:'Letters — Marcus Tullius Cicero',
   page:9,url:'https://example.test/letters#page=9',
   text:'Servius Sulpicius To Cicero, greetings. I have received your letter, and I urge you to let reason restrain your grief, for excessive sorrow profits nothing.',
@@ -9096,12 +9105,18 @@ test('redesign Stage A: the byline-direction flag is recorded and never acted on
  const result=await composeEvidenceAnswer(
   'What counsel does the letter offer about grief?',
   [source],ai,[],{plan,catalog:{80:'Letters — Marcus Tullius Cicero'},trace:true});
- assert.match(result.answer,/Cicero argues that reason should restrain grief/,
-  'the claim ships: the flag is record-only and removes nothing');
+ assert.doesNotMatch(result.answer,/Cicero argues that reason should restrain grief/,
+  'the gated claim does not ship');
  assert.deepEqual(result.trace.final.bylineDirectionFlags,
   [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
     creditedName:'Cicero',bylineAuthor:'Servius Sulpicius',
-    creditedRole:'recipient'}]);
+    creditedRole:'recipient'}],
+  'the flag itself is still recorded');
+ assert.deepEqual(result.trace.final.bylineGateRemovals,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
+    creditedName:'Cicero',bylineAuthor:'Servius Sulpicius',
+    creditedRole:'recipient'}],
+  'the removal is recorded with the flag that caused it');
 });
 
 test('redesign Stage A: the pronoun-orphan flag is recorded and never acted on',async()=>{
@@ -9617,85 +9632,16 @@ test('stage B B3: a build with no assembly losses still reports the zero count',
 });
 
 // ---------------------------------------------------------------------------
-// Stage C record-only bundle: passage-window subject presence,
-// cross-work citations, byline-trigger widening, widened orphan
-// scan. Every flag is telemetry: shipped text is asserted
-// unchanged in each test.
+// Stage C bundle, as amended by Stage B.2: the passage-window,
+// cross-work, and widened-orphan scans were deleted (two
+// validations at ~0 precision; their tests went with them). What
+// survives is the byline-trigger widening — and under B.2 the
+// byline check has a narrow gate, so the Trajan test below now
+// asserts removal, not just the flag.
 // ---------------------------------------------------------------------------
 
-test('stage C item 1: the Conrad shape flags — the attributed name is in the span but outside the passage window',async()=>{
- // Production shape (phase-2 validation, both selected passes):
- // the manager's words ship as Kurtz's while Kurtz is named only
- // elsewhere in the same long span. The span below is one review
- // span of four sentences; the claim draws on sentence 1 (its own
- // quoted phrase), Kurtz is named only in sentence 4.
- const source={id:'S1',bookId:'315',title:'Heart of Darkness — Joseph Conrad',
-  page:64,url:'https://example.test/conrad#page=64',
-  text:'The manager smiled, a smile like a door opening into a darkness he had in his keeping. The brickmaker nodded beside him. A clerk muttered over the accounts. Later, talk turned to Kurtz of the Inner Station.',
-  preview:'The manager smiled at the river.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Joseph Conrad',role:'primary',bookIds:['315']}],
-  parts:[{id:'P1',question:'How is Kurtz presented through the eyes of others at the station?',
-   sourceBookIds:['315'],searchQueries:['manager smile darkness Kurtz'],
-   candidateSourceIds:['S1']}],queries:['Kurtz presentation']};
- const ai=makeAI([
-  answer('PART P1\nKurtz wore a smile "like a door opening into a darkness he had in his keeping" as he watched the river. [S1]\n'+
-   'Kurtz of the Inner Station was the name on everyone\'s lips at the post. [S1]'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer(
-  'How is Kurtz presented through the eyes of others at the station?',
-  [source],ai,[],{plan,catalog:{315:'Heart of Darkness — Joseph Conrad'},trace:true});
- assert.match(result.answer,/Kurtz wore a smile/,
-  'the claim ships: the window check is record-only and removes nothing');
- const flags=result.trace.final.passageWindowSubjectFlags;
- assert.equal(flags.length,1,'only the window-missing claim flags; the claim whose window names Kurtz does not');
- assert.equal(flags[0].partId,'P1');
- assert.equal(flags[0].claimId,'P1-C1');
- assert.equal(flags[0].sourceId,'S1');
- assert.equal(flags[0].name,'Kurtz');
- assert.equal(flags[0].nameInSpan,true,'the name IS in the span — outside the window');
- assert.match(flags[0].windowText,/door opening into a darkness/);
- assert.doesNotMatch(flags[0].windowText,/Kurtz/);
- assert.match(flags[0].matchedSentence,/manager smiled/);
-});
 
-test('stage C item 2: the Hobbes shape flags — a claim about one author cited to the other author\'s book inside a compare part',async()=>{
- // Production shape (phase-2 validation): claims about Hobbes
- // shipped cited to a Rousseau span. The part legitimately holds
- // both books, so part scope cannot decide; the claim's single
- // named subject can.
- const hobbesSource={id:'S1',bookId:'163',title:'Leviathan — Thomas Hobbes',
-  page:120,url:'https://example.test/hobbes#page=120',
-  text:'Covenants without the sword are but words, and of no strength to secure a man at all. Authority rests on the covenant each man makes with every other man.',
-  preview:'Covenants without the sword are but words.'};
- const rousseauSource={id:'S2',bookId:'552',title:'Discourse on Inequality — Jean-Jacques Rousseau',
-  page:88,url:'https://example.test/rousseau#page=88',
-  text:'The first man who, having enclosed a piece of ground, bethought himself of saying this is mine, and found people simple enough to believe him, was the real founder of civil society. Natural man lived solitary and free, troubling himself little about his fellows.',
-  preview:'The first man who enclosed a piece of ground.'};
- const plan={version:'reader-evidence-v2',intent:'compare',
-  sources:[{label:'Thomas Hobbes',role:'primary',bookIds:['163']},
-   {label:'Jean-Jacques Rousseau',role:'primary',bookIds:['552']}],
-  parts:[{id:'P1',question:'How do Hobbes and Rousseau each ground political authority?',
-   sourceBookIds:['163','552'],searchQueries:['Hobbes Rousseau authority covenant'],
-   candidateSourceIds:['S1','S2']}],queries:['Hobbes Rousseau authority']};
- const ai=makeAI([
-  answer('PART P1\nHobbes argues that political authority rests on the covenant each man makes with every other. [S2]\n'+
-   'Rousseau argues that civil society began when the first man enclosed a piece of ground and called it his own. [S2]'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer(
-  'How do Hobbes and Rousseau each ground political authority?',
-  [hobbesSource,rousseauSource],ai,[],
-  {plan,catalog:{163:'Leviathan — Thomas Hobbes',552:'Discourse on Inequality — Jean-Jacques Rousseau'},trace:true});
- assert.match(result.answer,/Hobbes argues that political authority rests on the covenant/,
-  'the claim ships: the cross-work check is record-only');
- const flags=result.trace.final.crossWorkCitationFlags;
- assert.equal(flags.length,1,'only the Hobbes-on-Rousseau claim flags');
- assert.deepEqual(flags[0],{partId:'P1',claimId:'P1-C1',sourceId:'S2',
-  spanId:'S2-Q1',basis:'claim-subject',spanBookId:'552',
-  partBookIds:['163','552'],claimSubject:'Hobbes'});
-});
-
-test('stage C item 3: the Trajan shape flags — furniture ahead of the byline, and the credited name is the volume author',async()=>{
+test('stage C item 3 + B.2 gate: the Trajan shape — furniture ahead of the byline, the credited name is the volume author, and the claim is removed',async()=>{
  // Production shape (phase 3): the span head carries site
  // furniture (banner repeating the volume title, a bracketed
  // contents link, a roman-numeral letter number) ahead of
@@ -9716,72 +9662,142 @@ test('stage C item 3: the Trajan shape flags — furniture ahead of the byline, 
  const result=await composeEvidenceAnswer(
   'What ruling does the letter give on children exposed by their parents?',
   [source],ai,[],{plan,catalog:{81:'Letters of Marcus Tullius Cicero'},trace:true});
- assert.match(result.answer,/Cicero discusses the legal rights/,
-  'the claim ships: the widened byline check is still record-only');
+ assert.doesNotMatch(result.answer,/Cicero discusses the legal rights/,
+  'the gated claim does not ship (volume-author role)');
  assert.deepEqual(result.trace.final.bylineDirectionFlags,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
+    creditedName:'Cicero',bylineAuthor:'Trajan',
+    creditedRole:'volume-author'}],
+  'the widened flag is still recorded');
+ assert.deepEqual(result.trace.final.bylineGateRemovals,
   [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
     creditedName:'Cicero',bylineAuthor:'Trajan',
     creditedRole:'volume-author'}]);
 });
 
-test('stage C item 4: the widened orphan scan catches a mid-part pronoun whose recorded subject was never established',async()=>{
- // Production shape (phase-3 guilt AP2): "She observes that
- // Benjamin Disraeli's 'good conscience'…" shipped with the
- // referent (Arendt) named nowhere — her naming claim was
- // audit-omitted. The original scan is paragraph-initial and
- // answer-global, so it stayed silent; the widened scan checks
- // every sentence opening against the names established earlier
- // in the same part, using the claim's recorded subject.
- const source={id:'S1',bookId:'200',title:'Essays on Conscience — Sigmund Freud',
-  page:31,url:'https://example.test/conscience#page=31',
-  text:'The super-ego becomes exceptionally severe and unkind, reproaching the ego with the utmost violence in melancholia. A good conscience may rest on nothing more than the accident of a fortunate birth. Guilt is the price the ego pays to the super-ego for its failures.',
-  preview:'The super-ego becomes exceptionally severe.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Sigmund Freud',role:'primary',bookIds:['200']}],
-  parts:[{id:'P1',question:'How do writers explain the severity and the quieting of conscience?',
-   sourceBookIds:['200'],searchQueries:['super-ego severe conscience guilt'],
-   candidateSourceIds:['S1']}],queries:['conscience severity']};
- // The review stub records each claim's subject in BOTH subject
- // fields: normalizeReview carries attributedSpeaker onto the
- // decision record unconditionally, while attributedSubject is
- // recorded only when the claim text itself yields an extractable
- // subject — and "She observes…" yields none (that record gap is
- // documented in the Stage C checkpoint). The scan's subject
- // lookup reads subject-then-speaker, the project's own order.
- const subjectsByClaim={'P1-C1':'Sigmund Freud','P1-C2':'Hannah Arendt',
-  'P1-C3':'Sigmund Freud'};
- const reviewPart=(_model,{messages})=>{
-  const payload=parsePayload(messages);
-  const part=payload.parts[0];
-  return {response:JSON.stringify({parts:[{partId:part.partId,status:'answered',
-    answerStatus:'answered',
-    directAnswerClaimIds:payload.claims.map(claim=>claim.claimId)}],
-   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
-    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
-     spanIds:[sourceId+'-Q1'],subjectAttributionStatus:'supported',
-     attributedSubject:subjectsByClaim[claim.claimId]||'',
-     attributedSpeaker:subjectsByClaim[claim.claimId]||''}))}))})};
- };
- const ai=makeAI([
-  answer('PART P1\nSigmund Freud argues that the super-ego becomes exceptionally severe and unkind in melancholia. [S1]\n'+
-   'She observes that Benjamin Disraeli\'s "good conscience" was due to his having been born an Englishman. [S1]\n'+
-   'He argues that guilt is the price the ego pays to the super-ego for its failures. [S1]'),
-  reviewPart],{decorateReview:false});
- const result=await composeEvidenceAnswer(
-  'How do writers explain the severity and the quieting of conscience?',
-  [source],ai,[],{plan,catalog:{200:'Essays on Conscience — Sigmund Freud'},trace:true});
- assert.match(result.answer,/She observes that Benjamin Disraeli/,
-  'the sentence ships: the widened scan is record-only');
 
- assert.deepEqual(result.trace.final.pronounOrphanFlags,[],
-  'the original scan stays silent here, exactly as in production');
- const wide=result.trace.final.pronounOrphanFlagsWide;
- assert.equal(wide.length,1,'only the unestablished-subject opening flags; the Freud-anchored "He argues" does not');
- assert.equal(wide[0].partId,'P1');
- assert.equal(wide[0].claimId,'P1-C2');
- assert.equal(wide[0].openingType,'pronoun');
- assert.equal(wide[0].pronoun,'She');
- assert.equal(wide[0].recordedSubject,'Hannah Arendt');
- assert.deepEqual(wide[0].establishedNamesBefore,['Sigmund Freud']);
- assert.match(wide[0].opening,/^She observes that Benjamin Disraeli/);
+
+// ---------------------------------------------------------------------------
+// Stage B.2: byline gate (partial removal + record-only roles),
+// the single-part extra review attempt, and coverage honesty.
+// ---------------------------------------------------------------------------
+
+test('stage B.2 gate: only the misdirected claim is removed — a correctly credited sibling claim ships',async()=>{
+ const source={id:'S1',bookId:'80',title:'Letters — Marcus Tullius Cicero',
+  page:9,url:'https://example.test/letters#page=9',
+  text:'Servius Sulpicius To Cicero, greetings. I have received your letter, and I urge you to let reason restrain your grief, for excessive sorrow profits nothing.',
+  preview:'Servius Sulpicius To Cicero, greetings.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Marcus Tullius Cicero',role:'primary',bookIds:['80']}],
+  parts:[{id:'P1',question:'What counsel does the letter offer about grief?',
+   sourceBookIds:['80'],searchQueries:['grief reason restrain'],
+   candidateSourceIds:['S1']}],queries:['grief counsel']};
+ const ai=makeAI([
+  answer('PART P1\nCicero argues that reason should restrain grief, since excessive sorrow profits nothing. [S1]\nSulpicius urges that reason should restrain grief, since excessive sorrow profits nothing. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(
+  'What counsel does the letter offer about grief?',
+  [source],ai,[],{plan,catalog:{80:'Letters — Marcus Tullius Cicero'},trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.doesNotMatch(result.answer,/Cicero argues that reason should restrain grief/,
+  'the recipient-credit claim is removed');
+ assert.match(result.answer,/Sulpicius urges that reason should restrain grief/,
+  'the correctly credited claim ships');
+ assert.equal(result.trace.final.bylineGateRemovals.length,1);
+ assert.equal(result.trace.final.bylineGateRemovals[0].claimId,'P1-C1');
+});
+
+test('stage B.2 gate: an other-role byline flag stays record-only and the claim ships',async()=>{
+ const source={id:'S1',bookId:'80',title:'Letters — Marcus Tullius Cicero',
+  page:9,url:'https://example.test/letters#page=9',
+  text:'Servius Sulpicius To Cicero, greetings. I have received your letter, and I urge you to let reason restrain your grief, for excessive sorrow profits nothing.',
+  preview:'Servius Sulpicius To Cicero, greetings.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Marcus Tullius Cicero',role:'primary',bookIds:['80']}],
+  parts:[{id:'P1',question:'What counsel does the letter offer about grief?',
+   sourceBookIds:['80'],searchQueries:['grief reason restrain'],
+   candidateSourceIds:['S1']}],queries:['grief counsel']};
+ const ai=makeAI([
+  answer('PART P1\nAtticus argues that reason should restrain grief, since excessive sorrow profits nothing. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(
+  'What counsel does the letter offer about grief?',
+  [source],ai,[],{plan,catalog:{80:'Letters — Marcus Tullius Cicero'},trace:true});
+ assert.match(result.answer,/Atticus argues that reason should restrain grief/,
+  'an other-role credit is not gated — the gate is deliberately narrow');
+ assert.deepEqual(result.trace.final.bylineDirectionFlags,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',
+    creditedName:'Atticus',bylineAuthor:'Servius Sulpicius',
+    creditedRole:'other'}]);
+ assert.deepEqual(result.trace.final.bylineGateRemovals,[]);
+});
+
+test('stage B.2: a single-part review that times out, then returns invalid JSON, recovers on the extra attempt (the progress AP2 shape)',async()=>{
+ const timeout=()=>Object.assign(new Error('Inference deadline exceeded'),{
+  stage:'review',code:'inference-deadline-exceeded',startedAt:Date.now()-45000
+ });
+ const ai=makeAI([answer('PART P1\nHume links causal expectation to custom and regular conjunction. [S1]'),
+  timeout(),{response:'this is not a review'},review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true
+ });
+ assert.equal(ai.calls.length,4,'compose + initial review + two retries');
+ assert.equal(result.outcome,'verified-source-draft',
+  'the extra attempt recovers the answer instead of suppressing it');
+ assert.equal(result.trace.reviewRetry.applied,true);
+ assert.equal(result.trace.reviewRetry.parts[0].attempts,2);
+ assert.equal(result.trace.reviewRetry.parts[0].outcome,'recovered');
+ assert.equal(result.trace.reviewRetry.parts[0].retryFailureCode,'model-output-invalid-format',
+  'the failed retry in the middle is still the recorded one');
+});
+test('stage B.2: coverage cannot read full over a claim-level uncited ship',async()=>{
+ // The B34-2(ii) Faust shape (see its own test for the label
+ // assertions): the wager condition — a direct-answer and
+ // requirement claim — ships with no citation and is named in
+ // claimLevelUncitedLabels, while the part otherwise answers
+ // fully. Before B.2 this build reported coverage 'full'; the
+ // uncited ledger now downgrades it. (A claim-scoped assembly
+ // loss with all requirements answered does NOT downgrade —
+ // that is a disclosed footnote, per the B.1 label semantics,
+ // and the hamlet fixture above keeps its 'full'.)
+ const faust={id:'S1',bookId:'888',title:'Faust — Johann Wolfgang von Goethe',page:44,
+  url:'https://example.test/faust#page=44',
+  text:'Faust speaks in the study: first let us agree the pact itself, '+
+   'Mephistopheles, and strike the bargain here, and let the terms be set '+
+   'down before any condition is named between us.',
+  preview:'Faust speaks in the study: first let us agree the pact itself.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Johann Wolfgang von Goethe',role:'primary',bookIds:['888']}],
+  parts:[{id:'P1',question:'What is the condition of the wager Faust makes?',
+   sourceBookIds:['888'],searchQueries:['Faust wager condition'],candidateSourceIds:['S1'],
+   sourceRequired:true,
+   requirements:[{id:'P1-R1',text:'State the condition on which Faust forfeits his soul.'}]}],
+  queries:['Faust wager condition']};
+ const draft='PART P1\n'+
+  'In the study, Faust proposes the pact to Mephistopheles and agrees to strike the bargain there. [S1]\n\n'+
+  'The wager\u2019s condition is that if Faust ever bids the passing moment stay, saying it is fair, that moment will be his last and his soul forfeit.\n\n'+
+  'Goethe reworked the older Faust chapbooks, whose hero was damned outright, into this drama of striving.';
+ const reviewResponder=({messages})=>{
+  const payload=parsePayload(messages);
+  const span=payload.spanCatalog.find(entry=>entry.text.includes('strike the bargain'));
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+    answerStatus:'answered',directAnswerClaimIds:['P1-C1','P1-C2'],
+    retainedContextClaimIds:['P1-C2','P1-C3'],
+    requirementCoverage:[{requirementId:'P1-R1',status:'answered',
+     answerClaimIds:['P1-C1','P1-C2']}]}],
+   claims:[{claimId:'P1-C1',status:'answered',
+    attributedSubject:'Faust',attributedSpeaker:'Faust',
+    sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId]}]}]})};
+ };
+ const ai=batch25RouterAI({reviewResponder,rescueResponder:b34RescueRefused,
+  repairResponder:({messages})=>({response:JSON.stringify({parts:[]})}),
+  draftText:draft});
+ const result=await composeEvidenceAnswer(
+  'What is the condition of the wager Faust makes?',[faust],ai,[],
+  {plan,trace:true,catalog:{888:'Faust — Johann Wolfgang von Goethe'}});
+ assert.deepEqual(result.trace.final?.claimLevelUncitedLabels,
+  [{partId:'P1',claimIds:['P1-C2']}],
+  'the uncited requirement claim is named in the ledger');
+ assert.equal(result.coverage,'partial',
+  'a claim-level uncited ship downgrades coverage from full');
 });

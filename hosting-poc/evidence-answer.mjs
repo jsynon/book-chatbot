@@ -429,15 +429,17 @@ export const BATCH35_FIRING_FIELDS=[
   // precision).
   'final.bylineDirectionFlags',
   'final.pronounOrphanFlags',
-  // Stage C: the record-only bundle — passage-window subject
-  // presence, cross-work citations, and the widened orphan scan.
-  // The byline widening extends 'final.bylineDirectionFlags' above
-  // (entries now carry creditedRole, and the parser tolerates
-  // site furniture ahead of the letter header). All four checks
-  // earn any power only at >=80% measured precision.
-  'final.passageWindowSubjectFlags',
-  'final.crossWorkCitationFlags',
-  'final.pronounOrphanFlagsWide',
+  // Stage B.2: the byline gate's removal record — the byline check
+  // graduated (see the gate site) for recipient and volume-author
+  // roles, so its flags are joined by the claims it removed. The
+  // Stage C passage-window, cross-work, and widened-orphan scans
+  // were DELETED in the same tranche: across two full validations
+  // they fired ~70 times at ~0 precision and never earned power,
+  // and the standing rule's other half is that checks which do
+  // not earn power are removed. (The Stage C byline widening —
+  // creditedRole plus furniture-tolerant header parsing — is part
+  // of the surviving byline check.)
+  'final.bylineGateRemovals',
   // Redesign Stage A: raw span-ID tokens stripped from shipped
   // prose, and the disclosure-label verbatim verification record.
   'final.spanIdLeaksStripped',
@@ -5210,22 +5212,36 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             const retryEntry={partId,reason:failureCode,applied:false,
               mode:'review-only',samePacket:true};
             reviewRetryParts.push(retryEntry);
-            if(usage.calls>=callLimit){
-              retryEntry.outcome='not-attempted-call-budget';
-              firstReviewError.reviewOnlyRetryExhausted=true;
-              throw firstReviewError;
-            }
-            try{
-              const retriedReview=await runReviewCall(packet.reviewPayload,'retry');
-              retryEntry.applied=true;
-              retryEntry.outcome='recovered';
-              return {packet,rawReview:retriedReview};
-            }catch(retryError){
-              retryEntry.outcome='failed-again';
-              retryEntry.retryFailureCode=reviewFailureCode(retryError);
-              if(retryError&&typeof retryError==='object')
-                retryError.reviewOnlyRetryExhausted=true;
-              throw retryError;
+            // Stage B.2: a single-part answer has no sibling part
+            // to degrade to when its review fails, so it gets one
+            // extra review-only attempt (initial + two retries)
+            // before the part — and with it the whole answer — is
+            // lost (the phase-2 progress AP2 shape: timeout, then
+            // an invalid-format retry, then suppression by design).
+            // Multi-part answers keep the single retry; their
+            // failed parts degrade per-part under B.1.
+            const maxReviewOnlyAttempts=plan.parts.length===1?2:1;
+            for(let attempt=1;attempt<=maxReviewOnlyAttempts;attempt++){
+              if(usage.calls>=callLimit){
+                retryEntry.outcome='not-attempted-call-budget';
+                firstReviewError.reviewOnlyRetryExhausted=true;
+                throw firstReviewError;
+              }
+              try{
+                const retriedReview=await runReviewCall(packet.reviewPayload,'retry');
+                retryEntry.applied=true;
+                retryEntry.outcome='recovered';
+                if(attempt>1)retryEntry.attempts=attempt;
+                return {packet,rawReview:retriedReview};
+              }catch(retryError){
+                retryEntry.retryFailureCode=reviewFailureCode(retryError);
+                if(attempt>1)retryEntry.attempts=attempt;
+                if(attempt<maxReviewOnlyAttempts)continue;
+                retryEntry.outcome='failed-again';
+                if(retryError&&typeof retryError==='object')
+                  retryError.reviewOnlyRetryExhausted=true;
+                throw retryError;
+              }
             }
           }
           // A part whose review-only retry already exhausted throws
@@ -5249,9 +5265,30 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           reviewRetryParts.push(retryEntry);
           packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question,
             packetSpanLimit:4});
-          const rawReview=await runReviewCall(packet.reviewPayload,'retry');
-          retryEntry.applied=true;
-          return {packet,rawReview};
+          // Stage B.2: single-part answers get one extra compact
+          // attempt, mirroring the review-only path above.
+          const maxCompactAttempts=plan.parts.length===1?2:1;
+          let lastCompactError=null;
+          for(let attempt=1;attempt<=maxCompactAttempts;attempt++){
+            if(attempt>1&&usage.calls>=callLimit)
+              throw lastCompactError||firstReviewError;
+            try{
+              const rawReview=await runReviewCall(packet.reviewPayload,'retry');
+              retryEntry.applied=true;
+              if(attempt>1)retryEntry.attempts=attempt;
+              return {packet,rawReview};
+            }catch(compactError){
+              lastCompactError=compactError;
+              // The standard single attempt keeps the entry's
+              // original shape; the failure code is recorded only
+              // once the B.2 extra attempt has been used.
+              if(attempt>1){
+                retryEntry.retryFailureCode=reviewFailureCode(compactError);
+                retryEntry.attempts=attempt;
+              }
+              if(attempt>=maxCompactAttempts)throw compactError;
+            }
+          }
         }
       };
       const settledReviews=await Promise.allSettled(checked.parts.map(attemptPartReview));
@@ -6801,6 +6838,175 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         part.answerStatus='unanswered';part.answers=[];part.evidence=[];}
       assemblySuppressed=true;
     }
+      const nameInText=(name,text)=>{
+        const tokens=String(name||'').split(/\s+/).filter(Boolean);
+        if(!tokens.length)return false;
+        const surname=tokens[tokens.length-1].replace(/[^\p{L}'-]/gu,'');
+        if(surname.length<3)return false;
+        return new RegExp('\\b'+surname.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','iu')
+          .test(String(text||''));
+      };
+      // Stage C: shared record lookups for the record-only final
+      // checks — the review's recorded subjects per claim+source
+      // and per claim, from the merged review decisions.
+      const recordedSubjectsByClaimSource=new Map();
+      const recordedSubjectByClaim=new Map();
+      for(const decision of review?.reviewDecisions||[]){
+        if(!decision?.partId||!decision?.claimId)continue;
+        const subject=String(decision.attributedSubject||'').trim()||
+          String(decision.attributedSpeaker||'').trim();
+        if(!subject)continue;
+        const claimKey=decision.partId+'|'+decision.claimId;
+        if(!recordedSubjectByClaim.has(claimKey))
+          recordedSubjectByClaim.set(claimKey,subject);
+        if(decision.sourceId){
+          const key=claimKey+'|'+String(decision.sourceId);
+          if(!recordedSubjectsByClaimSource.has(key))
+            recordedSubjectsByClaimSource.set(key,subject);
+        }
+      }
+      const claimPersonsFor=(partId,ans,sourceId)=>{
+        const names=[],seen=new Set();
+        const NON_NAME_TRAILING=new Set(['the','a','an','and','or','but',
+          'in','on','of','to','at','by','for','with','from','as','is','was']);
+        const add=name=>{
+          const cleaned=String(name||'').trim();
+          if(!cleaned)return;
+          // Candidate hygiene: extraction over prose can absorb a
+          // trailing capitalized function word into a "name"
+          // ("Pliny The" from a span head); such a string is not a
+          // person and must not become a flag's credited name.
+          const tokens=cleaned.split(/\s+/);
+          if(tokens.length>1&&
+            NON_NAME_TRAILING.has(tokens[tokens.length-1].toLowerCase()))return;
+          const key=normalizedPersonName(cleaned);
+          if(!key||seen.has(key))return;
+          seen.add(key);names.push(cleaned);
+        };
+        if(sourceId!==undefined)
+          add(recordedSubjectsByClaimSource.get(partId+'|'+ans.claimId+'|'+String(sourceId)));
+        else add(recordedSubjectByClaim.get(partId+'|'+ans.claimId));
+        for(const name of claimPersonSubjects(String(ans.text||'')))add(name);
+        return names;
+      };
+      const surnameOf=name=>{
+        const tokens=String(name||'').split(/\s+/).filter(Boolean);
+        if(!tokens.length)return '';
+        return tokens[tokens.length-1].replace(/[^\p{L}'-]/gu,'').toLowerCase();
+      };
+      const splitSpanSentences=text=>{
+        const sentences=[];
+        const pattern=/[^.!?]+[.!?]+["'’”)\]]*\s*|[^.!?]+$/gu;
+        for(const m of String(text||'').matchAll(pattern)){
+          const sentence=m[0].trim();
+          if(sentence)sentences.push(sentence);
+        }
+        return sentences;
+      };
+      const bylineDirectionFlags=[];
+      const bylineFlagSeen=new Set();
+      for(const item of included){
+        for(const ans of item.answers||[]){
+          for(const sourceId of ans.sourceIds||[]){
+            const source=sources.find(value=>String(value.id)===String(sourceId));
+            if(!source)continue;
+            const byline=letterBylineForSource(source);
+            if(!byline)continue;
+            // A claim that also names the letter's actual author
+            // is not misdirected, whatever else it names (the
+            // original check's claim-level guard, kept).
+            if(nameInText(byline.sender,ans.text))continue;
+            const titleAuthor=titleAuthorForSource(source);
+            // Stage C (item 3): the credited-name set is widened
+            // beyond the original recipient/title-author probes —
+            // the claim's recorded subject and its extracted
+            // subjects are candidates too, so a claim crediting
+            // the VOLUME author (the phase-3 Trajan shape: the
+            // letter is Trajan's, the answer credited Cicero, the
+            // volume's name) flags with its role recorded.
+            const candidates=claimPersonsFor(item.part.id,ans,sourceId);
+            if(nameInText(byline.recipient,ans.text)&&
+              !candidates.some(name=>personNamesMatch(name,byline.recipient)))
+              candidates.push(byline.recipient);
+            if(titleAuthor&&nameInText(titleAuthor,ans.text)&&
+              !candidates.some(name=>personNamesMatch(name,titleAuthor)))
+              candidates.push(titleAuthor);
+            for(const creditedName of candidates){
+              if(personNamesMatch(creditedName,byline.sender))continue;
+              const flagKey=item.part.id+'|'+ans.claimId+'|'+String(sourceId)+'|'+
+                normalizedPersonName(creditedName);
+              if(bylineFlagSeen.has(flagKey))continue;
+              bylineFlagSeen.add(flagKey);
+              const creditedRole=personNamesMatch(creditedName,byline.recipient)?
+                'recipient':(titleAuthor&&personNamesMatch(creditedName,titleAuthor))?
+                'volume-author':'other';
+              bylineDirectionFlags.push({partId:item.part.id,
+                claimId:ans.claimId,sourceId:String(sourceId),
+                creditedName,bylineAuthor:byline.sender,creditedRole});
+            }
+          }
+        }
+      }
+      trace.final={...(trace.final||{}),bylineDirectionFlags};
+      // Stage B.2: the byline gate. The byline direction check
+      // measured 3/3 precision across the Stage B.1 validation
+      // (phase 3), including on the one shipped misattribution it
+      // could see (a consolation letter credited to its RECIPIENT),
+      // so under the standing earn-power rule it graduates — for
+      // the two roles whose semantics are unambiguous: the claim
+      // credits the letter's recipient, or it credits the volume's
+      // title author while the letter's own header names a
+      // different sender. Gated claims are removed whole (the
+      // audit's only removal shape), the removal is recorded, and
+      // the reconciliation + label machinery below then reports
+      // any requirement the removal unanswered. 'other'-role flags
+      // stay record-only.
+      const bylineGateRemovals=[];
+      {
+        const gatedFlags=new Map();
+        for(const flag of bylineDirectionFlags){
+          if(flag.creditedRole!=='recipient'&&
+            flag.creditedRole!=='volume-author')continue;
+          const key=flag.partId+'|'+flag.claimId;
+          if(!gatedFlags.has(key))gatedFlags.set(key,flag);
+        }
+        if(gatedFlags.size){
+          for(const item of included){
+            const surviving=item.answers.filter(ans=>
+              !gatedFlags.has(item.part.id+'|'+ans.claimId));
+            if(surviving.length!==item.answers.length){
+              item.answers=surviving;
+              const survivingIds=new Set(surviving.map(ans=>ans.claimId));
+              item.evidence=(item.evidence||[])
+                .filter(entry=>survivingIds.has(entry.claimId));
+            }
+          }
+          bylineGateRemovals.push(...gatedFlags.values());
+          const survivingIncluded=included.filter(item=>item.answers.length);
+          for(const item of included){
+            if(!item.answers.length){
+              item.status='unanswered';item.answerStatus='unanswered';
+              item.evidence=[];
+            }
+          }
+          included=survivingIncluded;
+          answer=included.length?
+            sanitizeInternalAnswerIds(normalizeAnswerMarkdown(
+              included.map(item=>renderAnswerParagraphs(item.answers))
+                .join('\n\n'))):'';
+          if(!answer){
+            failure={stage:'final-quality-check',
+              code:'byline-gate-removed-all',
+              message:'Every claim in the answer credited a letter to someone other than its author.'};
+            for(const part of parts){part.status='unanswered';
+              part.answerStatus='unanswered';part.answers=[];
+              part.evidence=[];}
+            assemblySuppressed=true;
+          }
+        }
+      }
+      trace.final={...(trace.final||{}),bylineGateRemovals};
+
     // Batch 35 (B35-6): the final coverage reconciliation runs
     // BEFORE the label block (through batch 34 it sat after it):
     // disclosure generation below is driven by the reconciled
@@ -7231,8 +7437,25 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // (phase-3 war AP2: a general-context answer whose trace
     // claimed full coverage). evidenceIds are already filtered to
     // citations actually rendered in the shipped text.
-    const coverage=computedCoverage==='full'&&
-      !questionParts.some(part=>part.evidenceIds.length)?'partial':computedCoverage;
+    // Stage B.2: coverage honesty, extended — 'full' additionally
+    // requires a clean uncited ledger: no part shipped labeled or
+    // as context, no uncited-with-packet part, and no claim-level
+    // uncited labels. The phase-3 Wuthering Heights case reported
+    // coverage 'full' over an answer carrying uncited units,
+    // because the B35-6/B4 conditions consulted only requirement
+    // bookkeeping and per-part citation presence. (Assembly losses
+    // are deliberately NOT a condition: a claim-scoped loss whose
+    // requirements all remain answered is a disclosed footnote,
+    // not a coverage gap — the B.1 label semantics.)
+    const containmentDispositions=
+      trace.sourceRequiredContainment?.partDispositions||[];
+    const coverage=computedCoverage==='full'&&(
+      !questionParts.some(part=>part.evidenceIds.length)||
+      containmentDispositions.some(entry=>
+        entry.disposition==='shipped-labeled'||
+        entry.disposition==='shipped-context')||
+      (trace.uncitedPartsWithPacket||[]).length>0||
+      (trace.final?.claimLevelUncitedLabels||[]).length>0)?'partial':computedCoverage;
     const answerCompleteness=questionParts.length&&questionParts.every(part=>part.answerStatus==='answered')?'full':
       questionParts.some(part=>part.answerStatus==='answered'||part.answerStatus==='partial')?'partial':'none';
     // Batch 11 (B11-5): a part that shipped with packet-linked
@@ -7292,126 +7515,20 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // Redesign Stage A: the deterministic final checks that act on
     // or observe the SHIPPED text, run once, here, after every
     // label is applied. (1) Raw span-ID leaks are stripped, not
-    // merely flagged. (2) Byline/header direction and (3)
-    // pronoun-orphan scans are RECORD-ONLY: they write trace
-    // fields and never touch the output; under the standing rule
-    // they can earn removal power only at >=80% measured
-    // precision. (4) Every recorded disclosure label is verified
-    // verbatim against the shipped text.
+    // merely flagged. (2) The pronoun-orphan scan is RECORD-ONLY:
+    // it writes a trace field and never touches the output; under
+    // the standing rule it can earn removal power only at >=80%
+    // measured precision. (The byline direction check runs
+    // earlier, before the coverage reconciliation, because Stage
+    // B.2 gave it a narrow gate; the Stage C passage-window,
+    // cross-work, and widened-orphan scans were deleted in B.2
+    // after ~70 firings at ~0 precision across two validations.)
+    // (3) Every recorded disclosure label is verified verbatim
+    // against the shipped text.
     if(answer){
       const stripped=stripSpanIdLeaks(answer);
       if(stripped.count)answer=stripped.text;
       trace.final={...(trace.final||{}),spanIdLeaksStripped:stripped.count};
-      const nameInText=(name,text)=>{
-        const tokens=String(name||'').split(/\s+/).filter(Boolean);
-        if(!tokens.length)return false;
-        const surname=tokens[tokens.length-1].replace(/[^\p{L}'-]/gu,'');
-        if(surname.length<3)return false;
-        return new RegExp('\\b'+surname.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','iu')
-          .test(String(text||''));
-      };
-      // Stage C: shared record lookups for the record-only final
-      // checks — the review's recorded subjects per claim+source
-      // and per claim, from the merged review decisions.
-      const recordedSubjectsByClaimSource=new Map();
-      const recordedSubjectByClaim=new Map();
-      for(const decision of review?.reviewDecisions||[]){
-        if(!decision?.partId||!decision?.claimId)continue;
-        const subject=String(decision.attributedSubject||'').trim()||
-          String(decision.attributedSpeaker||'').trim();
-        if(!subject)continue;
-        const claimKey=decision.partId+'|'+decision.claimId;
-        if(!recordedSubjectByClaim.has(claimKey))
-          recordedSubjectByClaim.set(claimKey,subject);
-        if(decision.sourceId){
-          const key=claimKey+'|'+String(decision.sourceId);
-          if(!recordedSubjectsByClaimSource.has(key))
-            recordedSubjectsByClaimSource.set(key,subject);
-        }
-      }
-      const claimPersonsFor=(partId,ans,sourceId)=>{
-        const names=[],seen=new Set();
-        const NON_NAME_TRAILING=new Set(['the','a','an','and','or','but',
-          'in','on','of','to','at','by','for','with','from','as','is','was']);
-        const add=name=>{
-          const cleaned=String(name||'').trim();
-          if(!cleaned)return;
-          // Candidate hygiene: extraction over prose can absorb a
-          // trailing capitalized function word into a "name"
-          // ("Pliny The" from a span head); such a string is not a
-          // person and must not become a flag's credited name.
-          const tokens=cleaned.split(/\s+/);
-          if(tokens.length>1&&
-            NON_NAME_TRAILING.has(tokens[tokens.length-1].toLowerCase()))return;
-          const key=normalizedPersonName(cleaned);
-          if(!key||seen.has(key))return;
-          seen.add(key);names.push(cleaned);
-        };
-        if(sourceId!==undefined)
-          add(recordedSubjectsByClaimSource.get(partId+'|'+ans.claimId+'|'+String(sourceId)));
-        else add(recordedSubjectByClaim.get(partId+'|'+ans.claimId));
-        for(const name of claimPersonSubjects(String(ans.text||'')))add(name);
-        return names;
-      };
-      const surnameOf=name=>{
-        const tokens=String(name||'').split(/\s+/).filter(Boolean);
-        if(!tokens.length)return '';
-        return tokens[tokens.length-1].replace(/[^\p{L}'-]/gu,'').toLowerCase();
-      };
-      const splitSpanSentences=text=>{
-        const sentences=[];
-        const pattern=/[^.!?]+[.!?]+["'’”)\]]*\s*|[^.!?]+$/gu;
-        for(const m of String(text||'').matchAll(pattern)){
-          const sentence=m[0].trim();
-          if(sentence)sentences.push(sentence);
-        }
-        return sentences;
-      };
-      const bylineDirectionFlags=[];
-      const bylineFlagSeen=new Set();
-      for(const item of included){
-        for(const ans of item.answers||[]){
-          for(const sourceId of ans.sourceIds||[]){
-            const source=sources.find(value=>String(value.id)===String(sourceId));
-            if(!source)continue;
-            const byline=letterBylineForSource(source);
-            if(!byline)continue;
-            // A claim that also names the letter's actual author
-            // is not misdirected, whatever else it names (the
-            // original check's claim-level guard, kept).
-            if(nameInText(byline.sender,ans.text))continue;
-            const titleAuthor=titleAuthorForSource(source);
-            // Stage C (item 3): the credited-name set is widened
-            // beyond the original recipient/title-author probes —
-            // the claim's recorded subject and its extracted
-            // subjects are candidates too, so a claim crediting
-            // the VOLUME author (the phase-3 Trajan shape: the
-            // letter is Trajan's, the answer credited Cicero, the
-            // volume's name) flags with its role recorded.
-            const candidates=claimPersonsFor(item.part.id,ans,sourceId);
-            if(nameInText(byline.recipient,ans.text)&&
-              !candidates.some(name=>personNamesMatch(name,byline.recipient)))
-              candidates.push(byline.recipient);
-            if(titleAuthor&&nameInText(titleAuthor,ans.text)&&
-              !candidates.some(name=>personNamesMatch(name,titleAuthor)))
-              candidates.push(titleAuthor);
-            for(const creditedName of candidates){
-              if(personNamesMatch(creditedName,byline.sender))continue;
-              const flagKey=item.part.id+'|'+ans.claimId+'|'+String(sourceId)+'|'+
-                normalizedPersonName(creditedName);
-              if(bylineFlagSeen.has(flagKey))continue;
-              bylineFlagSeen.add(flagKey);
-              const creditedRole=personNamesMatch(creditedName,byline.recipient)?
-                'recipient':(titleAuthor&&personNamesMatch(creditedName,titleAuthor))?
-                'volume-author':'other';
-              bylineDirectionFlags.push({partId:item.part.id,
-                claimId:ans.claimId,sourceId:String(sourceId),
-                creditedName,bylineAuthor:byline.sender,creditedRole});
-            }
-          }
-        }
-      }
-      trace.final={...(trace.final||{}),bylineDirectionFlags};
       // Stage B (B2): shipped claims resting on apparatus spans,
       // recorded with a deterministic framing assessment — the
       // claim must present the material as the edition's
@@ -7444,126 +7561,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         }
       }
       trace.final={...(trace.final||{}),apparatusCitations};
-      // Stage C (item 1): passage-window subject presence,
-      // RECORD-ONLY. A claim that names a person and cites a span
-      // flags when the name is absent from the local window around
-      // the passage the claim actually draws on — the Conrad shape,
-      // where the manager's words shipped as Kurtz's while Kurtz
-      // was named only elsewhere in the span (span-global presence
-      // proved too weak in phase-2 validation). The matched passage
-      // is found by the claim's own quoted phrases, else by best
-      // content-term overlap; the window is the matched sentences
-      // plus one neighbour each side. Spans that cannot localize
-      // (single sentence, or a window covering the whole span)
-      // record nothing.
-      const passageWindowSubjectFlags=[];
-      const normalizeQuoteSurface=value=>String(value||'').toLowerCase()
-        .replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/gu,' ').trim();
-      for(const item of included){
-        for(const ans of item.answers||[]){
-          for(const support of item.evidence||[]){
-            if(support.claimId!==ans.claimId)continue;
-            const spanText=String(support.quote||'');
-            const sentences=splitSpanSentences(spanText);
-            if(sentences.length<2)continue;
-            const persons=claimPersonsFor(item.part.id,ans,support.sourceId);
-            if(!persons.length)continue;
-            const quotedPhrases=[];
-            for(const m of String(ans.text||'').matchAll(/["“]([^"”]{12,})["”]|['‘]([^'’]{12,})['’]/gu))
-              quotedPhrases.push(normalizeQuoteSurface(m[1]||m[2]));
-            let matchedIndexes=[];
-            if(quotedPhrases.length){
-              sentences.forEach((sentence,index)=>{
-                const normalized=normalizeQuoteSurface(sentence);
-                if(quotedPhrases.some(phrase=>phrase&&normalized.includes(phrase)))
-                  matchedIndexes.push(index);
-              });
-            }
-            if(!matchedIndexes.length){
-              const claimTerms=fallbackEvidenceTerms(String(ans.text||''));
-              let best=-1,bestOverlap=0;
-              sentences.forEach((sentence,index)=>{
-                const sentenceTerms=fallbackEvidenceTerms(sentence);
-                let overlap=0;
-                for(const term of claimTerms)if(sentenceTerms.has(term))overlap++;
-                if(overlap>bestOverlap){bestOverlap=overlap;best=index;}
-              });
-              if(best>=0&&bestOverlap>=2)matchedIndexes=[best];
-            }
-            if(!matchedIndexes.length)continue;
-            const windowIndexes=new Set();
-            for(const index of matchedIndexes){
-              windowIndexes.add(index);
-              if(index>0)windowIndexes.add(index-1);
-              if(index<sentences.length-1)windowIndexes.add(index+1);
-            }
-            if(windowIndexes.size>=sentences.length)continue;
-            const windowText=sentences
-              .filter((_,index)=>windowIndexes.has(index)).join(' ').slice(0,320);
-            const matchedSentence=sentences[matchedIndexes[0]].slice(0,200);
-            for(const name of persons){
-              if(nameInText(name,windowText))continue;
-              passageWindowSubjectFlags.push({partId:item.part.id,
-                claimId:ans.claimId,sourceId:String(support.sourceId),
-                spanId:String(support.spanId||''),name,
-                nameInSpan:nameInText(name,spanText),
-                windowText,matchedSentence});
-            }
-          }
-        }
-      }
-      trace.final={...(trace.final||{}),passageWindowSubjectFlags};
-      // Stage C (item 2): cross-work citation check, RECORD-ONLY.
-      // A shipped claim flags when its cited span's book is
-      // mechanically determinable as a different work from the one
-      // the claim is about — by the part's single-book scope
-      // ('part-scope'), or, for multi-book parts, by the claim's
-      // single named subject matching exactly one book's title
-      // author ('claim-subject': the Hobbes shape, a claim about
-      // Hobbes cited to a Rousseau span inside a compare part).
-      const crossWorkCitationFlags=[];
-      const authorByBookId=new Map();
-      for(const source of sources){
-        const author=titleAuthorForSource(source);
-        const bookId=String(source?.bookId||'');
-        if(!author||!bookId||authorByBookId.has(bookId))continue;
-        authorByBookId.set(bookId,author);
-      }
-      for(const item of included){
-        const partBookIds=[...new Set((item.part.sourceBookIds||[])
-          .map(String).filter(Boolean))];
-        for(const ans of item.answers||[]){
-          const supports=(item.evidence||[])
-            .filter(support=>support.claimId===ans.claimId);
-          const rows=supports.length?supports:
-            (ans.sourceIds||[]).map(sourceId=>({sourceId,spanId:''}));
-          if(!rows.length)continue;
-          const claimPersons=claimPersonsFor(item.part.id,ans);
-          let claimSubject='',subjectBookIds=null;
-          if(claimPersons.length===1){
-            const matched=new Set();
-            for(const [bookId,author] of authorByBookId)
-              if(personNamesMatch(claimPersons[0],author))matched.add(bookId);
-            if(matched.size){claimSubject=claimPersons[0];subjectBookIds=matched;}
-          }
-          for(const row of rows){
-            const source=sources.find(value=>String(value.id)===String(row.sourceId));
-            const spanBookId=String(source?.bookId||'');
-            if(!spanBookId)continue;
-            let basis='';
-            if(partBookIds.length===1&&spanBookId!==partBookIds[0])
-              basis='part-scope';
-            else if(subjectBookIds&&!subjectBookIds.has(spanBookId))
-              basis='claim-subject';
-            if(!basis)continue;
-            crossWorkCitationFlags.push({partId:item.part.id,
-              claimId:ans.claimId,sourceId:String(row.sourceId),
-              spanId:String(row.spanId||''),basis,spanBookId,
-              partBookIds,claimSubject});
-          }
-        }
-      }
-      trace.final={...(trace.final||{}),crossWorkCitationFlags};
       const pronounOrphanFlags=[];
       const partTextById=new Map(included.map(item=>[item.part.id,
         unwrapBoldWrappedParagraphs(renderAnswerParagraphs(item.answers)).text]));
@@ -7584,93 +7581,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         }
       });
       trace.final={...(trace.final||{}),pronounOrphanFlags};
-      // Stage C (item 4): the pronoun-orphan scan widened to EVERY
-      // sentence opening, RECORD-ONLY, in its own field — the
-      // original scan above keeps its exact semantics so old- and
-      // new-scope precision stay separately measurable. The shipped
-      // scan is paragraph-initial and answer-global; production
-      // misses were mid-part ("She observes…" with the antecedent's
-      // naming claim audit-omitted), possessive-led paragraph
-      // openings, and demonstrative openings ("In this view…").
-      // Here every sentence opening in a part is classified
-      // (pronoun / possessive / demonstrative) and checked against
-      // the names established earlier IN THE SAME PART: when the
-      // sentence's claim carries a recorded subject, the opening is
-      // anchored only if that subject's surname is established
-      // earlier in the part (or the sentence names it); with no
-      // recorded subject, any earlier established name anchors.
-      // The pipeline's own disclosure-label and framing sentences
-      // are excluded — a label opening "This part of the question…"
-      // is not an orphan.
-      const pronounOrphanFlagsWide=[];
-      const disclosureLabelTexts=new Set((trace.final?.disclosureLabels||[])
-        .map(entry=>String(entry.text||'')));
-      const LABEL_OPENING_PREFIXES=['This part of the question',
-        'Retrieved passages could not be verified',
-        'No library passages could be verified'];
-      for(const item of included){
-        const partId=item.part.id;
-        const establishedSurnames=new Set();
-        const establishedNames=[];
-        let sentenceIndex=0;
-        for(const ans of item.answers||[]){
-          if(isAnswerHeading(ans.text))continue;
-          const recordedSubject=recordedSubjectByClaim.get(partId+'|'+ans.claimId)||null;
-          const cleanText=String(ans.text||'').replace(/\s*\[[^\]]*\]/gu,' ');
-          for(const sentence of splitSpanSentences(cleanText)){
-            const index=sentenceIndex++;
-            const trimmed=sentence.replace(/^\s*(?:[-*•]\s*)?(?:\*\*[^*\n]{1,140}?\*\*:?\s*)?/u,'');
-            const isLabel=disclosureLabelTexts.has(sentence)||
-              LABEL_OPENING_PREFIXES.some(prefix=>trimmed.startsWith(prefix));
-            let openingType='',pronoun='';
-            if(!isLabel){
-              let m=trimmed.match(/^(He|She|It|They)\b/u);
-              if(m){
-                openingType='pronoun';pronoun=m[1];
-                if(pronoun==='It'){
-                  const next=(trimmed.slice(m[0].length).trimStart()
-                    .match(/^[\p{L}’'-]+/u)||[''])[0].toLowerCase();
-                  if(ASSEMBLY_IMPERSONAL_IT_FOLLOWERS.has(next))openingType='';
-                }
-              }else if((m=trimmed.match(/^(His|Her|Their|Its)\b/u))){
-                openingType='possessive';pronoun=m[1];
-              }else if((m=trimmed.match(/^(This|That|These|Those)\b/u))){
-                openingType='demonstrative';pronoun=m[1];
-              }else if((m=trimmed.match(/^In (this|that)\b/u))){
-                openingType='demonstrative';pronoun=m[1];
-              }
-            }
-            if(openingType){
-              const anchored=recordedSubject?
-                (nameInText(recordedSubject,sentence)||
-                 establishedSurnames.has(surnameOf(recordedSubject))):
-                establishedNames.length>0;
-              if(!anchored)
-                pronounOrphanFlagsWide.push({partId,claimId:ans.claimId,
-                  paragraphIndex:Number.isInteger(ans.paragraphIndex)?
-                    ans.paragraphIndex:0,
-                  sentenceIndex:index,openingType,
-                  opening:trimmed.slice(0,90),pronoun,recordedSubject,
-                  establishedNamesBefore:establishedNames.slice(0,6)});
-            }
-            for(const match of sentence.matchAll(/\b(\p{Lu}\p{Ll}+)\s+(\p{Lu}\p{Ll}+)\b/gu)){
-              const surname=match[2].toLowerCase();
-              if(!establishedSurnames.has(surname)){
-                establishedSurnames.add(surname);
-                establishedNames.push(match[0]);
-              }
-            }
-            for(const name of claimPersonSubjects(sentence)){
-              const surname=surnameOf(name);
-              if(surname&&!establishedSurnames.has(surname)){
-                establishedSurnames.add(surname);
-                establishedNames.push(name);
-              }
-            }
-          }
-        }
-      }
-      trace.final={...(trace.final||{}),pronounOrphanFlagsWide};
       // Stage B (B4): verification checks the label texts actually
       // recorded at application time (trace.final.disclosureLabels)
       // — since subjects became requirement-scoped, reconstruction
