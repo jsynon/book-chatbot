@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectEvidenceCandidates} from './evidence-selector.mjs';
+import {enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectEvidenceCandidates,selectionExclusionLedger} from './evidence-selector.mjs';
 
 test('selector fallback gives distinct works a page before taking second pages',()=>{
  const candidates=[
@@ -663,4 +663,48 @@ test('stage B B1a facetAnchorReservations: no facet ranks in the pool, no reserv
  const result=facetAnchorReservations([
   {id:'C1',candidatePartIds:['P1']},{id:'C2',candidatePartIds:['P1']}]);
  assert.deepEqual(result,{hasFacetRanks:false,seedCandidateIds:[],reservations:[]});
+});
+
+test('stage B.5 ledger: every exclusion reason is named in stage order, and packed or merged rows never appear',()=>{
+ const excluded=selectionExclusionLedger({
+  candidateIds:['C1','C2','C3','C4','C5','C6','C7','C8','C9','C10','C11'],
+  packedIds:['C1'],mergedIds:['C2'],
+  droppedCandidateIds:[{candidateId:'C3',reason:'six-page-packet-limit'}],
+  packingRejections:[{candidateId:'C4',reason:'answer-packet-budget'},
+   {candidateId:'C5',reason:'source-byte-cap'}],
+  packetFloor:{added:[{candidateId:'C10',displacedCandidateId:'C6'}]},
+  diversityInserted:[{candidateId:'C10',displacedCandidateId:'C7'}],
+  diversityDeferred:['C8'],
+  recoverySkips:[{partId:'P1',candidateId:'C9',reason:'answer-packet-budget'},
+   {partId:'P1',candidateId:'C4',reason:'some-other-skip'}],
+  linkedIds:['C3','C4','C5','C6','C7','C8','C9','C10']});
+ assert.deepEqual(excluded,[
+  {id:'C3',reason:'six-page-packet-limit'},
+  {id:'C4',reason:'answer-packet-budget'},
+  {id:'C5',reason:'source-byte-cap'},
+  {id:'C6',reason:'displaced-by-packet-floor'},
+  {id:'C7',reason:'displaced-by-diversity'},
+  {id:'C8',reason:'diversity-deferred'},
+  {id:'C9',reason:'answer-packet-budget'},
+  {id:'C10',reason:'not-selected'},
+  {id:'C11',reason:'no-part-link'}]);
+ // C10 was inserted by both the floor and the diversity pass yet
+ // never packed: it is an exclusion ('not-selected'), while the rows
+ // it displaced carry the displacement reasons. C11 was never linked
+ // to any part and no stage touched it: 'no-part-link'.
+});
+
+test('stage B.5 ledger: an earlier stage\'s reason wins over a later stage\'s',()=>{
+ assert.deepEqual(selectionExclusionLedger({
+  candidateIds:['C1','C2'],
+  droppedCandidateIds:[{candidateId:'C1',reason:'six-page-packet-limit'}],
+  packingRejections:[{candidateId:'C1',reason:'answer-packet-budget'},
+   {candidateId:'C2',reason:'source-byte-cap'}],
+  packetFloor:{added:[{candidateId:'C9',displacedCandidateId:'C2'}]},
+  linkedIds:['C1','C2']}),
+ [{id:'C1',reason:'six-page-packet-limit'},
+  {id:'C2',reason:'source-byte-cap'}],
+  'the decision overflow outranks a packing rejection, which outranks a floor displacement');
+ assert.deepEqual(selectionExclusionLedger({candidateIds:['C1'],packedIds:['C1']}),[],
+  'a fully packed pool ledgers nothing');
 });

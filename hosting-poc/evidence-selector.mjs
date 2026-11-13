@@ -708,3 +708,45 @@ export function orderFallbackCandidates(candidates,partIds=[]){
   }
   return ordered;
 }
+
+/* Stage B.5 (item 1): the selection exclusion ledger. Record-only —
+ * nothing here feeds back into selection. For every pooled candidate
+ * that does not reach the packet, name the stage that left it out, in
+ * the order the stages actually decide: the decision's own packet-cap
+ * overflow first, then packing's byte rejections, the packet floor's
+ * and the diversity pass's displacements and deferrals, recoveries the
+ * packet budget skipped, and finally the rows no part ever linked.
+ * Packed rows, and rows merged into a packed duplicate, are not
+ * exclusions and never appear. */
+export function selectionExclusionLedger({candidateIds=[],packedIds=[],mergedIds=[],
+  droppedCandidateIds=[],packingRejections=[],packetFloor=null,diversityInserted=[],
+  diversityDeferred=[],recoverySkips=[],linkedIds=[]}={}){
+  const packed=new Set(packedIds),merged=new Set(mergedIds),linked=new Set(linkedIds);
+  const dropped=new Map((droppedCandidateIds||[])
+    .map(entry=>[entry?.candidateId,entry?.reason]));
+  const rejected=new Map((packingRejections||[])
+    .map(entry=>[entry?.candidateId,entry?.reason]));
+  const floorDisplaced=new Set((packetFloor?.added||[])
+    .map(entry=>entry?.displacedCandidateId).filter(Boolean));
+  const diversityDisplaced=new Set((diversityInserted||[])
+    .map(entry=>entry?.displacedCandidateId).filter(Boolean));
+  const deferred=new Set(diversityDeferred||[]);
+  const budgetSkipped=new Set();
+  for(const skip of recoverySkips||[]){
+    if(skip?.reason!=='answer-packet-budget')continue;
+    for(const id of Array.isArray(skip?.candidateIds)?skip.candidateIds:
+      skip?.candidateId?[skip.candidateId]:[])budgetSkipped.add(id);
+  }
+  const excluded=[];
+  for(const id of candidateIds||[]){
+    if(packed.has(id)||merged.has(id))continue;
+    const reason=dropped.get(id)||rejected.get(id)||
+      (floorDisplaced.has(id)?'displaced-by-packet-floor':null)||
+      (diversityDisplaced.has(id)?'displaced-by-diversity':null)||
+      (deferred.has(id)?'diversity-deferred':null)||
+      (budgetSkipped.has(id)?'answer-packet-budget':null)||
+      (linked.has(id)?'not-selected':'no-part-link');
+    excluded.push({id,reason});
+  }
+  return excluded;
+}

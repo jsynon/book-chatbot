@@ -2296,3 +2296,120 @@ test('stage B B1a pilot: facet-anchor pages are seeded before the round-robin fi
  assert.deepEqual(bareStage.facetAnchorReservations.seededCandidateIds,[]);
  assert.deepEqual(bareStage.facetAnchorReservations.reservations,[]);
 });
+
+test('stage B.5 adoption: a starved part adopts the pool\'s unlinked page and the page reaches composition',async()=>{
+ const token='stage-b5-adoption-pilot-test-token-0123456';
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {response:'PART P1\nThe growth of Athenian power inspired fear in Sparta. [S1]\n\nPART P2\nThe growth of Athenian power inspired fear in Sparta. [S1]'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return depthReview(JSON.parse(input.messages[1].content));
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const first=pilot.fixture.body.sources[0];
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War, and why did it last so long?',
+  answerVariant:'with-review',trace:true,
+  sources:[{...first,page:38,candidatePartIds:['P1','P2']},
+   {...first,page:39,candidatePartIds:['P1','P2']},
+   {...first,page:40,candidatePartIds:[]},
+   {...first,page:41,candidatePartIds:['P1','P2']}],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']},
+    {id:'P2',question:'Why did the war last so long?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ const stage=(result.trace.stages||[]).find(item=>item.stage==='evidence-selection');
+ assert.ok(stage,'the selection stage is traced');
+ // P2's retrieval links are all context rows, so the starved part
+ // adopts the pool's one unlinked page (C3, page 40) as a context row.
+ const adoption=(stage.adoptions||[]).find(entry=>entry.partId==='P2');
+ assert.ok(adoption,'P2 records an adoption');
+ assert.equal(adoption.candidateId,'C3');
+ assert.ok(adoption.fit>=1,'the adopted page lexically fits the part question');
+ const p2Decision=stage.decision.parts.find(part=>part.partId==='P2');
+ assert.deepEqual(p2Decision.evidence.find(entry=>entry.candidateId==='C3'),
+  {candidateId:'C3',support:'context',provenance:'adopted'});
+ // The adopted page packs, carries the P2 link, and is in the part's
+ // composer source set — compose-visible, not just traced.
+ const packed=stage.selected.find(entry=>entry.candidateId==='C3');
+ assert.ok(packed,'the adopted page is packed');
+ assert.ok(packed.candidatePartIds.includes('P2'));
+ const p2Plan=result.trace.plan.parts.find(part=>part.id==='P2');
+ assert.ok(p2Plan.candidateSourceIds.includes(packed.id),
+  'the adopted page is in the part\'s composer source set');
+});
+
+test('stage B.5 ledger: a pooled page no part links and no starved part can use is excluded as no-part-link',async()=>{
+ const token='stage-b5-ledger-nolink-pilot-test-token-01';
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {response:'PART P1\nThe growth of Athenian power inspired fear in Sparta. [S1]'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return depthReview(JSON.parse(input.messages[1].content));
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const first=pilot.fixture.body.sources[0];
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
+  sources:[{...first,page:38,candidatePartIds:['P1']},
+   {...first,page:39,candidatePartIds:['P1']},
+   // The orphan's text shares no stemmed term with the part's
+   // question, so adoption cannot claim it either; it must be
+   // ledgered, not silently dropped.
+   {...first,page:40,candidatePartIds:[],
+    text:'A sourdough starter, fed with rye flour and warm water, bubbles gently on the kitchen counter through the night.'}],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ const stage=(result.trace.stages||[]).find(item=>item.stage==='evidence-selection');
+ assert.ok(stage,'the selection stage is traced');
+ assert.equal(stage.selected.length,2,'only the two linked pages pack');
+ assert.deepEqual(stage.excluded,[{id:'C3',reason:'no-part-link'}]);
+ assert.deepEqual(stage.decision.droppedCandidateIds,[]);
+});
+
+test('stage B.5 ledger: the six-page packet cap names its overflow on the decision and the ledger',async()=>{
+ const token='stage-b5-ledger-overflow-pilot-test-token';
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {response:'PART P1\nThe growth of Athenian power inspired fear in Sparta. [S1]'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return depthReview(JSON.parse(input.messages[1].content));
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const first=pilot.fixture.body.sources[0];
+ const sources=[38,39,40,41,42,43,44,45].map(page=>({...first,page,
+  candidatePartIds:['P1']}));
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
+  sources,
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ const stage=(result.trace.stages||[]).find(item=>item.stage==='evidence-selection');
+ assert.ok(stage,'the selection stage is traced');
+ assert.equal(stage.selected.length,6,'the packet holds six pages');
+ assert.deepEqual(stage.decision.droppedCandidateIds,[
+  {candidateId:'C7',reason:'six-page-packet-limit'},
+  {candidateId:'C8',reason:'six-page-packet-limit'}],
+  'the slice overflow is named on the decision instead of vanishing');
+ assert.deepEqual(stage.excluded,[
+  {id:'C7',reason:'six-page-packet-limit'},
+  {id:'C8',reason:'six-page-packet-limit'}],
+  'and the ledger repeats it in pool order');
+});

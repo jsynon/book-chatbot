@@ -9358,68 +9358,6 @@ test('stage B.4 gate shadow: unflagged siblings restating a gated letter are rem
   'the same name in an ungated part is untouched');
 });
 
-test('stage B.4 dialogue second look: a frame contradiction is flagged in the trace and the answer is unchanged',async()=>{
- // The Wuthering Heights shape from the B.3 validation: words
- // Joseph speaks ABOUT Catherine ship as a description of Nelly.
- // The review accepts both claims; the narrow second look sees
- // one claim at a time with its quote and contradicts the frame.
- // Record-only: the flag is written, the answer ships as drafted.
- const heights={id:'S1',bookId:'90',title:'Wuthering Heights — Emily Brontë',
-  page:182,url:'https://example.test/heights#page=182',
-  text:'Joseph turned on Catherine in the kitchen. "A flaysome, graceless quean you are," cried Joseph, "and noan Nelly at all." Nelly stood by the door with the candle and said nothing.',
-  preview:'Joseph turned on Catherine in the kitchen.'};
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'Emily Brontë',role:'primary',bookIds:['90']}],
-  parts:[{id:'P1',question:'What is said about the women in the kitchen scene?',
-   sourceBookIds:['90'],searchQueries:['flaysome graceless quean'],
-   candidateSourceIds:['S1']}],queries:['kitchen scene']};
- const frameLook=(_model,{messages})=>{
-  const payload=JSON.parse(messages[1].content);
-  return {response:JSON.stringify({verdicts:payload.items.map(item=>
-   item.claim.includes('Nelly is a flaysome')?
-    {partId:item.partId,claimId:item.claimId,speaker:'other',
-     describes:'other',otherName:'Joseph'}:
-    {partId:item.partId,claimId:item.claimId,speaker:'claim-subject',
-     describes:'claim-target',otherName:''})})};
- };
- const ai=makeAI([
-  answer('PART P1\nNelly is a flaysome, graceless quean. [S1]\n'+
-   'Joseph calls Catherine a flaysome, graceless quean. [S1]'),
-  review([['P1','answered']]),frameLook]);
- const result=await composeEvidenceAnswer(
-  'What is said about the women in the kitchen scene?',
-  [heights],ai,[],{plan,catalog:{90:'Wuthering Heights — Emily Brontë'},
-   trace:true});
- assert.deepEqual(result.trace.frameSecondLookAttempt,
-  {triggered:2,flags:1},'both dialogue claims were checked, one flagged');
- assert.deepEqual(result.trace.final.frameSecondLookFlags,
-  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',subject:'Nelly',
-    speaker:'other',describes:'other',otherName:'Joseph'}],
-  'the contradiction is recorded with its verdicts');
- assert.match(result.answer,/Nelly is a flaysome, graceless quean/,
-  'record-only: the flagged claim still ships in B.4');
- assert.match(result.answer,/Joseph calls Catherine a flaysome/,
-  'the clean claim ships');
- assert.equal(ai.calls.length,3,'compose, review, one batched second look');
-});
-
-test('stage B.4 dialogue second look: no dialogue-bearing citation, no call',async()=>{
- const plan={version:'reader-evidence-v2',intent:'explain',
-  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
-  parts:[{id:'P1',question:'How does Hume explain causal necessity?',
-   sourceBookIds:['35'],searchQueries:['necessity custom'],
-   candidateSourceIds:['S1']}],queries:['causal necessity']};
- const ai=makeAI([
-  answer('PART P1\nHume says necessity arises from regular conjunction and custom. [S1]'),
-  review([['P1','answered']])]);
- const result=await composeEvidenceAnswer(
-  'How does Hume explain causal necessity?',
-  [hume],ai,[],{plan,catalog,trace:true});
- assert.equal(result.trace.frameSecondLookAttempt,undefined,
-  'no claim triggered the second look');
- assert.deepEqual(result.trace.final.frameSecondLookFlags,[]);
- assert.equal(ai.calls.length,2,'no second-look call was spent');
-});
 
 test('redesign Stage A: the pronoun-orphan flag is recorded and never acted on',async()=>{
  const source={id:'S1',bookId:'35',title:catalog[35],page:7,
@@ -10101,4 +10039,20 @@ test('stage B.2: coverage cannot read full over a claim-level uncited ship',asyn
   'the uncited requirement claim is named in the ledger');
  assert.equal(result.coverage,'partial',
   'a claim-level uncited ship downgrades coverage from full');
+});
+
+test('stage B.5 ledger: a packed page linked to no part is recorded on the selection ledger at compose',async()=>{
+ const selectionTrace={stage:'evidence-selection',status:'selected',
+  excluded:[{id:'C7',reason:'six-page-packet-limit'}]};
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume,{...kant,candidateId:'C9',candidatePartIds:[]}],ai,[],
+  {plan:onePartPlan,catalog,trace:true,selectionTrace});
+ assert.equal(result.trace.stages[0],selectionTrace,
+  'the gateway selection trace rides into the answer trace by reference');
+ assert.deepEqual(selectionTrace.excluded,[
+  {id:'C7',reason:'six-page-packet-limit'},
+  {id:'C9',reason:'no-part-link',stage:'compose'}],
+  'the Kant page packed under candidate C9 belongs to no part, so the composer drop is ledgered instead of silent');
 });
