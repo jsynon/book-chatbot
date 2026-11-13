@@ -879,6 +879,91 @@ test('review truncation gets two compact retries in a single-part answer (Stage 
  assert.equal(result.trace.fallbackEvidence,undefined);
  assert.equal(result.evidenceMap.length,0);
 });
+test('review JSON salvage recovers exactly the complete claim prefix of a truncated payload (Stage B.4)',()=>{
+ const payload=JSON.stringify({claims:[
+  {claimId:'P1-C1',status:'answered',sources:[{sourceId:'S1',spanIds:['S1-Q1']}]},
+  {claimId:'P1-C2',status:'partial',sources:[{sourceId:'S1',spanIds:[]}]},
+  {claimId:'P1-C3',status:'answered',sources:[]}],
+  parts:[{partId:'P1',status:'partial'}]});
+ // A cut inside the third claim recovers the first two, whole.
+ const cutInsideC3=payload.slice(0,payload.indexOf('P1-C3')+10);
+ const salvaged=parseReviewJson({response:cutInsideC3});
+ assert.deepEqual(salvaged.claims.map(claim=>claim.claimId),['P1-C1','P1-C2']);
+ assert.equal(salvaged.parts,undefined,'the cut part entry is absent, not reconstructed');
+ // A cut inside the parts entry still recovers every claim.
+ const cutInsideParts=payload.slice(0,payload.indexOf('"partId":"P1"')+16);
+ assert.equal(parseReviewJson({response:cutInsideParts}).claims.length,3);
+ // A cut inside the first claim recovers nothing and fails as before.
+ assert.throws(()=>parseReviewJson({response:payload.slice(0,40)}),
+  error=>error.code==='model-output-invalid-format');
+ // An untruncated payload parses untouched, with no recovery marker.
+ const whole=parseReviewJson({response:payload});
+ assert.equal(whole.claims.length,3);
+ assert.equal(whole.parts.length,1);
+});
+test('a truncated review with a salvageable prefix is used, not retried: recovered claims ship and cut claims drop (Stage B.4)',async()=>{
+ const reviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const decisions=payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+   sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+    subjectAttributionStatus:'supported',
+    attributedSubject:claimPersonSubjects(claim.text)[0]||'',
+    spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}));
+  const full=JSON.stringify({claims:decisions,
+   parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:decisions.map(decision=>decision.claimId),
+    retainedContextClaimIds:[],requirementCoverage:[]}]});
+  const cut=full.slice(0,full.indexOf(payload.claims[1].claimId)+14);
+  return {choices:[{finish_reason:'length',message:{content:cut}}],
+   usage:{neurons:3,prompt_tokens:500,completion_tokens:1800}};
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n\nHume also treats custom as the guide of human life. [S1]'),
+  reviewer]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,2,'the salvaged review needs no retry call');
+ assert.deepEqual(result.trace.reviewSalvage,
+  [{partId:'P1',recoveredClaims:1,droppedClaimIds:['P1-C2']}]);
+ assert.equal(result.trace.reviewCompletion,undefined,
+  'a salvaged part is validated, so no completion disposition is recorded');
+ assert.ok(result.answer.includes('Hume links necessity to custom'));
+ assert.ok(!result.answer.includes('guide of human life'),
+  'the claim the cut dropped does not ship');
+ assert.equal(result.questionParts[0].status,'partial',
+  'a salvaged part is partial: claims were lost to the cut');
+ assert.notEqual(result.coverage,'full');
+});
+test('the Stage B.4 fallback drops dialogue-attribution and uncited claims, and suppression stands when nothing survives',async()=>{
+ const dialogue={id:'S1',bookId:'35',title:'An Enquiry Concerning Human Understanding — David Hume',
+  page:25,candidatePartIds:['P1'],
+  text:'"I cannot accept this," said Hume, shaking his head at the argument. Custom governs our inferences from experience, and reason alone cannot produce the idea of necessary connection.',
+  preview:'Custom governs our inferences from experience.'};
+ const invalid={response:'{invalid-json'};
+ const ai=makeAI([answer('PART P1\nHume said that custom governs our inferences from experience. [S1]'),
+  invalid,invalid,invalid]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[dialogue],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'generation-failed',
+  'a fallback part reduced to zero claims does not manufacture an answer');
+ assert.deepEqual(result.trace.reviewCompletion,{totalParts:1,unvalidatedPartIds:['P1'],
+  disposition:'suppressed-not-strict-minority'});
+ assert.equal(result.trace.reviewFallback,undefined);
+});
+test('the Stage B.4 fallback records why each non-surviving claim dropped',async()=>{
+ const invalid={response:'{invalid-json'};
+ const ai=makeAI([answer('PART P1\nNecessity and causation arise from the uniformity observable in nature, where similar objects are constantly conjoined, and the mind is determined by custom to infer one from the other. [S1]\nBackground framing helps the reader here.'),
+  invalid,invalid,invalid]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.deepEqual(result.trace.reviewCompletion,{totalParts:1,unvalidatedPartIds:['P1'],
+  disposition:'fallback-unreviewed'});
+ assert.deepEqual(result.trace.reviewFallback,
+  [{partId:'P1',keptClaimIds:['P1-C1'],
+    dropped:[{claimId:'P1-C2',reason:'uncited-claim'}]}]);
+ assert.ok(result.answer.includes('Necessity and causation arise from the uniformity'));
+ assert.ok(!result.answer.includes('Background framing'),
+  'an uncited claim never ships from a fallback part');
+});
 test('claim-level review removes a sentence when its cited quote supports only a neighboring claim',async()=>{
  const text='The movement of infinity is the last stage preceding faith, so that he who has not made the movement of infinity cannot have faith.';
  const source={...hume,id:'S5',bookId:'140',title:'Fear and Trembling — Søren Kierkegaard',text,preview:text};
@@ -2304,15 +2389,31 @@ test('flat reviewer input keeps per-part claims linked once and duplicate claims
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
  assert.equal(ai.calls.length,4);
- assert.equal(result.outcome,'generation-failed');
- assert.equal(result.coverage,'none');
+ // Stage B.4: the review contract still fails closed (below), but the
+ // answer no longer suppresses with it — the two position claims pass
+ // the deterministic fallback filter and ship labeled, while the
+ // synthesis part's inference claim fails span coverage and drops.
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'partial');
  assert.equal(result.reviewStatus,'review-contract-incomplete');
  assert.deepEqual(result.trace.reviewContract.issues,['missing-claim-decision']);
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.partId==='P1'&&issue.claimId==='P1-C1'&&issue.reason==='missing-claim-decision'));
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.partId==='P2'&&issue.claimId==='P2-C1'&&issue.reason==='missing-claim-decision'));
- assert.equal(result.evidenceMap.some(item=>item.partId==='P1'||item.partId==='P2'),false);
+ assert.deepEqual(result.trace.reviewCompletion,{totalParts:3,
+  unvalidatedPartIds:['P1','P2','P3'],disposition:'fallback-unreviewed'});
+ assert.deepEqual(result.trace.reviewFallback.map(record=>
+  [record.partId,record.keptClaimIds]),[['P1',['P1-C1']],['P2',['P2-C1']],['P3',[]]]);
+ assert.deepEqual(result.trace.reviewFallback[2].dropped,
+  [{claimId:'P3-C1',reason:'span-coverage'}]);
+ assert.deepEqual(result.evidenceMap.map(item=>item.partId),['P1','P2']);
+ assert.ok(result.trace.final.disclosureLabels.some(label=>
+  label.partId==='P1'&&label.kind==='unreviewed-fallback'));
+ assert.ok(result.trace.final.disclosureLabels.some(label=>
+  label.partId==='P2'&&label.kind==='unreviewed-fallback'));
+ assert.ok(!result.answer.includes('one cautious inference'),
+  'the unreviewed inference claim does not ship');
 });
 
 test('a reviewed comparison cannot satisfy a hypothetical synthesis part without an inference',async()=>{
@@ -3423,7 +3524,7 @@ test('a truncated first review succeeds on one compact retry with a smaller span
  assert.equal(retryPacket.spanCatalog.length,4,'the retry reviews a compact four-span packet');
 });
 
-test('a review that fails every attempt suppresses the sole unvalidated part (B.2: three attempts for a single part)',async()=>{
+test('a review that fails every attempt ships the mechanically covered claim under the Stage B.4 fallback (B.2: three attempts for a single part)',async()=>{
  const matching='A just decision applies a rule impartially, while a merciful response tempers the consequence with compassion.';
  const unrelated='Harvest festivals in the valley traditionally begin after the first frost and continue for nine days of feasting.';
  const source={id:'S1',bookId:'72',title:'Justice and Mercy',page:1,
@@ -3440,11 +3541,22 @@ test('a review that fails every attempt suppresses the sole unvalidated part (B.
  assert.deepEqual(result.trace.reviewRetry,{attempted:true,reason:'model-output-invalid-format',applied:false,
   parts:[{partId:'P1',reason:'model-output-invalid-format',applied:false,attempts:2,retryFailureCode:'model-output-invalid-format'}]});
  assert.equal(result.reviewStatus,'review-format-failed');
- assert.equal(result.outcome,'generation-failed');
- assert.equal(result.coverage,'none');
- assert.equal(result.questionParts[0].status,'unsupported',
-  'the sole unvalidated part is suppressed');
- assert.equal(result.evidenceMap.length,0);
+ // Stage B.4: suppression is no longer the outcome when the composed
+ // claim passes every deterministic check — it ships under the
+ // fallback, labeled as unreviewed, at partial coverage.
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.equal(result.coverage,'partial');
+ assert.equal(result.questionParts[0].status,'partial',
+  'the sole unvalidated part ships under the fallback');
+ assert.deepEqual(result.trace.reviewCompletion,{totalParts:1,unvalidatedPartIds:['P1'],
+  disposition:'fallback-unreviewed'});
+ assert.deepEqual(result.trace.reviewFallback,
+  [{partId:'P1',keptClaimIds:['P1-C1'],dropped:[]}]);
+ assert.equal(result.evidenceMap.length,1);
+ assert.ok(result.answer.includes('This part is presented without a completed source review'),
+  'the fallback label is in the shipped answer text');
+ assert.ok(result.trace.final.disclosureLabels.some(label=>
+  label.partId==='P1'&&label.kind==='unreviewed-fallback'));
 });
 
 test('per-part review calls run concurrently instead of summing every part',async()=>{
@@ -7688,10 +7800,15 @@ test('batch 32 B32-9: a contract-incomplete part degrades instead of suppressing
  assert.deepEqual(kantPart.claimIds,[]);
 });
 
-test('batch 32 B32-9: when every part\u2019s contract is incomplete the build still fails',async()=>{
- // Degradation never manufactures an answer from nothing
- // reviewed: with no validated part, the review failure stands
- // exactly as before.
+test('batch 32 B32-9 + Stage B.4: when every part\u2019s contract is incomplete, the fallback ships only the mechanically covered claim',async()=>{
+ // B32-9's rule was that degradation never manufactures an answer
+ // from nothing reviewed. Stage B.4 supersedes it for exactly this
+ // shape: with no validated part, an unvalidated part may still ship
+ // the claims that pass the deterministic fallback filter — here the
+ // near-verbatim Kant claim — labeled as unreviewed, while the
+ // loosely paraphrased Hume claim drops on span coverage and its
+ // part renders as unanswered. When NO claim survives, suppression
+ // still stands (see the Stage B.4 dialogue test).
  const draft='PART P1\nHume explains causal expectation through custom rather than reasoning. [S1]\n'+
   'PART P2\nKant treats causality as a category of relation and a pure conception of the understanding. [S2]';
  const dispatchReviewer=(_model,{messages})=>{
@@ -7706,10 +7823,18 @@ test('batch 32 B32-9: when every part\u2019s contract is incomplete the build st
   [{...hume,candidatePartIds:['P1','P3']},{...kant,candidatePartIds:['P2','P3']}],ai,[],
   {plan:{...twoSidePlan,intent:'explain',parts:twoSidePlan.parts.slice(0,2)},
    catalog,trace:true});
- assert.equal(result.outcome,'generation-failed');
- assert.equal(result.failureCode,'review-contract-incomplete');
+ assert.equal(result.outcome,'unverified-source-draft');
+ assert.deepEqual(result.trace.reviewCompletion,{totalParts:2,
+  unvalidatedPartIds:['P1','P2'],disposition:'fallback-unreviewed'});
+ assert.deepEqual(result.trace.reviewFallback,[
+  {partId:'P1',keptClaimIds:[],dropped:[{claimId:'P1-C1',reason:'span-coverage'}]},
+  {partId:'P2',keptClaimIds:['P2-C1'],dropped:[]}]);
  assert.equal(result.trace.reviewContractDegradedParts,undefined,
   'no degradation is recorded when nothing validated');
+ assert.ok(result.answer.includes('Kant treats causality as a category of relation'));
+ assert.ok(result.answer.includes('This part is presented without a completed source review'));
+ assert.ok(!result.answer.includes('Hume explains causal expectation'),
+  'the claim that failed the deterministic filter does not ship');
 });
 
 // ---------------------------------------------------------------------------
