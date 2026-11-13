@@ -9273,6 +9273,154 @@ test('stage B.2 gate: a claim crediting a letter to its recipient is removed, an
   'the removal is recorded with the flag that caused it');
 });
 
+test('stage B.4 gate shadow: unflagged siblings restating a gated letter are removed; correct credits and low-coverage claims survive',async()=>{
+ // The phase-3 death shape, extended past the B.2 gate fixture.
+ // The gate sees only claims that cite the letter AND raise a
+ // direction flag. Two siblings restate the same letter under the
+ // same wrong name without ever being flagged: one names the
+ // recipient but cites the recipient's OWN letter (its flag scan
+ // sees a correct credit), and one is a pronoun claim citing the
+ // letter itself (no extracted subject to flag). The shadow
+ // removes both. Controls: a claim
+ // crediting the letter's real author survives at full coverage,
+ // a low-coverage claim citing the letter survives, and a claim
+ // naming the same man in an UNGATED part (his own letter)
+ // survives untouched.
+ const letter={id:'S1',bookId:'80',title:'Letters — Marcus Tullius Cicero',
+  page:9,url:'https://example.test/letters#page=9',
+  text:'Servius Sulpicius To Cicero (At Astura, 5 March). My dear Cicero, I was as much grieved as you could be at the death of Tullia, and I write to urge that the magnitude of a loss should be measured by what it deprives someone of, not merely by its objective importance, for time itself consoles what reason cannot. I urge you to let reason restrain your grief, for excessive sorrow profits nothing.',
+  preview:'Servius Sulpicius To Cicero (At Astura, 5 March).'};
+ const ownLetter={id:'S2',bookId:'81',title:'Letters — Marcus Tullius Cicero',
+  page:12,url:'https://example.test/letters#page=12',
+  text:'Marcus Tullius Cicero To Atticus, greetings. Reflect that fortune has snatched from us country, honour, rank, every political distinction, and I set down my own thoughts on grief.',
+  preview:'Marcus Tullius Cicero To Atticus, greetings.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Marcus Tullius Cicero',role:'primary',bookIds:['80','81']}],
+  parts:[{id:'P1',question:'What counsel does the letter offer about grief and loss?',
+   sourceBookIds:['80'],searchQueries:['grief magnitude of a loss'],
+   candidateSourceIds:['S1']},
+   {id:'P2',question:'What does Cicero himself write about fortune?',
+   sourceBookIds:['81'],searchQueries:['fortune country honour rank'],
+   candidateSourceIds:['S2']}],queries:['grief counsel']};
+ const draft='PART P1\n'+
+  'Cicero argues that reason should restrain grief, since excessive sorrow profits nothing. [S1]\n'+
+  'Cicero attempts to offer consolation to a grieving friend, urging that the magnitude of a loss be measured by what it deprives someone of and that reason restrain grief. [S2]\n'+
+  'Sulpicius writes that time itself consoles what reason cannot. [S1]\n'+
+  'He also discusses the household accounts at length. [S1]\n'+
+  'He urges that a loss be measured by what it deprives someone of, and adds that its objective importance matters less. [S1]\n'+
+  'PART P2\n'+
+  'Cicero writes that fortune has snatched from us country, honour, and rank. [S2]';
+ // A bespoke reviewer: each claim is accepted against its own
+ // cited source with a span that exists in that part's packet.
+ const reviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const parts=payload.parts.map(part=>({partId:part.partId,status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:payload.claims
+    .filter(claim=>claim.partId===part.partId).slice(0,1)
+    .map(claim=>claim.claimId),
+   retainedContextClaimIds:[]}));
+  const claims=payload.claims.map(claim=>{
+   const people=claimPersonSubjects(claim.text);
+   return {claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[sourceId==='S1'?'S1-Q2':'S2-Q1'],
+     ...(people.length?{subjectAttributionStatus:'supported',
+      attributedSubject:people[0]}:{})}))};
+  });
+  return {response:JSON.stringify({parts,claims})};
+ };
+ const ai=makeAI([answer(draft),reviewer,reviewer]);
+ const result=await composeEvidenceAnswer(
+  'What counsel does the letter offer about grief and loss?',
+  [letter,ownLetter],ai,[],{plan,
+   catalog:{80:'Letters — Marcus Tullius Cicero',81:'Letters — Marcus Tullius Cicero'},
+   trace:true});
+ assert.deepEqual(result.trace.final.bylineGateRemovals.map(r=>r.claimId),
+  ['P1-C1'],'the gate itself removes only the flagged claim');
+ assert.deepEqual(result.trace.final.frameGateShadowRemovals,
+  [{partId:'P1',claimId:'P1-C2',sourceId:'S1',creditedName:'Cicero',
+    bylineAuthor:'Servius Sulpicius',via:'names-credited',
+    coverageRatio:0.692},
+   {partId:'P1',claimId:'P1-C5',sourceId:'S1',creditedName:'Cicero',
+    bylineAuthor:'Servius Sulpicius',via:'cites-gated-source',
+    coverageRatio:0.833}],
+  'the shadow removes the cross-cited sibling and the covered pronoun sibling');
+ assert.doesNotMatch(result.answer,/attempts to offer consolation/,
+  'the cross-cited sibling does not ship');
+ assert.doesNotMatch(result.answer,/objective importance matters less/,
+  'the covered pronoun sibling does not ship');
+ assert.match(result.answer,/Sulpicius writes that time itself consoles/,
+  'the claim crediting the real author survives');
+ assert.match(result.answer,/household accounts/,
+  'the low-coverage claim citing the letter survives');
+ assert.match(result.answer,/fortune has snatched from us country, honour, and rank/,
+  'the same name in an ungated part is untouched');
+});
+
+test('stage B.4 dialogue second look: a frame contradiction is flagged in the trace and the answer is unchanged',async()=>{
+ // The Wuthering Heights shape from the B.3 validation: words
+ // Joseph speaks ABOUT Catherine ship as a description of Nelly.
+ // The review accepts both claims; the narrow second look sees
+ // one claim at a time with its quote and contradicts the frame.
+ // Record-only: the flag is written, the answer ships as drafted.
+ const heights={id:'S1',bookId:'90',title:'Wuthering Heights — Emily Brontë',
+  page:182,url:'https://example.test/heights#page=182',
+  text:'Joseph turned on Catherine in the kitchen. "A flaysome, graceless quean you are," cried Joseph, "and noan Nelly at all." Nelly stood by the door with the candle and said nothing.',
+  preview:'Joseph turned on Catherine in the kitchen.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Emily Brontë',role:'primary',bookIds:['90']}],
+  parts:[{id:'P1',question:'What is said about the women in the kitchen scene?',
+   sourceBookIds:['90'],searchQueries:['flaysome graceless quean'],
+   candidateSourceIds:['S1']}],queries:['kitchen scene']};
+ const frameLook=(_model,{messages})=>{
+  const payload=JSON.parse(messages[1].content);
+  return {response:JSON.stringify({verdicts:payload.items.map(item=>
+   item.claim.includes('Nelly is a flaysome')?
+    {partId:item.partId,claimId:item.claimId,speaker:'other',
+     describes:'other',otherName:'Joseph'}:
+    {partId:item.partId,claimId:item.claimId,speaker:'claim-subject',
+     describes:'claim-target',otherName:''})})};
+ };
+ const ai=makeAI([
+  answer('PART P1\nNelly is a flaysome, graceless quean. [S1]\n'+
+   'Joseph calls Catherine a flaysome, graceless quean. [S1]'),
+  review([['P1','answered']]),frameLook]);
+ const result=await composeEvidenceAnswer(
+  'What is said about the women in the kitchen scene?',
+  [heights],ai,[],{plan,catalog:{90:'Wuthering Heights — Emily Brontë'},
+   trace:true});
+ assert.deepEqual(result.trace.frameSecondLookAttempt,
+  {triggered:2,flags:1},'both dialogue claims were checked, one flagged');
+ assert.deepEqual(result.trace.final.frameSecondLookFlags,
+  [{partId:'P1',claimId:'P1-C1',sourceId:'S1',subject:'Nelly',
+    speaker:'other',describes:'other',otherName:'Joseph'}],
+  'the contradiction is recorded with its verdicts');
+ assert.match(result.answer,/Nelly is a flaysome, graceless quean/,
+  'record-only: the flagged claim still ships in B.4');
+ assert.match(result.answer,/Joseph calls Catherine a flaysome/,
+  'the clean claim ships');
+ assert.equal(ai.calls.length,3,'compose, review, one batched second look');
+});
+
+test('stage B.4 dialogue second look: no dialogue-bearing citation, no call',async()=>{
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',
+   sourceBookIds:['35'],searchQueries:['necessity custom'],
+   candidateSourceIds:['S1']}],queries:['causal necessity']};
+ const ai=makeAI([
+  answer('PART P1\nHume says necessity arises from regular conjunction and custom. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer(
+  'How does Hume explain causal necessity?',
+  [hume],ai,[],{plan,catalog,trace:true});
+ assert.equal(result.trace.frameSecondLookAttempt,undefined,
+  'no claim triggered the second look');
+ assert.deepEqual(result.trace.final.frameSecondLookFlags,[]);
+ assert.equal(ai.calls.length,2,'no second-look call was spent');
+});
+
 test('redesign Stage A: the pronoun-orphan flag is recorded and never acted on',async()=>{
  const source={id:'S1',bookId:'35',title:catalog[35],page:7,
   url:'https://example.test/plato#page=7',
