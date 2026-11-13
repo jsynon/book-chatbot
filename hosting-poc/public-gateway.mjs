@@ -10,7 +10,7 @@
  * identity; they do not prove that a claim follows from the source.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {MAX_SELECTOR_CANDIDATES,MAX_SELECTOR_SOURCES,enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates} from './evidence-selector.mjs';
+import {MAX_SELECTOR_CANDIDATES,MAX_SELECTOR_SOURCES,enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectionExclusionLedger} from './evidence-selector.mjs';
 import {normalizePlan,citationIds,catalogIdentity} from './reader-contract.mjs';
 import {normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 import {isHeadingLine} from './review-spans.mjs';
@@ -3414,8 +3414,14 @@ function addSelectedEvidenceSource(answerSources,source,{candidateId,candidatePa
     return {added:false,totalBytes,source:duplicate.existing};
   }
   const bytes=new TextEncoder().encode(source.text).byteLength;
+  // Stage B.5 (item 1): a byte rejection names its cause in the same
+  // vocabulary the floor/diversity records already use, so the
+  // selection exclusion ledger can record why packing left a page out
+  // instead of the rejection staying silent.
   if(answerSources.length>=maxSources||bytes>14000||totalBytes+bytes>budget)
-    return {added:false,totalBytes,source:null};
+    return {added:false,totalBytes,source:null,rejectionReason:
+      bytes>14000?'source-byte-cap':
+      answerSources.length>=maxSources?'six-page-packet-limit':'answer-packet-budget'};
   answerSources.push({...source,id:'S'+(answerSources.length+1),candidateId,candidatePartIds,candidatePartSupport,
     ...(source.scopeText?{scopeText:source.scopeText}:{})});
   return {added:true,totalBytes:totalBytes+bytes,source:answerSources.at(-1)};
@@ -4380,6 +4386,52 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
                 'supported':evidence.length?'partial':'none',
               evidence};
           });
+          // Stage B.5 (item 2): starved-part adoption. A part whose
+          // evidence holds no direct row — the same uncovered test
+          // the packing-time recovery uses — adopts the single best
+          // scope-admissible pool page retrieval never linked to it,
+          // ranked by the lexical fit of the page's excerpt against
+          // the part's question and search queries. The adopted row
+          // is context class: it makes the page compose-visible for
+          // the part without claiming retrieval judged it
+          // supportive. Plan scope binds absolutely, the fit must be
+          // nonzero, and each starved part adopts at most one page.
+          // (A part at literal coverage 'none' has no
+          // scope-admissible row at all — the scope fallback above
+          // saw to that — so it can never adopt; the starved shape
+          // that exists is a part served only by context rows while
+          // a fitting page sits unlinked.)
+          const adoptions=[];
+          for(const part of decisionParts){
+            if(part.evidence.some(entry=>entry.support==='direct'))continue;
+            const planPart=selectionParts.find(item=>item.partId===part.partId);
+            const fitQuery=[planPart?.question||'',
+              ...(planPart?.searchQueries||[])].join(' ');
+            const fitTerms=queryWords(fitQuery);
+            if(!fitTerms.length)continue;
+            let best=null;
+            for(const source of selectionCandidates){
+              const candidateId=candidateIdByPoolRow.get(source);
+              if(part.candidateIds.includes(candidateId))continue;
+              if(!scopeLinked(source,part.partId))continue;
+              const excerpt=sourceExcerpt(source.scopeText||source.text,fitQuery,1200);
+              const excerptStems=new Set(
+                (excerpt.toLowerCase().match(/[a-z0-9]+/g)||[]).map(excerptStem));
+              let fit=0;
+              for(const term of fitTerms)if(excerptStems.has(term))fit++;
+              if(fit>0&&(!best||fit>best.fit))best={candidateId,source,fit};
+            }
+            if(!best)continue;
+            part.evidence.push({candidateId:best.candidateId,
+              support:'context',provenance:'adopted'});
+            part.candidateIds.push(best.candidateId);
+            const selectorRow=selectorCandidates[
+              selectionCandidates.indexOf(best.source)];
+            if(selectorRow)selectorRow.retrievedPartHints=[...new Set([
+              ...(selectorRow.retrievedPartHints||[]),part.partId])];
+            adoptions.push({partId:part.partId,
+              candidateId:best.candidateId,fit:best.fit});
+          }
           const partLinkedIds=new Set(decisionParts
             .flatMap(part=>part.candidateIds));
           // Stage B (B1a): facet-anchor reservation. Each facet's
@@ -4409,19 +4461,27 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             seededCandidateIds:anchorSeedIds,
             reservations:anchorReservation.reservations.map(entry=>({
               ...entry,submitted:submittedIds.includes(entry.candidateId)}))});
+          // Only part-linked pages are selected: a page no part
+          // claims (by retrieval or by scope) is not evidence for
+          // this question, and an empty linked set is the
+          // deterministic abstention (no-relevant-evidence).
+          const preSliceSelectedIds=[...anchorSeedIds,
+            ...orderFallbackCandidates(selectionCandidates,
+              plan.parts.map(part=>part.id))
+              .map(source=>candidateIdByPoolRow.get(source))
+              .filter(id=>id&&partLinkedIds.has(id)&&
+                !anchorSeedIds.includes(id))];
           const decision={
             parts:decisionParts,
-            // Only part-linked pages are selected: a page no part
-            // claims (by retrieval or by scope) is not evidence for
-            // this question, and an empty linked set is the
-            // deterministic abstention (no-relevant-evidence).
-            selectedCandidateIds:[...anchorSeedIds,
-              ...orderFallbackCandidates(selectionCandidates,
-                plan.parts.map(part=>part.id))
-                .map(source=>candidateIdByPoolRow.get(source))
-                .filter(id=>id&&partLinkedIds.has(id)&&
-                  !anchorSeedIds.includes(id))]
+            selectedCandidateIds:preSliceSelectedIds
               .slice(0,MAX_SELECTOR_SOURCES),
+            // Stage B.5 (item 1): the packet-cap overflow is named
+            // on the decision instead of vanishing at the slice, so
+            // the exclusion ledger can record it.
+            droppedCandidateIds:preSliceSelectedIds
+              .slice(MAX_SELECTOR_SOURCES)
+              .map(candidateId=>({candidateId,
+                reason:'six-page-packet-limit'})),
             usage:{calls:0,neurons:0,inputTokens:0,outputTokens:0},
             provenance:'deterministic'};
           sourceSelectionUsage=decision.usage;
@@ -4456,6 +4516,15 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
               selectionCandidateCount:selectionCandidates.length,
               suppressedCandidateDuplicates:candidateDeduplication.suppressed,
               candidates:selectorCandidates,decision,selected:[],
+              ...(adoptions.length?{adoptions}:{}),
+              excluded:selectionExclusionLedger({
+                candidateIds:selectionCandidates.map((source,index)=>'C'+(index+1)),
+                droppedCandidateIds:decision.droppedCandidateIds,
+                packetFloor:floorDecision.packetFloor,
+                diversityInserted:diversity.diversityInserted||[],
+                diversityDeferred:diversity.diversityDeferred||[],
+                recoverySkips:selectionRecovery.skippedPartRecoveries,
+                linkedIds:partLinkedIds}),
               packetFloor:floorDecision.packetFloor};
           }else{
           const byCandidateId=new Map(selectionCandidates.map((source,index)=>['C'+(index+1),source]));
@@ -4482,6 +4551,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           }
           const packingIds=orderPacketForPacking(selectedIds,decision.parts,
             [...floorDecision.packetFloorLinks,...diversityLinks]);
+          // Stage B.5 (item 1): packing's byte rejections are
+          // collected for the exclusion ledger instead of vanishing.
+          const packingRejections=[];
           for(const id of packingIds){
             const source=byCandidateId.get(id);
             if(!source)continue;
@@ -4498,6 +4570,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:id,
               candidatePartIds,candidatePartSupport,duplicateTrace,budget:35000,totalBytes,question:data.question});
             totalBytes=packed.totalBytes;
+            if(!packed.source&&packed.rejectionReason)
+              packingRejections.push({candidateId:id,reason:packed.rejectionReason});
             if(!packed.source&&floorDecision.packetFloorLinks.some(link=>link.candidateId===id)){
               const failedLinks=floorDecision.packetFloorLinks.filter(link=>link.candidateId===id);
               floorDecision.packetFloor.skipped.push(...failedLinks.map(link=>({partId:link.partId,
@@ -4535,6 +4609,21 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
               candidatePartIds:source.candidatePartIds,candidatePartSupport:source.candidatePartSupport})),
             ...(recoveredPartLinks.length?{recoveredPartLinks}:{}),
             ...(skippedPartRecoveries.length?{skippedPartRecoveries}:{}),
+            ...(adoptions.length?{adoptions}:{}),
+            // Stage B.5 (item 1): every pooled candidate that missed
+            // the packet is named here with the stage that left it
+            // out — the ledger the S3 census reads.
+            excluded:selectionExclusionLedger({
+              candidateIds:selectionCandidates.map((source,index)=>'C'+(index+1)),
+              packedIds:answerSources.map(source=>source.candidateId),
+              mergedIds:duplicateTrace.map(entry=>entry.candidateId),
+              droppedCandidateIds:decision.droppedCandidateIds,
+              packingRejections,
+              packetFloor:floorDecision.packetFloor,
+              diversityInserted:diversity.diversityInserted||[],
+              diversityDeferred:diversity.diversityDeferred||[],
+              recoverySkips:[...skippedPartRecoveries,...diversitySkipped],
+              linkedIds:partLinkedIds}),
             packetFloor:floorDecision.packetFloor,
             ...(diversity.selectionDroppedFacets.length?
               {selectionDroppedFacets:diversity.selectionDroppedFacets}:{}),
@@ -4556,8 +4645,16 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           let totalBytes=0;
           const duplicateTrace=[];
           const candidateIds=new Map(selectionCandidates.map((source,index)=>[source.id,'C'+(index+1)]));
-          for(const source of orderFallbackCandidates(selectionCandidates)){
+          // Stage B.5 (item 1): the fallback's exclusions are
+          // ledgered with the same vocabulary as the deterministic
+          // path — byte rejections by cause, and the rows the
+          // six-page cap never reached as packet-limit drops.
+          const fallbackOrder=orderFallbackCandidates(selectionCandidates);
+          const fallbackPackedIds=[],fallbackMergedIds=[],fallbackRejections=[];
+          let fallbackAttempted=0;
+          for(const source of fallbackOrder){
             if(answerSources.length>=6)break;
+            fallbackAttempted++;
             // In fallback mode, planned source scope is the only safe part
             // link available; model relevance has not been established.
             const candidatePartIds=plan.parts.filter(part=>!Array.isArray(part.sourceBookIds)||
@@ -4565,6 +4662,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             const packed=addSelectedEvidenceSource(answerSources,source,{candidateId:candidateIds.get(source.id),
               candidatePartIds,duplicateTrace,budget:35000,totalBytes,question:data.question});
             totalBytes=packed.totalBytes;
+            if(packed.added)fallbackPackedIds.push(candidateIds.get(source.id));
+            else if(packed.source)fallbackMergedIds.push(candidateIds.get(source.id));
+            else if(packed.rejectionReason)fallbackRejections.push({
+              candidateId:candidateIds.get(source.id),reason:packed.rejectionReason});
           }
           selectionTrace={stage:'evidence-selection',elapsedMs:Math.round(performance.now()-started),
             status:sourceSelectionStatus,packingProvenance:'deterministic-fallback',
@@ -4575,7 +4676,15 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
               error.failureCode:'selector-error',
             ...(SAFE_SELECTOR_FAILURE_REASONS.has(error?.failureReason)?{failureReason:error.failureReason}:{}),
             selected:answerSources.map(source=>({id:source.id,candidateId:source.candidateId,
-              bookId:source.bookId,page:source.page})),suppressedDuplicates:duplicateTrace};
+              bookId:source.bookId,page:source.page})),suppressedDuplicates:duplicateTrace,
+            excluded:selectionExclusionLedger({
+              candidateIds:selectionCandidates.map((source,index)=>'C'+(index+1)),
+              packedIds:fallbackPackedIds,mergedIds:fallbackMergedIds,
+              droppedCandidateIds:fallbackOrder.slice(fallbackAttempted)
+                .map(source=>({candidateId:candidateIds.get(source.id),
+                  reason:'six-page-packet-limit'})),
+              packingRejections:fallbackRejections,
+              linkedIds:selectionCandidates.map((source,index)=>'C'+(index+1))})};
           console.warn('Reader pilot evidence selection fell back to retrieval order',
             inferenceFailureDiagnostics(error));
         }

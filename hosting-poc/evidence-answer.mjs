@@ -167,20 +167,6 @@ function responseText(raw,stage){
   if(typeof text!=='string'||!text.trim())throw new ModelFormatError(stage,'Model response was empty.');
   return text;
 }
-// Stage B.4 (2B): the dialogue-frame second look. A narrow,
-// forced-choice attribution check for claims that rest on
-// dialogue-bearing passages: the review judges claims against
-// whole packets, and the frame-ownership family (a line spoken
-// by one character, or words describing one character, shipped
-// as another's) has passed it in every validation since B.1.
-// This call sees ONE claim at a time with only its located quote
-// and the surrounding passage sentences, and answers two
-// forced-choice questions about the frame. Record-only in B.4:
-// its flags are written to the trace and never change the
-// answer; the check earns removal power only at >=80% measured
-// precision on a production validation, by the same rule that
-// graduated the byline gate.
-export const FRAME_SECOND_LOOK_PROMPT=`For each item, you are given one claim from an answer, the person the claim names as its subject (recordedSubject), the exact passage quote the claim cites (quote), and the passage sentences around that quote (context). Judge ONLY from the quote and context. Answer two forced-choice questions about the quoted material in the passage: (1) speaker: who speaks the quoted words, or performs the quoted action, in the passage? Use "claim-subject" when it is the recordedSubject, "other" when it is a different named person, "narrator" when it is the narrator or narrative voice rather than a character, and "unclear" when the passage does not establish it. (2) describes: whom do the quoted words or actions describe or characterize? Use "claim-target" when they describe the person the claim says they describe (usually the recordedSubject), "other" when they describe a different named person, and "unclear" when the passage does not establish it. When either answer is "other", give that person's name in otherName exactly as the passage names them; otherwise leave otherName empty. Do not judge whether the claim is otherwise true, relevant, or well written; judge only who speaks or acts and who is described. Return one valid JSON object only, without Markdown or explanation: {"verdicts":[{"partId":"P1","claimId":"P1-C1","speaker":"claim-subject|other|narrator|unclear","describes":"claim-target|other|unclear","otherName":""}]}. Include every supplied item exactly once.`;
 const REVIEW_JSON_RECOVERY=Symbol('reviewJsonRecovery');
 const ANSWER_REPAIR_JSON_RECOVERY=Symbol('answerRepairJsonRecovery');
 function removeRepeatedUnmatchedClosers(value){
@@ -536,9 +522,6 @@ export const BATCH35_FIRING_FIELDS=[
   // claims in a gated part that restate the gated letter's content
   // under the same miscredited name (see the shadow site).
   'final.frameGateShadowRemovals',
-  // Stage B.4 (2B): the dialogue-frame second look's contradiction
-  // flags (record-only; see FRAME_SECOND_LOOK_PROMPT).
-  'final.frameSecondLookFlags',
   // Redesign Stage A: raw span-ID tokens stripped from shipped
   // prose, and the disclosure-label verbatim verification record.
   'final.spanIdLeaksStripped',
@@ -5044,12 +5027,22 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   // pages linked to no planned part out of the shared prompt also prevents an
   // unrelated retrieved result from tempting the composer into that failure.
   const composerSourceIds=new Set(plan.parts.flatMap(part=>part.candidateSourceIds||[]));
+  // Stage B.5 (item 1): a packed page the linkage above leaves out of
+  // every part is compose-invisible; record the drop on the gateway's
+  // selection ledger (same object the trace carries) instead of
+  // letting it vanish between packing and composition. Prior
+  // compose-stage records are replaced, so a repeated composition
+  // never duplicates them.
+  if(options.selectionTrace){
+    const ledger=(options.selectionTrace.excluded||[])
+      .filter(entry=>entry.stage!=='compose');
+    for(const source of sources)
+      if(!composerSourceIds.has(source.id))
+        ledger.push({id:source.candidateId||source.id,
+          reason:'no-part-link',stage:'compose'});
+    options.selectionTrace.excluded=ledger;
+  }
   const validatedAnswers=[];let review=null,reviewFailure=null,failure=null,reviewedLibraryClaims=false;
-  // Stage B.4 (2B): dialogue-frame second-look verdicts that
-  // contradicted their claim, collected in the post-review region
-  // and written to trace.final inside final assembly, filtered to
-  // claims the byline gate and gate shadow left standing.
-  let frameSecondLookFlags=[];
   const composerPacketSpansByPart=new Map(plan.parts.map(part=>[part.id,new Map()]));
   // Parts whose review failed (call-level failure after the compact retry,
   // or an incomplete per-part review contract) while other parts reviewed
@@ -6557,89 +6550,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           partIds:stripped.partIds,passes:stripped.passes};
       }
     }
-    // Stage B.4 (2B): the dialogue-frame second look (record-only;
-    // see FRAME_SECOND_LOOK_PROMPT). Trigger: a claim in a reviewed
-    // part that names a person and cites a quote whose passage
-    // context carries dialogue — the frame-ownership shape. One
-    // batched call per case, at most six claims, optional-stage
-    // budget rules; any failure is recorded in the attempt record
-    // and changes nothing. Flags land in trace.final inside final
-    // assembly, filtered to claims still standing there, so a
-    // claim the byline gate or the gate shadow removed can never
-    // be counted in this check's precision.
-    if(options.review!==false&&review&&!reviewFailure){
-      const frameTriggered=[];
-      for(const item of parts){
-        if(item.answerStatus==='unanswered'||!item.answers.length)continue;
-        if(failedReviewParts.some(failed=>failed.partId===item.part.id))continue;
-        for(const ans of item.answers){
-          if(frameTriggered.length>=6)break;
-          const subjects=claimPersonSubjects(ans.text);
-          if(!subjects.length)continue;
-          const entry=(item.evidence||[]).find(candidate=>
-            candidate.claimId===ans.claimId&&(ans.sourceIds||[])
-              .some(id=>String(id)===String(candidate.sourceId)));
-          if(!entry?.quote)continue;
-          const source=sources.find(value=>
-            String(value.id)===String(entry.sourceId));
-          const fullText=source?.text||source?.scopeText||'';
-          let context=entry.quote;
-          if(fullText){
-            const at=fullText.indexOf(entry.quote.slice(0,60));
-            if(at>=0)context=fullText.slice(Math.max(0,at-400),
-              at+entry.quote.length+400);
-          }
-          // Dialogue-bearing means quoted speech with an
-          // attribution verb in the passage window — a merely
-          // quoted term or phrase in a span does not trigger.
-          if(!/["“”]/u.test(context)||
-            !/\b(?:said|says|asked|replied|cried|answered|whispered|shouted|exclaimed|murmured|declared|remarked|observed|called out)\b/iu
-              .test(context))continue;
-          frameTriggered.push({partId:item.part.id,claimId:ans.claimId,
-            sourceId:String(entry.sourceId),subject:subjects[0],
-            claim:ans.text,quote:entry.quote,context});
-        }
-      }
-      if(frameTriggered.length){
-        const attempt={triggered:frameTriggered.length};
-        try{
-          const parsed=await run('frame-second-look',
-            FRAME_SECOND_LOOK_PROMPT,
-            {items:frameTriggered.map(item=>({partId:item.partId,
-              claimId:item.claimId,claim:item.claim,
-              recordedSubject:item.subject,quote:item.quote,
-              context:item.context}))},
-            response=>parseJson(response,'frame-second-look'),
-            {optional:true,kind:'second-look',
-             claimCount:frameTriggered.length});
-          const verdicts=Array.isArray(parsed?.verdicts)?
-            parsed.verdicts:[];
-          for(const item of frameTriggered){
-            const verdict=verdicts.find(candidate=>
-              candidate?.partId===item.partId&&
-              candidate?.claimId===item.claimId);
-            if(!verdict)continue;
-            if(verdict.speaker!=='other'&&
-              verdict.describes!=='other')continue;
-            frameSecondLookFlags.push({partId:item.partId,
-              claimId:item.claimId,sourceId:item.sourceId,
-              subject:item.subject,
-              speaker:String(verdict.speaker||'unclear'),
-              describes:String(verdict.describes||'unclear'),
-              ...(typeof verdict.otherName==='string'&&
-                verdict.otherName.trim()?
-                {otherName:verdict.otherName.trim()}:{})});
-          }
-          attempt.flags=frameSecondLookFlags.length;
-        }catch(error){
-          attempt.failed=true;
-          attempt.code=typeof error?.code==='string'&&
-            /^[a-z0-9-]{1,64}$/i.test(error.code)?error.code:
-            'frame-second-look-failed';
-        }
-        trace.frameSecondLookAttempt=attempt;
-      }
-    }
     injectPostReviewFault('final-assembly');
     // Batch 11 (B11-5): with every gate and deterministic pass done,
     // name the parts that still ship uncited despite packet-linked
@@ -7478,14 +7388,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         }
       }
       trace.final={...(trace.final||{}),frameGateShadowRemovals};
-      // Stage B.4 (2B): the second look's flags, recorded against
-      // the claims still standing after the gate and its shadow —
-      // a flag on a removed claim is not part of this check's
-      // measured precision. Record-only: nothing is removed here.
-      trace.final={...(trace.final||{}),frameSecondLookFlags:
-        frameSecondLookFlags.filter(flag=>included.some(item=>
-          item.part.id===flag.partId&&
-          item.answers.some(ans=>ans.claimId===flag.claimId)))};
 
     // Batch 35 (B35-6): the final coverage reconciliation runs
     // BEFORE the label block (through batch 34 it sat after it):
