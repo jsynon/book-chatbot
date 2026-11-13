@@ -217,6 +217,72 @@ function escapeUnescapedJsonStringQuotes(value){
   }
   return changed&&!inString&&!escaped?{text:output,count:changed}:null;
 }
+// Stage B.4: truncation salvage for review payloads. A review cut off
+// mid-stream (a provider length finish, a dropped connection) leaves a
+// payload whose root object never closes; the leading claim objects in
+// its claims array are complete verdicts. Salvage rebuilds a closed
+// object from the COMPLETE top-level claims/parts elements only — an
+// element cut in half is dropped, never reconstructed — and the
+// ordinary schema and span validation still runs on what was
+// recovered. The recovery rides the same channel as the other review
+// JSON recoveries, so normalizeReview can apply the salvaged-part
+// contract and the trace can name what the cut dropped.
+function salvageTruncatedReviewJson(candidate){
+  const start=candidate.indexOf('{');
+  if(start<0)return null;
+  const elements={claims:[],parts:[]};
+  let depth=0,inString=false,escaped=false;
+  let atKey=false,pendingKey=null,arrayKey=null,elementStart=-1;
+  let stringStart=-1;
+  for(let index=start;index<candidate.length;index++){
+    const char=candidate[index];
+    if(inString){
+      if(escaped)escaped=false;
+      else if(char==='\\')escaped=true;
+      else if(char==='"'){
+        inString=false;
+        if(atKey&&depth===1)
+          pendingKey=candidate.slice(stringStart+1,index);
+      }
+      continue;
+    }
+    if(char==='"'){inString=true;stringStart=index;continue;}
+    if(char==='{'){
+      if(arrayKey!==null&&depth===2&&elementStart<0)elementStart=index;
+      depth++;if(depth===1)atKey=true;continue;
+    }
+    if(char==='['){
+      if(depth===1&&(pendingKey==='claims'||pendingKey==='parts'))
+        arrayKey=pendingKey;
+      depth++;continue;
+    }
+    if(char==='}'){
+      depth--;
+      if(arrayKey!==null&&depth===2&&elementStart>=0){
+        elements[arrayKey].push(candidate.slice(elementStart,index+1));
+        elementStart=-1;
+      }
+      continue;
+    }
+    if(char===']'){
+      if(depth===2&&arrayKey!==null){arrayKey=null;elementStart=-1;}
+      depth--;continue;
+    }
+    if(char===','&&depth===1)atKey=true;
+    if(char===':'&&depth===1)atKey=false;
+  }
+  if(depth===0||!elements.claims.length)return null;
+  const rebuilt='{"claims":['+elements.claims.join(',')+']'+
+    (elements.parts.length?',"parts":['+elements.parts.join(',')+']':'')+'}';
+  try{
+    const parsed=JSON.parse(rebuilt);
+    Object.defineProperty(parsed,REVIEW_JSON_RECOVERY,
+      {value:{code:'truncated-prefix-salvage',
+        recoveredClaims:elements.claims.length,
+        recoveredParts:elements.parts.length}});
+    return parsed;
+  }catch{return null;}
+}
 function parseJson(raw,stage){
   const text=responseText(raw,stage).trim();
   const fenced=text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -236,7 +302,19 @@ function parseJson(raw,stage){
     if(char==='{')depth++;
     else if(char==='}'&&--depth===0){end=index+1;break;}
   }
-  if(end<0||!/^\s*(?:\]\s*\}?|\}\s*\]?)?\s*$/.test(candidate.slice(end)))
+  if(end<0){
+    // Stage B.4: a truncated review payload (the root never closes)
+    // goes through truncation salvage before it is declared invalid;
+    // salvage recovers the complete leading claim verdicts and drops
+    // the rest. Every other stage, and a review payload with nothing
+    // recoverable, keeps the existing invalid-format failure.
+    if(stage==='review'){
+      const salvaged=salvageTruncatedReviewJson(candidate);
+      if(salvaged)return salvaged;
+    }
+    throw new ModelFormatError(stage,'Model response was not valid JSON.');
+  }
+  if(!/^\s*(?:\]\s*\}?|\}\s*\]?)?\s*$/.test(candidate.slice(end)))
     throw new ModelFormatError(stage,'Model response was not valid JSON.');
   const objectText=candidate.slice(start,end);
   try{return JSON.parse(objectText);}
@@ -2895,9 +2973,22 @@ export function derivePartContract({reviewerStatus,reviewerAnswerStatus,
 
 function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question,reviewClaims=[],initialAnswerContext=[],priorArchiveByPart=null,composerPacketSpansByPart=null){
   const suppliedParts=new Map(),suppliedClaims=new Map(),issues=[],warnings=[],recovered=[];
+  // Stage B.4: a truncation-salvaged review (its payload was cut
+  // mid-stream and rebuilt from its complete claim objects) is
+  // normalized under a relaxed contract: entries the cut removed are
+  // ABSENT, not defective — a missing claim drops and is recorded, a
+  // missing part entry is synthesized conservatively below — while
+  // every supplied entry is validated exactly as in a complete review.
+  const reviewSalvage=review?.[REVIEW_JSON_RECOVERY]?.code==='truncated-prefix-salvage'?
+    review[REVIEW_JSON_RECOVERY]:null;
+  const salvageDroppedClaimIds=[];
   const expectedClaims=new Map(answerParts.flatMap(part=>(part.answers||[])
     .map(answer=>[answer.claimId,part.partId])));
-  if(!Array.isArray(review?.parts))issues.push('missing-parts');
+  if(!Array.isArray(review?.parts)){
+    // Stage B.4: a salvaged review whose cut took the parts array is
+    // absent, not defective — the part entry is synthesized below.
+    if(!reviewSalvage)issues.push('missing-parts');
+  }
   else for(const item of review.parts){
     const id=String(item?.partId||'').toUpperCase();
     if(!plan.parts.some(part=>part.id===id)){issues.push('unknown-part');continue;}
@@ -3175,7 +3266,25 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
   ]));
   const parts=plan.parts.map(part=>{
     const answerPart=answerParts.find(item=>item.partId===part.id);
-    const reviewerPart=suppliedParts.get(part.id);
+    let reviewerPart=suppliedParts.get(part.id);
+    if(!reviewerPart&&reviewSalvage){
+      // Stage B.4: the cut took this part's part entry. Synthesize the
+      // conservative entry the recovered claims support: the part is
+      // partial (the cut dropped claims), its direct-answer set is the
+      // recovered claims the reviewer marked answered, uncited claims
+      // are retained only on their own recovered verdicts, and no
+      // requirement coverage is asserted — every requirement derives
+      // 'partial' below and the final reconciliation recomputes from
+      // the shipped claim set.
+      reviewerPart={status:'partial',answerStatus:'partial',repairable:false,
+        directAnswerClaimIds:[...suppliedClaims]
+          .filter(([claimId,decision])=>decision.status==='answered'&&
+            expectedClaims.get(claimId)===part.id).map(([claimId])=>claimId),
+        retainedContextClaimIds:[],scaffoldingLinks:[],scaffoldingInvalidLinks:0,
+        scaffoldingInvalidLinkDetails:[],invalidDirectAnswerClaimIds:[],
+        salvageSynthesized:true};
+      suppliedParts.set(part.id,reviewerPart);
+    }
     if(!reviewerPart)issues.push('missing-part-decision');
     const acceptedAnswers=[],evidence=[],precedingAnswers=[...answerContext];
     for(const answer of answerPart?.answers||[]){
@@ -3235,7 +3344,14 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         reviewDecisions.push(contextDecision);
         continue;
       }
-      if(!decision){issues.push('missing-claim-decision');supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-decision'});continue;}
+      if(!decision){
+        // Stage B.4: in a salvaged review a missing claim decision is
+        // the cut's doing, not a contract defect — the claim drops
+        // (recorded for the trace) and the part's remaining verdicts
+        // stand. A complete review keeps the fail-closed issue.
+        if(reviewSalvage)salvageDroppedClaimIds.push(answer.claimId);
+        else issues.push('missing-claim-decision');
+        supportIssues.push({partId:part.id,claimId:answer.claimId,reason:'missing-claim-decision'});continue;}
       let claimStatus=decision.status;
       const proposedSupportedText=decision.supportedText;
       const validModelSupportedText=decision.status==='partial'&&proposedSupportedText.length>0&&
@@ -3678,6 +3794,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
   }
   return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions,
     clauseFindings,subjectExtractionBlindSpots,gateRestorations,gateDemotionsSuppressed,
+    ...(salvageDroppedClaimIds.length?{salvageDroppedClaimIds}:{}),
     ...(framingRescues.length?{framingRescues}:{}),
     ...(framingFallbacks.length?{framingFallbacks}:{}),
     ...(boundarySubjectChecks.length?{boundarySubjectChecks}:{}),
@@ -4861,8 +4978,20 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     if(stage.startsWith('review')||stage==='answer-re-review'||stage==='answer-repair'){
       const parseStartedAt=performance.now();
       try{
-        if(['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason))
+        if(['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason)){
+          // Stage B.4: a length finish used to discard the payload
+          // unread, although its leading claim verdicts are complete.
+          // The review parser (which salvages truncated payloads) gets
+          // the first attempt; only a payload with nothing recoverable
+          // takes the truncated failure. Answer-repair stages keep
+          // their existing behavior — salvage is review-only.
+          let salvaged=null;
+          if(stage.startsWith('review')||stage==='answer-re-review'){
+            try{salvaged=parser(response,stage);}catch{salvaged=null;}
+          }
+          if(salvaged){finishTiming(parseStartedAt,'completed');return salvaged;}
           throw new ModelFormatError(stage,'Reviewer output was truncated before a complete decision object was returned.','review-output-truncated');
+        }
         const parsed=parser(response,stage);
         finishTiming(parseStartedAt,'completed');
         return parsed;
@@ -5410,6 +5539,17 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           const recovery=rawReviewByPart.get(part.id)?.[REVIEW_JSON_RECOVERY];
           return recovery?[{stage:'review',...recovery}]:[];
         });
+        // Stage B.4: the truncation-salvage record — which parts were
+        // reviewed from a salvaged payload, how many claim verdicts
+        // the salvage recovered, and which claims the cut dropped.
+        const salvageRecords=plan.parts.flatMap(part=>{
+          const recovery=rawReviewByPart.get(part.id)?.[REVIEW_JSON_RECOVERY];
+          if(recovery?.code!=='truncated-prefix-salvage')return [];
+          return [{partId:part.id,
+            recoveredClaims:recovery.recoveredClaims??null,
+            droppedClaimIds:singlesByPart.get(part.id)?.salvageDroppedClaimIds||[]}];
+        });
+        if(salvageRecords.length)trace.reviewSalvage=salvageRecords;
         const rejectedClauses=review.supportIssues.filter(issue=>
           issue.reason==='claim-clause-not-supported');
         const clauseCoverage=rejectedClauses.map(issue=>({partId:issue.partId,
@@ -5486,6 +5626,95 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   const unvalidatedReviewPartIds=new Set();
   let unvalidatedPartsDropped=false;
   let suppressForReviewCompletion=false;
+  // Stage B.4: the unreviewed-part fallback. When the review-completion
+  // disposition below would suppress the whole answer (a whole-review
+  // failure, or unvalidated parts that are not a strict minority and
+  // not degradable), each unvalidated part may instead ship the subset
+  // of its composed claims that pass every deterministic check that
+  // does not need the review: the claim is cited, every citation
+  // resolves, the claim's content terms are mechanically covered by
+  // the packet spans of its cited sources (union coverage at least
+  // one half, at least three shared terms, and no missing critical
+  // term — negation and causal markers the spans do not carry), and
+  // the claim is not a dialogue or speaker-attribution claim (those
+  // are dropped outright in fallback mode — attribution is exactly
+  // what an unreviewed claim cannot be trusted with). The byline gate
+  // still runs on fallback claims in the final region like any other
+  // claim. Fallback parts ship labeled, never count toward 'full'
+  // coverage, and are recorded claim by claim. If no unvalidated part
+  // keeps a single claim, the fallback does not engage and suppression
+  // stands — an empty answer is never manufactured.
+  // Calibration (build-time, recorded in the B.4 checkpoint): the
+  // 0.65 per-span bar of the claimSpanFit instrument would keep 1 of
+  // 11 drafted claims in the B.3 suffering case and 0% of the claims
+  // the review itself accepted in the B.3 selected pass — composed
+  // claims are paraphrases, and per-span lexical coverage of ACCEPTED
+  // claims medians ~0.35. The union-of-packet-spans form at one half
+  // sits above that accepted median while still dropping the
+  // lexically empty tail; the validation's fallback-claim audit
+  // (pre-registered at 70% supported/partial) is the empirical check.
+  let reviewFallbackByPart=null;
+  const FALLBACK_CRITICAL_TERMS=/^(?:no|not|never|without|because|therefore|although|unless|only|must|cannot|causes?|caused|requires?|required|rather|than|between|versus|against)$/u;
+  const reviewFallbackDropReason=(answer,packetSpanTextsBySource)=>{
+    const sourceIds=answer.sourceIds||[];
+    if(!sourceIds.length)return 'uncited-claim';
+    const cited=sourceIds.map(id=>sources.find(source=>
+      String(source.id)===String(id)));
+    if(cited.some(source=>!source))return 'unresolved-citation';
+    const spanTexts=sourceIds.flatMap(id=>
+      packetSpanTextsBySource.get(String(id))||[]);
+    if(claimPersonSubjects(answer.text).length&&
+       spanTexts.some(text=>/["“”]/u.test(text)&&
+         /\b(?:said|says|asked|replied|answered|cried|exclaimed|whispered|murmured|declared|remarked)\b/iu.test(text)))
+      return 'dialogue-attribution';
+    const coverage=secondLookCoverage(String(answer.text||''),spanTexts);
+    if(coverage.ratio<0.5||coverage.shared<3)return 'span-coverage';
+    // Critical terms (the clauseContentCoverage set): a claim whose
+    // negation or causal markers appear nowhere in its cited spans is
+    // making a logical move the passages do not carry.
+    const normalizeWord=word=>word.replace(/(?:ing|ed|es|s)$/u,'');
+    const spanWords=new Set(spanTexts.flatMap(text=>
+      (String(text||'').normalize('NFKC').toLocaleLowerCase()
+        .match(/[\p{L}\p{N}]{3,}/gu)||[]).map(normalizeWord)));
+    const critical=[...(String(answer.text||'').normalize('NFKC')
+      .toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu)||[])]
+      .filter(word=>FALLBACK_CRITICAL_TERMS.test(word)).map(normalizeWord);
+    if(critical.some(term=>!spanWords.has(term)))return 'critical-term';
+    return null;
+  };
+  const computeReviewFallback=()=>{
+    const byPart=new Map(),records=[];
+    let keptTotal=0;
+    for(const part of plan.parts){
+      if(!unvalidatedReviewPartIds.has(part.id))continue;
+      // The packet the failed part was reviewed against is rebuilt
+      // here (the original lives in the review block's scope); packet
+      // construction is deterministic and makes no model call.
+      const draftPart=validatedAnswers.find(item=>item.partId===part.id);
+      const packet=draftPart?buildReviewPacket([draftPart],
+        {sources,pageById,plan,question}):null;
+      const spanTextsBySource=new Map();
+      const partSpanMaps=packet?.reviewSpanMapsByPart?.get(part.id);
+      if(partSpanMaps)for(const [sourceId,spanMap] of partSpanMaps)
+        spanTextsBySource.set(String(sourceId),
+          [...spanMap.values()].map(span=>String(span.text||'')));
+      for(const source of sources){
+        if(!spanTextsBySource.has(String(source.id)))
+          spanTextsBySource.set(String(source.id),
+            [String(source.scopeText||source.text||source.preview||'')]);
+      }
+      const draft=validatedAnswers.find(item=>item.partId===part.id);
+      const kept=[],dropped=[];
+      for(const answer of draft?.answers||[]){
+        const reason=reviewFallbackDropReason(answer,spanTextsBySource);
+        if(reason)dropped.push({claimId:answer.claimId,reason});
+        else kept.push(answer.claimId);
+      }
+      if(kept.length){byPart.set(part.id,new Set(kept));keptTotal+=kept.length;}
+      records.push({partId:part.id,keptClaimIds:kept,dropped});
+    }
+    return keptTotal?{byPart,records}:null;
+  };
   if(options.review!==false&&validatedAnswers.some(part=>part.answers?.length)){
     const reviewedPartIds=new Set((review?.parts||[]).map(item=>item.partId));
     for(const part of plan.parts){
@@ -5556,14 +5785,39 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           degradedPartCauses:Object.fromEntries([...unvalidatedReviewPartIds]
             .map(partId=>[partId,failedReviewParts
               .find(item=>item.partId===partId)?.code||'unvalidated']))};
-      }else{
-        unvalidatedPartsDropped=strictMinority;
-        suppressForReviewCompletion=!strictMinority;
+      }else if(strictMinority){
+        unvalidatedPartsDropped=true;
+        suppressForReviewCompletion=false;
         trace.reviewCompletion={totalParts:plan.parts.length,
           unvalidatedPartIds:[...unvalidatedReviewPartIds],
-          disposition:strictMinority?'dropped-strict-minority':'suppressed-not-strict-minority'};
-        if(!strictMinority&&!failure)failure={stage:'review',code:'review-contract-incomplete',
-          message:'Too many answer parts lack a complete valid review decision.'};
+          disposition:'dropped-strict-minority'};
+      }else{
+        // Stage B.4: before suppressing, try the unreviewed-part
+        // fallback (defined above). It engages only when at least one
+        // unvalidated part keeps a claim under the deterministic
+        // filter; validated parts ship their reviewed answers as
+        // usual. A review-stage failure that the fallback absorbs
+        // must not outlive the disposition it triggered (the degraded
+        // path's rule, applied to the whole review stage).
+        const fallback=computeReviewFallback();
+        if(fallback){
+          unvalidatedPartsDropped=false;
+          suppressForReviewCompletion=false;
+          reviewFallbackByPart=fallback.byPart;
+          if(failure&&failure.stage==='review')failure=null;
+          trace.reviewCompletion={totalParts:plan.parts.length,
+            unvalidatedPartIds:[...unvalidatedReviewPartIds],
+            disposition:'fallback-unreviewed'};
+          trace.reviewFallback=fallback.records;
+        }else{
+          unvalidatedPartsDropped=false;
+          suppressForReviewCompletion=true;
+          trace.reviewCompletion={totalParts:plan.parts.length,
+            unvalidatedPartIds:[...unvalidatedReviewPartIds],
+            disposition:'suppressed-not-strict-minority'};
+          if(!failure)failure={stage:'review',code:'review-contract-incomplete',
+            message:'Too many answer parts lack a complete valid review decision.'};
+        }
       }
     }
   }
@@ -5625,6 +5879,13 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     const shipped=()=>parts.map(item=>({partId:item.part.id,answers:item.answers}));
     const shippedWithEvidence=()=>parts.map(item=>({partId:item.part.id,
       answers:item.answers,evidence:item.evidence}));
+    // Stage B.4: fallback-kept claims are traced by the fallback
+    // mechanism itself (findUntracedCitedClaims has carried a fallback
+    // key since the B29 complex); without this set the invariant
+    // would strip the very claims the fallback exists to ship.
+    const fallbackKeys=new Set(reviewFallbackByPart?
+      [...reviewFallbackByPart].flatMap(([partId,kept])=>
+        [...kept].map(claimId=>keyOf(partId,claimId))):[]);
     let mechanisms;
     if(review&&!reviewFailure){
       const accepted=new Set();
@@ -5642,9 +5903,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         inherited:new Set((trace.claimInheritance||[])
           .map(entry=>keyOf(entry.partId,entry.claimId))),
         secondLook:new Set((trace.contextSecondLook||[])
-          .map(entry=>keyOf(entry.partId,entry.claimId)))};
+          .map(entry=>keyOf(entry.partId,entry.claimId))),
+        fallback:fallbackKeys};
     }else if(reviewFailure){
-      mechanisms={};
+      mechanisms={fallback:fallbackKeys};
     }else{
       return restoreRecord([],[],[],'passed');
     }
@@ -5684,7 +5946,16 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       const partReviewFailed=failedReviewParts.some(item=>item.partId===part.id);
       const unvalidated=unvalidatedReviewPartIds.has(part.id);
       const answers=[...(unreviewed||partReviewFailed?(answerPart?.answers||[]):(reviewed?.answers||[]))];
-      if(unvalidated||suppressForReviewCompletion)answers.length=0;
+      if(suppressForReviewCompletion)answers.length=0;
+      else if(unvalidated&&reviewFallbackByPart?.has(part.id)){
+        // Stage B.4: a fallback part ships exactly the claims the
+        // deterministic filter kept, taken from its composed draft.
+        const kept=reviewFallbackByPart.get(part.id);
+        const draft=answerPart?.answers||[];
+        answers.length=0;
+        answers.push(...draft.filter(answer=>kept.has(answer.claimId)));
+      }
+      else if(unvalidated)answers.length=0;
       let status=reviewed?.status||
         (answers.length?'partial':'unanswered');
       let answerStatus=reviewed?.answerStatus||reviewed?.status||
@@ -5696,7 +5967,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       if(status==='answered'&&answerPart?.missingHypotheticalInference)status='partial';
       if(answerStatus==='answered'&&hasUnfinishedListIntroduction(renderAnswerParagraphs(answers)))
         answerStatus='partial';
-      return {part,answers,status,answerStatus,evidence:unvalidated||suppressForReviewCompletion?[]:reviewed?.evidence||[],reviewReason:reviewed?.reason||'',
+      return {part,answers,status,answerStatus,evidence:suppressForReviewCompletion?[]:
+        reviewFallbackByPart?.has(part.id)?
+          answers.flatMap(answer=>(answer.sourceIds||[])
+            .map(sourceId=>({claimId:answer.claimId,sourceId,fallback:true}))):
+          unvalidated?[]:reviewed?.evidence||[],reviewReason:reviewed?.reason||'',
         reviewScaffolding:reviewed?.reviewScaffolding||[],
         scaffoldingInvalidLinks:reviewed?.scaffoldingInvalidLinks||0,
         ...(reviewed?.scaffoldingInvalidLinkDetails?.length?
@@ -6198,7 +6473,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           inherited:new Set((trace.claimInheritance||[])
             .map(entry=>keyOf(entry.partId,entry.claimId))),
           secondLook:new Set((trace.contextSecondLook||[])
-            .map(entry=>keyOf(entry.partId,entry.claimId)))});
+            .map(entry=>keyOf(entry.partId,entry.claimId))),
+          fallback:new Set(reviewFallbackByPart?
+            [...reviewFallbackByPart].flatMap(([partId,kept])=>
+              [...kept].map(claimId=>keyOf(partId,claimId))):[])});
       if(untraced.length){
         hasUntracedCitedClaims=true;
         trace.untracedCitedClaims=untraced;
@@ -6234,9 +6512,14 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // unvalidated parts' answers, so this branch normally finds
       // nothing. (The options.review===false mode never sets
       // reviewFailure, so its intentional unverified-draft contract
-      // is untouched.)
+      // is untouched.) Stage B.4 exception: claims the unreviewed-part
+      // fallback kept ARE traced — by the fallback mechanism — so
+      // they are named in its key set here and survive the strip.
       const untraced=findUntracedCitedClaims(
-        parts.map(item=>({partId:item.part.id,answers:item.answers})),{});
+        parts.map(item=>({partId:item.part.id,answers:item.answers})),{
+          fallback:new Set(reviewFallbackByPart?
+            [...reviewFallbackByPart].flatMap(([partId,kept])=>
+              [...kept].map(claimId=>partId+'|'+claimId)):[])});
       if(untraced.length){
         hasUntracedCitedClaims=true;
         trace.untracedCitedClaims=untraced;
@@ -7019,7 +7302,24 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // requirement at application time (labelSubjectFor below)
       // and recorded verbatim in trace.final.disclosureLabels.
       const labelKindByPartId=new Map();
+      // Stage B.4: a fallback part's label names its actual state —
+      // it ships without a completed review — and takes precedence
+      // over the generic uncited-part label another trigger might
+      // also assign it.
+      if(trace.reviewFallback?.length){
+        for(const record of trace.reviewFallback){
+          if(!record.keptClaimIds?.length)continue;
+          const item=(parts||[]).find(candidate=>
+            candidate.part.id===record.partId);
+          if(item&&includedPartIds.has(record.partId)&&
+             !labelByPartId.has(record.partId)){
+            labelByPartId.set(record.partId,item.part.question);
+            labelKindByPartId.set(record.partId,'unreviewed-fallback');
+          }
+        }
+      }
       for(const entry of uncitedPartsWithPacket){
+        if(labelByPartId.has(entry.partId))continue;
         labelByPartId.set(entry.partId,entry.question);
         labelKindByPartId.set(entry.partId,'uncited-part');
       }
@@ -7305,7 +7605,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               (claimScopedLoss?
                 'A supporting point in this part of the question could not be included: ':
                 'This part of the question could only be partially answered: '):
-              'Retrieved passages could not be verified as supporting this part of the question: ')+
+              labelKind==='unreviewed-fallback'?
+                'This part is presented without a completed source review; only passages that could be verified mechanically are shown: ':
+                'Retrieved passages could not be verified as supporting this part of the question: ')+
               labelSubjectFor(item,{kind:labelKind});
             disclosureLabels.push({partId:item.part.id,
               kind:labelKindByPartId.get(item.part.id)||'uncited-part',text,
@@ -7430,7 +7732,10 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         entry.disposition==='shipped-labeled'||
         entry.disposition==='shipped-context')||
       (trace.uncitedPartsWithPacket||[]).length>0||
-      (trace.final?.claimLevelUncitedLabels||[]).length>0)?'partial':computedCoverage;
+      (trace.final?.claimLevelUncitedLabels||[]).length>0||
+      // Stage B.4: a shipped fallback part is an unreviewed part by
+      // definition; an answer carrying one is never 'full' coverage.
+      (trace.reviewFallback||[]).some(record=>record.keptClaimIds?.length))?'partial':computedCoverage;
     const answerCompleteness=questionParts.length&&questionParts.every(part=>part.answerStatus==='answered')?'full':
       questionParts.some(part=>part.answerStatus==='answered'||part.answerStatus==='partial')?'partial':'none';
     // Batch 11 (B11-5): a part that shipped with packet-linked
@@ -7613,7 +7918,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       trace.answerRepair.reason!=='answer-repair-no-material-change')?
       {code:trace.answerRepair.reason,stage:'answer-repair'}:null;
     const noText=!answer;
-    return {outcome:answer?((salvage||unreviewed||unvalidatedPartsDropped||hasReviewCoverageGaps||hasUntracedCitedClaims)?'unverified-source-draft':used.size?'verified-source-draft':'general-context-answer'):
+    return {outcome:answer?((salvage||unreviewed||unvalidatedPartsDropped||hasReviewCoverageGaps||hasUntracedCitedClaims||Boolean(reviewFallbackByPart))?'unverified-source-draft':used.size?'verified-source-draft':'general-context-answer'):
         failure?'generation-failed':'insufficient-evidence',
       answer:noText?(failure?'I could not complete a reliable answer this time. Please try again.':
         'The retrieved passages did not support a reliable answer to this question. Try a more specific passage or work.'):answer,
