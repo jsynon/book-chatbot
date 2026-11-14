@@ -9977,6 +9977,83 @@ test('combined tranche PR-A: salvage is blocked when the kept spans do not carry
   'no salvage is recorded for the blocked claim');
 });
 
+test('combined tranche PR-B: payload-bounded chunking splits a span-heavy claim set earlier than the five-claim count cap',async()=>{
+ // Five cited claims would be ONE unscoped call under the
+ // count-only rule. Each claim here carries eight hinted spans of
+ // ~160 characters across two sources (~1.3K payload per claim),
+ // so the 4000-character payload budget closes chunks after two
+ // claims: the review arrives as several scoped calls whose union
+ // is the whole claim set.
+ const longSentences=(stems)=>stems.map(stem=>
+  `${stem} is examined at length through repeated instances, careful comparison of attendant circumstances, and the expectations that repeated experience forms in the mind.`);
+ const sourceA={id:'S1',bookId:'35',title:catalog[35],page:42,url:'https://example.test/hume#page=42',
+  text:longSentences(['Custom','Conjunction','Necessity','Expectation','Inference','Habit']).join(' '),
+  preview:'Custom and conjunction.'};
+ const sourceB={id:'S2',bookId:'40',title:catalog[40],page:53,url:'https://example.test/kant#page=53',
+  text:longSentences(['Causality','The category','The understanding','Experience','Relation','Synthesis']).join(' '),
+  preview:'Causality and the categories.'};
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How do Hume and Kant each ground causality?',
+   sourceBookIds:['35','40'],searchQueries:['causality custom categories'],
+   candidateSourceIds:['S1','S2']}],queries:['causality']};
+ const draft='PART P1\n'+
+  'Hume grounds causal expectation in custom formed by repeated conjunction of similar objects. [S1, S2]\n'+
+  'Kant treats causality as a category the understanding brings to experience a priori. [S1, S2]\n'+
+  'Necessity for Hume arises from the felt determination of the mind after repeated experience. [S1, S2]\n'+
+  'The relation of cause and effect is examined by both through instances and expectations. [S1, S2]\n'+
+  'Synthesis and inference alike rest on how repeated instances shape what the mind expects. [S1, S2]';
+ const scopedCalls=[];
+ const reviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  scopedCalls.push(payload.reviewClaimIds||null);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered'}],
+   claims:payload.claims.map(claim=>({claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]]}))}))})};
+ };
+ const ai=makeAI([answer(draft),reviewer,reviewer,reviewer,reviewer,reviewer,reviewer],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How do Hume and Kant each ground causality?',
+  [sourceA,sourceB],ai,[],{plan,catalog,trace:true});
+ assert.ok(scopedCalls.length>=2,
+  `the span-heavy set was reviewed in several scoped calls, not one: ${JSON.stringify(scopedCalls)}`);
+ assert.ok(scopedCalls.every(ids=>Array.isArray(ids)&&ids.length<5),
+  'every chunk is smaller than the five-claim count cap');
+ assert.deepEqual(scopedCalls.flat().sort(),
+  ['P1-C1','P1-C2','P1-C3','P1-C4','P1-C5'],
+  'the chunks partition the whole claim set');
+ assert.equal(ai.calls.length,1+scopedCalls.length);
+ assert.ok(result.trace.reviewContract.valid);
+});
+
+test('combined tranche PR-B: the final review retry is budget-reserved and attempted after the base call limit is spent',async()=>{
+ // Ten claims, two count chunks. Every review call times out, so
+ // each chunk costs three calls (the call plus its split halves):
+ // the initial attempt spends 6 review calls and the first extra
+ // round would exhaust the single-part base limit (12) mid-round,
+ // leaving the final round unattempted — the production fallback
+ // shape ('not-attempted-call-budget'). Under the reservation the
+ // final round is attempted and fails on its own merits.
+ const timeout=()=>Object.assign(new Error('Inference deadline exceeded'),{
+  stage:'review',code:'inference-deadline-exceeded',startedAt:Date.now()-45000});
+ const claims=Array.from({length:10},(_,index)=>
+  `Hume point ${index+1} links necessity to custom and regular conjunction in observed experience. [S1]`);
+ const ai=makeAI([answer('PART P1\n'+claims.join('\n')),
+  ...Array.from({length:40},()=>timeout())]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',
+  [hume],ai,[],{plan:onePartPlan,catalog,trace:true});
+ const entry=result.trace.reviewRetry.parts[0];
+ assert.equal(entry.outcome,'failed-again',
+  'the final retry was attempted and failed; it was not starved by the call budget');
+ assert.equal(entry.budgetReserved,true,
+  'the reservation is recorded on the retry entry it carried');
+ assert.ok(ai.calls.length>12,
+  `calls were spent past the single-part base limit of 12 (saw ${ai.calls.length})`);
+ assert.equal(result.outcome,'generation-failed');
+});
+
 test('assembly-loss tranche item 1: salvage does not fire when a cited source hard-fails, nor when no source fully supports the claim',async()=>{
  const plan={version:'reader-evidence-v2',intent:'explain',
   sources:[{label:'David Hume',role:'primary',bookIds:['35']},
