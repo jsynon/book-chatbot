@@ -2115,8 +2115,8 @@ test('evidence-v2 diagnostics separate provider wait, parsing, composition and c
   Number.isFinite(item.parseMs)&&item.stageWallMs>=item.providerWaitMs),
   JSON.stringify(timings));
  const review=timings.filter(item=>item.stage==='review');
- assert.equal(review.length,2,'each planned part receives its existing review call');
- assert.equal(maxConcurrentReviews,2,'the test confirms the review calls overlap');
+ assert.equal(review.length,3,'each planned part receives its review calls (P1\u2019s six cited claims chunk into two calls, P2 one)');
+ assert.equal(maxConcurrentReviews,3,'the test confirms the part and chunk review calls overlap');
  const summedReviewWall=review.reduce((sum,item)=>sum+item.stageWallMs,0);
  assert.ok(result.trace.timingSummary.reviewWallMs<=summedReviewWall,
   'review wall time never exceeds the sum of its individual intervals');

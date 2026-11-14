@@ -260,7 +260,7 @@ function reviewWithSubjects(statuses,options={}){
   return {response:JSON.stringify(parsed)};
  };
 }
-function makeAI(responses,{decorateReview=true,decorateClauses=true,decorateSubject=true}={}){
+function makeAI(responses,{decorateReview=true,decorateSubject=true}={}){
  const calls=[];
  return {calls,run:async(model,request)=>{calls.push({model,request});const next=responses.shift();
    if(next instanceof Error)throw next;
@@ -268,7 +268,7 @@ function makeAI(responses,{decorateReview=true,decorateClauses=true,decorateSubj
    // Most fixtures predate the explicit answer/context decisions. Give legacy
    // fixtures realistic reviewer selections; focused contract tests opt out.
    const systemText=String(request?.messages?.[0]?.content||'');
-   if((decorateReview||decorateClauses||decorateSubject)&&systemText.includes('directAnswerClaimIds')&&
+   if((decorateReview||decorateSubject)&&systemText.includes('directAnswerClaimIds')&&
       typeof result?.response==='string'){
     try{
      const reviewObject=JSON.parse(result.response);
@@ -304,19 +304,6 @@ function makeAI(responses,{decorateReview=true,decorateClauses=true,decorateSubj
          source.attributedSubject=people[Math.min(index,people.length-1)];
         }
        }
-      }
-      if(decorateClauses)for(const claim of reviewObject.claims){
-       if(Array.isArray(claim.clauses))continue;
-       const sourceIds=payload.claims.find(item=>item.claimId===claim.claimId)?.sourceIds||[];
-       const sourceDecisions=Array.isArray(claim.sources)?claim.sources:
-        sourceIds.map(sourceId=>({sourceId,
-         status:claim.status||'answered',
-         spanIds:(Array.isArray(claim.spanIds)?claim.spanIds:[])
-          .filter(spanId=>String(spanId).startsWith(sourceId+'-'))}));
-       claim.clauses=[{text:payload.claims.find(item=>item.claimId===claim.claimId)?.text||'',
-        status:claim.status||'answered',issueCode:'none',
-        sources:sourceDecisions.map(item=>({sourceId:item.sourceId,
-         status:item.status||claim.status||'answered',spanIds:item.spanIds||[]}))}];
       }
       return {...result,response:JSON.stringify(reviewObject)};
      }
@@ -516,9 +503,7 @@ test('review request orders the cited page by the answer sentence while preservi
   const selected=reviewPayload.parts[0].evidence[0].spans[0];
   const claim=reviewPayload.claims[0];
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:['P1-C1']}],
-   claims:[{claimId:claim.claimId,status:'answered',spanIds:[selected.spanId],clauses:[{
-    text:claim.text,status:'answered',issueCode:'none',sources:[{sourceId:'S1',
-     status:'answered',spanIds:[selected.spanId]}]}]}]})};
+   claims:[{claimId:claim.claimId,status:'answered',spanIds:[selected.spanId]}]})};
  }};
  const result=await composeEvidenceAnswer('What is the relation between faith and probability?',[source],ai,[],{
   catalog,plan:{intent:'explain',sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
@@ -595,9 +580,7 @@ test('compact review decisions validate exact spans without rationale text or re
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
     subjectAttributionStatus:'supported',attributedSubject:'Hume',
-    spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}],
-    clauses:[{text:claim.text,status:'answered',issueCode:'none',sources:[{sourceId:'S1',
-     status:'answered',spanIds:[span.spanId]}]}]}]})};
+    spanIds:[span.spanId,...reviewPayload.parts[0].evidence[0].spans.slice(1,2).map(item=>item.spanId)]}]}]})};
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true
@@ -1866,9 +1849,9 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/logical relations.*neither P nor Q.*not both P and Q/);
  assert.match(REVIEW_PROMPT,/When a claim says how one thing affects or relates to another, the span must support that connection/);
- assert.match(REVIEW_PROMPT,/For a cited claim with multiple independently checkable source-derived clauses, also return clauses/);
- assert.match(REVIEW_PROMPT,/copying its text exactly as it appears in the supplied claim/);
- assert.match(REVIEW_PROMPT,/Uncited general-context claims are assessed at the part level and do not need clause spans or citations/);
+ assert.doesNotMatch(REVIEW_PROMPT,/also return clauses/);
+ assert.match(REVIEW_PROMPT,/When the payload carries reviewClaimIds, return claim entries only for those claim IDs/);
+ assert.match(REVIEW_PROMPT,/Uncited general-context claims are assessed at the part level and do not need citations/);
  assert.match(REVIEW_PROMPT,/A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means/);
  assert.match(COMPOSER_PROMPT,/Keep the opening focused on the reader rather than a preview of themes/);
  assert.match(COMPOSER_PROMPT,/If that opening sentence summarizes or combines positions from supplied passages, cite the page IDs that support those components in the sentence/);
@@ -1891,7 +1874,7 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/reviewer will assess which claim or claims directly answer the question/);
  assert.match(REVIEW_PROMPT,/describes the collection, not the answer to the reader/);
  assert.match(REVIEW_PROMPT,/complementary passages may support different components of a concise synthesis/);
- assert.match(REVIEW_PROMPT,/Do not mark a corpus-gap statement or merely adjacent source discussion as an answer/);
+ assert.match(REVIEW_PROMPT,/do not treat it as a direct answer unless the reader asked/);
  assert.match(REVIEW_PROMPT,/only related background or ends with an unfinished thought/);
  assert.match(REVIEW_PROMPT,/the supplied passages cannot establish its truth, so do not treat their silence as disproof/);
  assert.match(REVIEW_PROMPT,/Return the supporting span IDs/);
@@ -2260,9 +2243,11 @@ test('review sees a bounded per-source packet and cannot select an unsent full-s
 test('review deadline failure in a single-part answer gets two in-place retries (Stage B.2) and stays fail-closed after all attempts',async()=>{
  // Stage B.2 supersedes the one-retry contract for single-part
  // answers: with no sibling part to degrade to, the review gets
- // a second retry before the answer is lost. (Multi-part answers
- // keep one retry per part; their B.1 degradation fixtures are
- // the regression tests for that side.)
+ // a second retry before the answer is lost. Latency tranche:
+ // the retries are chunked review rounds in split-retry form (a
+ // one-claim part cannot split, so each round is one call), and
+ // multi-part parts get the timeout-split inside their first
+ // review instead of an extra round.
  const timeout=()=>Object.assign(new Error('Inference deadline exceeded'),{
   stage:'review',code:'inference-deadline-exceeded',startedAt:Date.now()-45000
  });
@@ -2271,10 +2256,10 @@ test('review deadline failure in a single-part answer gets two in-place retries 
   plan:onePartPlan,catalog,trace:true
  });
  assert.equal(ai.calls.length,4,'composition runs once; the review call is retried twice');
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,mode:'review-only',
-  reason:'inference-deadline-exceeded',applied:false,outcome:'failed-again',
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,
+  reason:'inference-deadline-exceeded',applied:false,
   parts:[{partId:'P1',reason:'inference-deadline-exceeded',applied:false,
-   mode:'review-only',samePacket:true,outcome:'failed-again',attempts:2,retryFailureCode:'inference-deadline-exceeded'}]});
+   mode:'split-retry',outcome:'failed-again',attempts:2,retryFailureCode:'inference-deadline-exceeded'}]});
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.coverage,'none');
  assert.equal(result.trace.answerRetry,undefined,'review timeout does not trigger a whole-build retry');
@@ -3229,16 +3214,18 @@ test('large claim reviews send one ranked span hint per citation while keeping t
    'Custom directs ordinary expectations.','Experience produces familiar associations.',
    'Inference follows established habits.','Repeated cases shape anticipation.'][index]+' [S1]')
   .join('\n\n');
- let reviewPayload,reviewSystem='';
- const ai=makeAI([answer(answerText),(_model,{messages})=>{
+ let reviewPayload,reviewSystem='';const reviewPayloads=[];
+ const reviewFn=(_model,{messages})=>{
   reviewSystem=messages[0].content;
   reviewPayload=parsePayload(messages);
+  reviewPayloads.push(reviewPayload);
   const spanId=reviewPayload.parts[0].evidence[0].spans[0].spanId;
   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
    directAnswerClaimIds:['P1-C1']}],claims:reviewPayload.claims.map(claim=>({
     claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
      spanIds:[spanId]}]}))})};
- }]);
+ };
+ const ai=makeAI([answer(answerText),reviewFn,reviewFn]);
  await composeEvidenceAnswer('What guides human life?', [source],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
@@ -3247,7 +3234,9 @@ test('large claim reviews send one ranked span hint per citation while keeping t
  assert.ok(reviewPayload.parts[0].evidence[0].spans.length>1,
   'the reviewer still receives the full bounded set of exact source spans');
  assert.match(reviewSystem,/One source cannot supply another source’s missing support/);
- assert.equal(ai.calls.length,2,'adaptive review packing adds no model call');
+ assert.deepEqual(reviewPayloads.map(payload=>payload.reviewClaimIds.length),[5,4],
+  'the 9-claim review is chunked at five claims per scoped call');
+ assert.equal(ai.calls.length,3,'adaptive review packing adds no model call beyond the two chunks');
 });
 
 test('the reviewer can retain several exact spans from one source for one fully supported claim',async()=>{
@@ -3936,11 +3925,11 @@ test('review-only retry reuses composition and succeeds after a review deadline 
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
  assert.equal(result.outcome,'verified-source-draft');
- assert.equal(ai.calls.length,3,'one composition, first review, and one review-only retry');
- assert.deepEqual(result.trace.reviewRetry,{attempted:true,mode:'review-only',
-  reason:'inference-deadline-exceeded',applied:true,outcome:'recovered',
+ assert.equal(ai.calls.length,3,'one composition, first review, and one split-retry round');
+ assert.deepEqual(result.trace.reviewRetry,{attempted:true,
+  reason:'inference-deadline-exceeded',applied:true,
   parts:[{partId:'P1',reason:'inference-deadline-exceeded',applied:true,
-   mode:'review-only',samePacket:true,outcome:'recovered'}]});
+   mode:'split-retry',outcome:'recovered'}]});
  assert.equal(result.trace.answerRetry,undefined,
   'a successful review-only retry does not rerun the whole build');
 });
@@ -3953,10 +3942,7 @@ test('a part still uncited after the gate is dropped and named in the containmen
  const rejectingReview={response:JSON.stringify({parts:[{partId:'P1',status:'partial',
   answerStatus:'partial',directAnswerClaimIds:['P1-C2'],retainedContextClaimIds:['P1-C2']}],
   claims:[{claimId:'P1-C1',status:'partial',
-   sources:[{sourceId:'S1',status:'partial',spanIds:[]}],
-   clauses:[{text:'Hume links necessity to custom and regular conjunction.',
-    status:'partial',issueCode:'none',
-    sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]}]})};
+   sources:[{sourceId:'S1',status:'partial',spanIds:[]}]}]})};
  const uncitedRepair=(_model,{messages})=>{
   const payload=parsePayload(messages);
   return {response:JSON.stringify({parts:[{partId:'P1',
@@ -4003,18 +3989,20 @@ test('no build-time budget trace appears when optional calls run within budget (
 test('review output budget scales past the old cap for a many-claim review',async()=>{
  const sentences=Array.from({length:25},(_,index)=>
   `Hume observation ${index+1} links necessity to custom and regular conjunction in experience. [S1]`);
- // Redesign Stage A: split review (batch 24 B24-3) is deleted, so a
- // 25-claim part is audited by ONE review call and the per-record
- // budget formula applies to the whole record set at once.
+ // Latency tranche: a 25-claim part is audited by five chunk calls
+ // of five claims each; every chunk carries the full part payload,
+ // so the per-record budget formula still applies to the whole
+ // record set at once on every call.
  const reviewHandler=review([['P1','answered']]);
- const ai=makeAI([answer('PART P1\n'+sentences.join(' ')),reviewHandler]);
+ const ai=makeAI([answer('PART P1\n'+sentences.join(' ')),reviewHandler,reviewHandler,
+  reviewHandler,reviewHandler,reviewHandler]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
   plan:onePartPlan,catalog,trace:true});
- assert.equal(ai.calls.length,2,'compose plus the single many-claim review');
+ assert.equal(ai.calls.length,6,'compose plus the five chunk calls of the many-claim review');
  const reviewCalls=ai.calls.filter(call=>call.request.messages[0].content.startsWith('Review the complete answer'));
- assert.equal(reviewCalls.length,1,'the many-claim review is a single call');
+ assert.equal(reviewCalls.length,5,'the many-claim review runs as five chunk calls');
  assert.deepEqual(reviewCalls.map(call=>call.request.max_completion_tokens).sort((a,b)=>b-a),
-  [6700],'the budget is 1,200 plus 220 tokens per review record (25 claims)');
+  [6700,6700,6700,6700,6700],'the budget is 1,200 plus 220 tokens per review record (25 claims) on every chunk');
  assert.equal(result.trace.reviewRetry,undefined,'a completed review is not retried');
 });
 
@@ -4048,10 +4036,7 @@ test('flat reviewer decisions retain exact provenance and source-encoded spans',
   return {response:'```json\n'+JSON.stringify({parts:[{partId:'P1',status:'answered',directAnswerClaimIds:[claim.claimId]}],
    claims:[{claimId:claim.claimId,status:'answered',spanIds:['S1-Q1'],sources:[{
     sourceId:'S1',status:'answered',spanIds:['S1-Q1'],subjectAttributionStatus:'supported',
-    attributedSubject:'Hume'}],clauses:[{
-    text:claim.text,status:'answered',issueCode:'none',sources:[{sourceId:'S1',
-     status:'answered',spanIds:['S1-Q1'],subjectAttributionStatus:'supported',
-     attributedSubject:'Hume'}]}]}]})+'\n```'};
+    attributedSubject:'Hume'}]}]})+'\n```'};
  }};
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[source],ai,[],{
   plan:{...onePartPlan,sources:[{label:'Hume commentary',role:'commentary',bookIds:['35']}]},catalog,trace:true});
@@ -9015,9 +9000,7 @@ function b35SynthesisAI({draft,partialClaimId,synthesisId,supportId}){
      status:claim.claimId===partialClaimId?'partial':'answered',
      sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId],
       subjectAttributionStatus:'supported',
-      attributedSubject:claim.claimId==='P1-C1'?'Darcy':'Elizabeth'}],
-     clauses:[{text:claim.text,status:'answered',issueCode:'none',
-      sources:[{sourceId:'S1',status:'answered',spanIds:[span.spanId]}]}]}))})};
+      attributedSubject:claim.claimId==='P1-C1'?'Darcy':'Elizabeth'}]}))})};
   }
   if(system.startsWith('Judge only the listed claim'))return b34RescueRefused(request);
   if(system.startsWith('Patch only the requested claims'))
@@ -10055,4 +10038,179 @@ test('stage B.5 ledger: a packed page linked to no part is recorded on the selec
   {id:'C7',reason:'six-page-packet-limit'},
   {id:'C9',reason:'no-part-link',stage:'compose'}],
   'the Kant page packed under candidate C9 belongs to no part, so the composer drop is ledgered instead of silent');
+});
+
+// ---------------------------------------------------------------------
+// Latency tranche fixtures: compact verdict format (item 1),
+// claim-chunked reviews (item 2), timeout-split retry (item 4).
+
+test('a nine-claim part reviews as two scoped chunk calls and merges before the audit (latency tranche)',async()=>{
+ const sentences=['Custom guides human life.','Habit shapes inference.',
+  'Repeated experience forms expectations.','One event follows another regularly.',
+  'The mind learns from repeated conjunctions.','Custom directs ordinary expectations.',
+  'Experience produces familiar associations.','Inference follows established habits.',
+  'Repeated cases shape anticipation.'];
+ const sourceText=sentences.join('\n\n');
+ const source={...hume,id:'S1',text:sourceText,preview:sourceText};
+ const scopes=[];
+ const reviewFn=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  scopes.push(payload.reviewClaimIds);
+  const spanId=payload.parts[0].evidence[0].spans[0].spanId;
+  const claims=payload.reviewClaimIds.map(claimId=>({claimId,status:'answered',
+   sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}));
+  // The second chunk also returns a verdict for a claim outside its
+  // scope; the merge must drop it, not duplicate or overwrite.
+  if(payload.reviewClaimIds.length===4)
+   claims.push({claimId:'P1-C1',status:'unanswered',sources:[]});
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:['P1-C1']}],claims})};
+ };
+ const ai=makeAI([answer('PART P1\n'+sentences.map(s=>s+' [S1]').join('\n\n')),
+  reviewFn,reviewFn]);
+ const result=await composeEvidenceAnswer('What guides human life?',[source],ai,[],{
+  plan:onePartPlan,catalog,trace:true,transportDiagnostics:true});
+ assert.equal(ai.calls.length,3,'compose plus two chunk calls');
+ assert.deepEqual(scopes.map(scope=>scope.length),[5,4],
+  'the part chunks at five claims per call');
+ assert.deepEqual(scopes.flat(),['P1-C1','P1-C2','P1-C3','P1-C4','P1-C5',
+  'P1-C6','P1-C7','P1-C8','P1-C9'],'the scopes partition the part’s claims in order');
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.ok(result.trace.reviewContract.valid);
+ const reviewCalls=result.trace.inferenceCalls.filter(call=>call.stage==='review');
+ assert.deepEqual(reviewCalls.map(call=>call.claimCount),[5,4],
+  'each chunk call records the claims it judged');
+ assert.ok(result.answer.includes('Repeated cases shape anticipation'),
+  'claims from the second chunk ship');
+});
+
+test('a review chunk that hits its deadline retries as two half-size split calls (latency tranche)',async()=>{
+ const sentences=['Custom guides human life.','Habit shapes inference.',
+  'Repeated experience forms expectations.','One event follows another regularly.',
+  'The mind learns from repeated conjunctions.','Custom directs ordinary expectations.',
+  'Experience produces familiar associations.','Inference follows established habits.',
+  'Repeated cases shape anticipation.'];
+ const sourceText=sentences.join('\n\n');
+ const source={...hume,id:'S1',text:sourceText,preview:sourceText};
+ const timeout=()=>Object.assign(new Error('Inference deadline exceeded'),
+  {stage:'review',code:'inference-deadline-exceeded'});
+ const scopedReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const ids=payload.reviewClaimIds||payload.claims.map(claim=>claim.claimId);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:['P1-C1']}],claims:ids.map(claimId=>{
+    const claim=payload.claims.find(item=>item.claimId===claimId);
+    return {claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:[claim.sourceEvidence[0].spanIds[0]]}]};})})};
+ };
+ const ai=makeAI([answer('PART P1\n'+sentences.map(s=>s+' [S1]').join('\n\n')),
+  timeout(),scopedReview,scopedReview,scopedReview]);
+ const result=await composeEvidenceAnswer('What guides human life?',[source],ai,[],{
+  plan:onePartPlan,catalog,trace:true,transportDiagnostics:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(ai.calls.length,5,'compose, the timed-out chunk, the second chunk, and two split halves');
+ assert.deepEqual(result.trace.reviewRetrySplit,[{partId:'P1',
+  claimIds:['P1-C1','P1-C2','P1-C3','P1-C4','P1-C5'],
+  halves:[['P1-C1','P1-C2','P1-C3'],['P1-C4','P1-C5']],outcome:'recovered'}],
+  'the split is recorded with the part, its claims, and its halves');
+ assert.equal(result.trace.reviewRetry,undefined,
+  'a recovered split needs no part-level retry entry');
+ const reviewCalls=result.trace.inferenceCalls.filter(call=>call.stage==='review');
+ assert.deepEqual(reviewCalls.map(call=>call.kind),
+  ['initial','initial','split-retry','split-retry']);
+ assert.ok(reviewCalls.every(call=>call.timeoutMs===60000),
+  'split halves run at the flat 60 s deadline, not the 120 s retry raise');
+ assert.deepEqual(reviewCalls.map(call=>call.claimCount),[5,4,3,2]);
+});
+
+test('a truncated compact-format review still salvages its complete claim prefix (latency tranche)',async()=>{
+ let cutText='';
+ const reviewer=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const decisions=payload.claims.map(claim=>{
+   const subject=claimPersonSubjects(claim.text)[0]||'';
+   return {claimId:claim.claimId,status:'answered',
+    sources:claim.sourceIds.map(sourceId=>({sourceId,
+     spanIds:[claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0]],
+     attributionStatus:'not_applicable',
+     subjectAttributionStatus:'supported',
+     ...(subject?{attributedSubject:subject}:{}),
+     evidenceRole:'work-assertion',
+     supportBoundary:'The cited span states the claim as written.'}))};
+  });
+  const full=JSON.stringify({claims:decisions,
+   parts:[{partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:decisions.map(decision=>decision.claimId),
+    retainedContextClaimIds:[],requirementCoverage:[]}]});
+  cutText=full.slice(0,full.indexOf(payload.claims[1].claimId)+14);
+  return {choices:[{finish_reason:'length',message:{content:cutText}}],
+   usage:{neurons:3,prompt_tokens:500,completion_tokens:1800}};
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]\n\nHume also treats custom as the guide of human life. [S1]'),
+  reviewer]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,2,'the salvaged review needs no retry call');
+ assert.deepEqual(result.trace.reviewSalvage,
+  [{partId:'P1',recoveredClaims:1,droppedClaimIds:['P1-C2']}]);
+ assert.ok(result.answer.includes('Hume links necessity to custom'));
+ assert.ok(!result.answer.includes('guide of human life'),
+  'the claim the cut dropped does not ship');
+ // Parse level: the salvaged claim keeps its compact source decision
+ // whole, and the empty speaker field is absent, not blank.
+ const salvaged=parseReviewJson({response:cutText});
+ assert.equal(salvaged.claims.length,1);
+ assert.equal(salvaged.claims[0].sources[0].supportBoundary,
+  'The cited span states the claim as written.');
+ assert.equal(salvaged.claims[0].sources[0].attributedSpeaker,undefined,
+  'compact verdicts omit empty name fields');
+ assert.equal(salvaged.claims[0].clauses,undefined,
+  'compact verdicts carry no clause copies');
+});
+
+test('compact verdict format: per-claim response size falls by at least 40% (latency tranche)',()=>{
+ // The same verdicts in the pre-tranche schema (verbatim clause
+ // copies with per-clause source decisions) and in the compact
+ // schema (no clauses; empty name fields omitted). Shapes mirror
+ // the review census profile: compound claims with supportedText
+ // and a full source decision run near 1,000 chars per claim.
+ const boundary='The span states that Hume links necessity to custom and regular conjunction; it does not by itself establish the claim about rational insight.';
+ const oldSource={sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+  attributionStatus:'supported',attributedSpeaker:'',
+  subjectAttributionStatus:'supported',attributedSubject:'Hume',
+  evidenceRole:'work-assertion',supportBoundary:boundary};
+ const newSource={sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+  attributionStatus:'supported',
+  subjectAttributionStatus:'supported',attributedSubject:'Hume',
+  evidenceRole:'work-assertion',supportBoundary:boundary};
+ const text1='Hume links necessity to custom and regular conjunction, and he treats the expectation that follows as a determination of the mind rather than rational insight.';
+ const oldClaims=[
+  {claimId:'P1-C1',status:'partial',supportedText:text1,sources:[oldSource],
+   clauses:[
+    {text:'Hume links necessity to custom and regular conjunction',start:0,end:54,
+     status:'answered',issueCode:'none',sources:[{sourceId:'S1',spanIds:['S1-Q1']}]},
+    {text:'he treats the expectation that follows as a determination of the mind',start:59,end:128,
+     status:'answered',issueCode:'none',sources:[{sourceId:'S1',spanIds:['S1-Q1']}]},
+    {text:'rather than rational insight',start:129,end:157,
+     status:'partial',issueCode:'scope',sources:[{sourceId:'S1',spanIds:['S1-Q1']}]}]},
+  {claimId:'P1-C2',status:'partial',supportedText:'Hume treats custom as the guide of life.',
+   sources:[oldSource,{...oldSource,sourceId:'S2',spanIds:['S2-Q4']}],
+   clauses:[
+    {text:'Hume treats custom as the guide of life',start:0,end:38,
+     status:'answered',issueCode:'none',sources:[{sourceId:'S1',spanIds:['S1-Q1']}]},
+    {text:'and the basis of inference from experience',start:39,end:81,
+     status:'answered',issueCode:'none',sources:[{sourceId:'S2',spanIds:['S2-Q4']}]}]}];
+ const newClaims=[
+  {claimId:'P1-C1',status:'partial',supportedText:text1,sources:[newSource]},
+  {claimId:'P1-C2',status:'partial',supportedText:'Hume treats custom as the guide of life.',
+   sources:[newSource,{...newSource,sourceId:'S2',spanIds:['S2-Q4']}]}];
+ const oldChars=JSON.stringify(oldClaims).length;
+ const newChars=JSON.stringify(newClaims).length;
+ assert.ok(newChars<=oldChars*0.6,
+  `compact format must cut per-claim response size by at least 40%: ${oldChars} -> ${newChars} chars over 2 claims`);
+ // The compact response still parses through the ordinary review parser.
+ const parsed=parseReviewJson({response:JSON.stringify({claims:newClaims,parts:[]})});
+ assert.equal(parsed.claims.length,2);
+ assert.equal(parsed.claims[0].sources[0].attributedSubject,'Hume');
 });
