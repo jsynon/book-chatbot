@@ -684,11 +684,20 @@ test('source-grouped review makes each cited source decision explicit and keeps 
  const payload=parsePayload(ai.calls[1].request.messages);
  assert.deepEqual(payload.claims[0].sourceIds,['S1','S2']);
  assert.deepEqual(payload.claims[0].sourceEvidence.map(item=>item.sourceId),['S1','S2']);
- assert.equal(result.coverage,'none');
+ // Assembly-loss tranche (item 1): the Kant side's verdict is
+ // partial support, not a hard failure, and the Hume group fully
+ // supports the claim — partial-gate salvage now retains the claim
+ // on the Hume citation alone (the comparison demotion keeps the
+ // part partial). Before the tranche the claim died whole here.
+ assert.equal(result.coverage,'partial');
  assert.ok(result.trace.reviewContract.supportIssues.some(issue=>
   issue.sourceId==='S2'&&issue.reason==='claim-source-not-supported'));
- assert.equal(result.evidenceMap.length,0);
- assert.equal(ai.calls.length,2,'missing repairability keeps the unsupported source side fail-closed without a repair round trip');
+ assert.equal(result.evidenceMap.length,1);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1'],
+  'the salvaged claim cites only its fully-supporting source');
+ assert.deepEqual(result.trace.reviewContract.assemblySalvage,
+  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S1'],droppedSourceIds:['S2']}]);
+ assert.equal(ai.calls.length,2,'partial-gate salvage is deterministic and adds no repair round trip');
 });
 test('compatible duplicate same-source review entries merge spans while conflicting entries fail closed',async()=>{
  const run=async(second)=>{
@@ -1252,7 +1261,7 @@ test('an all-books plan does not promote a partial claim after removing a failed
  assert.deepEqual(result.trace.reviewContract.recovered,[]);
 });
 
-test('the Sunyata review handoff omits a compound sentence when one of its cited pages fails review',async()=>{
+test('the Sunyata review handoff retains a compound sentence on its fully-supporting page under partial-gate salvage',async()=>{
  const supported={...hume,id:'S2',bookId:'178',page:88,
   text:'Dependent arising shows that things do not exist by themselves; emptiness is not absolute nonexistence.',
   preview:'Dependent arising shows that things do not exist by themselves; emptiness is not absolute nonexistence.'};
@@ -1282,12 +1291,21 @@ test('the Sunyata review handoff omits a compound sentence when one of its cited
  const result=await composeEvidenceAnswer('What is sunyata?',[supported,rejected],ai,[],{
   catalog,plan,trace:true
  });
- assert.equal(result.coverage,'partial');
- assert.equal(result.questionParts[0].status,'partial');
- assert.doesNotMatch(result.answer,/warns against dogmatism/);
+ assert.equal(result.coverage,'full');
+ assert.equal(result.questionParts[0].status,'supported');
+ // Assembly-loss tranche (item 1): the commentary page's verdict
+ // is partial (not a hard failure) and the Nāgārjuna page fully
+ // supports the compound claim as the reviewer judged it, so
+ // partial-gate salvage retains the sentence on S2 alone. (The
+ // shed page carried the dogmatism clause in its own text; the
+ // salvaged set's support is what validation check Q1 measures.)
+ assert.match(result.answer,/warns against dogmatism/);
  assert.match(result.answer,/Emptiness is not absolute nonexistence/);
  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
+ assert.deepEqual(result.trace.reviewContract.assemblySalvage,
+  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S2'],droppedSourceIds:['S5']}]);
  assert.deepEqual(result.evidenceMap.map(item=>item.point),[
+  'Emptiness describes dependent arising and warns against dogmatism.',
   'Emptiness is not absolute nonexistence.'
  ]);
  assert.deepEqual(result.trace.reviewContract.recovered,[]);
@@ -1806,7 +1824,14 @@ test('a surviving later claim can answer the part when the opening claim is reje
   plan:hamletMeaningPlan,catalog:{212:hamletMeaningSource.title},trace:true});
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.coverage,'full');
- assert.doesNotMatch(result.answer,/Awareness of consequences explains the phrase/);
+ // Assembly-loss tranche (item 1): the opening claim's only source
+ // accepted it (the mock's span-bearing decision normalizes to
+ // 'answered') although the claim-level verdict was 'partial' —
+ // partial-gate salvage now retains it alongside the direct answer.
+ // Before the tranche the claim-level verdict alone dropped it.
+ assert.match(result.answer,/Awareness of consequences explains the phrase/);
+ assert.deepEqual(result.trace.reviewContract.assemblySalvage,
+  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S1'],droppedSourceIds:[]}]);
  assert.match(result.answer,/Fear of death makes Hamlet hesitate to act/);
  assert.deepEqual(result.trace.reviewContract.partDecisions[0].directAnswerClaimIds,['P1-C2']);
  assert.deepEqual(result.trace.reviewContract.partDecisions[0].acceptedDirectAnswerClaimIds,['P1-C2']);
@@ -2139,7 +2164,7 @@ test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both 
  assert.deepEqual(result.trace.coverageGaps,[]);
 });
 
-test('a broad hypothetical conclusion stays partial even when both premise sources are supported',async()=>{
+test('a broad hypothetical conclusion is retained by partial-gate salvage when both premise sources are supported, and its part stays partial',async()=>{
  const broadReviewer=(_model,{messages})=>{
   const payload=parsePayload(messages);
   const claims=payload.claims.map(claim=>({claimId:claim.claimId,
@@ -2156,12 +2181,20 @@ test('a broad hypothetical conclusion stays partial even when both premise sourc
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,4,'broad unsupported synthesis remains partial on the reviewer verdict alone (redesign Stage A: no rescue call follows a zero-accept part)');
+ assert.equal(ai.calls.length,4,'salvage is deterministic: no rescue call follows (redesign Stage A)');
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.questionParts[1].status,'supported');
- assert.equal(result.questionParts[2].status,'unsupported');
- assert.doesNotMatch(result.answer,/reject Kierkegaard’s entire philosophy/);
+ // Assembly-loss tranche (item 1): both premise sources accepted
+ // the conclusion claim and no narrowing was proposed, so
+ // partial-gate salvage retains it and P3 ships as partial instead
+ // of unsupported. This is the rule's sharpest edge — the reviewer
+ // marked the inference itself 'partial' — and the salvaged set's
+ // support is what validation check Q1 measures.
+ assert.equal(result.questionParts[2].status,'partial');
+ assert.match(result.answer,/reject Kierkegaard’s entire philosophy/);
+ assert.ok((result.trace.reviewContract.assemblySalvage||[])
+  .some(entry=>entry.partId==='P3'));
  assert.equal(result.trace.reviewContract.recovered.some(item=>item.partId==='P3'),false);
 });
 
@@ -8325,15 +8358,16 @@ test('batch 34 B34-3 controls: correct subject, different action, and silent bou
   'control (c): no swap recorded');
 });
 
-test('batch 34 B34-6 pilot (Wuthering): accepted claims lost to containment and the partial gate are reconciled, and a containment-dropped disclosure is not restored',async()=>{
+test('batch 34 B34-6 pilot (Wuthering): accepted claims lost to containment are reconciled, the partial-gated claim is salvaged, and a containment-dropped disclosure is not restored',async()=>{
  // Production shape, verbatim in structure: the split retry recovered
  // and judged every cited claim; the loss is downstream. C5/C9/C10 are
  // accepted UNCITED context claims restating rejected draft claims
  // (C11/C12/C13, archived by the initial review) at overlap >= 0.5,
  // so rejection containment drops them; C6 is cited, its source
- // accepted, but the reviewer judged it 'partial' with no narrowing,
- // so normalizeReview never puts it in the part's answers while the
- // contract still records accepted:true. C10 is also an absence
+ // accepted, but the reviewer judged it 'partial' with no narrowing
+ // — the assembly-loss tranche's partial-gate salvage now retains
+ // exactly this shape, so C6 ships and the reconciled losses are
+ // the three containment drops. C10 is also an absence
  // disclosure: B34-2 must NOT restore it (it restates a rejection).
  const wuthering={id:'S1',bookId:'123',title:'Wuthering Heights — Emily Brontë',
   page:100,url:'https://example.test/wuthering#page=100',
@@ -8419,8 +8453,8 @@ test('batch 34 B34-6 pilot (Wuthering): accepted claims lost to containment and 
   'the retained conclusion still ships');
  assert.doesNotMatch(result.answer,/Subjectivity/,
   'the containment-dropped section does not ship');
- assert.doesNotMatch(result.answer,/neutral observer/,
-  'the partial-gated section does not ship');
+ assert.match(result.answer,/neutral observer/,
+  'the partial-gated section now ships under partial-gate salvage');
  assert.doesNotMatch(result.answer,/hides Catherine's letters/,
   'the containment-dropped withholding evidence does not ship');
  assert.doesNotMatch(result.answer,/do not describe Nelly filtering/,
@@ -8434,7 +8468,7 @@ test('batch 34 B34-6 pilot (Wuthering): accepted claims lost to containment and 
   'containment recorded the disclosure drop');
  const losses=result.trace.assemblyLoss||[];
  const lossFor=claimId=>losses.find(entry=>entry.claimId===claimId);
- assert.equal(losses.length,4,'four accepted claims are unshipped');
+ assert.equal(losses.length,3,'three accepted claims are unshipped');
  assert.deepEqual(lossFor('P1-C5'),
   {partId:'P1',claimId:'P1-C5',reason:'rejection-containment',disposition:'traced'},
   'the Subjectivity loss is reconciled as containment');
@@ -8444,12 +8478,15 @@ test('batch 34 B34-6 pilot (Wuthering): accepted claims lost to containment and 
  assert.deepEqual(lossFor('P1-C10'),
   {partId:'P1',claimId:'P1-C10',reason:'rejection-containment',disposition:'traced'},
   'the disclosure loss is reconciled as containment');
- assert.deepEqual(lossFor('P1-C6'),
-  {partId:'P1',claimId:'P1-C6',reason:'claim-partial-not-shipped',disposition:'traced'},
-  'the partial-gated loss is reconciled as the ship-gate, not unexplained; '+
-  'this fixture is the ambiguous case a verdict gate must not act on (the '+
-  'source decision accepted while the reviewer boundary denies the claim’s '+
-  '‘conflict of interest’ framing)');
+ assert.equal(lossFor('P1-C6'),undefined,
+  'C6 is no longer a loss: partial-gate salvage retained it (the '+
+  'source decision accepted while the reviewer boundary denied the '+
+  'claim’s ‘conflict of interest’ framing — the ambiguous shape the '+
+  'tranche census counted 122 of, retained deliberately; the '+
+  'salvaged set’s support is validation check Q1’s to measure)');
+ assert.deepEqual(result.trace.reviewContract.assemblySalvage,
+  [{partId:'P1',claimId:'P1-C6',keptSourceIds:['S1'],droppedSourceIds:[]}],
+  'the salvage is recorded with its kept and dropped citations');
  assert.equal((result.trace.assemblyDisclosureRestored||[])
   .some(entry=>entry.claimId==='P1-C10'),false,
   'B34-2 does not restore a containment-dropped disclosure');
@@ -9517,6 +9554,12 @@ test('stage B.1 B4 scoping: an assembly loss that touches no requirement is labe
   const claims=payload.claims.map(claim=>{
    const partial=claim.text.includes('synthetic unity of every possible perception');
    return {claimId:claim.claimId,status:partial?'partial':'answered',
+    // Assembly-loss tranche: the reviewer proposes a narrowing for
+    // the lost claim (malformed — it cites a page the claim does
+    // not), so partial-gate salvage does not retain it: a proposed
+    // narrowing keeps the claim in the narrowing rescue's hands,
+    // fail-closed. Without the proposal the claim would salvage.
+    ...(partial?{supportedText:'The categories guarantee unity. [S9] Every perception is synthetically unified.'}:{}),
     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
      spanIds:[spanFor(claim)]}))};
   });
@@ -9771,12 +9814,16 @@ test('stage B B3: a partial-gated loss is disclosed in requirement terms, counte
  // The phase-3 assembly-loss shape in miniature: P2's second
  // claim is judged 'partial' at claim level although its only
  // source decision accepts with a span — the dominant loss class
- // of the phase-3 census (24 of 25). The gate does not move (the
- // claim-level verdict is the audit's to give), but the loss is
- // no longer silent: the part carries a partially-answered label
- // naming the affected requirement, the disclosure is recorded,
- // the loss count is a first-class trace number, and the loss
- // record carries the record-only unanimity flag.
+ // of the phase-3 census (24 of 25). The assembly-loss tranche's
+ // partial-gate salvage now retains that shape when the reviewer
+ // proposes no narrowing; this fixture's reviewer DID propose one
+ // (malformed — it cites a page the claim does not), so the claim
+ // stays in the narrowing rescue's hands, fail-closed, and the
+ // loss stands. What this test exercises is that the loss is not
+ // silent: the part carries a partially-answered label naming the
+ // affected requirement, the disclosure is recorded, the loss
+ // count is a first-class trace number, and the loss record
+ // carries the record-only unanimity flag.
  const plan={version:'reader-evidence-v2',intent:'explain',
   sources:[{label:'David Hume',role:'primary',bookIds:['35']},
    {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
@@ -9797,6 +9844,7 @@ test('stage B B3: a partial-gated loss is disclosed in requirement terms, counte
   const claims=payload.claims.map(claim=>{
    const partial=claim.text.includes('synthetic unity');
    return {claimId:claim.claimId,status:partial?'partial':'answered',
+    ...(partial?{supportedText:'The categories guarantee unity. [S9] Experience is synthetically unified.'}:{}),
     sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
      spanIds:[spanFor(claim)]}))};
   });
@@ -9819,7 +9867,7 @@ test('stage B B3: a partial-gated loss is disclosed in requirement terms, counte
  assert.match(result.answer,/pure conceptions of the understanding/,
   'the answered claim ships');
  assert.doesNotMatch(result.answer,/synthetic unity/,
-  'the partial-gated claim still does not ship — the audit gate is unmoved');
+  'the partial-gated claim still does not ship — its reviewer proposed a narrowing, so salvage does not retain it');
  const losses=result.trace.assemblyLoss||[];
  assert.equal(losses.length,1,'exactly one loss is recorded');
  assert.deepEqual(losses[0],{partId:'P2',claimId:'P2-C2',
@@ -9851,6 +9899,201 @@ test('stage B B3: a build with no assembly losses still reports the zero count',
   'the summary is emitted even when nothing was lost');
  assert.equal(result.trace.final.assemblyLossDisclosures,undefined,
   'no loss, no disclosure');
+});
+
+// ---------------------------------------------------------------------------
+// Assembly-loss tranche: partial-gate salvage (item 1), context-part
+// survival (item 2), and ledger completion (item 3).
+// ---------------------------------------------------------------------------
+
+test('assembly-loss tranche item 1: salvage retains a two-source claim on its fully-supporting source alone',async()=>{
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How do Hume and Kant each ground causality?',
+   sourceBookIds:['35','40'],searchQueries:['causality custom categories'],
+   candidateSourceIds:['S1','S2']}],queries:['causality']};
+ const draft='PART P1\nHume and Kant both treat causality as a structure the mind brings to experience. [S1, S2]';
+ const reviewResponder=(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0];
+  const spanFor=sourceId=>claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:[{
+   claimId:claim.claimId,status:'partial',sources:[
+    {sourceId:'S1',status:'answered',spanIds:[spanFor('S1')]},
+    {sourceId:'S2',status:'partial',spanIds:[spanFor('S2')]}]}]})};
+ };
+ const ai=makeAI([answer(draft),reviewResponder],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How do Hume and Kant each ground causality?',
+  [hume,kant],ai,[],{plan,catalog,trace:true});
+ assert.match(result.answer,/both treat causality as a structure the mind brings to experience/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1'],
+  'the shipped claim cites only the fully-supporting source');
+ assert.deepEqual(result.trace.reviewContract.assemblySalvage,
+  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S1'],droppedSourceIds:['S2']}],
+  'the salvage is recorded with its kept and dropped citations');
+});
+
+test('assembly-loss tranche item 1: salvage does not fire when a cited source hard-fails, nor when no source fully supports the claim',async()=>{
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How do Hume and Kant each ground causality?',
+   sourceBookIds:['35','40'],searchQueries:['causality custom categories'],
+   candidateSourceIds:['S1','S2']}],queries:['causality']};
+ const draft='PART P1\nHume and Kant both treat causality as a structure the mind brings to experience. [S1, S2]';
+ const run=async(sourcesFor)=>{
+  const reviewResponder=(_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   const spanFor=sourceId=>claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:[{
+    claimId:claim.claimId,status:'partial',sources:sourcesFor(spanFor)}]})};
+  };
+  const ai=makeAI([answer(draft),reviewResponder],{decorateReview:false});
+  return composeEvidenceAnswer('How do Hume and Kant each ground causality?',
+   [hume,kant],ai,[],{plan,catalog,trace:true});
+ };
+ const hardFailed=await run(spanFor=>[
+  {sourceId:'S1',status:'answered',spanIds:[spanFor('S1')]},
+  {sourceId:'S2',status:'unanswered',spanIds:[]}]);
+ assert.doesNotMatch(hardFailed.answer,/both treat causality as a structure/,
+  'a hard-failed sibling bars salvage even with one fully-supporting source');
+ assert.equal(hardFailed.trace.reviewContract.assemblySalvage,undefined);
+ const noneFull=await run(spanFor=>[
+  {sourceId:'S1',status:'partial',spanIds:[spanFor('S1')]},
+  {sourceId:'S2',status:'partial',spanIds:[spanFor('S2')]}]);
+ assert.doesNotMatch(noneFull.answer,/both treat causality as a structure/,
+  'with no fully-supporting source there is nothing to retain the claim on');
+ assert.equal(noneFull.trace.reviewContract.assemblySalvage,undefined);
+});
+
+test('assembly-loss tranche item 2: an unanswered part ships its retained context claims under the general-context label',async()=>{
+ const contextText='Ordinary expectations are also shaped by repeated experience beyond any single text.';
+ const draft='PART P1\nHume links necessity to custom and regular conjunction. [S1]\n\n'+
+  'PART P2\nKant grounds causality in the categories of the understanding. [S1]\n'+contextText;
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']}],
+  parts:[{id:'P1',question:'How does Hume explain causal necessity?',
+   sourceBookIds:['35'],searchQueries:['Hume necessity'],candidateSourceIds:['S1']},
+   {id:'P2',question:'How does Kant ground causality?',
+   sourceBookIds:['35'],searchQueries:['Kant causality'],candidateSourceIds:['S1']}],
+  queries:['causality']};
+ const reviewResponder=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const claims=payload.claims.map(claim=>claim.partId==='P1'?
+   {claimId:claim.claimId,status:'answered',sources:claim.sourceIds.map(sourceId=>({
+    sourceId,status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}))}:
+   {claimId:claim.claimId,status:'unanswered',sources:claim.sourceIds.map(sourceId=>({
+    sourceId,status:'unanswered',spanIds:[]}))});
+  const parts=payload.parts.map(part=>part.partId==='P1'?
+   {partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.filter(claim=>claim.partId==='P1').map(claim=>claim.claimId),
+    retainedContextClaimIds:[]}:
+   {partId:'P2',status:'unanswered',answerStatus:'unanswered',repairable:false,
+    directAnswerClaimIds:[],
+    retainedContextClaimIds:(part.contextClaims||[]).map(claim=>claim.claimId)});
+  return {response:JSON.stringify({parts,claims})};
+ };
+ const ai=makeAI([answer(draft),reviewResponder,answer(draft),reviewResponder],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How do Hume and Kant ground causality?',
+  [hume],ai,[],{plan,catalog,trace:true});
+ assert.match(result.answer,/Hume links necessity to custom/);
+ assert.match(result.answer,/Ordinary expectations are also shaped by repeated experience/,
+  'the retained context claim ships for the unanswered part');
+ assert.doesNotMatch(result.answer,/Kant grounds causality in the categories/,
+  'the failed cited claim itself does not ship');
+ const p2=result.questionParts.find(part=>part.partId==='P2');
+ assert.equal(p2?.status,'partial','the survived part ships as partial');
+ assert.deepEqual(result.trace.contextSurvivedParts,
+  [{partId:'P2',claimIds:p2.claimIds}],
+  'the survival is recorded with the claims it shipped');
+ const label=(result.trace.final.disclosureLabels||[]).find(entry=>entry.partId==='P2');
+ assert.equal(label?.kind,'general-context',
+  'the survived part carries the general-context disclosure label');
+});
+
+test('assembly-loss tranche item 2: source-required containment still wins over context-part survival',async()=>{
+ // Containment's suppression shape: P1 (source-required) would
+ // ship cited only to an apparatus page, so no part is linked and
+ // the answer-level suppression zeroes EVERY part — including
+ // P2, the unanswered part holding retained context claims that
+ // survival would otherwise ship. Survival runs after containment
+ // and finds no answers left: containment wins.
+ const toc={id:'S3',bookId:'40',title:catalog[40],page:7,url:'https://example.test/kant#page=7',
+  text:'Contents\nChapter One: The Categories of Relation . . . 12\nChapter Two: The Deductions of the Understanding . . . 27\nChapter Three: The Schematism of the Concepts . . . 41',
+  preview:'Contents of the work.',candidatePartIds:['P1']};
+ const contextText='Ordinary expectations are also shaped by repeated experience beyond any single text.';
+ const draft='PART P1\nThe work is organized into chapters on the categories and the deductions. [S3]\n\n'+
+  'PART P2\nKant grounds causality in the categories of the understanding. [S1]\n'+contextText;
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How is Kant’s work organized?',
+   sourceBookIds:['40'],searchQueries:['Kant organization'],candidateSourceIds:['S3'],
+   sourceRequired:true},
+   {id:'P2',question:'How does Kant ground causality?',
+   sourceBookIds:['35'],searchQueries:['Kant causality'],candidateSourceIds:['S1'],
+   sourceRequired:true}],queries:['causality']};
+ const reviewResponder=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const claims=payload.claims.map(claim=>claim.partId==='P1'?
+   {claimId:claim.claimId,status:'answered',sources:claim.sourceIds.map(sourceId=>({
+    sourceId,status:'answered',spanIds:[claim.sourceEvidence[0].spanIds[0]]}))}:
+   {claimId:claim.claimId,status:'unanswered',sources:claim.sourceIds.map(sourceId=>({
+    sourceId,status:'unanswered',spanIds:[]}))});
+  const parts=payload.parts.map(part=>part.partId==='P1'?
+   {partId:'P1',status:'answered',answerStatus:'answered',
+    directAnswerClaimIds:payload.claims.filter(claim=>claim.partId==='P1').map(claim=>claim.claimId),
+    retainedContextClaimIds:[]}:
+   {partId:'P2',status:'unanswered',answerStatus:'unanswered',repairable:false,
+    directAnswerClaimIds:[],
+    retainedContextClaimIds:(part.contextClaims||[]).map(claim=>claim.claimId)});
+  return {response:JSON.stringify({parts,claims})};
+ };
+ const ai=makeAI([answer(draft),reviewResponder,answer(draft),reviewResponder],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer('How is Kant’s work organized, and how does he ground causality?',
+  [{...hume,candidatePartIds:['P2']},toc],ai,[],{plan,catalog,trace:true});
+ assert.doesNotMatch(result.answer,/Ordinary expectations are also shaped/,
+  'a part containment suppresses is not rescued by survival');
+ assert.doesNotMatch(result.answer,/organized into chapters/,
+  'the apparatus-cited part does not ship either');
+ assert.equal(result.trace.contextSurvivedParts,undefined,
+  'no survival is recorded when containment suppresses the answer');
+ const disp=(result.trace.sourceRequiredContainment?.partDispositions||[])
+  .find(entry=>entry.partId==='P1');
+ assert.equal(disp?.disposition,'suppressed-with-answer',
+  'containment’s suppression of the would-ship part is recorded');
+});
+
+test('assembly-loss tranche item 3: reconcile census-records a non-shipping part’s accepted claims without restoring them',async()=>{
+ const parts=[
+  {part:{id:'P1'},answerStatus:'answered',answers:[
+   {claimId:'P1-C1',text:'The shipped claim about Nelly Dean.',
+    renderedText:'The shipped claim about Nelly Dean. [S1]',sourceIds:['S1'],paragraphIndex:0}]},
+  {part:{id:'P2'},answerStatus:'unanswered',answers:[
+   {claimId:'P2-C1',text:'A retained context claim in a part that does not ship.',
+    renderedText:'A retained context claim in a part that does not ship.',sourceIds:[],paragraphIndex:0}]}
+ ];
+ const losses=reconcileAssemblyLoss({parts,
+  reviewDecisions:[
+   {partId:'P1',claimId:'P1-C1',accepted:true,claimStatus:'answered'},
+   {partId:'P2',claimId:'P2-C1',accepted:true,claimStatus:'partial'},
+   {partId:'P2',claimId:'P2-C2',accepted:true,claimStatus:'partial'}],
+  validatedAnswers:[{partId:'P2',answers:[{claimId:'P2-C2',
+   text:'A validated claim whose part never shipped.',
+   renderedText:'A validated claim whose part never shipped. [S1]',sourceIds:['S1']}]}],
+  rejectionArchive:[],trace:{}});
+ assert.deepEqual(losses,[
+  {partId:'P2',claimId:'P2-C1',reason:'part-not-shipped',disposition:'traced'},
+  {partId:'P2',claimId:'P2-C2',reason:'claim-partial-not-shipped',disposition:'traced'}],
+  'both deaths in the non-shipping part are census-recorded with reasons');
+ assert.equal(losses.some(loss=>loss.reason==='unexplained'),false,
+  'unexplained stays zero in the fixture');
+ assert.equal(parts[1].answers.length,1,
+  'census-only: nothing is restored into a non-shipping part');
+ assert.equal(parts[1].answerStatus,'unanswered',
+  'census-only: the part’s status is never flipped');
 });
 
 // ---------------------------------------------------------------------------
