@@ -603,6 +603,49 @@ function contextTokenSequence(text){
   return (String(text||'').toLowerCase().match(/[a-z']+/gu)||[])
     .filter(token=>token.length>=3&&!CONTEXT_OVERLAP_STOPWORDS.has(token));
 }
+// Combined tranche (PR-A): salvage span coverage. Partial-gate
+// salvage retains a claim on its fully-supporting sources, but the
+// assembly run's audit showed reviewer per-source acceptance alone
+// is loose: ~14% of salvaged rows sat on kept spans that do not
+// state the claim (the Hobbes ch. XLIII shape). Salvage therefore
+// also requires the claim's distinctive content terms (the codebase
+// tokenizer above plus the excerpt stemmer's morphology, ported
+// from public-gateway) to be carried by the kept sources' accepted
+// spans. Threshold from the pre-registered build-gate replay over
+// the assembly run's 76 salvaged claims (auditor-verdicted rows):
+// 0.23 blocks 7/11 unsupported salvaged rows while keeping 24/30
+// supported ones — the only passing point of the gate (blocks
+// >=60% of unsupported, keeps >=80% of supported; the passing
+// interval is narrow, (0.222, 0.231], and validation check A2
+// re-measures the live salvaged set). A claim with no distinctive
+// terms is unmeasurable and is not blocked (coverage null).
+const SALVAGE_COVERAGE_THRESHOLD=0.23;
+function salvageStem(word){
+  let w=word;
+  if(w.length>6&&w.endsWith('ation'))w=w.slice(0,-5)+'y';
+  else if(w.length>7&&w.endsWith('ance'))w=w.slice(0,-4);
+  else if(w.length>7&&w.endsWith('ence'))w=w.slice(0,-4);
+  else if(w.length>6&&w.endsWith('ing'))w=w.slice(0,-3);
+  else if(w.length>5&&w.endsWith('ied'))w=w.slice(0,-3)+'y';
+  else if(w.length>5&&w.endsWith('ed'))w=w.slice(0,-2);
+  else if(w.length>5&&w.endsWith('ies'))w=w.slice(0,-3)+'y';
+  else if(w.length>5&&w.endsWith('s'))w=w.slice(0,-1);
+  if(w.length>4&&w.endsWith('e'))w=w.slice(0,-1);
+  return w;
+}
+function salvageTerms(text){
+  return new Set(contextTokenSequence(text).map(salvageStem));
+}
+function salvageSpanCoverage(claimText,keptQuotes){
+  const terms=salvageTerms(claimText);
+  if(!terms.size)return null;
+  const spanTerms=new Set();
+  for(const quote of keptQuotes)
+    for(const term of salvageTerms(quote))spanTerms.add(term);
+  let shared=0;
+  for(const term of terms)if(spanTerms.has(term))shared++;
+  return Math.round((shared/terms.size)*1000)/1000;
+}
 // Batch 33 (B33-6): B32-5's threshold alone cannot tell restatement
 // from topical kinship — batch-32 production produced a false drop
 // at similarity 0.217 (Narrators: the context claim and the demoted
@@ -3626,11 +3669,20 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       if(claimStatus==='partial'&&supportedSourceIds.size&&
          !hasUnreviewedOrSpanlessSource&&!narrowingProposed&&
          ![...citedIds].some(sourceId=>hardFailedSourceIds.has(sourceId))){
-        claimStatus='answered';salvaged=true;
-        assemblySalvage.push({partId:part.id,claimId:answer.claimId,
-          keptSourceIds:[...supportedSourceIds],
-          droppedSourceIds:[...citedIds]
-            .filter(sourceId=>!supportedSourceIds.has(sourceId))});
+        // PR-A: the kept spans must also carry the claim's terms
+        // (see salvageSpanCoverage); a claim they do not carry dies
+        // at the partial gate exactly as before this tranche.
+        const coverage=salvageSpanCoverage(candidateText,
+          [...supportedSourceIds].flatMap(sourceId=>
+            (selectedBySource.get(sourceId)||[]).map(item=>item.quote||'')));
+        if(coverage===null||coverage>=SALVAGE_COVERAGE_THRESHOLD){
+          claimStatus='answered';salvaged=true;
+          assemblySalvage.push({partId:part.id,claimId:answer.claimId,
+            keptSourceIds:[...supportedSourceIds],
+            droppedSourceIds:[...citedIds]
+              .filter(sourceId=>!supportedSourceIds.has(sourceId)),
+            coverage});
+        }
       }
       const claimEvidence=[...supportedSourceIds]
         .flatMap(sourceId=>selectedBySource.get(sourceId)?.slice(0,MAX_REVIEW_SPANS_PER_SOURCE)||[]);

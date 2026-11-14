@@ -695,8 +695,10 @@ test('source-grouped review makes each cited source decision explicit and keeps 
  assert.equal(result.evidenceMap.length,1);
  assert.deepEqual(result.citations.map(source=>source.id),['S1'],
   'the salvaged claim cites only its fully-supporting source');
+ // Combined tranche (PR-A): the salvage record now also carries
+ // the kept spans' coverage of the claim's terms (0.25 here).
  assert.deepEqual(result.trace.reviewContract.assemblySalvage,
-  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S1'],droppedSourceIds:['S2']}]);
+  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S1'],droppedSourceIds:['S2'],coverage:0.25}]);
  assert.equal(ai.calls.length,2,'partial-gate salvage is deterministic and adds no repair round trip');
 });
 test('compatible duplicate same-source review entries merge spans while conflicting entries fail closed',async()=>{
@@ -1303,7 +1305,7 @@ test('the Sunyata review handoff retains a compound sentence on its fully-suppor
  assert.match(result.answer,/Emptiness is not absolute nonexistence/);
  assert.deepEqual(result.citations.map(source=>source.id),['S2']);
  assert.deepEqual(result.trace.reviewContract.assemblySalvage,
-  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S2'],droppedSourceIds:['S5']}]);
+  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S2'],droppedSourceIds:['S5'],coverage:0.429}]);
  assert.deepEqual(result.evidenceMap.map(item=>item.point),[
   'Emptiness describes dependent arising and warns against dogmatism.',
   'Emptiness is not absolute nonexistence.'
@@ -1826,12 +1828,14 @@ test('a surviving later claim can answer the part when the opening claim is reje
  assert.equal(result.coverage,'full');
  // Assembly-loss tranche (item 1): the opening claim's only source
  // accepted it (the mock's span-bearing decision normalizes to
- // 'answered') although the claim-level verdict was 'partial' —
- // partial-gate salvage now retains it alongside the direct answer.
- // Before the tranche the claim-level verdict alone dropped it.
- assert.match(result.answer,/Awareness of consequences explains the phrase/);
- assert.deepEqual(result.trace.reviewContract.assemblySalvage,
-  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S1'],droppedSourceIds:[]}]);
+ // 'answered') although the claim-level verdict was 'partial'.
+ // Combined tranche (PR-A): the claim is an interpretive gloss
+ // whose terms the soliloquy span does not carry at all (coverage
+ // 0), so the span-coverage condition now blocks the salvage and
+ // the claim drops at the partial gate; the part is still answered
+ // by the surviving later claim, which is this test's subject.
+ assert.doesNotMatch(result.answer,/Awareness of consequences explains the phrase/);
+ assert.equal(result.trace.reviewContract.assemblySalvage,undefined);
  assert.match(result.answer,/Fear of death makes Hamlet hesitate to act/);
  assert.deepEqual(result.trace.reviewContract.partDecisions[0].directAnswerClaimIds,['P1-C2']);
  assert.deepEqual(result.trace.reviewContract.partDecisions[0].acceptedDirectAnswerClaimIds,['P1-C2']);
@@ -2164,7 +2168,7 @@ test('a qualified Nietzsche-on-Kierkegaard inference is retained only with both 
  assert.deepEqual(result.trace.coverageGaps,[]);
 });
 
-test('a broad hypothetical conclusion is retained by partial-gate salvage when both premise sources are supported, and its part stays partial',async()=>{
+test('a broad hypothetical conclusion is no longer retained by partial-gate salvage when its premise spans do not carry its terms (PR-A)',async()=>{
  const broadReviewer=(_model,{messages})=>{
   const payload=parsePayload(messages);
   const claims=payload.claims.map(claim=>({claimId:claim.claimId,
@@ -2185,16 +2189,19 @@ test('a broad hypothetical conclusion is retained by partial-gate salvage when b
  assert.equal(result.coverage,'partial');
  assert.equal(result.questionParts[0].status,'supported');
  assert.equal(result.questionParts[1].status,'supported');
- // Assembly-loss tranche (item 1): both premise sources accepted
- // the conclusion claim and no narrowing was proposed, so
- // partial-gate salvage retains it and P3 ships as partial instead
- // of unsupported. This is the rule's sharpest edge — the reviewer
- // marked the inference itself 'partial' — and the salvaged set's
- // support is what validation check Q1 measures.
- assert.equal(result.questionParts[2].status,'partial');
- assert.match(result.answer,/reject Kierkegaard’s entire philosophy/);
- assert.ok((result.trace.reviewContract.assemblySalvage||[])
-  .some(entry=>entry.partId==='P3'));
+ // Assembly-loss tranche (item 1) retained this conclusion: both
+ // premise sources accepted it and no narrowing was proposed —
+ // the rule's sharpest edge, since the reviewer marked the
+ // inference itself 'partial'. Combined tranche (PR-A): the
+ // conclusion's terms (reject, entire philosophy, life-denying)
+ // are not carried by either premise page's accepted spans, so
+ // the span-coverage condition blocks the salvage; the claim
+ // drops at the partial gate and P3 stays unsupported, exactly
+ // as it did before the assembly-loss tranche.
+ assert.equal(result.questionParts[2].status,'unsupported');
+ assert.doesNotMatch(result.answer,/reject Kierkegaard’s entire philosophy/);
+ assert.equal((result.trace.reviewContract.assemblySalvage||[])
+  .some(entry=>entry.partId==='P3'),false);
  assert.equal(result.trace.reviewContract.recovered.some(item=>item.partId==='P3'),false);
 });
 
@@ -8485,7 +8492,7 @@ test('batch 34 B34-6 pilot (Wuthering): accepted claims lost to containment are 
   'tranche census counted 122 of, retained deliberately; the '+
   'salvaged set’s support is validation check Q1’s to measure)');
  assert.deepEqual(result.trace.reviewContract.assemblySalvage,
-  [{partId:'P1',claimId:'P1-C6',keptSourceIds:['S1'],droppedSourceIds:[]}],
+  [{partId:'P1',claimId:'P1-C6',keptSourceIds:['S1'],droppedSourceIds:[],coverage:0.526}],
   'the salvage is recorded with its kept and dropped citations');
  assert.equal((result.trace.assemblyDisclosureRestored||[])
   .some(entry=>entry.claimId==='P1-C10'),false,
@@ -9913,6 +9920,45 @@ test('assembly-loss tranche item 1: salvage retains a two-source claim on its fu
   parts:[{id:'P1',question:'How do Hume and Kant each ground causality?',
    sourceBookIds:['35','40'],searchQueries:['causality custom categories'],
    candidateSourceIds:['S1','S2']}],queries:['causality']};
+ // Combined tranche (PR-A): the claim is one the Hume page's own
+ // sentence states, so its terms are carried by the kept span and
+ // the span-coverage condition passes. (The both-authors synthesis
+ // sentence this fixture used before is the loose shape PR-A
+ // blocks; it is the blocked-shape test below.)
+ const draft='PART P1\nHume argues that our idea of necessity and causation arises from the uniformity observable in nature and the mind being determined by custom. [S1, S2]';
+ const reviewResponder=(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0];
+  const spanFor=sourceId=>claim.sourceEvidence.find(item=>item.sourceId===sourceId).spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'partial'}],claims:[{
+   claimId:claim.claimId,status:'partial',sources:[
+    {sourceId:'S1',status:'answered',spanIds:[spanFor('S1')]},
+    {sourceId:'S2',status:'partial',spanIds:[spanFor('S2')]}]}]})};
+ };
+ const ai=makeAI([answer(draft),reviewResponder],{decorateReview:false});
+ const result=await composeEvidenceAnswer('How do Hume and Kant each ground causality?',
+  [hume,kant],ai,[],{plan,catalog,trace:true});
+ assert.match(result.answer,/idea of necessity and causation arises from the uniformity/);
+ assert.deepEqual(result.citations.map(source=>source.id),['S1'],
+  'the shipped claim cites only the fully-supporting source');
+ assert.deepEqual(result.trace.reviewContract.assemblySalvage,
+  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S1'],droppedSourceIds:['S2'],coverage:0.786}],
+  'the salvage is recorded with its kept and dropped citations');
+});
+
+test('combined tranche PR-A: salvage is blocked when the kept spans do not carry the claim’s terms, although a source group accepted the claim',async()=>{
+ // The Hobbes/P&P shape from the assembly run: a source group
+ // fully accepts the claim, but the accepted page's spans do not
+ // state it — here a both-authors synthesis sentence retained on
+ // the Hume page alone, whose sentence says nothing about Kant,
+ // structures the mind brings, or experience. Before PR-A this
+ // claim was salvaged; the span-coverage condition now drops it
+ // at the partial gate.
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'David Hume',role:'primary',bookIds:['35']},
+   {label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How do Hume and Kant each ground causality?',
+   sourceBookIds:['35','40'],searchQueries:['causality custom categories'],
+   candidateSourceIds:['S1','S2']}],queries:['causality']};
  const draft='PART P1\nHume and Kant both treat causality as a structure the mind brings to experience. [S1, S2]';
  const reviewResponder=(_model,{messages})=>{
   const payload=parsePayload(messages),claim=payload.claims[0];
@@ -9925,12 +9971,10 @@ test('assembly-loss tranche item 1: salvage retains a two-source claim on its fu
  const ai=makeAI([answer(draft),reviewResponder],{decorateReview:false});
  const result=await composeEvidenceAnswer('How do Hume and Kant each ground causality?',
   [hume,kant],ai,[],{plan,catalog,trace:true});
- assert.match(result.answer,/both treat causality as a structure the mind brings to experience/);
- assert.deepEqual(result.citations.map(source=>source.id),['S1'],
-  'the shipped claim cites only the fully-supporting source');
- assert.deepEqual(result.trace.reviewContract.assemblySalvage,
-  [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S1'],droppedSourceIds:['S2']}],
-  'the salvage is recorded with its kept and dropped citations');
+ assert.doesNotMatch(result.answer,/both treat causality as a structure/,
+  'the claim is not retained on a page whose spans do not state it');
+ assert.equal(result.trace.reviewContract.assemblySalvage,undefined,
+  'no salvage is recorded for the blocked claim');
 });
 
 test('assembly-loss tranche item 1: salvage does not fire when a cited source hard-fails, nor when no source fully supports the claim',async()=>{
