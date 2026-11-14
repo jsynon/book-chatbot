@@ -28,6 +28,21 @@ const MAX_REVIEW_SPANS_PER_SOURCE=3;
 // large enough to hit the Worker inference deadline. Claim hints remain a
 // smaller ranked subset; the reviewer can choose any exact span in this packet.
 const MAX_REVIEW_PACKET_SPANS_PER_SOURCE=8;
+// Combined tranche (PR-B, item B1): a review chunk is bounded by
+// payload as well as by the five-claim count cap — the claim's text
+// plus its candidate spans' text. The fallback census showed the
+// calls that die at the 60 s deadline are the ones generating the
+// longest verdicts (timed-out calls had streamed 8.4–11K characters
+// against a ~4.9K completion median), and verdict volume grows
+// with the evidence a chunk must judge; a count-only chunk of
+// span-heavy claims can carry several times the span text of a
+// light one. 4000 characters is a structural bound against the
+// packet's span scale (sentence windows of a few hundred
+// characters; a five-claim count-only chunk can exceed 15K span
+// characters), not a census-fitted constant — the census could not
+// separate span volume from claim count, and validation check B3
+// (review timeouts per case) is the live measure.
+const REVIEW_CHUNK_PAYLOAD_BUDGET=4000;
 // Keep a short ranked hint list for each claim; these hints are not the full
 // review packet or an allowlist by themselves.
 const MAX_REVIEW_CANDIDATES_PER_SOURCE=MAX_REVIEW_SPANS_PER_SOURCE+1;
@@ -602,6 +617,49 @@ function contextOverlapTokens(text){
 function contextTokenSequence(text){
   return (String(text||'').toLowerCase().match(/[a-z']+/gu)||[])
     .filter(token=>token.length>=3&&!CONTEXT_OVERLAP_STOPWORDS.has(token));
+}
+// Combined tranche (PR-A): salvage span coverage. Partial-gate
+// salvage retains a claim on its fully-supporting sources, but the
+// assembly run's audit showed reviewer per-source acceptance alone
+// is loose: ~14% of salvaged rows sat on kept spans that do not
+// state the claim (the Hobbes ch. XLIII shape). Salvage therefore
+// also requires the claim's distinctive content terms (the codebase
+// tokenizer above plus the excerpt stemmer's morphology, ported
+// from public-gateway) to be carried by the kept sources' accepted
+// spans. Threshold from the pre-registered build-gate replay over
+// the assembly run's 76 salvaged claims (auditor-verdicted rows):
+// 0.23 blocks 7/11 unsupported salvaged rows while keeping 24/30
+// supported ones — the only passing point of the gate (blocks
+// >=60% of unsupported, keeps >=80% of supported; the passing
+// interval is narrow, (0.222, 0.231], and validation check A2
+// re-measures the live salvaged set). A claim with no distinctive
+// terms is unmeasurable and is not blocked (coverage null).
+const SALVAGE_COVERAGE_THRESHOLD=0.23;
+function salvageStem(word){
+  let w=word;
+  if(w.length>6&&w.endsWith('ation'))w=w.slice(0,-5)+'y';
+  else if(w.length>7&&w.endsWith('ance'))w=w.slice(0,-4);
+  else if(w.length>7&&w.endsWith('ence'))w=w.slice(0,-4);
+  else if(w.length>6&&w.endsWith('ing'))w=w.slice(0,-3);
+  else if(w.length>5&&w.endsWith('ied'))w=w.slice(0,-3)+'y';
+  else if(w.length>5&&w.endsWith('ed'))w=w.slice(0,-2);
+  else if(w.length>5&&w.endsWith('ies'))w=w.slice(0,-3)+'y';
+  else if(w.length>5&&w.endsWith('s'))w=w.slice(0,-1);
+  if(w.length>4&&w.endsWith('e'))w=w.slice(0,-1);
+  return w;
+}
+function salvageTerms(text){
+  return new Set(contextTokenSequence(text).map(salvageStem));
+}
+function salvageSpanCoverage(claimText,keptQuotes){
+  const terms=salvageTerms(claimText);
+  if(!terms.size)return null;
+  const spanTerms=new Set();
+  for(const quote of keptQuotes)
+    for(const term of salvageTerms(quote))spanTerms.add(term);
+  let shared=0;
+  for(const term of terms)if(spanTerms.has(term))shared++;
+  return Math.round((shared/terms.size)*1000)/1000;
 }
 // Batch 33 (B33-6): B32-5's threshold alone cannot tell restatement
 // from topical kinship — batch-32 production produced a false drop
@@ -3626,11 +3684,20 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       if(claimStatus==='partial'&&supportedSourceIds.size&&
          !hasUnreviewedOrSpanlessSource&&!narrowingProposed&&
          ![...citedIds].some(sourceId=>hardFailedSourceIds.has(sourceId))){
-        claimStatus='answered';salvaged=true;
-        assemblySalvage.push({partId:part.id,claimId:answer.claimId,
-          keptSourceIds:[...supportedSourceIds],
-          droppedSourceIds:[...citedIds]
-            .filter(sourceId=>!supportedSourceIds.has(sourceId))});
+        // PR-A: the kept spans must also carry the claim's terms
+        // (see salvageSpanCoverage); a claim they do not carry dies
+        // at the partial gate exactly as before this tranche.
+        const coverage=salvageSpanCoverage(candidateText,
+          [...supportedSourceIds].flatMap(sourceId=>
+            (selectedBySource.get(sourceId)||[]).map(item=>item.quote||'')));
+        if(coverage===null||coverage>=SALVAGE_COVERAGE_THRESHOLD){
+          claimStatus='answered';salvaged=true;
+          assemblySalvage.push({partId:part.id,claimId:answer.claimId,
+            keptSourceIds:[...supportedSourceIds],
+            droppedSourceIds:[...citedIds]
+              .filter(sourceId=>!supportedSourceIds.has(sourceId)),
+            coverage});
+        }
       }
       const claimEvidence=[...supportedSourceIds]
         .flatMap(sourceId=>selectedBySource.get(sourceId)?.slice(0,MAX_REVIEW_SPANS_PER_SOURCE)||[]);
@@ -4846,6 +4913,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   // source-decision repair, and the answer repair. The hard cap keeps
   // pathological plans bounded; calls past the cap fail closed per part.
   const callLimit=Math.min(60,3+plan.parts.length*9);
+  // Combined tranche (PR-B, item B2): calls running under a
+  // budget-reserved final-retry round (see the review deadline
+  // branch) may spend past callLimit by this allowance; it is
+  // raised only for the duration of such a round.
+  let reservedCallAllowance=0;
   // (Any finite injected value is honored, including 0 or negative,
   // so tests can force refusals from the first optional call.)
   const optionalStageBudgetMs=Number.isFinite(options.buildOptionalStageBudgetMs)?
@@ -4880,7 +4952,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         new Error('Build time budget exhausted for optional stage'),
         {code:'build-time-budget',stage});
     }
-    if(usage.calls>=callLimit)throw Error('Answer call budget exceeded');
+    if(usage.calls>=callLimit+reservedCallAllowance)
+      throw Error('Answer call budget exceeded');
     const serializedPayload=JSON.stringify(payload);
     const messages=[{role:'system',content:system},{role:'user',content:serializedPayload}];
     const start=Date.now();usage.calls++;
@@ -5436,11 +5509,30 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             }
           }
         };
+        // PR-B (item B1): chunk boundaries follow the payload
+        // budget as well as the five-claim cap (see
+        // REVIEW_CHUNK_PAYLOAD_BUDGET); a claim whose own payload
+        // exceeds the budget still travels alone. Claim order is
+        // preserved, so chunking stays deterministic.
+        const reviewChunksFor=(packet)=>{
+          const spanMaps=packet.reviewSpanMapsByPart?.get(partId);
+          const chunks=[];let current=[],currentVolume=0;
+          for(const claim of packet.reviewClaims||[]){
+            let volume=(claim.text||'').length;
+            for(const item of claim.sourceEvidence||[])
+              for(const spanId of item.spanIds||[])
+                volume+=spanMaps?.get(item.sourceId)?.get(spanId)?.text?.length||0;
+            if(current.length&&(current.length>=5||
+               currentVolume+volume>REVIEW_CHUNK_PAYLOAD_BUDGET)){
+              chunks.push(current);current=[];currentVolume=0;
+            }
+            current.push(claim.claimId);currentVolume+=volume;
+          }
+          if(current.length)chunks.push(current);
+          return chunks;
+        };
         const executePartReview=async(packet,kind)=>{
-          const claimIds=(packet.reviewClaims||[]).map(claim=>claim.claimId);
-          const chunks=[];
-          for(let index=0;index<claimIds.length;index+=5)
-            chunks.push(claimIds.slice(index,index+5));
+          const chunks=reviewChunksFor(packet);
           if(chunks.length<=1)return callReviewChunk(packet,null,kind);
           const settled=await Promise.allSettled(chunks.map(ids=>
             callReviewChunk(packet,ids,kind)));
@@ -5495,11 +5587,19 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             reviewRetryParts.push(retryEntry);
             const maxExtraRounds=plan.parts.length===1?2:0;
             for(let round=1;round<=maxExtraRounds;round++){
-              if(usage.calls>=callLimit){
-                retryEntry.outcome='not-attempted-call-budget';
-                firstReviewError.reviewOnlyRetryExhausted=true;
-                throw firstReviewError;
-              }
+              // PR-B (item B2): the extra rounds are the part's
+              // last resort, and the fallback census found every
+              // production fallback shipped with its final retry
+              // recorded 'not-attempted-call-budget' — the review
+              // chain itself had eaten the budget. A round now
+              // runs under a reserved allowance sized to its own
+              // worst case (three calls per chunk: the chunk call
+              // plus its two timeout-split halves), so the round
+              // is always attempted; the reservation is recorded
+              // on the retry entry when it binds (the round starts
+              // at, or spends past, the base call limit).
+              const roundAllowance=reviewChunksFor(packet).length*3;
+              reservedCallAllowance+=roundAllowance;
               if(round>1)retryEntry.attempts=round;
               try{
                 const retriedReview=await executePartReview(packet,'retry');
@@ -5513,6 +5613,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 if(retryError&&typeof retryError==='object')
                   retryError.reviewOnlyRetryExhausted=true;
                 throw retryError;
+              }finally{
+                reservedCallAllowance-=roundAllowance;
+                if(usage.calls>callLimit)retryEntry.budgetReserved=true;
               }
             }
             retryEntry.outcome='failed-again';
