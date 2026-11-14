@@ -140,7 +140,7 @@ export const COMPOSER_PROMPT=`Answer the reader's exact question with a clear, u
 // Review source-derived claims against exact spans, while uncited context is
 // judged collectively at the part level. The reviewer names the direct claim
 // IDs so coverage is not tied to the first sentence or extra context rows.
-export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode and a requirements list with stable requirement IDs and verbatim questionAnchor fields. Use each anchor to preserve the exact requested subject and relation while judging the answer; matching its words is not enough to mark it answered. For every listed requirement, decide whether the complete answer addresses it directly; map it to the smallest set of answer claim IDs that fulfills it. Mark it partial or unanswered when the relevant claim is merely topical or leaves the requested relation unexplained. Qualified general-knowledge claims may fulfill a requirement even without library evidence, but source-derived claims must still pass the ordinary exact-span review. Each part/source evidence entry lists the spanIds allowed for that part and source; exact span text appears once in the top-level spanCatalog. Read a span's text from spanCatalog, and use it only when its ID is listed in the current part's evidence entry. A spanCatalog entry may also carry a head: the passage text immediately before that span. Read the head as context that can identify the span's subject; it is not citable evidence and cannot by itself support a claim. A spanCatalog entry may also carry region: "apparatus": the span is edition apparatus — an introduction, preface, contents page, or translator's or editor's matter — not the work's own text. A claim resting on an apparatus span must present the material as the edition's editorial framing; a claim that presents apparatus content as the work's own text or as its author's own words is misattributed as written. Source title, page, provenance, and source group are stored once in sourceCatalog; look them up using sourceDetailsId when present, otherwise use the evidence entry's id. A claim's sourceEvidence lists cited source IDs and likely span hints; source-group identity is not repeated there. If sourceContexts contains an entry whose sourceId matches an evidence entry's id, read that background text as context, not exact claim evidence. Never borrow a span from another part merely because the same span ID is listed there. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Judge the supplied exact review spans independently and only within the current part. Distinguish a work's own position from a reported view, narrative voice, or editorial context. For each cited source decision, return an evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary that states what the accepted span establishes and the relevant limit; these are review findings, not substitutes for exact-span validation. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Check that the response gives the kind of concrete, question-specific explanation the reader asked for; broad generalities that could fit unrelated topics are not a complete answer when the question calls for specific examples, perspectives, mechanisms, or contrasts. Apply this to relevance and usefulness without demanding citations for independent background or every factual sentence. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. When a claim says how one thing affects or relates to another, the span must support that connection; merely mentioning both things or a related consequence is not enough. A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means. Do not infer an author-wide theory from a character's line, isolated example, or passing theme unless the supplied span supports that broader scope. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author, speaker, or other person. For every source-derived claim that assigns an action, belief, motive, state, or trait to a named person, verify that the cited span and its supplied source context identify that person as the subject; do not transfer a statement or action from another or unidentified person merely because both appear in the same work. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
+export const REVIEW_PROMPT=`Review the complete answer parts and claims. Each part includes an answerMode and a requirements list with stable requirement IDs and verbatim questionAnchor fields. Use each anchor to preserve the exact requested subject and relation while judging the answer; matching its words is not enough to mark it answered. For every listed requirement, decide whether the complete answer addresses it directly; map it to the smallest set of answer claim IDs that fulfills it. Mark it partial or unanswered when the relevant claim is merely topical or leaves the requested relation unexplained. Qualified general-knowledge claims may fulfill a requirement even without library evidence, but source-derived claims must still pass the ordinary exact-span review. Each part/source evidence entry lists the spanIds allowed for that part and source; exact span text appears once in the top-level spanCatalog. Read a span's text from spanCatalog, and use it only when its ID is listed in the current part's evidence entry. A spanCatalog entry may also carry a head: the passage text immediately before that span. Read the head as context that can identify the span's subject; it is not citable evidence and cannot by itself support a claim. A spanCatalog entry may also carry region: "apparatus": the span is edition apparatus — an introduction, preface, contents page, or translator's or editor's matter — not the work's own text. A claim resting on an apparatus span must present the material as the edition's editorial framing; a claim that presents apparatus content as the work's own text or as its author's own words is misattributed as written. Source title, page, provenance, and source group are stored once in sourceCatalog; look them up using sourceDetailsId when present, otherwise use the evidence entry's id. A claim's sourceEvidence lists cited source IDs and likely span hints; source-group identity is not repeated there. If sourceContexts contains an entry whose sourceId matches an evidence entry's id, read that background text as context, not exact claim evidence. Never borrow a span from another part merely because the same span ID is listed there. Selector relation hints, when present, describe an earlier excerpt-level judgment; a "context" hint or empty excerpt is not proof for a claim. Distinguish a work's own position from a reported view, narrative voice, or editorial context. For each cited source decision, return an evidenceRole (work-assertion|reported-position|character-or-narrator|editorial-context|unclear) and a concise supportBoundary that states what the accepted span establishes and the relevant limit; these are review findings, not substitutes for exact-span validation. In "general-context" mode, no library passage is cited for that part: assess a clear, appropriately qualified answer using general knowledge for relevance, plausibility, usefulness, attribution, and directness. Do not mark answerStatus unanswered solely because library evidence is absent. In "source-and-context" mode, assess cited source claims against their supplied spans and judge uncited background at the part level. Check that the response gives the kind of concrete, question-specific explanation the reader asked for; broad generalities that could fit unrelated topics are not a complete answer when the question calls for specific examples, perspectives, mechanisms, or contrasts. Apply this to relevance and usefulness without demanding citations for independent background or every factual sentence. Require a source ID and exact span only when a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim. Merely mentioning a work or person in independent background does not require a citation when the answer does not attribute a claim to that source. Library silence does not establish whether outside context is true; keep it qualified when appropriate. Use the supplied verified spans to judge claims that cite library sources. For each cited source, decide independently whether an exact span from that same source supports the claim as written, including its subject, meaning, scope, logical relations, and qualification. When a claim says how one thing affects or relates to another, the span must support that connection; merely mentioning both things or a related consequence is not enough. A passage that only announces, previews, or refers to a topic does not support substantive claims about what that topic means. Do not infer an author-wide theory from a character's line, isolated example, or passing theme unless the supplied span supports that broader scope. One source cannot supply another source’s missing support. Preserve the difference between alternatives and conjunctions: \"neither P nor Q\" does not mean \"not both P and Q\". Return the supporting span IDs; an empty span list means that source does not support the claim. Select only IDs present in that part's source evidence. Check attribution when the answer names a source author, speaker, or other person. For every source-derived claim that assigns an action, belief, motive, state, or trait to a named person, verify that the cited span and its supplied source context identify that person as the subject; do not transfer a statement or action from another or unidentified person merely because both appear in the same work. A catalog byline establishes credited author and work identity; still distinguish a character, narrator, quoted or reported person, pseudonymous speaker, editor, translator, or commentator when the passage identifies a different voice. A speaker label is supported only when the supplied span or source text explicitly identifies that speaker; do not infer a speaker from the author, title, or surrounding topic. A source citation is not proof by itself, and a source's silence does not prove a claim false.
 
 Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context. If a claim attributes a position to a supplied work, author, speaker, or page, or otherwise presents a source-derived claim, it needs a source ID and exact span support. Merely mentioning a work or person in independent background does not require a citation. Mark uncited source-derived claims partial or unanswered; independent background and synthesis may remain uncited. Judge uncited context for relevance, plausibility, usefulness, clear attribution, and directness; the supplied passages cannot establish its truth, so do not treat their silence as disproof.
 
@@ -148,13 +148,13 @@ Judge each part against the exact question and the kind of response it requests,
 
 Some claims describe the evidence itself rather than a position in it: a statement that the provided passages do not contain, or that the retrieved texts do not establish, a specified point. Judge such a statement against the packet you hold: when it is accurate about the packet and scoped to the provided material, retain it as context; it needs no supporting span, because no span can state an absence. A cited claim of this kind must not fail solely because no span states the absence — treat its source decision as not applicable and judge the claim as context.
 
-Use the supplied requiredAnswerClaimId as a candidate when reviewing directness, not as the only possible answer. It may be an uncited synthesis in the assistant's own voice; judge it as context rather than requiring a passage to state the synthesis verbatim. When a source-derived claim summarizes or combines positions, assess the cited spans together: complementary passages may support different components of a concise synthesis, but each cited source must support the component attributed to it, and the combined evidence must support the claim as a whole. Identify the claim or claims that directly answer the part in directAnswerClaimIds, whether they occur in the opening or later in the response. Mark answerStatus answered only when the direct-answer claims survive review and the remaining answer is coherent and complete. Do not mark a corpus-gap statement or merely adjacent source discussion as an answer to a different question.
+Use the supplied requiredAnswerClaimId as a candidate when reviewing directness, not as the only possible answer. It may be an uncited synthesis in the assistant's own voice; judge it as context rather than requiring a passage to state the synthesis verbatim. When a source-derived claim summarizes or combines positions, assess the cited spans together: complementary passages may support different components of a concise synthesis, but each cited source must support the component attributed to it, and the combined evidence must support the claim as a whole. Identify the claim or claims that directly answer the part in directAnswerClaimIds, whether they occur in the opening or later in the response. Mark answerStatus answered only when the direct-answer claims survive review and the remaining answer is coherent and complete.
 
-For each part, return requirementCoverage with one decision per supplied requirement: requirementId, status (answered|partial|unanswered), and answerClaimIds. Use only claim IDs from that part. An answered requirement must name at least one claim that directly fulfills it. Do not infer coverage from a claim that only shares its topic. A claim may address multiple requirements. For uncited contextClaims listed inside a part, assess them together for relevance, plausibility, usefulness, attribution, coherence, and completion. Return retainedContextClaimIds containing the context claims that should remain in the answer; omit unsupported, irrelevant, or misleading claims. You may nominate one retained claim as a direct answer only when it directly answers the question. Keep direct answer completeness separate from library evidence coverage: a direct, coherent answer using qualified general knowledge can be complete even when library evidence is partial. If an uncited sentence attributes a position to a supplied book, author, or speaker, it is source-derived and must have the needed source ID; do not pass it as general context. Some uncited claims do more than provide background: they restate or combine positions that cited claims in the same part establish — most often the claim that opens a part, the claim that closes it, or a thesis in between. The packet marks an uncited claim that opens or closes its part with frame set to true. For any uncited claim that restates or combines positions established by cited claims in the same part, return a scaffoldingLinks entry for that part naming the claim and the cited claims whose accepted spans establish the restated position, as {claimId, supportClaimIds}. Name only cited claims from the same part that you are accepting with supporting spans in this review. When the uncited claim combines two positions, name supporting claims for each side; never return a one-sided link for a claim that combines two positions — retain it as context or omit it instead. Do not link an uncited claim that restates, in different words, a claim whose citations you are rejecting in this review: if the spans that failed the cited version do not establish the restatement either, omit the restatement instead. When no cited claim in the part establishes the restated position, do not link the claim. Genuine background, transitions, and interpretation are not restatements: retain them as context without a link, exactly as before. Returning a scaffolding link retains the claim with the named claims' evidence attached; the claim does not need to appear in retainedContextClaimIds as well. A part may also list priorRejections: claims whose citations an earlier review round of this same answer rejected. Do not retain as context, and do not accept, a claim that restates the substance of a prior rejection unless its present spans genuinely establish it under the ordinary standard above; a rejected claim does not become acceptable by returning without its citations or with softer wording. Do not mark a part answered when its answer is only related background or ends with an unfinished thought or list introduction. A useful answer may combine cited source claims with uncited context and interpretation. Return answerStatus as answered, partial, or unanswered to describe whether the complete response answers the question; keep status as the library-evidence verdict. Also return repairable as a boolean: true only when a concrete missing or underdeveloped answer element can responsibly be supplied from the already supplied evidence or clearly qualified general knowledge; false when the current limitation is appropriate or the missing element cannot be responsibly resolved. Do not set repairable true merely because the answer is partial.
+For each part, return requirementCoverage with one decision per supplied requirement: requirementId, status (answered|partial|unanswered), and answerClaimIds. Use only claim IDs from that part. An answered requirement must name at least one claim that directly fulfills it. Do not infer coverage from a claim that only shares its topic. A claim may address multiple requirements. For uncited contextClaims listed inside a part, assess them together for relevance, plausibility, usefulness, attribution, coherence, and completion. Return retainedContextClaimIds containing the context claims that should remain in the answer; omit unsupported, irrelevant, or misleading claims. You may nominate one retained claim as a direct answer only when it directly answers the question. Keep direct answer completeness separate from library evidence coverage: a direct, coherent answer using qualified general knowledge can be complete even when library evidence is partial. Some uncited claims do more than provide background: they restate or combine positions that cited claims in the same part establish — most often the claim that opens a part, the claim that closes it, or a thesis in between. The packet marks an uncited claim that opens or closes its part with frame set to true. For any uncited claim that restates or combines positions established by cited claims in the same part, return a scaffoldingLinks entry for that part naming the claim and the cited claims whose accepted spans establish the restated position, as {claimId, supportClaimIds}. Name only cited claims from the same part that you are accepting with supporting spans in this review. When the uncited claim combines two positions, name supporting claims for each side; never return a one-sided link for a claim that combines two positions — retain it as context or omit it instead. Do not link an uncited claim that restates, in different words, a claim whose citations you are rejecting in this review: if the spans that failed the cited version do not establish the restatement either, omit the restatement instead. When no cited claim in the part establishes the restated position, do not link the claim. Genuine background, transitions, and interpretation are not restatements: retain them as context without a link, exactly as before. Returning a scaffolding link retains the claim with the named claims' evidence attached; the claim does not need to appear in retainedContextClaimIds as well. A part may also list priorRejections: claims whose citations an earlier review round of this same answer rejected. Do not retain as context, and do not accept, a claim that restates the substance of a prior rejection unless its present spans genuinely establish it under the ordinary standard above; a rejected claim does not become acceptable by returning without its citations or with softer wording. Do not mark a part answered when its answer is only related background or ends with an unfinished thought or list introduction. A useful answer may combine cited source claims with uncited context and interpretation. Return answerStatus as answered, partial, or unanswered to describe whether the complete response answers the question; keep status as the library-evidence verdict. Also return repairable as a boolean: true only when a concrete missing or underdeveloped answer element can responsibly be supplied from the already supplied evidence or clearly qualified general knowledge; false when the current limitation is appropriate or the missing element cannot be responsibly resolved. Do not set repairable true merely because the answer is partial.
 
-If a cited claim combines supported and unsupported material, you may optionally return supportedText: one narrower standalone sentence that preserves only what the supplied exact spans support. Keep the original claim status partial; judge the source decisions against supportedText when provided. Do not add facts, implications, or source attributions absent from those spans. Omit supportedText when no useful narrower claim is directly supported. This is only for cited claims, never uncited general context. The system retains it only if every originally cited source has an accepted exact span and the ordinary attribution, polarity, and citation checks pass. supportedText must be one sentence, contain no line breaks, and contain no citation labels. For a cited claim with multiple independently checkable source-derived clauses, also return clauses for those clauses. Identify each clause by copying its text exactly as it appears in the supplied claim: the clause's identity is its verbatim text, and the system locates the clause in the claim by that text. You may also include start and end offsets (0-based UTF-16 code units into the exact supplied claim text, start inclusive and end exclusive) as a hint when the same text occurs more than once, but the copied text is authoritative. Omit clauses for a simple single-proposition claim. Each clause must include a status (answered|partial|unanswered), an issueCode (scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other, or none), and source decisions containing only cited source IDs and exact supporting span IDs. Split propositions joined by causal or contrastive language when each could be true or false independently; do not split one idea into fragments. Mark a clause partial if the passage supports its topic but not its full scope or relation. The copied clause text must be a verbatim substring of the supplied claim and contain the whole clause. If supportedText is returned, clause decisions describe the original claim and source decisions describe the narrowed supportedText. Uncited general-context claims are assessed at the part level and do not need clause spans or citations. For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
+If a cited claim combines supported and unsupported material, you may optionally return supportedText: one narrower standalone sentence that preserves only what the supplied exact spans support. Keep the original claim status partial; judge the source decisions against supportedText when provided. Do not add facts, implications, or source attributions absent from those spans. Omit supportedText when no useful narrower claim is directly supported. This is only for cited claims, never uncited general context. The system retains it only if every originally cited source has an accepted exact span and the ordinary attribution, polarity, and citation checks pass. supportedText must be one sentence, contain no line breaks, and contain no citation labels. If supportedText is returned, source decisions describe the narrowed supportedText. Uncited general-context claims are assessed at the part level and do not need citations. For each part, return directAnswerClaimIds: the smallest set of supplied claim IDs that directly answers the part and together covers its essential request; use one ID when one claim is enough. Use an empty array if none of the claims directly answers it. The supplied requiredAnswerClaimId identifies the first sentence as a candidate, not a mandatory answer; another claim may be the direct answer if it is clearer and survives review. Do not nominate examples, consequences, analogies, or related context unless they are necessary to answer the request. Every nominated claim must belong to that same part. If one nominated claim fails but another supported direct claim still answers the essential request, judge the part on that supported answer rather than treating the extra claim as essential.
 
-Return one valid JSON object only, without Markdown or explanation. Include every supplied claim and every part exactly once. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name or empty","subjectAttributionStatus":"supported|conflict|unclear|not_applicable","attributedSubject":"name or empty","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}],"clauses":[{"text":"the clause copied exactly as written","start":0,"end":24,"status":"answered|partial|unanswered","issueCode":"scope|attribution|relation|qualification|polarity|relevance|compound|perspective|other|none","sources":[{"sourceId":"S1","spanIds":["S1-Q2"]}]}]}],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"],"scaffoldingLinks":[{"claimId":"P1-C3","supportClaimIds":["P1-C1"]}],"requirementCoverage":[{"requirementId":"P1-R1","status":"answered|partial|unanswered","answerClaimIds":["P1-C1"]}]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. For each part, return directAnswerClaimIds and retainedContextClaimIds arrays as described above. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. The scaffoldingLinks list likewise names only that part's supplied contextClaims as its claimId, and only cited claims of the same part as supportClaimIds; a part's scaffoldingLinks may be omitted when no uncited claim in it restates an established position. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For every claim assigning an action, belief, motive, state, or trait to a named person, include subjectAttributionStatus and attributedSubject, including possessive constructions such as “Kurtz’s conviction” and names appearing after a subordinate clause. Identify the actual person supported by the cited span. Use not_applicable only when the grammatical subject is a non-person; when personhood or attribution is uncertain, use unclear rather than omitting the verdict. Do not include answer text, page text, rationales, or extra fields.`;
+Return one valid JSON object only, without Markdown or explanation. Include every part exactly once and a claim entry for every supplied claim. When the payload carries reviewClaimIds, return claim entries only for those claim IDs; return the parts entry as usual and judge the part as a whole. Use this compact shape: {"claims":[{"claimId":"P1-C1","status":"answered|partial|unanswered","supportedText":"optional narrower sentence","sources":[{"sourceId":"S1","spanIds":["S1-Q2"],"attributionStatus":"supported|conflict|unclear|not_applicable","attributedSpeaker":"name; omit when empty","subjectAttributionStatus":"supported|conflict|unclear|not_applicable","attributedSubject":"name; omit when empty","evidenceRole":"work-assertion|reported-position|character-or-narrator|editorial-context|unclear","supportBoundary":"what the accepted span establishes and its limit"}]],"parts":[{"partId":"P1","status":"answered|partial|unanswered","answerStatus":"answered|partial|unanswered","repairable":true,"directAnswerClaimIds":["P1-C1"],"retainedContextClaimIds":["P1-C2"],"scaffoldingLinks":[{"claimId":"P1-C3","supportClaimIds":["P1-C1"]}],"requirementCoverage":[{"requirementId":"P1-R1","status":"answered|partial|unanswered","answerClaimIds":["P1-C1"]}]}]}. For a claim with sourceIds empty, return an empty sources array and judge its context quality. For every cited source ID in a claim's sourceIds, return exactly one matching source decision; do not silently omit a source you cannot verify. Use status partial and an empty spanIds array when no supplied span supports it. The retainedContextClaimIds list may contain only IDs from that part's supplied contextClaims (uncited claims); cited claims are judged through their claim and source decisions and must not appear in this list. The scaffoldingLinks list likewise names only that part's supplied contextClaims as its claimId, and only cited claims of the same part as supportClaimIds; a part's scaffoldingLinks may be omitted when no uncited claim in it restates an established position. Retain only relevant, plausible, appropriately qualified context claims; omit uncited claims attributed to supplied sources. Do not repeat a source status. For every claim assigning an action, belief, motive, state, or trait to a named person, include subjectAttributionStatus and attributedSubject, including possessive constructions such as “Kurtz’s conviction” and names appearing after a subordinate clause. Identify the actual person supported by the cited span. Use not_applicable only when the grammatical subject is a non-person; when personhood or attribution is uncertain, use unclear rather than omitting the verdict. Do not include answer text, page text, rationales, or extra fields.`;
 
 class ModelFormatError extends Error{
   constructor(stage,message,code='model-output-invalid-format'){
@@ -4859,16 +4859,20 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // Batch 34 (B34-5): review-shaped stages use the flat 60000 ms
     // deadline (B33-9's packet scaling retired — see the note at the
     // former reviewDeadlineMsForPacket site).
-    // Batch 35 (B35-8): a review RETRY (kind 'retry' or 'split-retry'
-    // — the calls made only after an earlier attempt failed, most
-    // often at the deadline) gets 120000 ms instead of a fresh flat
-    // 60 s: batch-34 phase 3 lost two cases to review-deadline deaths
-    // whose retries faced the same wall that killed the initial call.
-    // The overall case economy is unchanged — the call limit still
-    // bounds the retry count, and the retry's timeoutMs is what its
+    // Batch 35 (B35-8): a review RETRY (kind 'retry' — the calls made
+    // only after an earlier attempt failed, most often at the
+    // deadline) gets 120000 ms instead of a fresh flat 60 s: batch-34
+    // phase 3 lost two cases to review-deadline deaths whose retries
+    // faced the same wall that killed the initial call. The overall
+    // case economy is unchanged — the call limit still bounds the
+    // retry count, and the retry's timeoutMs is what its
     // inference-call record carries, so the raise is auditable.
+    // Latency tranche: kind 'split-retry' (the timeout-split halves)
+    // leaves this raise — a split half judges half the claims, so it
+    // returns to the flat 60000 ms; the split IS the timeout case's
+    // retry, replacing the 120 s same-size replay for that case.
     const timeoutMs=stage.startsWith('review')||stage==='answer-re-review'?
-      (kind==='retry'||kind==='split-retry'?120000:60000):45000;
+      (kind==='retry'?120000:60000):45000;
     // Batch 5 (L6): structured stages are deterministic extraction and
     // judgment tasks, so they run at temperature 0; only the creative
     // stages (compose, expand) omit the parameter and keep the provider
@@ -5297,12 +5301,97 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       const attemptPartReview=async(checkedPart)=>{
         const partId=checkedPart.partId;
         let packet=buildReviewPacket([checkedPart],{sources,pageById,plan,question});
-        const runReviewCall=(payload,kind)=>run('review',REVIEW_PROMPT,payload,
-          parseReviewJson,{partId,kind});
-        // Redesign Stage A: one review call per part — the split
-        // review (B24-3) is deleted; a part is audited as composed.
+        // Latency tranche (items 2 + 4): a part's review is chunked
+        // at five cited claims per call. A chunk call carries the
+        // part's full review payload plus a reviewClaimIds scope, so
+        // every verdict is produced under the same information as the
+        // unchunked review; the prompt asks for claim verdicts only
+        // for the scoped claims. Chunk verdicts are filtered to their
+        // assignment and merged (the part entry comes from the first
+        // chunk that returns one; a chunk's salvage marker carries
+        // into the merged review) before the unchanged audit applies.
+        // A part with five or fewer cited claims is exactly one
+        // unscoped call — byte-identical to the pre-tranche request
+        // apart from the trimmed prompt and the compact schema.
+        const mergeChunkReviews=(chunks,responses)=>{
+          const claims=[],seen=new Set();let parts=null,recovery=null;
+          responses.forEach((response,index)=>{
+            const assigned=new Set(chunks[index]);
+            for(const claim of Array.isArray(response?.claims)?response.claims:[])
+              if(assigned.has(claim?.claimId)&&!seen.has(claim.claimId)){
+                seen.add(claim.claimId);claims.push(claim);}
+            if(!parts&&Array.isArray(response?.parts)&&response.parts.length)
+              parts=response.parts;
+            const chunkRecovery=response?.[REVIEW_JSON_RECOVERY];
+            if(chunkRecovery)recovery={code:recovery?.code||chunkRecovery.code,
+              recoveredClaims:(recovery?.recoveredClaims||0)+(chunkRecovery.recoveredClaims||0),
+              recoveredParts:(recovery?.recoveredParts||0)+(chunkRecovery.recoveredParts||0)};
+          });
+          const merged={claims,parts:parts||[]};
+          if(recovery)Object.defineProperty(merged,REVIEW_JSON_RECOVERY,{value:recovery});
+          return merged;
+        };
+        const callReviewChunk=async(packet,claimIds,kind)=>{
+          const payload=claimIds?{...packet.reviewPayload,reviewClaimIds:claimIds}:
+            packet.reviewPayload;
+          try{
+            return await run('review',REVIEW_PROMPT,payload,parseReviewJson,
+              {partId,kind,...(claimIds?{claimCount:claimIds.length}:{})});
+          }catch(chunkError){
+            if(!claimIds)throw chunkError;
+            // A streamed chunk can carry a complete or salvageable
+            // buffered review for its own claims; accept it under the
+            // same parser rules as a whole-part partial response. An
+            // unusable buffer is stripped so the part-level partial
+            // path never mistakes one chunk's text for the whole
+            // part's review.
+            if(options.inferenceTransport==='streaming'&&
+               typeof chunkError?.partialResponse==='string'){
+              try{
+                const rawReview=parseReviewJson({response:chunkError.partialResponse});
+                partialReviewResponseParts.add(partId);
+                return rawReview;
+              }catch{delete chunkError.partialResponse;}
+            }
+            // Timeout-split retry: a chunk that hits its deadline is
+            // retried once as two half-size calls at the flat
+            // deadline, concurrent — the timeout case's retry,
+            // replacing the same-packet 120 s replay. A one-claim
+            // chunk cannot split and propagates its deadline.
+            if(reviewFailureCode(chunkError)!=='inference-deadline-exceeded'||
+               claimIds.length<2)throw chunkError;
+            const half=Math.ceil(claimIds.length/2);
+            const halves=[claimIds.slice(0,half),claimIds.slice(half)];
+            const splitEntry={partId,claimIds:[...claimIds],halves,outcome:'attempted'};
+            (trace.reviewRetrySplit??=[]).push(splitEntry);
+            try{
+              const responses=await Promise.all(halves.map(ids=>run('review',
+                REVIEW_PROMPT,{...packet.reviewPayload,reviewClaimIds:ids},
+                parseReviewJson,{partId,kind:'split-retry',claimCount:ids.length})));
+              splitEntry.outcome='recovered';
+              return mergeChunkReviews(halves,responses);
+            }catch(splitError){
+              splitEntry.outcome='failed';
+              if(splitError&&typeof splitError==='object')
+                delete splitError.partialResponse;
+              throw splitError;
+            }
+          }
+        };
+        const executePartReview=async(packet,kind)=>{
+          const claimIds=(packet.reviewClaims||[]).map(claim=>claim.claimId);
+          const chunks=[];
+          for(let index=0;index<claimIds.length;index+=5)
+            chunks.push(claimIds.slice(index,index+5));
+          if(chunks.length<=1)return callReviewChunk(packet,null,kind);
+          const settled=await Promise.allSettled(chunks.map(ids=>
+            callReviewChunk(packet,ids,kind)));
+          const failed=settled.find(entry=>entry.status==='rejected');
+          if(failed)throw failed.reason;
+          return mergeChunkReviews(chunks,settled.map(entry=>entry.value));
+        };
         try{
-          const rawReview=await runReviewCall(packet.reviewPayload,'initial');
+          const rawReview=await executePartReview(packet,'initial');
           return {packet,rawReview};
         }catch(firstReviewError){
           // A streamed provider can emit a complete JSON review before the
@@ -5328,44 +5417,49 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             failureCode==='inference-deadline-exceeded';
           if(failureCode==='inference-deadline-exceeded'&&
              !firstReviewError?.reviewOnlyRetryExhausted){
-            // Redesign Stage A: the review-only retry reuses the
-            // original packet unchanged (the split-on-timeout variant
-            // died with the split review). A review deadline never
-            // restarts composition or trims/rebuilds the packet.
+            // Latency tranche: the same-packet review-only retry is
+            // replaced by the timeout-split retry inside
+            // callReviewChunk — a deadline reaching this branch means
+            // the split also failed, or the failing call held one
+            // claim and could not split. The attempt is still
+            // recorded on trace.reviewRetry (mode 'split-retry'), and
+            // trace.reviewRetrySplit carries the split detail.
+            // Stage B.2's insurance survives in chunked form: a
+            // single-part answer has no sibling part to degrade to,
+            // so it gets extra review rounds (initial + two rounds,
+            // each round split-retrying its own timeouts) before the
+            // part — and with it the whole answer — is lost.
+            // Multi-part answers get no extra round: the split was
+            // their retry, and an exhausted deadline still fails
+            // closed exactly as an exhausted review-only retry did.
             const retryEntry={partId,reason:failureCode,applied:false,
-              mode:'review-only',samePacket:true};
+              mode:'split-retry'};
             reviewRetryParts.push(retryEntry);
-            // Stage B.2: a single-part answer has no sibling part
-            // to degrade to when its review fails, so it gets one
-            // extra review-only attempt (initial + two retries)
-            // before the part — and with it the whole answer — is
-            // lost (the phase-2 progress AP2 shape: timeout, then
-            // an invalid-format retry, then suppression by design).
-            // Multi-part answers keep the single retry; their
-            // failed parts degrade per-part under B.1.
-            const maxReviewOnlyAttempts=plan.parts.length===1?2:1;
-            for(let attempt=1;attempt<=maxReviewOnlyAttempts;attempt++){
+            const maxExtraRounds=plan.parts.length===1?2:0;
+            for(let round=1;round<=maxExtraRounds;round++){
               if(usage.calls>=callLimit){
                 retryEntry.outcome='not-attempted-call-budget';
                 firstReviewError.reviewOnlyRetryExhausted=true;
                 throw firstReviewError;
               }
+              if(round>1)retryEntry.attempts=round;
               try{
-                const retriedReview=await runReviewCall(packet.reviewPayload,'retry');
+                const retriedReview=await executePartReview(packet,'retry');
                 retryEntry.applied=true;
                 retryEntry.outcome='recovered';
-                if(attempt>1)retryEntry.attempts=attempt;
                 return {packet,rawReview:retriedReview};
               }catch(retryError){
                 retryEntry.retryFailureCode=reviewFailureCode(retryError);
-                if(attempt>1)retryEntry.attempts=attempt;
-                if(attempt<maxReviewOnlyAttempts)continue;
+                if(round<maxExtraRounds)continue;
                 retryEntry.outcome='failed-again';
                 if(retryError&&typeof retryError==='object')
                   retryError.reviewOnlyRetryExhausted=true;
                 throw retryError;
               }
             }
+            retryEntry.outcome='failed-again';
+            firstReviewError.reviewOnlyRetryExhausted=true;
+            throw firstReviewError;
           }
           // A part whose review-only retry already exhausted throws
           // with reviewOnlyRetryExhausted set; the part's review has
@@ -5396,7 +5490,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             if(attempt>1&&usage.calls>=callLimit)
               throw lastCompactError||firstReviewError;
             try{
-              const rawReview=await runReviewCall(packet.reviewPayload,'retry');
+              const rawReview=await executePartReview(packet,'retry');
               retryEntry.applied=true;
               if(attempt>1)retryEntry.attempts=attempt;
               return {packet,rawReview};
