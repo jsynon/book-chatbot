@@ -447,6 +447,51 @@ function excerptStem(value){
   if(word.length>4&&word.endsWith('e'))word=word.slice(0,-1);
   return word;
 }
+// Selection tranche (item 1): the deterministic fill-order key — a
+// page's best (minimum) retrieval facet rank, then how many facets
+// matched it, then pool order. Pages retrieval never ranked sort
+// last, in pool order among themselves.
+function selectionOrderKey(source,index){
+  const facetRanks=Array.isArray(source?.facetRanks)?source.facetRanks:[];
+  const ranks=facetRanks.map(entry=>entry?.rank).filter(Number.isFinite);
+  return {best:ranks.length?Math.min(...ranks):Infinity,
+    matched:facetRanks.length,index};
+}
+function compareSelectionOrder(left,right){
+  if(left.best!==right.best)return left.best<right.best?-1:1;
+  if(left.matched!==right.matched)return right.matched-left.matched;
+  return left.index-right.index;
+}
+// Selection tranche (item 2): each part's distinctive signal — the
+// stemmed terms of its question and requirements that no other
+// part's vocabulary holds, plus any quoted phrase (3+ words) its
+// requirements carry. A page whose text holds two of the part's
+// distinctive terms, or one of its quoted phrases verbatim, is
+// evidence retrieval genuinely aimed at that part.
+function partDistinctiveSignals(parts){
+  const vocab=new Map(),counts=new Map();
+  for(const part of Array.isArray(parts)?parts:[]){
+    const terms=new Set(queryWords([part?.question||'',
+      ...(Array.isArray(part?.requirements)?part.requirements:[])
+        .map(requirement=>requirement?.text||'')].join(' ')));
+    vocab.set(part.partId,terms);
+    for(const term of terms)counts.set(term,(counts.get(term)||0)+1);
+  }
+  const signals=new Map();
+  for(const part of Array.isArray(parts)?parts:[]){
+    const phrases=new Set();
+    for(const requirement of Array.isArray(part?.requirements)?part.requirements:[])
+      for(const match of String(requirement?.text||'')
+        .matchAll(/["“]([^"”]{10,})["”"]/g)){
+        const phrase=match[1].trim().toLowerCase();
+        if(phrase.split(/\s+/).length>=3)phrases.add(phrase);
+      }
+    signals.set(part.partId,{
+      terms:new Set([...vocab.get(part.partId)].filter(term=>counts.get(term)===1)),
+      phrases:[...phrases]});
+  }
+  return signals;
+}
 export function stripWebCaptureFooters(text) {
   // Keep the predicate deliberately narrow: a URL must occupy the whole line
   // and include Acrobat's page counter plus captured local timestamp.
@@ -4360,6 +4405,36 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             return !Array.isArray(scope)||!scope.length||
               scope.map(String).includes(String(source.bookId));
           };
+          // Selection tranche: the fill-order key per candidate
+          // (item 1) and the direct classifier (item 2). The
+          // classifier is candidatePartSupport's first producer:
+          // a retrieval-hinted row whose page text carries the
+          // part's distinctive evidence is 'direct' for that part.
+          // Scope-fallback rows (below) and adopted rows (B.5) are
+          // pushed as 'context' directly and never pass through it.
+          const orderKeyByCandidateId=new Map(selectionCandidates
+            .map((source,index)=>[candidateIdByPoolRow.get(source),
+              selectionOrderKey(source,index)]));
+          const distinctiveSignals=partDistinctiveSignals(selectionParts);
+          const pageScanBySource=new Map();
+          const classifiesDirect=(source,partId)=>{
+            const signal=distinctiveSignals.get(partId);
+            if(!signal||(!signal.terms.size&&!signal.phrases.length))return false;
+            let scan=pageScanBySource.get(source);
+            if(!scan){
+              const text=source.scopeText||source.text||'';
+              scan={stems:new Set((text.toLowerCase()
+                  .match(/[a-z0-9]+/g)||[]).map(excerptStem)),
+                lower:text.toLowerCase()};
+              pageScanBySource.set(source,scan);
+            }
+            for(const phrase of signal.phrases)
+              if(scan.lower.includes(phrase))return true;
+            let hits=0;
+            for(const term of signal.terms)
+              if(scan.stems.has(term)&&++hits>=2)return true;
+            return false;
+          };
           const decisionParts=selectionParts.map(part=>{
             const evidence=[];
             for(const source of selectionCandidates){
@@ -4369,7 +4444,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
                 source.candidatePartIds.includes(part.partId);
               if(!supportEntry&&!hinted)continue;
               evidence.push({candidateId:candidateIdByPoolRow.get(source),
-                support:supportEntry?.support||'context',
+                support:supportEntry?.support||
+                  (hinted&&classifiesDirect(source,part.partId)?'direct':'context'),
                 ...(supportEntry?.excerpt?
                   {excerpt:supportEntry.excerpt,excerptMatched:true}:{})});
             }
@@ -4379,7 +4455,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
                   evidence.push({candidateId:candidateIdByPoolRow.get(source),
                     support:'context'});
             evidence.sort((left,right)=>
-              (left.support==='direct'?0:1)-(right.support==='direct'?0:1));
+              (left.support==='direct'?0:1)-(right.support==='direct'?0:1)||
+              compareSelectionOrder(orderKeyByCandidateId.get(left.candidateId),
+                orderKeyByCandidateId.get(right.candidateId)));
             return {partId:part.partId,
               candidateIds:evidence.map(entry=>entry.candidateId),
               coverage:evidence.some(entry=>entry.support==='direct')?
@@ -4434,6 +4512,18 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           }
           const partLinkedIds=new Set(decisionParts
             .flatMap(part=>part.candidateIds));
+          // Selection tranche (item 2): the classification census
+          // rides the selection trace, so validation can check the
+          // signal's live band (checkpoint M2) from artifacts alone.
+          const directClassification={rowsClassified:0,directRows:0,
+            partsWithDirect:0,partsTotal:decisionParts.length};
+          for(const part of decisionParts){
+            directClassification.rowsClassified+=part.evidence.length;
+            const direct=part.evidence
+              .filter(entry=>entry.support==='direct').length;
+            directClassification.directRows+=direct;
+            if(direct)directClassification.partsWithDirect++;
+          }
           // Stage B (B1a): facet-anchor reservation. Each facet's
           // rank-1 page is seeded into the selected set BEFORE the
           // round-robin filling below, so a facet carried by a
@@ -4465,12 +4555,21 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           // claims (by retrieval or by scope) is not evidence for
           // this question, and an empty linked set is the
           // deterministic abstention (no-relevant-evidence).
-          const preSliceSelectedIds=[...anchorSeedIds,
-            ...orderFallbackCandidates(selectionCandidates,
+          // Selection tranche (item 1): the fill below the anchor
+          // seeds is ordered by the signal key — best facet rank,
+          // then matched-facet count, then pool order — so the
+          // six-page slice cuts the weakest-evidenced linked pages,
+          // not the latest-submitted ones. Seeds keep their
+          // protected leading positions; only the ID list is
+          // sorted, never the pool itself.
+          const fillIds=orderFallbackCandidates(selectionCandidates,
               plan.parts.map(part=>part.id))
-              .map(source=>candidateIdByPoolRow.get(source))
-              .filter(id=>id&&partLinkedIds.has(id)&&
-                !anchorSeedIds.includes(id))];
+            .map(source=>candidateIdByPoolRow.get(source))
+            .filter(id=>id&&partLinkedIds.has(id)&&
+              !anchorSeedIds.includes(id));
+          fillIds.sort((left,right)=>compareSelectionOrder(
+            orderKeyByCandidateId.get(left),orderKeyByCandidateId.get(right)));
+          const preSliceSelectedIds=[...anchorSeedIds,...fillIds];
           const decision={
             parts:decisionParts,
             selectedCandidateIds:preSliceSelectedIds
@@ -4515,7 +4614,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
               candidateCount:candidatePool.length,
               selectionCandidateCount:selectionCandidates.length,
               suppressedCandidateDuplicates:candidateDeduplication.suppressed,
-              candidates:selectorCandidates,decision,selected:[],
+              candidates:selectorCandidates,decision,directClassification,
+              selected:[],
               ...(adoptions.length?{adoptions}:{}),
               excluded:selectionExclusionLedger({
                 candidateIds:selectionCandidates.map((source,index)=>'C'+(index+1)),
@@ -4604,7 +4704,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             candidateCount:candidatePool.length,
             selectionCandidateCount:selectionCandidates.length,
             suppressedCandidateDuplicates:candidateDeduplication.suppressed,
-            candidates:selectorCandidates,decision,selected:answerSources.map(source=>({
+            candidates:selectorCandidates,decision,directClassification,
+            selected:answerSources.map(source=>({
               id:source.id,candidateId:source.candidateId,bookId:source.bookId,page:source.page,
               candidatePartIds:source.candidatePartIds,candidatePartSupport:source.candidatePartSupport})),
             ...(recoveredPartLinks.length?{recoveredPartLinks}:{}),
