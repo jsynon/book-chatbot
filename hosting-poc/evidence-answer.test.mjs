@@ -3210,6 +3210,28 @@ test('the active reviewer resolves a selected span to exact bounded source text'
  }]);
 });
 
+test('a pronoun-opening claim still records the reviewer subject in its decision record',async()=>{
+ const ai=makeAI([answer('PART P1\nHe grounds necessity in custom and regularity. [S1]'),
+  (_model,{messages})=>{
+   const payload=parsePayload(messages),claim=payload.claims[0];
+   return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+     directAnswerClaimIds:[claim.claimId]}],
+    claims:[{claimId:claim.claimId,status:'answered',sources:[{
+     sourceId:'S1',status:'answered',spanIds:['S1-Q1'],
+     subjectAttributionStatus:'supported',attributedSubject:'Hume'}]}]})};
+  }]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.coverage,'full');
+ const decision=result.trace.reviewContract.reviewDecisions[0];
+ assert.equal(decision.accepted,true);
+ // The claim's own text names no one ('He grounds necessity...'), so
+ // claim-side subject extraction is empty; the reviewer's recorded
+ // subject must still reach the trace (speaker tranche S-A).
+ assert.equal(decision.subjectAttributionStatus,'supported');
+ assert.equal(decision.attributedSubject,'Hume');
+});
+
 test('review sees one spare candidate while verified acceptance stays capped at three',async()=>{
  const text=[
   'A short introductory passage describes a topic without defining the requested doctrine.',
@@ -6423,8 +6445,9 @@ test('batch 27 B27-1: extraction blind spots are counted in the review contract'
    catalog:{77:'Heart of Darkness — Joseph Conrad'},trace:true});
  const decision=result.trace.reviewContract.reviewDecisions
   .find(entry=>entry.claimId==='P1-C1'&&entry.sourceId==='S1');
- assert.equal(decision.subjectAttributionStatus,undefined,
-  'no subject was extracted, so the decision carries no subject fields (the silent shape)');
+ assert.equal(decision.subjectAttributionStatus,'missing',
+  'no subject was extracted and the reviewer recorded none: the decision now carries the explicit missing record (speaker tranche S-A) instead of silently omitting the fields');
+ assert.equal(decision.attributedSubject,'');
  assert.equal(result.trace.reviewContract.subjectExtractionBlindSpots,1,
   'the claim carries a capitalized name candidate, so the blind spot is counted');
 });
