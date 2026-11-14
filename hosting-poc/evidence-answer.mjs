@@ -3634,9 +3634,15 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           sourceStatus:sourceDecision?.status||null,
           attributionStatus:sourceDecision?.attributionStatus||'missing',
           attributedSpeaker:sourceDecision?.attributedSpeaker||'',
-          ...(subjectTargets.length?{
-            subjectAttributionStatus:sourceDecision?.subjectAttributionStatus||'missing',
-            attributedSubject:sourceDecision?.attributedSubject||''}:{}),
+          // Speaker tranche (S-A): the reviewer's subject record rides
+          // EVERY decision record, not only claims whose own text yields
+          // an extractable subject. Pronoun-opening claims were the
+          // blind spot (Stage C D7): their records reached the trace
+          // subject-less, starving the assembly antecedent guard and
+          // the record-only final checks of the reviewer's reading
+          // exactly where the claim itself names no one.
+          subjectAttributionStatus:sourceDecision?.subjectAttributionStatus||'missing',
+          attributedSubject:sourceDecision?.attributedSubject||'',
           ...(sourceDecision?.evidenceRole?{evidenceRole:sourceDecision.evidenceRole}:{}),
           ...(sourceDecision?.supportBoundary?{supportBoundary:sourceDecision.supportBoundary}:{}),
           candidateSpanIds:(claimEvidenceById.get(answer.claimId)?.get(sourceId)||[])
