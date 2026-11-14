@@ -2413,3 +2413,168 @@ test('stage B.5 ledger: the six-page packet cap names its overflow on the decisi
   {id:'C8',reason:'six-page-packet-limit'}],
   'and the ledger repeats it in pool order');
 });
+
+test('selection tranche item 1: the fill is ordered by facet signal, so a rank-2 page late in pool order survives the slice',async()=>{
+ const token='selection-tranche-ordering-pilot-test-token';
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {response:'PART P1\nThe growth of Athenian power inspired fear in Sparta. [S1]'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return depthReview(JSON.parse(input.messages[1].content));
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const first=pilot.fixture.body.sources[0];
+ const mk=(page,facetRanks)=>({...first,page,candidatePartIds:['P1'],
+  ...(facetRanks?{facetRanks}:{})});
+ // Pool order is submission order (C1..C8 = pages 44,45,39,40,41,42,38,43).
+ // Facet tops seed first (C4 for facet 0, C3 for facet 1). Under the old
+ // pool-order fill the slice took C4,C3,C1,C2,C5,C6 and the facet-1
+ // rank-2 page (C8, last in the pool) was named in the overflow; the
+ // signal-ordered fill promotes it ahead of every rank-9 and unranked
+ // row, so the overflow names the two unranked pages instead.
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War?',answerVariant:'with-review',trace:true,
+  sources:[mk(44),mk(45),mk(39,[{facet:1,rank:1}]),mk(40,[{facet:0,rank:1}]),
+   mk(41,[{facet:1,rank:9}]),mk(42,[{facet:1,rank:9}]),mk(38,[{facet:1,rank:9}]),
+   mk(43,[{facet:1,rank:2},{facet:0,rank:2}])],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ const stage=(result.trace.stages||[]).find(item=>item.stage==='evidence-selection');
+ assert.ok(stage,'the selection stage is traced');
+ assert.deepEqual(stage.facetAnchorReservations.seededCandidateIds,['C4','C3'],
+  'the facet anchors still seed first, in facet order');
+ assert.deepEqual(stage.decision.selectedCandidateIds,
+  ['C4','C3','C8','C5','C6','C7'],
+  'anchors lead, then the rank-2 page, then the rank-9 rows in pool order');
+ assert.deepEqual(stage.decision.droppedCandidateIds,[
+  {candidateId:'C1',reason:'six-page-packet-limit'},
+  {candidateId:'C2',reason:'six-page-packet-limit'}],
+  'the unranked rows are the slice overflow now');
+ assert.equal(stage.candidates[7].page,43,
+  'C-ids still name pool positions — the sort moved IDs, never renumbered them');
+ const packedC8=stage.selected.find(entry=>entry.candidateId==='C8');
+ assert.equal(packedC8.page,43,'the rescued rank-2 page is packed');
+ // The part's own evidence list follows the same key: both rank-1
+ // anchors, then the rank-2 page, then rank 9s, then the unranked rows.
+ assert.deepEqual(stage.decision.parts[0].candidateIds,
+  ['C3','C4','C8','C5','C6','C7','C1','C2']);
+});
+
+test('selection tranche item 2: distinctive-term evidence classifies direct; scope-fallback rows never do',async()=>{
+ const token='selection-tranche-classify-pilot-test-token';
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {response:'PART P1\nThe growth of Athenian power inspired fear in Sparta. [S1]\n\nPART P2\nThe growth of Athenian power inspired fear in Sparta. [S1]\n\nPART P3\nThe growth of Athenian power inspired fear in Sparta. [S1]'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return depthReview(JSON.parse(input.messages[1].content));
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const first=pilot.fixture.body.sources[0];
+ // P1's distinctive terms: naval, tribute, fund, fleet. P2's: sparta,
+ // fear, growth, power. P3's: plague, strike, athens. The six fixture
+ // pages (identical text: 'cause'/'fear'/'power'/'war' territory) are
+ // direct for P2 only. C7 carries two P1 terms (direct for P1, context
+ // for P2); C8 carries exactly one P1 term (never enough); C9 carries
+ // three P3 terms but no part hints it to P3, so P3 meets it only
+ // through the scope fallback, which is context by construction.
+ // The custom pages sit past the slice, so none is ever packed.
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'How did naval tribute fund the Athenian fleet, why did Sparta fear Athenian power, and when did the plague strike Athens?',
+  answerVariant:'with-review',trace:true,
+  sources:[...[38,39,40,41,42,43].map(page=>({...first,page,candidatePartIds:['P1','P2']})),
+   {...first,page:44,candidatePartIds:['P1','P2'],
+    text:'The naval tribute records list payments from the island cities each spring.'},
+   {...first,page:45,candidatePartIds:['P1'],
+    text:'The fleet sailed home before winter storms closed the sea lanes.'},
+   {...first,page:46,candidatePartIds:['P1'],
+    text:'The plague strikes Athens in the second summer of the war.'}],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'How did naval tribute fund the Athenian fleet?',sourceBookIds:['152']},
+    {id:'P2',question:'Why did Sparta fear the growth of Athenian power?',sourceBookIds:['152']},
+    {id:'P3',question:'When did the plague strike Athens?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ const stage=(result.trace.stages||[]).find(item=>item.stage==='evidence-selection');
+ assert.ok(stage,'the selection stage is traced');
+ const supportOf=(partId,candidateId)=>stage.decision.parts
+  .find(part=>part.partId===partId).evidence
+  .find(entry=>entry.candidateId===candidateId)?.support;
+ assert.equal(supportOf('P1','C7'),'direct',
+  'two distinctive terms in the page text classify the row direct');
+ assert.equal(supportOf('P2','C7'),'context',
+  'the same page holds no P2-distinctive term');
+ assert.equal(supportOf('P1','C8'),'context',
+  'a single distinctive term does not classify');
+ assert.equal(supportOf('P2','C1'),'direct',
+  'the fixture text carries fear and power for P2');
+ assert.equal(supportOf('P1','C1'),'context',
+  'the fixture text carries no P1-distinctive term');
+ const p3=stage.decision.parts.find(part=>part.partId==='P3');
+ assert.equal(p3.evidence.length,9,'the scope fallback links every pooled page to P3');
+ assert.ok(p3.evidence.every(entry=>entry.support==='context'),
+  'scope-fallback rows stay context even when the text matches the part');
+ assert.equal(supportOf('P3','C9'),'context',
+  'the plague page is context for P3 despite three distinctive terms');
+ assert.equal(stage.decision.parts.find(part=>part.partId==='P1').coverage,'supported');
+ assert.equal(p3.coverage,'partial');
+ assert.deepEqual(stage.directClassification,
+  {rowsClassified:25,directRows:7,partsWithDirect:2,partsTotal:3},
+  'the trace census counts the classification');
+});
+
+test('selection tranche item 2: an adopted row stays context even when its text carries the part’s distinctive terms',async()=>{
+ const token='selection-tranche-adopted-pilot-test-token';
+ const model=async(_model,input)=>{
+  const system=input.messages[0].content;
+  if(system.startsWith('Answer the reader\'s exact question')){
+   return {response:'PART P1\nThe growth of Athenian power inspired fear in Sparta. [S1]\n\nPART P2\nThe growth of Athenian power inspired fear in Sparta. [S1]'};
+  }
+  if(system.startsWith('Review the complete answer parts and claims')){
+   return depthReview(JSON.parse(input.messages[1].content));
+  }
+  return {response:'{}'};
+ };
+ const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
+  PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
+ const first=pilot.fixture.body.sources[0];
+ // P1 (caused / Peloponnesian / war) has direct fixture rows. P2
+ // (naval tribute / Athenian fleet) has none — the fixture text holds
+ // none of its distinctive terms — so P2 is starved and adopts the
+ // unlinked C7, whose text is full of P2's terms. Adoption provenance
+ // keeps the row context: the classifier never sees adopted rows.
+ // C7 sits past the slice, so it is adopted and traced, never packed.
+ const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
+  question:'What caused the Peloponnesian War, and how did naval tribute fund the Athenian fleet?',
+  answerVariant:'with-review',trace:true,
+  sources:[...[38,39,40,41,42,43].map(page=>({...first,page,candidatePartIds:['P1','P2']})),
+   {...first,page:44,candidatePartIds:[],
+    text:'The naval tribute lists record how island allies paid for the fleet.'}],
+  plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
+   parts:[{id:'P1',question:'What caused the Peloponnesian War?',sourceBookIds:['152']},
+    {id:'P2',question:'How did naval tribute fund the Athenian fleet?',sourceBookIds:['152']}]}}});
+ assert.equal(response.status,200);const result=await response.json();
+ const stage=(result.trace.stages||[]).find(item=>item.stage==='evidence-selection');
+ assert.ok(stage,'the selection stage is traced');
+ const adoption=(stage.adoptions||[]).find(entry=>entry.partId==='P2');
+ assert.ok(adoption,'P2 still adopts — it has no direct row');
+ assert.equal(adoption.candidateId,'C7');
+ const p2=stage.decision.parts.find(part=>part.partId==='P2');
+ assert.deepEqual(p2.evidence.find(entry=>entry.candidateId==='C7'),
+  {candidateId:'C7',support:'context',provenance:'adopted'},
+  'the adopted row is context despite carrying P2’s distinctive terms');
+ const p1=stage.decision.parts.find(part=>part.partId==='P1');
+ assert.ok(p1.evidence.every(entry=>entry.support==='direct'),
+  'P1’s fixture rows are direct (cause and war in the text)');
+ assert.deepEqual(stage.directClassification,
+  {rowsClassified:13,directRows:6,partsWithDirect:1,partsTotal:2});
+});
