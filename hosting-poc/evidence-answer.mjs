@@ -3139,6 +3139,11 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           typeof clearance.text==='string'&&clearance.text&&clearance.sourceId):[]});
   }
   const supportIssues=[],answerContext=[...initialAnswerContext],reviewDecisions=[],partDecisions=[];
+  // Assembly-loss tranche (item 1): claims the partial gate would have
+  // dropped whole but the salvage rule below retains on their
+  // fully-supporting source groups. Recorded per claim so validation
+  // can verdict the salvaged set on its own (checkpoint check A1).
+  const assemblySalvage=[];
   // Batch 27 (B27-1/B27-4): this normalization's own clause findings,
   // recorded per claim×source pair from the same clauseReview the
   // demotion below consumes, and the subject-extraction blind-spot
@@ -3433,6 +3438,14 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       // covers the claim. Missing decisions, legacy spanless reviews, and a
       // source marked answered without an accepted exact span remain fail-closed.
       let hasUnreviewedOrSpanlessSource=false;
+      // Assembly-loss tranche (item 1): sources whose failure is a
+      // hard rejection — an attribution conflict, a missing decision
+      // (fail-closed by construction), a legacy spanless review, an
+      // answered verdict with no accepted span, or an unanswered
+      // (unsupported) verdict. A claim citing one can never be
+      // salvaged; a claim whose only failures are well-formed
+      // partial verdicts can (see the salvage at the claim gate).
+      const hardFailedSourceIds=new Set();
       for(const sourceId of citedIds){
         let sourceDecision=sourceDecisions.get(sourceId);
         const selected=selectedBySource.get(sourceId)||[];
@@ -3538,6 +3551,10 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         if(attributionIssue||sourceDecision.recoveredMissingDecision||
            sourceDecision.status!=='answered'||!selected.length){
           if(answeredWithoutSelectedSpan)sourceDecision.status='partial';
+          if(attributionIssue||sourceDecision.recoveredMissingDecision||
+             sourceDecision.legacyMissingSpan||answeredWithoutSelectedSpan||
+             sourceDecision.status==='unanswered')
+            hardFailedSourceIds.add(sourceId);
           supportIssues.push({partId:part.id,claimId:answer.claimId,sourceId,
             reason:attributionIssue||
               (sourceDecision.recoveredMissingDecision?'missing-claim-source-decision':
@@ -3594,9 +3611,30 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         [...citedGroupKeys].every(key=>supportedGroupKeys.has(key));
       claimStatus=supportedSubsetCoversClaim?'answered':
         decision.status==='unanswered'?'unanswered':'partial';
+      // Assembly-loss tranche (item 1): partial-gate salvage. A claim
+      // the gate would drop whole although at least one cited source
+      // fully supports it as written, and no cited source hard-failed
+      // (attribution conflict, missing/legacy/spanless decision, or an
+      // unsupported verdict), is retained on its fully-supporting
+      // sources alone; shed citations belong to partial siblings, whose
+      // verdicts were partial support, not contradiction. A fail-closed
+      // source anywhere bars salvage, as does a reviewer-proposed
+      // narrowing (the narrowing rescue's claim, fail-closed). The
+      // retained claim flows through every downstream stage normally.
+      let salvaged=false;
+      const narrowingProposed=decision.supportedText.length>0&&decision.supportedText!==String(answer.text||'').trim();
+      if(claimStatus==='partial'&&supportedSourceIds.size&&
+         !hasUnreviewedOrSpanlessSource&&!narrowingProposed&&
+         ![...citedIds].some(sourceId=>hardFailedSourceIds.has(sourceId))){
+        claimStatus='answered';salvaged=true;
+        assemblySalvage.push({partId:part.id,claimId:answer.claimId,
+          keptSourceIds:[...supportedSourceIds],
+          droppedSourceIds:[...citedIds]
+            .filter(sourceId=>!supportedSourceIds.has(sourceId))});
+      }
       const claimEvidence=[...supportedSourceIds]
         .flatMap(sourceId=>selectedBySource.get(sourceId)?.slice(0,MAX_REVIEW_SPANS_PER_SOURCE)||[]);
-      if(validSupportedText&&!supportedSubsetCoversClaim){
+      if(validSupportedText&&!supportedSubsetCoversClaim&&!salvaged){
         supportIssues.push({partId:part.id,claimId:answer.claimId,
           reason:'claim-narrowing-failed-evidence-validation'});
       }
@@ -3798,6 +3836,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
   }
   return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions,
     clauseFindings,subjectExtractionBlindSpots,gateRestorations,gateDemotionsSuppressed,
+    ...(assemblySalvage.length?{assemblySalvage}:{}),
     ...(salvageDroppedClaimIds.length?{salvageDroppedClaimIds}:{}),
     ...(framingRescues.length?{framingRescues}:{}),
     ...(framingFallbacks.length?{framingFallbacks}:{}),
@@ -4595,6 +4634,15 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
     const list=archiveByPart.get(entry.partId)||[];
     list.push(entry);archiveByPart.set(entry.partId,list);
   }
+  // Assembly-loss tranche (item 3): parts the source-required
+  // containment suppressed name their accepted claims' deaths with
+  // that reason in the census below — the suppression ran before
+  // this reconciliation and zeroed the parts, so without the record
+  // their claims would take a gate reason that never touched them.
+  const containmentSuppressedPartIds=new Set(
+    (trace?.sourceRequiredContainment?.partDispositions||[])
+      .filter(entry=>entry.disposition==='suppressed-with-answer')
+      .map(entry=>entry.partId));
   const restatesRejected=(partId,text)=>{
     const terms=fallbackEvidenceTerms(text);
     if(!terms.size)return false;
@@ -4610,10 +4658,16 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
   for(const item of parts||[]){
     const partId=item.part?.id;
     if(!partId)continue;
-    // A part that does not ship accounts for its claims at part
-    // level; only a shipping part can silently lose a claim.
-    if(item.answerStatus==='unanswered'||!(item.answers||[]).length)continue;
-    const shipped=new Set((item.answers||[]).map(answer=>answer.claimId));
+    // Assembly-loss tranche (item 3): a part that does not ship is
+    // reconciled census-only — its accepted claims are classified
+    // with the same taxonomy, but nothing is restored into it and
+    // its status is never flipped. Before this extension the census
+    // skipped these parts entirely, and a whole part's retained
+    // claims could die with no claim-level record (checkpoint A3).
+    const censusOnly=item.answerStatus==='unanswered'||!(item.answers||[]).length;
+    const shipped=new Set(censusOnly?[]:
+      (item.answers||[]).map(answer=>answer.claimId));
+    const presentIds=new Set((item.answers||[]).map(answer=>answer.claimId));
     const shippedHaystack=normalizedProseSurface(
       (item.answers||[]).map(answer=>answer.text||'').join(' '));
     const seen=new Set();
@@ -4625,7 +4679,11 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
       if(shipped.has(claimId))continue;
       const key=partId+'|'+claimId;
       let reason,disposition='traced';
-      if(containmentIds.has(key))reason='rejection-containment';
+      if(censusOnly&&presentIds.has(claimId))
+        reason='part-not-shipped';
+      else if(censusOnly&&containmentSuppressedPartIds.has(partId))
+        reason='source-required-containment';
+      else if(containmentIds.has(key))reason='rejection-containment';
       else if(inheritedIds.has(key))reason='context-claim-inherits-demotion';
       else if(guardRemovedIds.has(key))reason='assembly-antecedent-guard-removed';
       else if(scaffoldingOmittedIds.has(key))reason='scaffolding-omit';
@@ -4654,7 +4712,7 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
           // substance ships under another ID. No loss — record it
           // as explained so the census stays honest.
           reason='renumbered-substance-shipped';
-        }else if(decision.claimStatus==='answered'&&draft&&draftText&&
+        }else if(!censusOnly&&decision.claimStatus==='answered'&&draft&&draftText&&
           !restatesRejected(partId,draftText)){
           const paragraphIndex=Math.max(-1,...(item.answers||[])
             .map(answer=>answer.paragraphIndex||0))+1;
@@ -4666,7 +4724,7 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
           disposition='withheld-rejection-overlap';
         }else{
           disposition='unexplained-partial';
-          if(item.answerStatus==='answered')item.answerStatus='partial';
+          if(!censusOnly&&item.answerStatus==='answered')item.answerStatus='partial';
         }
       }
       losses.push({partId,claimId,reason,disposition});
@@ -5568,7 +5626,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           subjectExtractionBlindSpots:0,gateRestorations:[],gateDemotionsSuppressed:[],
           framingRescues:[],framingFallbacks:[],boundarySubjectChecks:[],
           apparatusFramingChecks:[],spanRegionClassifications:[],
-          contextSupportUnmeasured:[],vetoCensus:[]};
+          contextSupportUnmeasured:[],vetoCensus:[],assemblySalvage:[]};
         for(const part of plan.parts){
           if(issueExcludedPartIds.has(part.id))continue;
           const single=singlesByPart.get(part.id);
@@ -5620,6 +5678,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           merged.spanRegionClassifications.push(...(single.spanRegionClassifications||[]));
           merged.contextSupportUnmeasured.push(...(single.contextSupportUnmeasured||[]));
           merged.vetoCensus.push(...(single.vetoCensus||[]));
+          merged.assemblySalvage.push(...(single.assemblySalvage||[]));
           merged.subjectExtractionBlindSpots+=single.subjectExtractionBlindSpots||0;
         }
         return merged;
@@ -5709,6 +5768,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             {spanRegionClassifications:review.spanRegionClassifications}:{}),
           ...(review.contextSupportUnmeasured?.length?
             {contextSupportUnmeasured:review.contextSupportUnmeasured}:{}),
+          // Assembly-loss tranche (item 1): the salvaged-claim set,
+          // recorded so the validation audit can verdict it as its
+          // own support line (checkpoint check A1).
+          ...(review.assemblySalvage?.length?
+            {assemblySalvage:review.assemblySalvage}:{}),
           ...(failedReviewParts.length?{failedParts:failedReviewParts
             .map(item=>({partId:item.partId,code:item.code}))}:{})};
         // Per-part contract problems fail only their own part (recorded in
@@ -7015,6 +7079,31 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         restored:assemblyLoss.filter(loss=>loss.disposition==='restored').length,
         byReason,byPart};
     }
+    // Assembly-loss tranche (item 2): context-part survival. A part
+    // finalized 'unanswered' on its cited claims is excluded below
+    // even when it holds reviewer-retained context claims — the one
+    // claim-level-silent whole-part death the census found. Such a
+    // part now ships its context claims as a partial part under the
+    // general-context label (registered below), recorded here and in
+    // its containment disposition. Source-required parts are never
+    // rescued: containment's determination stands.
+    const contextSurvivedParts=[];
+    for(const item of parts){
+      if(item.answerStatus!=='unanswered'||!item.answers.length)continue;
+      if(item.part.sourceRequired===true)continue;
+      if(!(review?.parts||[]).some(entry=>entry.partId===item.part.id))continue;
+      if(item.answers.some(answer=>(answer.sourceIds||[]).length))continue;
+      item.contextSurvival=true;
+      item.answerStatus='partial';
+      if(item.status==='unanswered')item.status='partial';
+      contextSurvivedParts.push({partId:item.part.id,
+        claimIds:item.answers.map(answer=>answer.claimId)});
+      const disp=(trace.sourceRequiredContainment?.partDispositions||[])
+        .find(entry=>entry.partId===item.part.id);
+      if(disp){disp.disposition='shipped-context';disp.contextSurvival=true;}
+    }
+    if(contextSurvivedParts.length)
+      trace.contextSurvivedParts=contextSurvivedParts;
     let included=parts.filter(item=>item.answerStatus!=='unanswered'&&item.answers.length);
     let answer=sanitizeInternalAnswerIds(normalizeAnswerMarkdown(
       included.map(item=>renderAnswerParagraphs(item.answers)).join('\n\n')));
@@ -7612,6 +7701,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       // construction: assembly appends the standard label for the
       // part unless a label already covers it or a shipped claim
       // already discloses the absence in its own words.
+      // Assembly-loss tranche (item 2): a context-survived part
+      // carries the general-context disclosure as its label, which
+      // also keeps the unanswered-requirement trigger below from
+      // stacking a second notice on the same part.
+      for(const item of included){
+        if(!item.contextSurvival||labelByPartId.has(item.part.id))continue;
+        labelByPartId.set(item.part.id,item.part.question);
+        labelKindByPartId.set(item.part.id,'general-context');
+      }
       const unansweredRequirementLabels=[];
       for(const item of included){
         const unanswered=(item.requirementCoverage||[])
@@ -7825,6 +7923,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                 'This part of the question could only be partially answered: '):
               labelKind==='unreviewed-fallback'?
                 'This part is presented without a completed source review; only passages that could be verified mechanically are shown: ':
+              labelKind==='general-context'?
+                'This part of the question is answered from general knowledge; no library passages could be verified for it: ':
                 'Retrieved passages could not be verified as supporting this part of the question: ')+
               labelSubjectFor(item,{kind:labelKind});
             disclosureLabels.push({partId:item.part.id,
@@ -8005,6 +8105,85 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // adjacent reviewed sentences without guessing at source wording.
           ...(Number.isInteger(support.start)&&Number.isInteger(support.end)?
             {start:support.start,end:support.end}:{}),reason:item.reviewReason});
+      }
+    }
+    // Assembly-loss tranche (item 3): the final census. The
+    // reconciliation ran before the audit partition and the
+    // byline/frame gates, so removals there never entered the
+    // ledger; and a 'part-not-shipped' record written for a part
+    // that later shipped via context survival (item 2) would
+    // overstate the loss. This census-only pass prunes the stale
+    // records, records every accepted claim that is neither in the
+    // final shipped set nor already recorded — naming the
+    // post-reconcile mechanism when a trace field identifies it —
+    // and folds the text-absent and shipped-but-unlinked counts
+    // into the same summary, so the ledger reconciles against the
+    // true final state (checkpoint check A3). Nothing here removes
+    // or restores a claim; it only completes the record.
+    {
+      const keyOf=(partId,claimId)=>partId+'|'+claimId;
+      const finalShippedKeys=new Set();
+      for(const part of questionParts)
+        for(const claimId of part.claimIds||[])
+          finalShippedKeys.add(keyOf(part.partId,claimId));
+      const pruned=(trace.assemblyLoss||[]).filter(entry=>
+        !(entry.reason==='part-not-shipped'&&
+          finalShippedKeys.has(keyOf(entry.partId,entry.claimId))));
+      const recordedKeys=new Set(pruned
+        .map(entry=>keyOf(entry.partId,entry.claimId)));
+      const bylineIds=new Set((trace.final?.bylineGateRemovals||[])
+        .map(entry=>keyOf(entry.partId,entry.claimId)));
+      const frameIds=new Set((trace.final?.frameGateShadowRemovals||[])
+        .map(entry=>keyOf(entry.partId,entry.claimId)));
+      const partitionPartIds=new Set([
+        ...(trace.final?.auditSalvage?.droppedPartIds||[]),
+        ...(trace.final?.auditPartition?.failingPartIds||[])]);
+      let postReconcileLosses=0;
+      const seenAccepted=new Set();
+      for(const decision of review?.reviewDecisions||[]){
+        if(decision.accepted!==true||!decision.claimId)continue;
+        const key=keyOf(decision.partId,decision.claimId);
+        if(seenAccepted.has(key))continue;
+        seenAccepted.add(key);
+        if(finalShippedKeys.has(key)||recordedKeys.has(key))continue;
+        let reason='post-reconcile-removal';
+        if(bylineIds.has(key))reason='byline-gate-removal';
+        else if(frameIds.has(key))reason='frame-gate-removal';
+        else if(partitionPartIds.has(decision.partId))
+          reason='final-audit-partition';
+        else if(assemblySuppressed)reason='answer-suppressed';
+        else if(!includedPartIds.has(decision.partId))
+          reason='part-not-shipped';
+        pruned.push({partId:decision.partId,claimId:decision.claimId,
+          reason,disposition:'traced'});
+        postReconcileLosses++;
+      }
+      const linkedClaimKeys=new Set(evidenceMap
+        .map(entry=>keyOf(entry.partId,entry.claimId)));
+      let unlinkedShippedClaims=0;
+      for(const item of included){
+        const evidenceClaimIds=new Set((item.evidence||[])
+          .map(entry=>entry.claimId));
+        for(const claimId of finalClaimIdsByPart.get(item.part.id)||[]){
+          if(evidenceClaimIds.has(claimId)&&
+             !linkedClaimKeys.has(keyOf(item.part.id,claimId)))
+            unlinkedShippedClaims++;
+        }
+      }
+      const textAbsentClaims=(trace.finalCoverageReconciliation||[])
+        .reduce((total,entry)=>total+(entry.textAbsentClaimIds?.length||0),0);
+      if(pruned.length||trace.assemblyLoss)trace.assemblyLoss=pruned;
+      if(trace.assemblyLossSummary){
+        const byReason={},byPart={};
+        for(const loss of pruned){
+          byReason[loss.reason]=(byReason[loss.reason]||0)+1;
+          byPart[loss.partId]=(byPart[loss.partId]||0)+1;
+        }
+        trace.assemblyLossSummary={total:pruned.length,
+          restored:pruned.filter(loss=>loss.disposition==='restored').length,
+          byReason,byPart,
+          ...((postReconcileLosses||textAbsentClaims||unlinkedShippedClaims)?
+            {final:{postReconcileLosses,textAbsentClaims,unlinkedShippedClaims}}:{})};
       }
     }
     if(options.transportDiagnostics===true){
