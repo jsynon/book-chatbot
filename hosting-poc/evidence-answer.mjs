@@ -500,7 +500,6 @@ export const BATCH35_FIRING_FIELDS=[
   // The boundary subject check survives ONLY as this record-only
   // census (redesign Stage A): findings are recorded, never acted
   // on.
-  'reviewContract.boundarySubjectChecks',
   // B35-4: the per-span region census (B34-7's firing ledger).
   'reviewContract.spanRegionClassifications',
   // B35-6: claim-level uncited labels measured on shipped units,
@@ -1051,163 +1050,6 @@ function spanSpeakerForClaim(spanTexts,claimActions,claimSubject,knownNames,
 // an affirmative record assigns the claim's action to a different
 // subject; parity when an affirmative record assigns it to the
 // claim's own subject.
-function boundarySubjectCheck({claimText,boundaryText='',spanTexts=[],spanHeads=[],
-  claimSubjectRecorded='',knownNames=[]}){
-  const claimActions=claimActionTokens(claimText,
-    [claimSubjectRecorded,...knownNames]);
-  if(!claimActions.size)return {swap:null,parity:null};
-  const recordedSubjects=[claimSubjectRecorded];
-  const claimSubject=claimSubjectForAction(claimText,claimActions,
-    knownNames,recordedSubjects);
-  // (2) utterance mode runs FIRST for claims whose own predicate
-  // is a speech/judgment verb: for those, the span's speaker
-  // attribution is the specific record, and a boundary that merely
-  // names the judgment's object near the quoted words must not be
-  // read as assigning the utterance to them (the Wickham shape —
-  // the boundary ratified Elizabeth while the span's speech is
-  // Wickham's). This channel uses the speech families the boundary
-  // channel excludes (plus the claim's quoted tokens).
-  const speechActions=new Set();
-  let hasSpeechPredicate=false;
-  for(const {token} of wordTokensOf(claimText)){
-    const family=boundaryActionFamilyIndex(token);
-    if(family===2||family===3){
-      speechActions.add(token);hasSpeechPredicate=true;
-    }else if(claimQuotedTokens(claimText).has(token))speechActions.add(token);
-  }
-  // Batch 35 (B35-3): the utterance a claim quotes is identified by
-  // its quoted words and its distinctive actions — never by the
-  // generic speech verbs, which appear in every speaker's
-  // attribution sentence alike.
-  const utteranceActions=new Set(claimActions);
-  for(const token of claimQuotedTokens(claimText))utteranceActions.add(token);
-  if(claimSubject&&hasSpeechPredicate&&speechActions.size){
-    const speaker=spanSpeakerForClaim([...spanTexts,...spanHeads],
-      speechActions,claimSubject,knownNames,utteranceActions);
-    if(speaker)return {swap:{subject:speaker,via:'span-speech',
-      claimSubject},parity:null};
-  }
-  // (1) boundary / head associations.
-  // Batch 35 (B35-1): attestation. Batch 34's production audit found
-  // the extracted "subjects" were overwhelmingly reviewer-sentence
-  // fragments ("Establishes Freud", "Confirms the", "Though") —
-  // capitalized sequences harvested from the boundary prose itself,
-  // which capitalizedNameCandidates cannot distinguish from names.
-  // A subject counts now only when the name sequence appears
-  // VERBATIM in the span text or a span head — the evidence's own
-  // record. An extraction that appears nowhere in the evidence is
-  // "no subject recorded": the check stays silent rather than
-  // demoting on prose shape. (The span-speech channel below matches
-  // its names against the span text by construction, and the
-  // span-phrase channel reads its heads off the span itself; both
-  // are attested by construction.)
-  const nameAttestedInEvidence=name=>{
-    const escaped=String(name).replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')
-      .replace(/\s+/gu,'\\s+');
-    if(!escaped)return false;
-    const pattern=new RegExp(`\\b${escaped}\\b`,'u');
-    return spanTexts.some(text=>pattern.test(String(text||'')))||
-      spanHeads.some(head=>pattern.test(String(head||'')));
-  };
-  const associations=[
-    ...affirmativeActionSubjects(boundaryText,claimActions,knownNames)
-      .map(entry=>({...entry,via:'boundary'})),
-    ...spanHeads.flatMap(head=>affirmativeActionSubjects(head,claimActions,
-      knownNames)).map(entry=>({...entry,via:'span-head'}))]
-    .filter(entry=>nameAttestedInEvidence(entry.name));
-  let parity=null;
-  for(const association of associations){
-    if(claimSubject&&subjectNamesEquivalent(association.name,claimSubject)){
-      parity={subject:association.name,via:association.via};break;
-    }
-  }
-  if(!parity){
-    // Batch 35 (B35-3): the span's own subject assignment for the
-    // claim's action, read off the evidence: a sentence of the span
-    // text or head (quoted speech stripped) that carries a token
-    // of the claim's action family and opens — after at most a
-    // clause lead-in — with a known name: that name is the
-    // sentence's subject. This is the comparison the speaker
-    // verification gates on; the 5-token association window above
-    // is too narrow to read it (the Gatsby span assigns the crying
-    // to Daisy across a ten-token sentence: "Daisy bent her head
-    // into the shirts and began to cry…").
-    const SENTENCE_LEAD_TOKENS=new Set(['and','but','while','when','as',
-      'that','although','though','because','if','then','so','yet']);
-    const spanActionSubjects=new Set();
-    for(const text of [...spanTexts,...spanHeads]){
-      for(const unit of headSentenceUnits(text)){
-        const narration=stripQuotedSpeechRegions(unit);
-        if(!narration.trim())continue;
-        const tokens=wordTokensOf(narration);
-        if(!tokens.some(entry=>[...claimActions]
-          .some(action=>actionTokensMatch(action,entry.token))))continue;
-        const occurrences=nameOccurrencesIn(tokens,knownNames);
-        for(const occurrence of occurrences){
-          const leadTokens=tokens.slice(0,occurrence.start);
-          if(leadTokens.every(entry=>SENTENCE_LEAD_TOKENS.has(entry.token))){
-            spanActionSubjects.add(occurrence.name);break;
-          }
-        }
-      }
-    }
-    for(const association of associations){
-      if(claimSubject&&!subjectNamesEquivalent(association.name,claimSubject)){
-        // A boundary-only finding is reviewer prose: batch 35
-        // records whether the SPAN's own record assigns the same
-        // action to the same subject, because that corroboration
-        // is what separates the evidence's record from the
-        // reviewer's reading of it (the B35-3 gating question).
-        const spanCorroborated=association.via==='boundary'&&
-          (associations.some(other=>other.via==='span-head'&&
-             subjectNamesEquivalent(other.name,association.name))||
-           [...spanActionSubjects].some(name=>
-             subjectNamesEquivalent(name,association.name)));
-        return {swap:{subject:association.name,via:association.via,
-          claimSubject,...(spanCorroborated?{spanCorroborated:true}:{})},
-          parity:null};
-      }
-    }
-  }else return {swap:null,parity};
-  // (2b) utterance mode for the remaining claims (emotion claims
-  // whose span attributes the emotion's expression to a speaker).
-  if(claimSubject&&speechActions.size){
-    const speaker=spanSpeakerForClaim([...spanTexts,...spanHeads],
-      speechActions,claimSubject,knownNames,utteranceActions);
-    if(speaker)return {swap:{subject:speaker,via:'span-speech',
-      claimSubject},parity:null};
-  }
-  // (3) phrase mode: common-noun subjects in claim vs span. This
-  // channel is deliberately the narrowest: it engages only when
-  // the claim QUOTES the span's phrase (the Emerson shape — the
-  // claim lifts 'despair of the heart' verbatim and reassigns its
-  // subject), the same quoted token appears in the span sentence,
-  // and the two subject heads, read structurally off each text,
-  // differ. Unquoted claims never reach it: a free-standing
-  // pre-action noun in a complex sentence is not a record.
-  const quotedTokens=claimQuotedTokens(claimText);
-  // Only quoted ACTION tokens engage this channel: a quoted term
-  // ("consciousness", "mockery") is vocabulary, not a predication
-  // whose subject can be reassigned; a quoted predicate ('despair
-  // of the heart') is.
-  const phraseActions=new Set([...claimActions]
-    .filter(token=>quotedTokens.has(token)&&
-      boundaryActionFamilyIndex(token)>=0));
-  if(phraseActions.size){
-    const claimHead=preActionSubjectHead(claimText,phraseActions);
-    if(claimHead){
-      for(const spanText of spanTexts){
-        const spanTokens=wordTokensOf(spanText);
-        if(!spanTokens.some(entry=>phraseActions.has(entry.token)))continue;
-        const spanHead=preActionSubjectHead(spanText,phraseActions);
-        if(spanHead&&spanHead!==claimHead)
-          return {swap:{subject:spanHead,via:'span-phrase',
-            claimSubject:claimHead},parity:null};
-      }
-    }
-  }
-  return {swap:null,parity:null};
-}
 
 // Batch 32 (B32-10 (a)): letter-byline direction. Collected-works
 // pages routinely bind a letter under its recipient's name — the
@@ -3234,7 +3076,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
   // Batch 34 (B34-3): pairs the boundary subject check demoted —
   // the in-span subject-swap census, surfaced on the contract like
   // the other gate records.
-  const boundarySubjectChecks=[];
   const apparatusFramingChecks=[];
   // Batch 33 (B33-8): parts whose context-support kills rested on
   // an empty packet view (see the guard in the uncited-claim
@@ -3535,40 +3376,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const personSubjects=claimPersonSubjects(candidateText);
         const subjectTargets=personSubjects.length?personSubjects:claimSpeaker?[claimSpeaker]:[];
         // Batch 34 (B34-3): the boundary subject check for this
-        // pair, computed at most once and consumed by the parity
-        // block at rescue re-normalization and by the swap block
-        // after every suppression below has had its say. Inputs are
-        // records only: the reviewer's support boundary for the
-        // pair, the accepted spans' texts and heads, and the names
-        // those records contain.
-        let boundaryCheckCache=null;
-        // speakerMismatchIssue is a const; the parity block below
-        // clears it through this flag, which every later
-        // attributionIssue recomposition in this pair honors.
-        let boundaryParitySpeakerCleared=false;
-        const runBoundarySubjectCheck=()=>{
-          if(boundaryCheckCache)return boundaryCheckCache;
-          const selectedSpanIds=new Set(selected.map(item=>String(item.spanId||'')));
-          const spanHeads=packetSpans
-            .filter(span=>selectedSpanIds.has(String(span?.spanId||'')))
-            .map(span=>span?.head||'').filter(Boolean);
-          const spanTexts=selected.map(item=>item.quote||'').filter(Boolean);
-          const knownNames=[...new Set([
-            ...subjectTargets,claimSpeaker||'',attributedSubject,
-            sourceDecision?.attributedSpeaker||'',
-            ...capitalizedNameCandidates(candidateText),
-            ...spanTexts.flatMap(text=>capitalizedNameCandidates(text)),
-            ...spanHeads.flatMap(text=>capitalizedNameCandidates(text)),
-            ...capitalizedNameCandidates(sourceDecision?.supportBoundary||'')]
-            .map(name=>String(name||'').trim()).filter(Boolean))];
-          boundaryCheckCache=boundarySubjectCheck({
-            claimText:candidateText,
-            boundaryText:sourceDecision?.supportBoundary||'',
-            spanTexts,spanHeads,knownNames,
-            claimSubjectRecorded:claimSpeaker||subjectTargets[0]||
-              sourceDecision?.attributedSpeaker||attributedSubject||''});
-          return boundaryCheckCache;
-        };
         // Batch 27 (B27-1): a claim that carries a capitalized name
         // candidate but yields no subject target is an extraction
         // blind spot — counted, never gated on.
@@ -3584,27 +3391,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         // judgment applied to a pair is the reviewer's own
         // attributionStatus, computed above as modelAttributionIssue.
         const attributionIssue=modelAttributionIssue;
-        // The boundary subject check survives only as the record-only
-        // census (B35-1's channel, now the only channel): a swap
-        // finding is recorded with the verdict it would have produced
-        // and never mutates the decision.
-        if(sourceDecision.status==='answered'&&selected.length){
-          const swapCheck=runBoundarySubjectCheck();
-          if(swapCheck.swap){
-            boundarySubjectChecks.push({partId:part.id,
-              claimId:answer.claimId,sourceId,
-              claimSubject:swapCheck.swap.claimSubject||'',
-              boundarySubject:swapCheck.swap.subject,
-              via:swapCheck.swap.via,
-              spanIds:selected.map(item=>String(item.spanId||''))
-                .filter(Boolean),
-              outcome:'recorded',
-              ...(swapCheck.swap.spanCorroborated?
-                {spanCorroborated:true}:{}),
-              wouldBeOutcome:'demoted',
-              wouldBeGround:'source-subject-attribution-mismatch'});
-          }
-        }
         const answeredWithoutSelectedSpan=sourceDecision.status==='answered'&&!selected.length;
         if(attributionIssue||sourceDecision.recoveredMissingDecision||
            sourceDecision.status!=='answered'||!selected.length){
@@ -3913,7 +3699,6 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     ...(salvageDroppedClaimIds.length?{salvageDroppedClaimIds}:{}),
     ...(framingRescues.length?{framingRescues}:{}),
     ...(framingFallbacks.length?{framingFallbacks}:{}),
-    ...(boundarySubjectChecks.length?{boundarySubjectChecks}:{}),
     ...(apparatusFramingChecks.length?{apparatusFramingChecks}:{}),
     ...(spanRegionClassifications.length?{spanRegionClassifications}:{}),
     ...(contextSupportUnmeasuredParts.length?{contextSupportUnmeasured:contextSupportUnmeasuredParts}:{})};
@@ -5733,7 +5518,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         const merged={parts:[],issues:[],warnings:[],supportIssues:[],recovered:[],
           reviewDecisions:[],partDecisions:[],clauseFindings:[],
           subjectExtractionBlindSpots:0,gateRestorations:[],gateDemotionsSuppressed:[],
-          framingRescues:[],framingFallbacks:[],boundarySubjectChecks:[],
+          framingRescues:[],framingFallbacks:[],
           apparatusFramingChecks:[],spanRegionClassifications:[],
           contextSupportUnmeasured:[],vetoCensus:[],assemblySalvage:[]};
         for(const part of plan.parts){
@@ -5782,7 +5567,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // antecedent guard's restore pool ride the same merge.
           merged.framingRescues.push(...(single.framingRescues||[]));
           merged.framingFallbacks.push(...(single.framingFallbacks||[]));
-          merged.boundarySubjectChecks.push(...(single.boundarySubjectChecks||[]));
           merged.apparatusFramingChecks.push(...(single.apparatusFramingChecks||[]));
           merged.spanRegionClassifications.push(...(single.spanRegionClassifications||[]));
           merged.contextSupportUnmeasured.push(...(single.contextSupportUnmeasured||[]));
@@ -5865,8 +5649,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           ...(review.subjectExtractionBlindSpots?
             {subjectExtractionBlindSpots:review.subjectExtractionBlindSpots}:{}),
           // Batch 34 (B34-3): the in-span subject-swap demotions.
-          ...(review.boundarySubjectChecks?.length?
-            {boundarySubjectChecks:review.boundarySubjectChecks}:{}),
           // Batch 34 (B34-7): the apparatus-only framing demotions.
           ...(review.apparatusFramingChecks?.length?
             {apparatusFramingChecks:review.apparatusFramingChecks}:{}),

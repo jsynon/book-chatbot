@@ -10,7 +10,7 @@
  * identity; they do not prove that a claim follows from the source.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {MAX_SELECTOR_CANDIDATES,MAX_SELECTOR_SOURCES,enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectionExclusionLedger} from './evidence-selector.mjs';
+import {MAX_SELECTOR_CANDIDATES,MAX_SELECTOR_SOURCES,applyDirectRepresentationSwaps,enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectionExclusionLedger} from './evidence-selector.mjs';
 import {normalizePlan,citationIds,catalogIdentity} from './reader-contract.mjs';
 import {normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 import {isHeadingLine} from './review-spans.mjs';
@@ -462,23 +462,62 @@ function compareSelectionOrder(left,right){
   if(left.matched!==right.matched)return right.matched-left.matched;
   return left.index-right.index;
 }
-// Selection tranche (item 2): each part's distinctive signal — the
-// stemmed terms of its question and requirements that no other
-// part's vocabulary holds, plus any quoted phrase (3+ words) its
-// requirements carry. A page whose text holds two of the part's
-// distinctive terms, or one of its quoted phrases verbatim, is
-// evidence retrieval genuinely aimed at that part.
-function partDistinctiveSignals(parts){
-  const vocab=new Map(),counts=new Map();
-  for(const part of Array.isArray(parts)?parts:[]){
-    const terms=new Set(queryWords([part?.question||'',
-      ...(Array.isArray(part?.requirements)?part.requirements:[])
-        .map(requirement=>requirement?.text||'')].join(' ')));
-    vocab.set(part.partId,terms);
-    for(const term of terms)counts.set(term,(counts.get(term)||0)+1);
+// Repair tranche: each part's distinctive signal, rebuilt. The
+// selection tranche's construction kept only terms UNIQUE to one
+// part's vocabulary across the plan — which deletes the topical core
+// (a theme word appears in every part that shares the theme) and
+// keeps meta-discourse and pronouns: measured across four runs, the
+// commonest "distinctive" terms were they/identify/library/explain/
+// that, 43.6% of selected-case terms appeared nowhere in the target
+// book's pooled pages, and 'direct' did not predict shipped support.
+// The repaired signal drops the uniqueness filter: a part's terms are
+// its question/requirement vocabulary minus function words and
+// question-framing verbs, spelling-folded (-our/-or, -ise/-ize,
+// judgement/judgment — the leaf index's bridge classes), and filtered
+// by rarity across the case's own pool: a term present in more than
+// 40% of the pool's distinct page texts cannot distinguish substance
+// from aboutness (identical texts count once — they are one piece of
+// evidence, however many pool rows carry them).
+// A page whose text holds two of the part's surviving terms, or one
+// of its quoted phrases verbatim, is 'direct' for that part.
+const SIGNAL_STOP=new Set(('that they them then than thus hence also more most other others each both any all '+
+ 'she her hers him his himself herself itself one two first second would could should may might must shall will '+
+ 'upon about above after before between through during under over again further once here there when where which while '+
+ 'identify identifies identified identifying explain explains explained describe describes described discuss discusses '+
+ 'analyze analyse analyzes analyses examine examines consider considers explore explores illustrate illustrates reveal reveals '+
+ 'portray portrays portrayed portraying portrayal portrayals present presents argue argues note notes show shows showing provide provides include includes including '+
+ 'use uses using used make makes made way ways part parts point points case cases sense form forms kind type example examples').split(' '));
+function foldSignalWord(value){
+  let word=String(value||'').toLowerCase();
+  if(word.includes('judgement'))word=word.replaceAll('judgement','judgment');
+  if(word.length>=5&&word.endsWith('our'))word=word.slice(0,-3)+'or';
+  if(word.length>=4&&word.endsWith('ise'))word=word.slice(0,-3)+'ize';
+  return word;
+}
+function signalStem(value){return excerptStem(foldSignalWord(value));}
+function partDistinctiveSignals(parts,poolTexts=[]){
+  const distinctTexts=new Map();
+  for(const text of Array.isArray(poolTexts)?poolTexts:[]){
+    const key=String(text||'');
+    if(!distinctTexts.has(key))
+      distinctTexts.set(key,new Set(
+        (key.toLowerCase().match(/[a-z0-9]+/g)||[]).map(signalStem)));
   }
+  const poolStems=[...distinctTexts.values()];
+  const documentFrequency=new Map();
+  for(const stems of poolStems)for(const stem of stems)
+    documentFrequency.set(stem,(documentFrequency.get(stem)||0)+1);
+  const frequencyCap=Math.max(2,Math.floor(poolStems.length*0.4));
   const signals=new Map();
   for(const part of Array.isArray(parts)?parts:[]){
+    const raw=new Set(([part?.question||'',
+      ...(Array.isArray(part?.requirements)?part.requirements:[])
+        .map(requirement=>requirement?.text||'')].join(' ')
+      .toLowerCase().match(/[a-z0-9]+/g)||[])
+      .filter(word=>word.length>=3&&!STOP.has(word)&&!SIGNAL_STOP.has(word)));
+    const terms=new Set([...raw].map(signalStem)
+      .filter(stem=>stem.length>=3&&
+        (documentFrequency.get(stem)||0)<=frequencyCap));
     const phrases=new Set();
     for(const requirement of Array.isArray(part?.requirements)?part.requirements:[])
       for(const match of String(requirement?.text||'')
@@ -486,9 +525,7 @@ function partDistinctiveSignals(parts){
         const phrase=match[1].trim().toLowerCase();
         if(phrase.split(/\s+/).length>=3)phrases.add(phrase);
       }
-    signals.set(part.partId,{
-      terms:new Set([...vocab.get(part.partId)].filter(term=>counts.get(term)===1)),
-      phrases:[...phrases]});
+    signals.set(part.partId,{terms,phrases:[...phrases]});
   }
   return signals;
 }
@@ -4415,7 +4452,8 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
           const orderKeyByCandidateId=new Map(selectionCandidates
             .map((source,index)=>[candidateIdByPoolRow.get(source),
               selectionOrderKey(source,index)]));
-          const distinctiveSignals=partDistinctiveSignals(selectionParts);
+          const distinctiveSignals=partDistinctiveSignals(selectionParts,
+            selectionCandidates.map(source=>source.scopeText||source.text||''));
           const pageScanBySource=new Map();
           const classifiesDirect=(source,partId)=>{
             const signal=distinctiveSignals.get(partId);
@@ -4424,7 +4462,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             if(!scan){
               const text=source.scopeText||source.text||'';
               scan={stems:new Set((text.toLowerCase()
-                  .match(/[a-z0-9]+/g)||[]).map(excerptStem)),
+                  .match(/[a-z0-9]+/g)||[]).map(signalStem)),
                 lower:text.toLowerCase()};
               pageScanBySource.set(source,scan);
             }
@@ -4602,6 +4640,23 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             selectionRecovery.selectedCandidateIds,diversityRows,
             {partIds:plan.parts.map(part=>part.id)});
           const selectedIds=diversity.selectedCandidateIds;
+          // Repair tranche: direct-representation swap — the P-B
+          // shape, gated on the repaired signal (replay: addressable
+          // parts 19/242 vs the broken signal's 11/242 on the same
+          // corpus, with the named exhibits classified correctly).
+          // The pure swap lives in evidence-selector.mjs; every swap
+          // is traced on the selection stage.
+          const rowByCandidateId=new Map(selectionCandidates.map(source=>
+            [candidateIdByPoolRow.get(source),source]));
+          const representation=applyDirectRepresentationSwaps(
+            selectedIds,decisionParts,{
+              bookIdOf:id=>rowByCandidateId.get(id)?.bookId||'',
+              compareOrder:(a,b)=>compareSelectionOrder(
+                orderKeyByCandidateId.get(a),orderKeyByCandidateId.get(b))});
+          const sliceRepresentationSwaps=representation.swaps;
+          if(sliceRepresentationSwaps.length)
+            selectedIds.splice(0,selectedIds.length,
+              ...representation.selectedCandidateIds);
           if(!selectedIds.length){
             // The deterministic path abstains only when the pool
             // itself yields no candidates. The composer can still
@@ -4711,6 +4766,7 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             ...(recoveredPartLinks.length?{recoveredPartLinks}:{}),
             ...(skippedPartRecoveries.length?{skippedPartRecoveries}:{}),
             ...(adoptions.length?{adoptions}:{}),
+            ...(sliceRepresentationSwaps.length?{sliceRepresentationSwaps}:{}),
             // Stage B.5 (item 1): every pooled candidate that missed
             // the packet is named here with the stage that left it
             // out — the ledger the S3 census reads.

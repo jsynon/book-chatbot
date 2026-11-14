@@ -8712,18 +8712,11 @@ test('batch 35 B35-1 pilot: a boundary-only swap finding is recorded with audit 
   [source],ai,[],{plan,catalog:{77:'Letters — Alice Marchmain'},trace:true});
  assert.match(result.answer,/Bernard weeps openly/,
   'the claim ships: a boundary-only finding no longer demotes');
- const records=result.trace.reviewContract?.boundarySubjectChecks||[];
- assert.equal(records.length,1);
- assert.equal(records[0].outcome,'recorded');
- assert.equal(records[0].wouldBeOutcome,'demoted');
- assert.equal(records[0].wouldBeGround,'source-subject-attribution-mismatch');
- assert.equal(records[0].boundarySubject,'Alice');
- assert.equal(records[0].claimSubject,'Bernard');
- assert.ok(records[0].spanIds.length>=1,
-  'the record carries the cited span IDs for the precision audit');
+ assert.equal(result.trace.reviewContract?.boundarySubjectChecks,undefined,
+  'the boundary channel is deleted (repair tranche): no records are produced');
  assert.ok(!(result.trace.vetoCensus||[]).some(entry=>
-   entry.claimId===records[0].claimId&&entry.kind==='boundary-subject'),
-  'a recorded finding never enters the veto census as a demotion');
+   entry.kind==='boundary-subject'),
+  'no boundary demotion enters the veto census');
 });
 
 test('batch 35 B35-1 pilot: an extracted subject absent from the evidence is silence, not a finding',async()=>{
@@ -9230,9 +9223,8 @@ test('redesign Stage A: no boundary, context-purge, or veto demotion can fire on
   'the cited claim ships on the reviewer verdict despite the boundary finding');
  assert.match(result.answer,/The letter plainly shook everyone who read it/,
   'the uncited reviewer-answered claim ships: the context purge is gone');
- const records=result.trace.reviewContract?.boundarySubjectChecks||[];
- assert.equal(records.length,1,'the boundary finding is still recorded as telemetry');
- assert.equal(records[0].outcome,'recorded');
+ assert.equal(result.trace.reviewContract?.boundarySubjectChecks,undefined,
+  'the boundary channel is deleted (repair tranche): no records are produced');
  assert.equal(result.trace.vetoCensus,undefined,
   'no veto census exists on the pilot route');
  assert.ok(!(result.trace.reviewContract?.gateDemotionsSuppressed||[]).length,

@@ -2481,26 +2481,27 @@ test('selection tranche item 2: distinctive-term evidence classifies direct; sco
  const pilot=await pilotScenario({config:{PILOT_EVALUATION_ENABLED:'true',
   PILOT_EVALUATION_TOKEN:token,READER_PIPELINE:'evidence-v2'},model});
  const first=pilot.fixture.body.sources[0];
- // P1's distinctive terms: naval, tribute, fund, fleet. P2's: sparta,
- // fear, growth, power. P3's: plague, strike, athens. The six fixture
- // pages (identical text: 'cause'/'fear'/'power'/'war' territory) are
- // direct for P2 only. C7 carries two P1 terms (direct for P1, context
- // for P2); C8 carries exactly one P1 term (never enough); C9 carries
- // three P3 terms but no part hints it to P3, so P3 meets it only
- // through the scope fallback, which is context by construction.
- // The custom pages sit past the slice, so none is ever packed.
+ // Repaired-signal terms — P1's: fear, grow, power, caus, war (the
+ // fixture text carries all five, so the six identical pages are
+ // direct for P1 in the packet). P2's: sparta, fear, athenian, power
+ // (the text carries fear and power: direct). C7 carries no P1 or P2
+ // term (context for both); C8 carries exactly one P1 term (never
+ // enough); C9 carries three P3 terms but no part hints it to P3, so
+ // P3 meets it only through the scope fallback, which is context by
+ // construction. The custom pages sit past the slice, so none is
+ // ever packed.
  const response=await pilot.post({headers:{Authorization:'Bearer '+token},body:{
-  question:'How did naval tribute fund the Athenian fleet, why did Sparta fear Athenian power, and when did the plague strike Athens?',
+  question:'How did the fear of growing power cause the war, why did Sparta fear Athenian power, and when did the plague strike Athens?',
   answerVariant:'with-review',trace:true,
   sources:[...[38,39,40,41,42,43].map(page=>({...first,page,candidatePartIds:['P1','P2']})),
    {...first,page:44,candidatePartIds:['P1','P2'],
     text:'The naval tribute records list payments from the island cities each spring.'},
    {...first,page:45,candidatePartIds:['P1'],
-    text:'The fleet sailed home before winter storms closed the sea lanes.'},
+    text:'The fleet returned home after the war had ended.'},
    {...first,page:46,candidatePartIds:['P1'],
     text:'The plague strikes Athens in the second summer of the war.'}],
   plan:{intent:'explain',sources:[{label:'Thucydides',role:'primary',bookIds:['152']}],
-   parts:[{id:'P1',question:'How did naval tribute fund the Athenian fleet?',sourceBookIds:['152']},
+   parts:[{id:'P1',question:'How did the fear of growing power cause the war?',sourceBookIds:['152']},
     {id:'P2',question:'Why did Sparta fear the growth of Athenian power?',sourceBookIds:['152']},
     {id:'P3',question:'When did the plague strike Athens?',sourceBookIds:['152']}]}}});
  assert.equal(response.status,200);const result=await response.json();
@@ -2509,16 +2510,16 @@ test('selection tranche item 2: distinctive-term evidence classifies direct; sco
  const supportOf=(partId,candidateId)=>stage.decision.parts
   .find(part=>part.partId===partId).evidence
   .find(entry=>entry.candidateId===candidateId)?.support;
- assert.equal(supportOf('P1','C7'),'direct',
-  'two distinctive terms in the page text classify the row direct');
+ assert.equal(supportOf('P1','C7'),'context',
+  'the naval page holds no P1 term under the repaired signal');
  assert.equal(supportOf('P2','C7'),'context',
   'the same page holds no P2-distinctive term');
  assert.equal(supportOf('P1','C8'),'context',
   'a single distinctive term does not classify');
  assert.equal(supportOf('P2','C1'),'direct',
   'the fixture text carries fear and power for P2');
- assert.equal(supportOf('P1','C1'),'context',
-  'the fixture text carries no P1-distinctive term');
+ assert.equal(supportOf('P1','C1'),'direct',
+  'the fixture text carries fear, power, cause and war for P1');
  const p3=stage.decision.parts.find(part=>part.partId==='P3');
  assert.equal(p3.evidence.length,9,'the scope fallback links every pooled page to P3');
  assert.ok(p3.evidence.every(entry=>entry.support==='context'),
@@ -2528,7 +2529,7 @@ test('selection tranche item 2: distinctive-term evidence classifies direct; sco
  assert.equal(stage.decision.parts.find(part=>part.partId==='P1').coverage,'supported');
  assert.equal(p3.coverage,'partial');
  assert.deepEqual(stage.directClassification,
-  {rowsClassified:25,directRows:7,partsWithDirect:2,partsTotal:3},
+  {rowsClassified:25,directRows:12,partsWithDirect:2,partsTotal:3},
   'the trace census counts the classification');
 });
 
@@ -2578,3 +2579,4 @@ test('selection tranche item 2: an adopted row stays context even when its text 
  assert.deepEqual(stage.directClassification,
   {rowsClassified:13,directRows:6,partsWithDirect:1,partsTotal:2});
 });
+
