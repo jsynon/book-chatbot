@@ -3307,7 +3307,16 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
         const sameDecision=['status','attributionStatus','attributedSpeaker',
           'subjectAttributionStatus','attributedSubject','evidenceRole','legacyMissingSpan']
           .every(key=>(existing[key]??'')===(normalizedDecision[key]??''));
-        if(!sameDecision){issues.push('duplicate-claim-source');continue;}
+        if(!sameDecision){
+          // Retrieval tranche (item 3a): a conflicting duplicate used
+          // to fail the part's whole review (the progress case shipped
+          // fallback-unreviewed over this single issue). The first
+          // decision stands; the contradictory row excludes only its
+          // own (claim, source) pair and is recorded as a warning.
+          warnings.push({partId:part.id,claimId:answer.claimId,
+            code:'duplicate-claim-source-excluded',sourceId});
+          continue;
+        }
         const spanIdsAdded=normalizedDecision.spanIds.filter(id=>!existing.spanIds.includes(id)).length;
         existing.spanIds=[...new Set([...existing.spanIds,...normalizedDecision.spanIds])];
         const boundaries=[...new Set([existing.supportBoundary,normalizedDecision.supportBoundary]
@@ -5219,6 +5228,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
           error.code:'review-request-failed';
       const packetsByPart=new Map(),rawReviewByPart=new Map(),reviewRetryParts=[];
+      const reviewRetryExecutorsByPart=new Map();
       const partialReviewResponseParts=new Set(),completedPartialReviewParts=new Set();
       const attemptPartReview=async(checkedPart)=>{
         const partId=checkedPart.partId;
@@ -5305,7 +5315,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         // REVIEW_CHUNK_PAYLOAD_BUDGET); a claim whose own payload
         // exceeds the budget still travels alone. Claim order is
         // preserved, so chunking stays deterministic.
-        const reviewChunksFor=(packet)=>{
+        const reviewChunksFor=(packet,claimCap=5)=>{
           const spanMaps=packet.reviewSpanMapsByPart?.get(partId);
           const chunks=[];let current=[],currentVolume=0;
           for(const claim of packet.reviewClaims||[]){
@@ -5313,7 +5323,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             for(const item of claim.sourceEvidence||[])
               for(const spanId of item.spanIds||[])
                 volume+=spanMaps?.get(item.sourceId)?.get(spanId)?.text?.length||0;
-            if(current.length&&(current.length>=5||
+            if(current.length&&(current.length>=claimCap||
                currentVolume+volume>REVIEW_CHUNK_PAYLOAD_BUDGET)){
               chunks.push(current);current=[];currentVolume=0;
             }
@@ -5322,8 +5332,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           if(current.length)chunks.push(current);
           return chunks;
         };
-        const executePartReview=async(packet,kind)=>{
-          const chunks=reviewChunksFor(packet);
+        const executePartReview=async(packet,kind,chunkClaimCap=5)=>{
+          const chunks=reviewChunksFor(packet,chunkClaimCap);
           if(chunks.length<=1)return callReviewChunk(packet,null,kind);
           const settled=await Promise.allSettled(chunks.map(ids=>
             callReviewChunk(packet,ids,kind)));
@@ -5331,6 +5341,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           if(failed)throw failed.reason;
           return mergeChunkReviews(chunks,settled.map(entry=>entry.value));
         };
+        // Retrieval tranche (item 3b): register this part's review
+        // executor so the contract-incomplete re-review below can run
+        // one more review for a part whose calls completed but whose
+        // supplied review failed normalization.
+        reviewRetryExecutorsByPart.set(partId,
+          (retryPacket)=>executePartReview(retryPacket,'retry'));
         try{
           const rawReview=await executePartReview(packet,'initial');
           return {packet,rawReview};
@@ -5393,7 +5409,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               reservedCallAllowance+=roundAllowance;
               if(round>1)retryEntry.attempts=round;
               try{
-                const retriedReview=await executePartReview(packet,'retry');
+                // Retrieval tranche (item 3c): the reserved final
+                // rounds re-chunk at two claims per call. Deadline
+                // deaths that survived the split retry (the Gulliver
+                // shape) leave generation length as the remaining
+                // lever; smaller chunks give each call less to write.
+                const retriedReview=await executePartReview(packet,'retry',2);
                 retryEntry.applied=true;
                 retryEntry.outcome='recovered';
                 return {packet,rawReview:retriedReview};
@@ -5594,6 +5615,52 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       try{
         if(!rawReviewByPart.size)throw failedReviewParts[0].error;
         review=normalizeAllParts();
+        // Retrieval tranche (item 3b): a part whose review calls
+        // completed but whose supplied review is contract-incomplete
+        // (normalization recorded issues — a defective or missing
+        // decision) gets ONE re-review on the compact packet before
+        // its verdicts are withheld. Call-level failures carry an
+        // error on their failedReviewParts entry and already exhausted
+        // their retry paths above; they are not re-attempted here.
+        // The attempt is recorded on trace.reviewContractRetry.
+        const contractRetryEntries=[];
+        for(const item of failedReviewParts){
+          if(item.code!=='review-contract-incomplete'||item.error)continue;
+          const partId=item.partId;
+          const checkedPart=checked.parts.find(part=>part.partId===partId);
+          const executor=reviewRetryExecutorsByPart.get(partId);
+          if(!checkedPart||!executor||!rawReviewByPart.has(partId))continue;
+          const entry={partId,reason:'review-contract-incomplete',applied:false};
+          contractRetryEntries.push(entry);
+          if(usage.calls>=callLimit){entry.outcome='not-attempted-call-budget';continue;}
+          try{
+            const retryPacket=buildReviewPacket([checkedPart],
+              {sources,pageById,plan,question,packetSpanLimit:4});
+            const retriedReview=await executor(retryPacket);
+            packetsByPart.set(partId,retryPacket);
+            rawReviewByPart.set(partId,retriedReview);
+            entry.applied=true;
+          }catch(retryError){
+            entry.retryFailureCode=reviewFailureCode(retryError);
+          }
+        }
+        if(contractRetryEntries.length){
+          trace.reviewContractRetry=contractRetryEntries;
+          if(contractRetryEntries.some(entry=>entry.applied)){
+            for(const entry of contractRetryEntries){
+              if(!entry.applied)continue;
+              const failedIndex=failedReviewParts.findIndex(item=>
+                item.partId===entry.partId&&!item.error);
+              if(failedIndex>=0)failedReviewParts.splice(failedIndex,1);
+            }
+            // Re-derive the exclusion state from scratch: the
+            // re-normalization recomputes every part's single, and
+            // mergeSingles re-excludes any part still failing.
+            issueExcludedPartIds.clear();
+            excludedIssues.length=0;
+            review=normalizeAllParts();
+          }
+        }
         if(completedPartialReviewParts.size)
           trace.partialReviewResponseRecovery={
             recoveredPartIds:plan.parts.map(part=>part.id)

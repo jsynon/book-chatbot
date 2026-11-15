@@ -219,8 +219,22 @@ export function normalizePlan(raw,question,catalog={},selectedBookId=''){
   // or a comparison side: scoping to an anthology byline's full set
   // silently excludes every book outside it, including the ones the
   // reader's question is actually about.
+  // Retrieval tranche: the count rule alone misses the planner's
+  // recurring anthology set — a single 'Various authors' source carrying
+  // the Ante-Nicene Fathers, the NKJV, and the Sacred Books of the East
+  // (16 books, under the limit) hard-scoped the science and suffering
+  // parts in every recorded run. A source whose every book is bylined
+  // with exactly that collective byline is collective at any count; a
+  // genuine author's multi-book set (Plato's 22 dialogues) names a
+  // person and still scopes.
+  const collectiveBylineSource=(source)=>source.bookIds.length>0&&
+    source.bookIds.every(id=>{
+      const authors=catalogIdentity(catalog[id]).authors.map(identity);
+      return authors.length===1&&authors[0]==='various authors';
+    });
   const collectiveSourceIndexes=new Set(sources
-    .map((source,index)=>source.bookIds.length>COLLECTIVE_SOURCE_BOOK_LIMIT?index:-1)
+    .map((source,index)=>source.bookIds.length>COLLECTIVE_SOURCE_BOOK_LIMIT||
+      collectiveBylineSource(source)?index:-1)
     .filter(index=>index>=0));
   const collectiveSources=sources
     .filter((source,index)=>collectiveSourceIndexes.has(index))
