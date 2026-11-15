@@ -3667,6 +3667,10 @@ test('a review that fails every attempt ships the mechanically covered claim und
  assert.deepEqual(result.trace.reviewFallback,
   [{partId:'P1',keptClaimIds:['P1-C1'],dropped:[]}]);
  assert.equal(result.evidenceMap.length,1);
+ // Audit fix (2026-11-15): fallback evidence was never quote-checked,
+ // so its map entry must not claim verification it never had.
+ assert.equal(result.evidenceMap[0].quoteVerified,false);
+ assert.equal(result.evidenceMap[0].quote,undefined);
  assert.ok(result.answer.includes('This part is presented without a completed source review'),
   'the fallback label is in the shipped answer text');
  assert.ok(result.trace.final.disclosureLabels.some(label=>
@@ -10609,6 +10613,45 @@ test('the reserved final review round re-chunks at two claims per call (retrieva
   'the five-claim chunk split failed before the reserved round ran');
  assert.equal(result.trace.reviewRetry.parts[0].outcome,'recovered',
   'the reserved round recovered the part');
+});
+
+test('the reserved round allowance is sized at the two-claim chunking the round executes (audit fix)',async()=>{
+ const sentences=['Custom guides human life.','Habit shapes inference.',
+  'Repeated experience forms expectations.','One event follows another regularly.',
+  'The mind learns from repeated conjunctions.','Custom directs ordinary expectations.',
+  'Experience produces familiar associations.','Inference follows established habits.',
+  'Repeated cases shape anticipation.'];
+ const sourceText=sentences.join('\n\n');
+ const source={...hume,id:'S1',text:sourceText,preview:sourceText};
+ const timeout=()=>Object.assign(new Error('Inference deadline exceeded'),
+  {stage:'review',code:'inference-deadline-exceeded'});
+ // Every multi-claim call dies at its deadline; single-claim calls
+ // land. The initial chunks and their splits all die, and in the
+ // reserved round every two-claim chunk must split into single
+ // claims — thirteen calls for the round. The pre-fix reservation
+ // counted chunks at the default five-claim cap (two chunks, six
+ // calls of allowance), so the budget check killed the round
+ // mid-flight and the part fell back unreviewed.
+ const flakyReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const ids=payload.reviewClaimIds||payload.claims.map(claim=>claim.claimId);
+  if(ids.length>=2)throw timeout();
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:['P1-C1']}],claims:ids.map(claimId=>{
+    const claim=payload.claims.find(item=>item.claimId===claimId);
+    return {claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:[claim.sourceEvidence[0].spanIds[0]]}]};})})};
+ };
+ const ai=makeAI([answer('PART P1\n'+sentences.map(s=>s+' [S1]').join('\n\n')),
+  ...Array(40).fill(flakyReview)]);
+ const result=await composeEvidenceAnswer('What guides human life?',[source],ai,[],
+  {plan:onePartPlan,catalog,trace:true,transportDiagnostics:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.equal(result.trace.reviewRetry.parts[0].outcome,'recovered',
+  'the reserved round recovered the part instead of dying on its own reservation');
+ assert.ok(ai.calls.length>=20,
+  'the recovery spent more calls than the pre-fix reservation allowed');
 });
 
 test('a truncated compact-format review still salvages its complete claim prefix (latency tranche)',async()=>{
