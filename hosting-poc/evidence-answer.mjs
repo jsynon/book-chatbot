@@ -5405,7 +5405,13 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               // is always attempted; the reservation is recorded
               // on the retry entry when it binds (the round starts
               // at, or spends past, the base call limit).
-              const roundAllowance=reviewChunksFor(packet).length*3;
+              // Audit fix (2026-11-15): the chunk count must be
+              // taken at the two-claim cap the round executes with
+              // (item 3c below) — counting at the default cap of
+              // five under-reserved the round, so the budget check
+              // could still kill the "guaranteed" final retry
+              // mid-round in the single-part deadline shape.
+              const roundAllowance=reviewChunksFor(packet,2).length*3;
               reservedCallAllowance+=roundAllowance;
               if(round>1)retryEntry.attempts=round;
               try{
@@ -7243,7 +7249,15 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         }
       }
     }
-    if(!final.ok&&!salvage)throw Error('Final answer integrity failed');
+    if(!final.ok&&!salvage){
+      // Audit fix (2026-11-15): carry the same code the salvaged
+      // path records below, so the B11-1 salvage catch names this
+      // failure 'answer-final-integrity-failed' instead of the
+      // generic 'answer-post-review-failed'.
+      const integrityError=Error('Final answer integrity failed');
+      integrityError.code='answer-final-integrity-failed';
+      throw integrityError;
+    }
     if(!final.ok){
       // Batch 11 (B11-1): a salvaged assembly whose text fails the
       // final audit must not ship it. Suppress the text exactly as
@@ -8058,7 +8072,12 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         evidenceMap.push({id:source.id,claimId:support.claimId||'C1',point:support.point||item.part.question,partId:item.part.id,
           ...(Array.isArray(support.requirementIds)&&support.requirementIds.length?
             {requirementIds:support.requirementIds}:{}),
-          quoteVerified:true,quote:sourceAnchor,
+          // Audit fix (2026-11-15): quoteVerified must mean a
+          // quote was actually verified. Fallback-unreviewed
+          // evidence entries carry no anchor quote; stamping them
+          // verified asserted a check that never happened.
+          quoteVerified:Boolean(sourceAnchor),
+          ...(sourceAnchor?{quote:sourceAnchor}:{}),
           // Preserve exact offsets from the verified page so the UI can join
           // adjacent reviewed sentences without guessing at source wording.
           ...(Number.isInteger(support.start)&&Number.isInteger(support.end)?
