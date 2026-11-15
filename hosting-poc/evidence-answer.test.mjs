@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {composeEvidenceAnswer,linkEvidenceToParts,derivePartContract,COMPOSER_PROMPT,REVIEW_PROMPT,parseReviewJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimPersonSubjects,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,claimPossessiveOnlySubjects} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
-import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims,reconcileAssemblyLoss,classifySpanRegion,subjectNamesEquivalent,BATCH35_FIRING_FIELDS} from './evidence-answer.mjs';
+import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims,reconcileAssemblyLoss,classifySpanRegion,subjectNamesEquivalent,BATCH35_FIRING_FIELDS,scopeReviewPayload} from './evidence-answer.mjs';
 test('batch 34 (B34-5) retired B33-9 scaling: an oversized review packet gets the flat 60000 deadline',async()=>{
  // The packet below carries ~96,000 span characters (~16,000 packet
  // words): under B33-9's retired scaling its initial review call
@@ -3332,10 +3332,12 @@ test('large claim reviews send one ranked span hint per citation while keeping t
  await composeEvidenceAnswer('What guides human life?', [source],ai,[],{
   plan:onePartPlan,catalog,trace:true
  });
- assert.equal(reviewPayload.claims.length,9);
- assert.ok(reviewPayload.claims.every(claim=>claim.sourceEvidence[0].spanIds.length===1));
- assert.ok(reviewPayload.parts[0].evidence[0].spans.length>1,
-  'the reviewer still receives the full bounded set of exact source spans');
+ assert.deepEqual(reviewPayloads.map(payload=>payload.claims.length),[5,4],
+  'each chunk call now carries only its own claims (review-payload trimming, 2026-11-15)');
+ assert.ok(reviewPayloads.every(payload=>payload.claims.every(claim=>
+  claim.sourceEvidence[0].spanIds.length===1)));
+ assert.ok(reviewPayloads.every(payload=>payload.parts[0].evidence[0].spans.length>1),
+  'the reviewer still receives the full bounded set of exact source spans for the cited source');
  assert.match(reviewSystem,/One source cannot supply another source’s missing support/);
  assert.deepEqual(reviewPayloads.map(payload=>payload.reviewClaimIds.length),[5,4],
   'the 9-claim review is chunked at five claims per scoped call');
@@ -4102,9 +4104,11 @@ test('review output budget scales past the old cap for a many-claim review',asyn
  const sentences=Array.from({length:25},(_,index)=>
   `Hume observation ${index+1} links necessity to custom and regular conjunction in experience. [S1]`);
  // Latency tranche: a 25-claim part is audited by five chunk calls
- // of five claims each; every chunk carries the full part payload,
- // so the per-record budget formula still applies to the whole
- // record set at once on every call.
+ // of five claims each. Review-payload trimming (2026-11-15): each
+ // chunk now carries only its own five claims, so the per-record
+ // budget formula sizes each call to the records that chunk can
+ // actually return — 1,200 + 220×5 = 2,300 — instead of sizing every
+ // chunk for the whole 25-record set it never returns.
  const reviewHandler=review([['P1','answered']]);
  const ai=makeAI([answer('PART P1\n'+sentences.join(' ')),reviewHandler,reviewHandler,
   reviewHandler,reviewHandler,reviewHandler]);
@@ -4114,7 +4118,7 @@ test('review output budget scales past the old cap for a many-claim review',asyn
  const reviewCalls=ai.calls.filter(call=>call.request.messages[0].content.startsWith('Review the complete answer'));
  assert.equal(reviewCalls.length,5,'the many-claim review runs as five chunk calls');
  assert.deepEqual(reviewCalls.map(call=>call.request.max_completion_tokens).sort((a,b)=>b-a),
-  [6700,6700,6700,6700,6700],'the budget is 1,200 plus 220 tokens per review record (25 claims) on every chunk');
+  [2300,2300,2300,2300,2300],'the budget is 1,200 plus 220 tokens per review record in the chunk\u2019s own scope (5 claims)');
  assert.equal(result.trace.reviewRetry,undefined,'a completed review is not retried');
 });
 
@@ -10667,4 +10671,48 @@ test('compact verdict format: per-claim response size falls by at least 40% (lat
  const parsed=parseReviewJson({response:JSON.stringify({claims:newClaims,parts:[]})});
  assert.equal(parsed.claims.length,2);
  assert.equal(parsed.claims[0].sources[0].attributedSubject,'Hume');
+});
+
+test('scopeReviewPayload trims a chunk call to its claims and their evidence (2026-11-15)',()=>{
+ const payload={
+  question:'What did the author think?',
+  parts:[
+   {partId:'P1',question:'Part one?',sourceRequired:true,
+    contextClaims:[{claimId:'X1',text:'Uncited framing.'}],
+    evidence:[{id:'S1',spanIds:['SP1','SP2']},{id:'S2',spanIds:['SP3']}]},
+   {partId:'P2',question:'Part two?',sourceRequired:true,
+    evidence:[{id:'S3',spanIds:['SP4']}]},
+  ],
+  sourceCatalog:{S1:{title:'Book A'},S2:{title:'Book B'},S3:{title:'Book C'}},
+  spanCatalog:[{spanId:'SP1',text:'one'},{spanId:'SP2',text:'two'},
+   {spanId:'SP3',text:'three'},{spanId:'SP4',text:'four'}],
+  sourceContexts:[{sourceId:'S1',text:'ctx a'},{sourceId:'S3',text:'ctx c'}],
+  claims:[
+   {partId:'P1',claimId:'C1',text:'First claim.',sourceIds:['S1'],
+    sourceEvidence:[{sourceId:'S1',spanIds:['SP1']}]},
+   {partId:'P1',claimId:'C2',text:'Second claim.',sourceIds:['S2'],
+    sourceEvidence:[{sourceId:'S2',spanIds:['SP3']}]},
+   {partId:'P2',claimId:'C3',text:'Third claim.',sourceIds:['S3'],
+    sourceEvidence:[{sourceId:'S3',spanIds:['SP4']}]},
+  ]};
+ const scoped=scopeReviewPayload(payload,['C1']);
+ assert.deepEqual(scoped.claims.map(claim=>claim.claimId),['C1']);
+ assert.equal(scoped.parts.length,1,'only the scoped claim\u2019s part travels');
+ assert.equal(scoped.parts[0].partId,'P1');
+ assert.deepEqual(scoped.parts[0].contextClaims,[{claimId:'X1',text:'Uncited framing.'}],
+  'the part\u2019s uncited context claims stay for scaffolding judgment');
+ assert.deepEqual(scoped.parts[0].evidence.map(item=>item.id),['S1'],
+  'only sources the scoped claims cite travel');
+ assert.deepEqual(scoped.spanCatalog.map(span=>span.spanId),['SP1','SP2'],
+  'all packet spans of a cited source stay, not just the hinted span');
+ assert.deepEqual(Object.keys(scoped.sourceCatalog),['S1']);
+ assert.deepEqual(scoped.sourceContexts,[{sourceId:'S1',text:'ctx a'}]);
+ assert.equal(scoped.question,payload.question);
+ const crossPart=scopeReviewPayload(payload,['C1','C3']);
+ assert.deepEqual(crossPart.parts.map(part=>part.partId),['P1','P2'],
+  'a scope spanning parts keeps each part, trimmed to its own cited sources');
+ assert.deepEqual(crossPart.parts[1].evidence.map(item=>item.id),['S3']);
+ assert.equal(scopeReviewPayload(payload,['NOPE']),payload,
+  'an unmatched scope falls back to the full payload');
+ assert.equal(scopeReviewPayload(payload,[]),payload);
 });
