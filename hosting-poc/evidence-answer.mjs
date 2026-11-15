@@ -3129,6 +3129,44 @@ function compactSourceContext(pageText,scopeText,limit=800){
 }
 
 
+// Review-payload trimming (2026-11-15): a chunked review call used to
+// carry the part's FULL review payload — every part, every claim, the
+// whole span catalog — plus a scope list of at most five claim IDs, so
+// a twelve-chunk case shipped the entire evidence payload twelve times
+// and each input-heavy call took ~28 s. A scoped call now carries only
+// what its claims need: the scoped claims themselves, their parts (with
+// the parts' context claims, requirements, and prior rejections intact),
+// the evidence entries for the sources those claims cite (with all of
+// those sources' packet spans), and the matching catalog/context
+// entries. The prompt, the chunking, the verdict logic, and the
+// unscoped single-chunk call are untouched.
+export function scopeReviewPayload(payload,claimIds){
+  const wanted=new Set(claimIds||[]);
+  const claims=(payload?.claims||[]).filter(claim=>wanted.has(claim.claimId));
+  if(!claims.length)return payload;
+  const partIds=new Set(claims.map(claim=>claim.partId));
+  const sourceIds=new Set(claims.flatMap(claim=>claim.sourceIds||[]));
+  const parts=(payload.parts||[]).filter(part=>partIds.has(part.partId))
+    .map(part=>({...part,evidence:(part.evidence||[])
+      .filter(item=>sourceIds.has(item.id))}));
+  const spanIds=new Set(parts.flatMap(part=>part.evidence
+    .flatMap(item=>item.spanIds||[])));
+  for(const claim of claims)for(const item of claim.sourceEvidence||[])
+    for(const spanId of item.spanIds||[])spanIds.add(spanId);
+  const catalogKeys=new Set();
+  for(const part of parts)for(const item of part.evidence){
+    catalogKeys.add(item.sourceDetailsId||item.id);catalogKeys.add(item.id);}
+  for(const id of sourceIds)catalogKeys.add(id);
+  const sourceCatalog={};
+  for(const key of catalogKeys)
+    if(payload.sourceCatalog?.[key])sourceCatalog[key]=payload.sourceCatalog[key];
+  const sourceContexts=(payload.sourceContexts||[])
+    .filter(context=>sourceIds.has(context.sourceId));
+  return {question:payload.question,parts,sourceCatalog,
+    spanCatalog:(payload.spanCatalog||[]).filter(span=>spanIds.has(span.spanId)),
+    ...(sourceContexts.length?{sourceContexts}:{}),claims};
+}
+
 function reviewPayloadMetrics(payload,serializedPayload,systemPrompt){
   const parts=Array.isArray(payload?.parts)?payload.parts:[];
   const evidence=parts.flatMap(part=>Array.isArray(part?.evidence)?part.evidence:[]);
@@ -4512,8 +4550,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           return merged;
         };
         const callReviewChunk=async(packet,claimIds,kind)=>{
-          const payload=claimIds?{...packet.reviewPayload,reviewClaimIds:claimIds}:
-            packet.reviewPayload;
+          const payload=claimIds?{...scopeReviewPayload(packet.reviewPayload,claimIds),
+            reviewClaimIds:claimIds}:packet.reviewPayload;
           try{
             return await run('review',REVIEW_PROMPT,payload,parseReviewJson,
               {partId,kind,...(claimIds?{claimCount:claimIds.length}:{})});
@@ -4546,7 +4584,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             (trace.reviewRetrySplit??=[]).push(splitEntry);
             try{
               const responses=await Promise.all(halves.map(ids=>run('review',
-                REVIEW_PROMPT,{...packet.reviewPayload,reviewClaimIds:ids},
+                REVIEW_PROMPT,{...scopeReviewPayload(packet.reviewPayload,ids),
+                 reviewClaimIds:ids},
                 parseReviewJson,{partId,kind:'split-retry',claimCount:ids.length})));
               splitEntry.outcome='recovered';
               return mergeChunkReviews(halves,responses);
