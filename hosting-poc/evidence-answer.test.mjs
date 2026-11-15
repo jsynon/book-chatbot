@@ -6983,6 +6983,37 @@ test('batch 30 B30-5: a plan-level candidate list alone does not make a part sou
  assert.equal(linked.parts[1].sourceRequired,true);
 });
 
+test('the selection-signal determination is per source, not build-global (audit fix)',()=>{
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Adam Smith',role:'primary',bookIds:['260']}],
+  parts:[{id:'P1',question:'How does the division of labour increase productivity?',
+   sourceBookIds:null,searchQueries:['division of labour productivity']},
+   {id:'P2',question:'How does the division of labour affect the workers who perform it?',
+   sourceBookIds:null,searchQueries:['division of labour workers']}],
+  queries:['division of labour']};
+ const signalled={id:'S1',bookId:'260',title:'The Wealth of Nations — Adam Smith',
+  candidatePartIds:['P1','P2'],
+  candidatePartSupport:[{partId:'P1',support:'direct'}]};
+ const unsignalled={id:'S2',bookId:'260',title:'The Wealth of Nations — Adam Smith',
+  candidatePartIds:['P2']};
+ // Mixed build: S1 carries the signal, S2 carries none (the
+ // deterministic-fallback / diversity-swap shape). Before the fix,
+ // S1's entries switched the whole build into signal mode and S2's
+ // explicit part link silently stopped conferring source-required
+ // status on P2.
+ let linked=linkEvidenceToParts(plan,[signalled,unsignalled]);
+ assert.equal(linked.parts[0].sourceRequired,true,
+  'the signalled source still confers via its direct entry');
+ assert.equal(linked.parts[1].sourceRequired,true,
+  'the unsignalled source keeps its pre-B30-5 explicit-link determination');
+ // A source carrying only a context entry for P2 remains in signal
+ // mode for itself: the per-source change does not loosen it.
+ linked=linkEvidenceToParts(plan,[signalled,
+  {...unsignalled,candidatePartSupport:[{partId:'P2',support:'context'}]}]);
+ assert.equal(linked.parts[1].sourceRequired,false,
+  'a context-only signal on the source itself still does not confer');
+});
+
 const b30SmithSources=supportBySource=>[
  {id:'S1',bookId:'260',title:'The Wealth of Nations — Adam Smith',page:18,
   url:'https://example.test/smith#page=18',

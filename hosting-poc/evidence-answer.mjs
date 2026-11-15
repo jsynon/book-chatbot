@@ -1180,16 +1180,20 @@ function titleAuthorForSource(source){
 function linkEvidenceToParts(plan,sources){
   // Batch 30 (B30-5): the per-part selection signal the architecture
   // records — candidatePartSupport entries are written by the
-  // selector/packing path per source PER PART ('direct' when the
-  // source was selected as answering that part, 'context' when it was
-  // packed as background). When any source in the build carries
-  // entries, selection happened and the signal is authoritative for
-  // the candidatePartIds question below; when no source carries any
-  // (deterministic-fallback builds, older packets), the signal is
-  // absent and today's determination stands unchanged.
-  const selectionSignalPresent=sources.some(source=>
-    Array.isArray(source?.candidatePartSupport)&&
-    source.candidatePartSupport.length>0);
+  // selector/packing path per source PER PART. The producing
+  // classifier is lexical (DF-filtered stemmed-term co-occurrence,
+  // or one verbatim phrase): 'direct' means the packing classifier
+  // matched the page to the part's vocabulary, 'context' that it
+  // packed the page as background — neither is a semantic judgment
+  // that the page answers the part. When a source carries entries,
+  // the signal is authoritative for THAT source's candidatePartIds
+  // question below; when a source carries none
+  // (deterministic-fallback builds, older packets, post-packing
+  // diversity swaps), the signal is absent for that source and the
+  // pre-B30-5 determination stands for it. (Audit fix 2026-11-15:
+  // the determination was build-global — one source's entries
+  // switched every source into signal mode and silently stripped
+  // the explicit-link path from sources carrying no entries.)
   const groups=(plan.sources||[]).filter(source=>['primary','subject'].includes(source.role)&&
     Array.isArray(source.bookIds)&&source.bookIds.length).map((source,index)=>({index,
       bookIds:new Set(source.bookIds.map(String))}));
@@ -1234,13 +1238,15 @@ function linkEvidenceToParts(plan,sources){
       // packed sources, so it links every source to every part
       // (the batch-29 Smith containment: P2 became source-required
       // through sources listed for both parts although selection had
-      // packed nothing for it). When the build carries the per-part
-      // selection signal, that list alone no longer confers
+      // packed nothing for it). When this source carries the
+      // per-part selection signal, that list alone no longer confers
       // source-required status: the part must be book-scoped to the
       // source (the plan's own per-part statement) or selected for
-      // the part with 'direct' support. With no signal anywhere,
-      // the link counts exactly as before.
-      if(selectionSignalPresent)return explicitPartScope||selectedSupport;
+      // the part with 'direct' support. When this source carries no
+      // signal, the link counts exactly as before.
+      const signalForSource=Array.isArray(source?.candidatePartSupport)&&
+        source.candidatePartSupport.length>0;
+      if(signalForSource)return explicitPartScope||selectedSupport;
       return explicitPartScope||explicitPartLink||selectedSupport;
     });
     return {...part,candidateSourceIds,sourceRequired,
