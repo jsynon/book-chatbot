@@ -2348,6 +2348,42 @@ async function verifyTurnstile(token,ip,secret,fetcher) {
   }
   return true;
 }
+// Challenge pass (2026-11-15): a Turnstile token is single-use, so the
+// gateway used to make the reader solve a fresh challenge before EVERY
+// call of one question — planner, gap planner, and answer each demanded
+// a new check, bunched at the start of the turn. A successful siteverify
+// now also mints a short-lived pass, HMAC-signed with the Turnstile
+// secret and bound to the visitor IP, which the client presents for the
+// remaining calls of the same turn. Rate limits still run before
+// verification on every route; the pass replaces only the repeated
+// human check, and the evaluation bearer path is untouched.
+const CHALLENGE_PASS_TTL_MS=600000;
+function base64UrlEncode(bytes){
+  let binary='';
+  for(const byte of bytes)binary+=String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function challengePassSignature(ip,expiry,secret){
+  const key=await crypto.subtle.importKey('raw',
+    new TextEncoder().encode(String(secret||'')),{name:'HMAC',hash:'SHA-256'},
+    false,['sign']);
+  const signature=await crypto.subtle.sign('HMAC',key,
+    new TextEncoder().encode('v1|'+ip+'|'+expiry));
+  return base64UrlEncode(new Uint8Array(signature));
+}
+export async function mintChallengePass(ip,secret,now=Date.now()){
+  const expiry=Math.floor((now+CHALLENGE_PASS_TTL_MS)/1000);
+  return 'pass.'+expiry+'.'+await challengePassSignature(ip,expiry,secret);
+}
+export async function verifyChallengePass(token,ip,secret,now=Date.now()){
+  if(typeof token!=='string'||!token.startsWith('pass.'))return false;
+  const parts=token.split('.');
+  if(parts.length!==3)return false;
+  const expiry=Number(parts[1]);
+  if(!Number.isSafeInteger(expiry)||expiry*1000<=now)return false;
+  return constantTimeStringEqual(
+    await challengePassSignature(ip,expiry,secret),parts[2]);
+}
 function constantTimeStringEqual(left,right) {
   const a=new TextEncoder().encode(String(left||''));
   const b=new TextEncoder().encode(String(right||''));
@@ -2365,13 +2401,21 @@ export function authorizedPilotEvaluation(request,env) {
   if(authorization.length>2048)return false;
   return constantTimeStringEqual(authorization,'Bearer '+secret);
 }
-async function verifyPilotChallenge(request,token,ip,env,fetcher) {
+async function verifyPilotChallengeDetailed(request,token,ip,env,fetcher) {
   // A manually dispatched evaluation workflow may authenticate with a
   // dedicated bearer secret instead of minting disposable Turnstile tokens.
   // Public requests still use Turnstile. The normal rate limits are applied
   // earlier by both pilot routes and remain mandatory in evaluation mode.
-  if(authorizedPilotEvaluation(request,env))return true;
-  return verifyTurnstile(token,ip,env.TURNSTILE_SECRET,fetcher);
+  if(authorizedPilotEvaluation(request,env))return {ok:true,challengePass:null};
+  if(typeof token==='string'&&token.startsWith('pass.'))
+    return {ok:await verifyChallengePass(token,ip,env.TURNSTILE_SECRET),
+      challengePass:null};
+  if(!await verifyTurnstile(token,ip,env.TURNSTILE_SECRET,fetcher))
+    return {ok:false,challengePass:null};
+  return {ok:true,challengePass:await mintChallengePass(ip,env.TURNSTILE_SECRET)};
+}
+async function verifyPilotChallenge(request,token,ip,env,fetcher) {
+  return (await verifyPilotChallengeDetailed(request,token,ip,env,fetcher)).ok;
 }
 export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.fetch(url,opts)) {
   const origin=request.headers.get('Origin')||'';
@@ -2400,7 +2444,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
       scope:'full-public-catalog'},200,origin);
   }
   if(url.pathname==='/api/pilot-plan'){
-    const reply=(body,status=200)=>json({...body,...workerVersionDiagnostics(env)},status,origin);
+    let challengePass=null;
+    const reply=(body,status=200)=>json({...body,
+      ...(challengePass?{challengePass}:{}),...workerVersionDiagnostics(env)},status,origin);
     if(origin!==FRONTEND_ORIGIN)return reply({error:'Origin not allowed'},403,origin);
     if(request.method==='OPTIONS')
       return new Response(null,{status:204,headers:headers(origin)});
@@ -2437,8 +2483,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
        data.retrievalGap.candidates.length>6))||
       !(data.bookId===''||PILOT_BOOK_SET.has(String(data.bookId))))
       return reply({error:'Invalid search-planning question or book scope'},400,origin);
-    if(!await verifyPilotChallenge(request,data.turnstileToken,ip,env,fetcher))
+    const challenge=await verifyPilotChallengeDetailed(request,data.turnstileToken,ip,env,fetcher);
+    if(!challenge.ok)
       return reply({error:'Visitor verification failed; please retry the challenge'},403,origin);
+    challengePass=challenge.challengePass;
     const title=PILOT_BOOKS[String(data.bookId)]||'';
     try{
       const result=data.retrievalGap===undefined
@@ -2472,7 +2520,9 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
     }
   }
   if(url.pathname==='/api/pilot-answer'){
-    const reply=(body,status=200)=>json({...body,...workerVersionDiagnostics(env)},status,origin);
+    let challengePass=null;
+    const reply=(body,status=200)=>json({...body,
+      ...(challengePass?{challengePass}:{}),...workerVersionDiagnostics(env)},status,origin);
     if(origin!==FRONTEND_ORIGIN)
       return reply({error:'Origin not allowed'},403,origin);
     if(request.method==='OPTIONS')
@@ -2511,8 +2561,10 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
         Number.isSafeInteger(s.page) && s.page>=1 && s.page<=10000 &&
         typeof s.text==='string'))
       return reply({error:'Invalid question or unsupported pilot pages'},400,origin);
-    if(!await verifyPilotChallenge(request,data.turnstileToken,ip,env,fetcher))
+    const challenge=await verifyPilotChallengeDetailed(request,data.turnstileToken,ip,env,fetcher);
+    if(!challenge.ok)
       return reply({error:'Visitor verification failed; please retry the challenge'},403,origin);
+    challengePass=challenge.challengePass;
     // Batch 5 (verification diet): selection used to run only after EVERY
     // submitted page (up to 48) was fingerprint-verified, though at most
     // six pages are ever used. Selection now runs on provisional

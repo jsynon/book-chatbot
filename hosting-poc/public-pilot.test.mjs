@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import * as support from './public-gateway.test-support.mjs';
 import {claimPersonSubjects} from './evidence-answer.mjs';
+import {mintChallengePass,verifyChallengePass} from './public-gateway.mjs';
 const {gzipSync,gateway,handleRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,prepareCandidatePages,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,planSearchGapQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights,HOST,PDF,manifest,pages,question,payload,fetcher,env,fingerprintTestFixture,pilotBaseEnv,pilotScenario,v2DefaultModel}=support;
 
 test('batch 15 pilot route preserves subtitles and canonical quotation repair through scaffolding',async()=>{
@@ -1328,5 +1329,50 @@ test('selection tranche item 2: an adopted row stays context even when its text 
   'P1’s fixture rows are direct (cause and war in the text)');
  assert.deepEqual(stage.directClassification,
   {rowsClassified:13,directRows:6,partsWithDirect:1,partsTotal:2});
+});
+
+test('challenge pass helpers verify only the bound IP inside the TTL (2026-11-15)',async()=>{
+ const secret='a-long-private-turnstile-test-secret';
+ const pass=await mintChallengePass('198.51.100.42',secret,1000000);
+ assert.match(pass,/^pass\.\d+\.[A-Za-z0-9_-]+$/);
+ assert.equal(await verifyChallengePass(pass,'198.51.100.42',secret,1000001),true);
+ assert.equal(await verifyChallengePass(pass,'198.51.100.99',secret,1000001),false,
+  'a pass is bound to the IP it was minted for');
+ assert.equal(await verifyChallengePass(pass,'198.51.100.42','another-secret',1000001),false);
+ assert.equal(await verifyChallengePass(pass,'198.51.100.42',secret,1000000+600001),false,
+  'a pass dies at its ten-minute expiry');
+ const tampered=pass.slice(0,-2)+(pass.endsWith('AA')?'BB':'AA');
+ assert.equal(await verifyChallengePass(tampered,'198.51.100.42',secret,1000001),false);
+ assert.equal(await verifyChallengePass('pass.abc.def','198.51.100.42',secret,1000001),false);
+ assert.equal(await verifyChallengePass('one-time-challenge','198.51.100.42',secret,1000001),false);
+});
+
+test('one Turnstile verification mints a pass the rest of the turn reuses (2026-11-15)',async()=>{
+ const pilot=await pilotScenario();
+ const first=await pilot.post({});
+ assert.equal(first.status,200);
+ const pass=(await first.json()).challengePass;
+ assert.match(pass,/^pass\.\d+\.[A-Za-z0-9_-]+$/,
+  'a verified request returns a challenge pass for the rest of the turn');
+ assert.equal(pilot.stats().verifyCalls,1);
+ const second=await pilot.post({body:{turnstileToken:pass}});
+ assert.equal(second.status,200);
+ assert.equal(pilot.stats().verifyCalls,1,
+  'the pass is honored without a second siteverify');
+ const planRequest=new Request(HOST+'/api/pilot-plan',{method:'POST',
+  headers:{Origin:'https://jsynon.github.io','Content-Type':'application/json',
+   'CF-Connecting-IP':'198.51.100.42'},
+  body:JSON.stringify({question:'What causes this event?',bookId:'',turnstileToken:pass})});
+ const planResult=await handleRequest(planRequest,pilot.environment,pilot.fetcher);
+ assert.notEqual(planResult.status,403,
+  'the plan route honors the same pass (its planner stub 502s in this fixture, but verification passed)');
+ assert.equal(pilot.stats().verifyCalls,1);
+ const tampered=pass.slice(0,-2)+(pass.endsWith('AA')?'BB':'AA');
+ const forged=await pilot.post({body:{turnstileToken:tampered}});
+ assert.equal(forged.status,403,'a tampered pass is rejected');
+ const wrongIp=await pilot.post({body:{turnstileToken:pass},ip:'198.51.100.99'});
+ assert.equal(wrongIp.status,403,'a pass presented from another IP is rejected');
+ assert.equal(pilot.stats().verifyCalls,1,
+  'pass rejections never fall through to siteverify');
 });
 
