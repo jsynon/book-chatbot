@@ -1,9 +1,8 @@
 /* Worker-side answer construction and review.
  *
  * The public gateway calls this after verifying candidate-page fingerprints
- * and selecting the bounded evidence packet. This module composes the answer,
- * reviews source-linked claims, and contains the conditional review-repair and
- * evaluation-only expansion paths. Deterministic source and citation checks
+ * and selecting the bounded evidence packet. This module composes the answer
+ * and reviews source-linked claims. Deterministic source and citation checks
  * remain outside model judgment: a passing review is not a truth guarantee.
  */
 import {CONTRACT_VERSION,normalizePlan,auditFinalAnswer,citationIds,normalizeQuote,quotations,sourceProvenance,catalogIdentity,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
@@ -50,7 +49,6 @@ const MAX_COMPOSER_PASSAGE_SPANS_PER_SOURCE=8;
 // Evaluation-only expansion follows the same source/context boundary as the
 // public composer, so the experiment measures answer depth rather than a
 // different knowledge policy.
-export const EXPANSION_PROMPT=`Expand the draft where useful to answer the question more fully. Preserve its direct answer and qualifications. Use the supplied passages for claims about their books and authors, cite those claims, and use broader knowledge where it helps explain or connect the ideas. Keep the distinction clear when needed; do not attribute general context to a source. Do not pad or repeat. Return the same PART P1, PART P2 headings.`;
 // The composer receives focused page windows with one neighboring span on each
 // side. Full fingerprint-verified text remains in the private trace and is used
 // by review; lexical ranking only prioritizes context and never grants support.
@@ -183,7 +181,6 @@ function responseText(raw,stage){
   return text;
 }
 const REVIEW_JSON_RECOVERY=Symbol('reviewJsonRecovery');
-const ANSWER_REPAIR_JSON_RECOVERY=Symbol('answerRepairJsonRecovery');
 function removeRepeatedUnmatchedClosers(value){
   const stack=[];let output='',inString=false,escaped=false,previousCloser='',removed=0;
   for(let index=0;index<value.length;index++){
@@ -208,29 +205,6 @@ function removeRepeatedUnmatchedClosers(value){
     output+=char;
   }
   return !inString&&stack.length===0&&removed?{text:output,removed}:null;
-}
-function escapeUnescapedJsonStringQuotes(value){
-  let output='',inString=false,escaped=false,changed=0;
-  for(let index=0;index<value.length;index++){
-    const char=value[index];
-    if(char==='"'&&!escaped){
-      if(!inString){inString=true;output+=char;continue;}
-      let next=index+1;
-      while(next<value.length&&/\s/u.test(value[next]))next++;
-      // A JSON string can close only before a structural delimiter. A quote
-      // followed by ordinary prose is an unescaped quote inside the value.
-      if(next===value.length||[',',']','}',':'].includes(value[next])){
-        inString=false;output+=char;continue;
-      }
-      output+='\\"';changed++;continue;
-    }
-    output+=char;
-    if(inString){
-      if(escaped)escaped=false;
-      else if(char==='\\')escaped=true;
-    }
-  }
-  return changed&&!inString&&!escaped?{text:output,count:changed}:null;
 }
 // Stage B.4: truncation salvage for review payloads. A review cut off
 // mid-stream (a provider length finish, a dropped connection) leaves a
@@ -334,19 +308,6 @@ function parseJson(raw,stage){
   const objectText=candidate.slice(start,end);
   try{return JSON.parse(objectText);}
   catch{
-    // Answer-repair output sometimes embeds source quotation marks without
-    // JSON escaping. Recover only quotes that cannot legally close a JSON
-    // string; all answer, claim, citation, and re-review validators still run.
-    const repairQuotes=stage==='answer-repair'?
-      escapeUnescapedJsonStringQuotes(objectText):null;
-    if(repairQuotes){
-      try{
-        const parsed=JSON.parse(repairQuotes.text);
-        Object.defineProperty(parsed,ANSWER_REPAIR_JSON_RECOVERY,
-          {value:{code:'unescaped-inner-quotes',count:repairQuotes.count}});
-        return parsed;
-      }catch{}
-    }
     // Recovery is limited to review output and one unambiguous defect pattern.
     // The normal review-schema and exact-span checks still run after parsing.
     const recovered=stage==='review'?removeRepeatedUnmatchedClosers(objectText):null;
@@ -362,9 +323,6 @@ function parseJson(raw,stage){
 }
 // Keep the review parser independently testable against authenticated trace fixtures.
 export function parseReviewJson(raw){return parseJson(raw,'review');}
-export function parseAnswerRepairJson(raw){return parseJson(raw,'answer-repair');}
-
-
 
 
 // Batch 24 (B24-1): zero-accept rescue re-review. When a
@@ -774,52 +732,7 @@ const BOUNDARY_NAME_STOPLIST=new Set(['the','this','that','it','in','on','for','
   'without','not','no','his','her','their','one','when','while','after','before','here',
   'there','what','which','who','whom','whose','if','then','than','so','such','part',
   'chapter','page','author','narrator','reader','work','novel','book','text']);
-function capitalizedNameCandidates(text){
-  const names=new Set();
-  const pattern=/\b(?:(?:Mr|Mrs|Miss|Ms|Dr|Sir|Lady|Lord)\.?\s+)?[A-Z][\p{L}]+(?:\s+(?:[A-Z][\p{L}]+|de|von|van|der|the)){0,2}/gu;
-  let match;const value=String(text||'');
-  while((match=pattern.exec(value))!==null){
-    const name=match[0].trim().replace(/\s+/gu,' ');
-    const head=name.split(' ')[0].replace('.','').toLocaleLowerCase();
-    if(name.length<3||BOUNDARY_NAME_STOPLIST.has(head))continue;
-    if(['The','This','That','It','In','On','For','But','And','As','At','By','From','With','When','While','After','Before','His','Her','Their','One','What','Which','Who','If','Then','Than','So','Such','Here','There','Without','Not'].includes(name.split(' ')[0]))continue;
-    names.add(name);
-  }
-  return [...names];
-}
-// Occurrences of known names in a token stream, as token ranges.
-function nameOccurrencesIn(tokens,knownNames){
-  const occurrences=[];
-  const normalized=knownNames.map(name=>({name,
-    parts:normalizedPersonName(name).split(' ').filter(Boolean)}))
-    .filter(entry=>entry.parts.length);
-  for(let index=0;index<tokens.length;index++){
-    for(const entry of normalized){
-      if(index+entry.parts.length>tokens.length)continue;
-      let matches=true;
-      for(let offset=0;offset<entry.parts.length;offset++)
-        if(tokens[index+offset].token!==entry.parts[offset]){matches=false;break;}
-      if(matches)occurrences.push({name:entry.name,start:index,
-        end:index+entry.parts.length-1});
-    }
-  }
-  return occurrences;
-}
 const BOUNDARY_NEGATION_TOKENS=new Set(['not','never','no','without','nor']);
-function associationNegated(tokens,nameStart){
-  for(let index=Math.max(0,nameStart-4);index<nameStart;index++)
-    if(BOUNDARY_NEGATION_TOKENS.has(tokens[index].token)||
-       tokens[index].token.endsWith("n't"))return true;
-  return false;
-}
-// The claim's quoted tokens (a quoted word is the claim presenting
-// the span's own material — 'scandalous', 'despair of the heart').
-function claimQuotedTokens(claimText){
-  const quoted=new Set();
-  for(const match of String(claimText||'').matchAll(/["“]([^"”]{2,60})["”]/gu))
-    for(const token of wordTokensOf(match[1]))quoted.add(token.token);
-  return quoted;
-}
 // Distinctive actions for the boundary and phrase channels:
 // emotion-family tokens (cry / despair / affect — the actions a
 // boundary actually discriminates) plus the claim's quoted tokens.
@@ -828,65 +741,6 @@ function claimQuotedTokens(claimText){
 // describes…", "the span shows…"), so family-matching them would
 // associate every name a boundary mentions with every claim.
 const DISTINCTIVE_ACTION_FAMILIES=new Set([0,1,5]);
-function claimActionTokens(claimText,subjectNames){
-  const subjectTokens=new Set(subjectNames.flatMap(name=>
-    normalizedPersonName(name).split(' ')));
-  const quoted=claimQuotedTokens(claimText);
-  const actions=new Set();
-  for(const {token} of wordTokensOf(claimText)){
-    if(subjectTokens.has(token))continue;
-    if(DISTINCTIVE_ACTION_FAMILIES.has(boundaryActionFamilyIndex(token))||
-       quoted.has(token))actions.add(token);
-  }
-  return actions;
-}
-function actionTokensMatch(claimToken,otherToken){
-  if(claimToken===otherToken)return true;
-  const family=boundaryActionFamilyIndex(claimToken);
-  return family>=0&&family===boundaryActionFamilyIndex(otherToken);
-}
-// Affirmative subject associations in an evidence text (boundary or
-// head): for every token matching one of the claim's actions, the
-// names in subject position for it — a name ending within five
-// tokens before the action, or a possessive name starting within
-// three tokens after it — excluding negated occurrences.
-function affirmativeActionSubjects(evidenceText,claimActions,knownNames){
-  const tokens=wordTokensOf(evidenceText);
-  const occurrences=nameOccurrencesIn(tokens,knownNames);
-  const associations=[];
-  tokens.forEach((entry,actionIndex)=>{
-    if(![...claimActions].some(action=>actionTokensMatch(action,entry.token)))return;
-    for(const occurrence of occurrences){
-      const before=occurrence.end<actionIndex&&actionIndex-occurrence.end<=5;
-      const possessiveAfter=occurrence.start>actionIndex&&
-        occurrence.start-actionIndex<=3&&
-        /^['’]s\b/u.test(String(evidenceText)
-          .slice(tokens[occurrence.end].end,tokens[occurrence.end].end+3));
-      if(!before&&!possessiveAfter)continue;
-      if(associationNegated(tokens,occurrence.start))continue;
-      associations.push({name:occurrence.name,action:entry.token,
-        actionIndex});
-    }
-  });
-  return associations;
-}
-// The claim's own subject for one of its actions: the nearest name
-// ending before the action token (within seven tokens), else the
-// recorded subjects.
-function claimSubjectForAction(claimText,claimActions,knownNames,recordedSubjects){
-  const tokens=wordTokensOf(claimText);
-  const occurrences=nameOccurrencesIn(tokens,knownNames);
-  let best=null;
-  tokens.forEach((entry,actionIndex)=>{
-    if(![...claimActions].some(action=>actionTokensMatch(action,entry.token)))return;
-    for(const occurrence of occurrences){
-      if(occurrence.end<actionIndex&&actionIndex-occurrence.end<=7&&
-         (!best||occurrence.end>best.end))best=occurrence;
-    }
-  });
-  if(best)return best.name;
-  return recordedSubjects.find(Boolean)||'';
-}
 const PRE_ACTION_SKIP_TOKENS=new Set(['the','a','an','their','his','her','its','this',
   'that','these','those','some','any','can','could','may','might','must','shall',
   'will','would','do','does','did','have','has','had','is','are','was','were','be',
@@ -895,156 +749,6 @@ const PRE_ACTION_SKIP_TOKENS=new Set(['the','a','an','their','his','her','its','
   'when','while','very','most','more','much','many','own']);
 const PRE_ACTION_PRONOUNS=new Set(['he','she','it','they','i','we','you','myself',
   'himself','herself','him','them','me','us']);
-// Phrase mode: the grammatical subject head of an action in one
-// text — the noun the action is predicated of, read off the words
-// before the action token in its sentence. A relative pronoun
-// points at the noun before it; otherwise the last content noun
-// before the action, skipping auxiliaries, modifiers, and
-// participial phrases. A pronoun in subject position abstains.
-function preActionSubjectHead(text,claimActions){
-  const sentences=String(text||'').split(/(?<=[.!?])\s+/u);
-  for(const sentence of sentences){
-    const tokens=wordTokensOf(sentence);
-    const actionIndex=tokens.findIndex(entry=>
-      [...claimActions].some(action=>actionTokensMatch(action,entry.token)));
-    if(actionIndex<0)continue;
-    const before=tokens.slice(0,actionIndex);
-    for(let index=before.length-1;index>=0;index--){
-      if(['who','which','that'].includes(before[index].token)){
-        for(let back=index-1;back>=0;back--){
-          const candidate=before[back].token;
-          if(PRE_ACTION_SKIP_TOKENS.has(candidate))continue;
-          if(PRE_ACTION_PRONOUNS.has(candidate))return '';
-          if(boundaryActionFamilyIndex(candidate)>=0)break;
-          return candidate;
-        }
-        return '';
-      }
-    }
-    for(let index=before.length-1;index>=0;index--){
-      const candidate=before[index].token;
-      if(PRE_ACTION_SKIP_TOKENS.has(candidate))continue;
-      if(PRE_ACTION_PRONOUNS.has(candidate))return '';
-      if(/(?:ing|ed)$/u.test(candidate))continue;
-      if(boundaryActionFamilyIndex(candidate)>=0)continue;
-      // The simple-clause head must be close: a noun separated
-      // from its verb by a long modifier chain is not a record
-      // this rule can read (the relative-clause rule above is
-      // the structural path for those).
-      if(actionIndex-index>4)return '';
-      return candidate;
-    }
-    return '';
-  }
-  return '';
-}
-// Utterance mode: who speaks the span's quoted / first-person
-// material carrying the claim's action. Returns the attributed
-// speaker's name, 'span-speaker' when the speech positively is not
-// the claim subject's (it addresses them by name), or ''.
-function spanSpeakerForClaim(spanTexts,claimActions,claimSubject,knownNames,
-  utteranceActions=claimActions){
-  const combined=spanTexts.filter(Boolean).join('\n');
-  if(!combined)return '';
-  const tokens=wordTokensOf(combined);
-  const carriesAction=tokens.some(entry=>
-    [...claimActions].some(action=>actionTokensMatch(action,entry.token)));
-  if(!carriesAction)return '';
-  // The attribution verbs are the fixed speech verbs plus the
-  // claim's own action families (a claim about crying is attributed
-  // by 'cried'/'wept' in the span, a claim about a judgment by
-  // 'said'/'told') — never by the claim's nouns.
-  const familyVerbs=new Set();
-  for(const action of claimActions){
-    const family=boundaryActionFamilyIndex(action);
-    if(family>=0)for(const verb of BOUNDARY_ACTION_FAMILIES[family])
-      familyVerbs.add(verb);
-  }
-  const speechVerbs=[...new Set(['said','says','replied','answered','asked',
-    'continued','added','remarked','went on',...familyVerbs])]
-    .map(verb=>verb.replace(/\s+/gu,'\\s+')).join('|');
-  // Batch 35 (B35-3): when several people speak in the span, the
-  // attribution that governs the claim is the one attached to the
-  // utterance the claim quotes — the attribution nearest a sentence
-  // carrying the claim's action. A name + speech-verb match anywhere
-  // in the span is not enough on its own: a neighboring speaker's
-  // line is not this utterance's speaker. A tie stays silent.
-  const units=headSentenceUnits(combined);
-  // Utterance identity excludes the speech/judgment families
-  // themselves: 'said' appears in every attribution sentence, so a
-  // unit carrying only a speech verb is no utterance at all.
-  const utteranceTokens=[...utteranceActions].filter(token=>{
-    if(String(token).length<4)return false;
-    const family=boundaryActionFamilyIndex(token);
-    return family<0||family===0||family===1||family===5;
-  });
-  const utteranceUnits=[];
-  units.forEach((unit,index)=>{
-    if(wordTokensOf(unit).some(entry=>
-      utteranceTokens.some(action=>actionTokensMatch(action,entry.token))))
-      utteranceUnits.push(index);
-  });
-  const attributionPatterns=name=>{
-    // An honorific is optional in the pattern: sentence splitting
-    // strands "Mr." at the end of the preceding fragment, and the
-    // attribution must still read on the name that follows.
-    const bare=String(name).replace(/^(?:Mr\.|Mrs\.|Ms\.|Miss|Dr\.)\s+/u,'');
-    const variants=[...new Set([name,bare])].map(variant=>
-      variant.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&').replace(/\s+/gu,'\\s+'));
-    const escaped=`(?:${variants.join('|')})`;
-    return [new RegExp(`\\b${escaped}\\b[^.!?\\n]{0,40}?\\b(?:${speechVerbs})\\b`,'iu'),
-      // The verb-first form is the dialogue tag ("said Magwitch"):
-      // the window stays tag-tight so an addressee named later in
-      // the same sentence ("…said Magwitch, turning to Pip") is
-      // never read as the speaker.
-      new RegExp(`\\b(?:${speechVerbs})\\b[^.!?\\n]{0,12}?\\b${escaped}\\b`,'iu')];
-  };
-  if(!utteranceUnits.length){
-    // The claim quotes nothing the span carries (its words are a
-    // paraphrase): keep the channel's long-standing span-wide
-    // attribution rather than going silent.
-    for(const name of knownNames){
-      if(claimSubject&&subjectNamesEquivalent(name,claimSubject))continue;
-      const [forward,backward]=attributionPatterns(name);
-      if(forward.test(combined)||backward.test(combined))return name;
-    }
-  }
-  let bestSpeaker=null;
-  for(const name of knownNames){
-    if(claimSubject&&subjectNamesEquivalent(name,claimSubject))continue;
-    const [forward,backward]=attributionPatterns(name);
-    units.forEach((unit,index)=>{
-      if(!forward.test(unit)&&!backward.test(unit))return;
-      // A unit carrying its own quoted speech is a self-contained
-      // utterance: its attribution speaks ITS quote and governs no
-      // neighboring unit (Pip's grateful line is not evidence about
-      // who speaks the next one). A narration attribution unit —
-      // no quotes of its own — introduces the utterance beside it.
-      if(/[“"][^”"]{3,}[”"]/u.test(unit)&&!utteranceUnits.includes(index))return;
-      let distance=Infinity;
-      for(const target of utteranceUnits)
-        distance=Math.min(distance,Math.abs(index-target));
-      if(distance>2)return;
-      if(!bestSpeaker||distance<bestSpeaker.distance)
-        bestSpeaker={name,distance};
-      else if(distance===bestSpeaker.distance&&bestSpeaker.name!==name)
-        bestSpeaker={name:'',distance};
-    });
-  }
-  if(process.env.B35DBG)console.log('DBG speaker:',JSON.stringify({claimSubject,utteranceUnits,utteranceTokens,bestSpeaker,units}));
-  if(bestSpeaker?.name)return bestSpeaker.name;
-  // First-person speech addressing the claim's subject by name:
-  // the speaker is someone else, whoever they are.
-  if(claimSubject&&/\b(?:I|myself|my)\b/u.test(combined)){
-    const subjectTokens=normalizedPersonName(claimSubject).split(' ')
-      .filter(token=>token.length>2);
-    const vocative=subjectTokens.some(token=>
-      new RegExp(`[,;:—-]\\s*(?:Mr\\.?|Mrs\\.?|Miss\\s+)?${token.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')}\\b`,'iu')
-        .test(combined));
-    if(vocative)return 'span-speaker';
-  }
-  return '';
-}
 // The full check for one claim–source pair. Returns
 // {swap:{subject,via}|null, parity:{subject,via}|null}: a swap when
 // an affirmative record assigns the claim's action to a different
@@ -1903,242 +1607,6 @@ function assemblyOpeningPronoun(text){
   return {pronoun:match[1],
     index:match.index+match[0].length-match[1].length};
 }
-export function applyAssemblyAntecedentGuard(parts,
- {reviewDecisions=[],restorable=[],draftParts=[]}={}){
-  const restored=[],rewritten=[],removed=[];
-  // Batch 35 (B35-2): subjects come from RECORDS — a claim's review
-  // records (cited decisions and source-less context records alike).
-  // Batch 34's guard also harvested a subject from the claim's own
-  // TEXT (claimPersonSubjects) and from the paragraph's other
-  // claims; that harvest is how the C&P swap was manufactured: the
-  // orphan's own text mentioned "Raskolnikov's theory", the
-  // harvester read the possessive as the claim's subject, and "Her"
-  // (Sonya) shipped as "Raskolnikov's". Text is now read in exactly
-  // one place: the DRAFT part's first claim, where a part's subject
-  // is established (see partFirstDraftSubject below).
-  const subjectByClaim=new Map();
-  for(const record of reviewDecisions||[]){
-    if(!record||!record.claimId)continue;
-    const subject=String(record.attributedSubject||'').trim()||
-      String(record.attributedSpeaker||'').trim();
-    if(!subject)continue;
-    const key=record.partId+'|'+record.claimId;
-    if(!subjectByClaim.has(key))subjectByClaim.set(key,subject);
-  }
-  const recordSubjectOf=(partId,claimId)=>
-    subjectByClaim.get(partId+'|'+claimId)||'';
-  const restorableByPart=new Map();
-  for(const entry of restorable||[]){
-    if(!entry?.partId||!entry.answer)continue;
-    const list=restorableByPart.get(entry.partId)||[];
-    list.push(entry);restorableByPart.set(entry.partId,list);
-  }
-  // The draft's record subjects per part, in draft order, plus the
-  // draft part's first-claim subject — the only textual subject the
-  // guard may use, and only for a part that ships no recorded
-  // subject at all (the subject-absent case: production C&P P3,
-  // whose records are ALL subject-less while its draft's first
-  // claim names Sonya).
-  const draftByPart=new Map();
-  for(const draftPart of draftParts||[]){
-    if(!draftPart?.partId||draftByPart.has(draftPart.partId))continue;
-    const claims=(draftPart.answers||[]).map(answer=>({
-      claimId:answer.claimId,
-      recordSubject:recordSubjectOf(draftPart.partId,answer.claimId),
-      // A leading article defeats the subject extractor's lead
-      // patterns ("The Underground Man shapes…" yields no subject);
-      // retry with the article stripped — an article is never part
-      // of the person the draft establishes.
-      textSubject:claimPersonSubjects(String(answer.text||''))[0]||
-        claimPersonSubjects(String(answer.text||'')
-          .replace(/^\s*(?:The|An|A)\s+/u,''))[0]||''}));
-    draftByPart.set(draftPart.partId,claims);
-  }
-  const draftRecordSubjectBefore=(partId,claimId)=>{
-    const claims=draftByPart.get(partId)||[];
-    let found='';
-    for(const claim of claims){
-      if(claim.claimId===claimId)break;
-      if(claim.recordSubject)found=claim.recordSubject;
-    }
-    return found;
-  };
-  // The nearest preceding DRAFT claim's named subject, read off
-  // the draft's own text: the draft is the composer's prose, where
-  // a part's antecedents are established claim by claim (the
-  // Wuthering geometry — the framing claim "Lockwood serves as
-  // the initial framing device…" names the subject the following
-  // pronoun continues, while its review record names no one).
-  const draftTextSubjectBefore=(partId,claimId)=>{
-    const claims=draftByPart.get(partId)||[];
-    let found='';
-    for(const claim of claims){
-      if(claim.claimId===claimId)break;
-      if(claim.textSubject)found=claim.textSubject;
-    }
-    return found;
-  };
-  const partFirstDraftSubject=partId=>{
-    const claims=draftByPart.get(partId)||[];
-    for(const claim of claims)if(claim.recordSubject)return claim.recordSubject;
-    return claims[0]?.textSubject||'';
-  };
-  const draftRecordsName=(partId,subject)=>
-    (draftByPart.get(partId)||[]).some(claim=>claim.recordSubject&&
-      personNamesMatch(claim.recordSubject,subject));
-  // The subject-absent removal (below) is scoped to its harm
-  // model: a pronoun misread as ANOTHER part's subject. That needs
-  // more than one shipped part; a lone part's pronoun reads
-  // against its own question, which names the subject.
-  const shippedPartCount=(parts||[])
-    .filter(item=>item?.answers?.length).length;
-  let antecedent='';
-  for(const item of parts||[]){
-    if(!item||item.answerStatus==='unanswered'||!item.answers?.length)continue;
-    const partId=item.part?.id;
-    if(!partId)continue;
-    const paragraphs=[];
-    for(const answer of item.answers){
-      const key=Number.isInteger(answer.paragraphIndex)?
-        answer.paragraphIndex:paragraphs.length;
-      const last=paragraphs[paragraphs.length-1];
-      if(last&&last.key===key)last.answers.push(answer);
-      else paragraphs.push({key,answers:[answer]});
-    }
-    const partShipsNamedSubject=item.answers.some(answer=>
-      recordSubjectOf(partId,answer.claimId));
-    const partNamesNoSubject=!partShipsNamedSubject&&
-      !item.answers.some(answer=>
-        claimPersonSubjects(String(answer.text||'')).length);
-    const removedIds=new Set();
-    for(const paragraph of paragraphs){
-      const first=paragraph.answers[0];
-      const firstText=String(first.renderedText||first.text||'');
-      const opening=assemblyOpeningPronoun(firstText);
-      let guardSubject='';
-      if(opening){
-        // Impersonal exemption: a non-referential "It" opener
-        // ("It matters...", "It is...") is never an orphan — the
-        // batch-34 guard rewrote one into a person-shaped claim.
-        const afterPronoun=firstText
-          .slice(opening.index+opening.pronoun.length).trimStart();
-        const nextWord=(afterPronoun.match(/^[\p{L}’'-]+/u)||[''])[0]
-          .toLowerCase();
-        const impersonal=opening.pronoun==='It'&&
-          ASSEMBLY_IMPERSONAL_IT_FOLLOWERS.has(nextWord);
-        if(!impersonal){
-          // The referent, in establishing order: the claim's OWN
-          // recorded subject; else (the part ships no recorded
-          // subject at all) the draft part's first-claim subject;
-          // else the nearest preceding DRAFT claim's named
-          // subject. Never the shipped part's other names, never
-          // the orphan's own text.
-          const ownSubject=recordSubjectOf(partId,first.claimId);
-          let referent=ownSubject;
-          if(!referent&&!partShipsNamedSubject)
-            referent=partFirstDraftSubject(partId);
-          if(!referent)
-            referent=draftTextSubjectBefore(partId,first.claimId);
-          if(referent&&(!antecedent||
-             !personNamesMatch(referent,antecedent))){
-            const shippedIds=new Set(item.answers.map(answer=>answer.claimId));
-            // Position discipline (unchanged): a framing claim
-            // anchors what FOLLOWS it. Only pool entries from
-            // earlier draft positions may be restored; the nearest
-            // preceding one wins.
-            const orphanNumber=assemblyClaimNumber(first.claimId);
-            const anchor=(restorableByPart.get(partId)||[])
-              .filter(entry=>!shippedIds.has(entry.claimId)&&
-                orphanNumber!==null&&assemblyClaimNumber(entry.claimId)!==null&&
-                assemblyClaimNumber(entry.claimId)<orphanNumber&&
-                (claimPersonSubjects(String(entry.answer.text||''))
-                  .some(name=>personNamesMatch(name,referent))||
-                 String(entry.answer.text||'').includes(referent)))
-              .sort((left,right)=>assemblyClaimNumber(right.claimId)-
-                assemblyClaimNumber(left.claimId))[0];
-            if(anchor){
-              const restoredAnswer={...anchor.answer,
-                paragraphIndex:first.paragraphIndex};
-              item.answers.splice(item.answers.indexOf(first),0,restoredAnswer);
-              paragraph.answers.unshift(restoredAnswer);
-              restored.push({partId,claimId:anchor.claimId,
-                forClaimId:first.claimId});
-              guardSubject=referent;
-            }else if(ownSubject&&draftByPart.has(partId)&&
-               !draftRecordsName(partId,ownSubject)&&
-               !draftRecordSubjectBefore(partId,first.claimId)){
-              // The claim's record names a subject its own draft
-              // nowhere establishes and no preceding draft claim
-              // records: the record itself is unestablished, so the
-              // claim is REMOVED — rewriting to it would put into
-              // the reader's text a subject nothing in the draft
-              // supports. (With no draft in hand — unit callers —
-              // the record is taken at face value, as before.)
-              for(const answer of paragraph.answers)
-                removedIds.add(answer.claimId);
-              removed.push({partId,
-                claimIds:paragraph.answers.map(answer=>answer.claimId),
-                reason:'antecedent-unestablished'});
-            }else{
-              const replacement=opening.pronoun==='His'||opening.pronoun==='Her'?
-                referent+'’s':referent;
-              const applyRewrite=value=>{
-                const match=String(value||'').match(ASSEMBLY_OPENING_PRONOUN);
-                if(!match)return null;
-                const start=match.index+match[0].length-match[1].length;
-                return String(value).slice(0,start)+replacement+
-                  String(value).slice(start+match[1].length);
-              };
-              const newText=applyRewrite(first.text);
-              const newRendered=applyRewrite(first.renderedText||first.text);
-              if(newText!==null&&newRendered!==null){
-                first.text=newText;first.renderedText=newRendered;
-                rewritten.push({partId,claimId:first.claimId,subject:referent});
-                guardSubject=referent;
-              }else{
-                for(const answer of paragraph.answers)
-                  removedIds.add(answer.claimId);
-                removed.push({partId,
-                  claimIds:paragraph.answers.map(answer=>answer.claimId),
-                  reason:'antecedent-unresolvable'});
-              }
-            }
-          }else if(!referent&&!antecedent&&shippedPartCount>1&&
-             partNamesNoSubject){
-            // No record, no draft subject, nothing shipped yet
-            // names a subject, and this part names none anywhere:
-            // the pronoun has no antecedent anywhere the reader
-            // has been. The unit is held for the disclosure path
-            // rather than shipped unanchored.
-            for(const answer of paragraph.answers)
-              removedIds.add(answer.claimId);
-            removed.push({partId,
-              claimIds:paragraph.answers.map(answer=>answer.claimId),
-              reason:'antecedent-unresolvable'});
-          }
-          // No referent but a running antecedent exists: no
-          // evidence of orphanhood — the pronoun may genuinely
-          // continue it. Left alone (batch 34's purge error was
-          // acting on exactly this absence of evidence).
-        }
-      }
-      for(const answer of paragraph.answers){
-        if(removedIds.has(answer.claimId))continue;
-        const subject=recordSubjectOf(partId,answer.claimId);
-        if(subject)antecedent=subject;
-      }
-      if(guardSubject)antecedent=guardSubject;
-    }
-    if(removedIds.size){
-      item.answers=item.answers.filter(answer=>!removedIds.has(answer.claimId));
-      if(!item.answers.length){
-        item.status='unanswered';item.answerStatus='unanswered';
-        item.evidence=[];
-      }
-    }
-  }
-  return {restored,rewritten,removed};
-}
 
 export function normalizeAnswerMarkdown(value){
   const lines=String(value||'').split(/\r?\n/u).filter(line=>{
@@ -2302,117 +1770,6 @@ function locateClauseText(claim,text,item){
   if(normalizedClauseSurface(claim).includes(normalizedClauseSurface(text)))
     return {range:null,splitOnly:false,surfaceLocation:true};
   return {range:null,splitOnly:false,surfaceLocation:false};
-}
-export function normalizeClaimClauseDecisions(raw,claimText,citedIds,partSpanMaps){
-  if(!Array.isArray(raw)||!raw.length)return {decisions:[],warnings:[]};
-  const warnings=[],decisions=[];
-  const normalizedClaim=normalizedClauseSurface(claimText);
-  const claim=String(claimText||'');
-  for(const item of raw.slice(0,6)){
-    let text=typeof item?.text==='string'?item.text.trim():'';
-    const hasOffsets=Object.hasOwn(item||{},'start')||Object.hasOwn(item||{},'end');
-    let range=null;
-    if(text&&text.length<=600&&normalizedClauseSurface(text)){
-      // Batch 29 (B29-1, Option A): the reviewer returns the clause
-      // text verbatim and offsets are advisory. Resolve the clause by
-      // locating its text in the claim (locateClauseText above);
-      // the batch 24-28 failure shape — correct verdict, wrong
-      // offsets, textless unresolved finding vetoing rescue flips
-      // while staying invisible to the packets — cannot recur,
-      // because no verdict depends on the model counting UTF-16
-      // offsets. A text that cannot be located at all still demotes
-      // fail-closed, but the finding now carries the returned text,
-      // so clauseFindings record it, rescue packets list it as an
-      // outstanding clause, and a text-keyed clearance can clear it.
-      const located=locateClauseText(claim,text,item);
-      if(!located.range&&!located.surfaceLocation){
-        warnings.push(located.splitOnly?'clause-range-not-word-boundary':
-          'clause-range-invalid');
-        decisions.push({text,status:'partial',issueCode:'other',sources:[],
-          unresolved:true});
-        continue;
-      }
-      range=located.range;
-    }else if(hasOffsets){
-      // No usable clause text returned: the pre-B29 offsets-only
-      // contract. A missing or empty text keeps the textless
-      // behavior (unresolved, unrecorded downstream, vetoing), and
-      // an invalid or word-splitting range stays unresolved. (The
-      // batch-23 unique-verbatim offset recovery that used to run
-      // here is gone: with text as the identity, its only remaining
-      // input was a slice of the claim itself, whose sole occurrence
-      // is the sliced position by construction.)
-      const offsetsValid=Number.isInteger(item?.start)&&Number.isInteger(item?.end);
-      const rangeValid=offsetsValid&&item.start>=0&&item.end>item.start&&item.end<=claim.length&&
-        !(item.start>0&&/[\uDC00-\uDFFF]/u.test(claim[item.start])&&/[\uD800-\uDBFF]/u.test(claim[item.start-1]))&&
-        !(item.end>0&&item.end<claim.length&&/[\uDC00-\uDFFF]/u.test(claim[item.end])&&/[\uD800-\uDBFF]/u.test(claim[item.end-1]));
-      if(!rangeValid){
-        warnings.push('clause-range-invalid');
-        decisions.push({text:traceableVerbatimClauseText(normalizedClaim,text),
-          status:'partial',issueCode:'other',sources:[],unresolved:true});
-        continue;
-      }
-      const exactSlice=claim.slice(item.start,item.end).trim();
-      if(!text)text=exactSlice;
-      const boundaryValid=(!/[\p{L}\p{N}\p{M}_]/u.test(claim[item.start-1]||'')||
-        !/[\p{L}\p{N}\p{M}_]/u.test(claim[item.start]||''))&&
-        (!/[\p{L}\p{N}\p{M}_]/u.test(claim[item.end-1]||'')||
-        !/[\p{L}\p{N}\p{M}_]/u.test(claim[item.end]||''));
-      if(!boundaryValid){
-        warnings.push('clause-range-not-word-boundary');
-        decisions.push({text:traceableVerbatimClauseText(normalizedClaim,text),
-          status:'partial',issueCode:'other',sources:[],unresolved:true});
-        continue;
-      }
-      range={start:item.start,end:item.end};
-    }
-    const normalizedText=normalizedClauseSurface(text);
-    if(!text||text.length>600||!normalizedText||!normalizedClaim.includes(normalizedText)){
-      warnings.push('clause-text-not-verbatim');
-      continue;
-    }
-    if(!hasRecognizedStatus(item?.status)){
-      warnings.push('clause-status-invalid');
-      continue;
-    }
-    const issueCode=REVIEW_CLAUSE_ISSUES.has(String(item?.issueCode||'').toLowerCase())?
-      String(item.issueCode).toLowerCase():'other';
-    if(item?.issueCode!==undefined&&!REVIEW_CLAUSE_ISSUES.has(String(item.issueCode).toLowerCase()))
-      warnings.push('clause-issue-code-invalid');
-    const sources=[],seenSources=new Set();
-    for(const sourceDecision of Array.isArray(item?.sources)?item.sources:[]){
-      const sourceId=String(sourceDecision?.sourceId||'');
-      if(!citedIds.has(sourceId)||seenSources.has(sourceId)){
-        warnings.push(citedIds.has(sourceId)?'clause-source-duplicated':'clause-source-not-cited');
-        continue;
-      }
-      seenSources.add(sourceId);
-      const validSpanMap=partSpanMaps?.get(sourceId);
-      const rawSpanIds=Array.isArray(sourceDecision?.spanIds)?sourceDecision.spanIds:[];
-      const spanIds=[...new Set(rawSpanIds.filter(spanId=>typeof spanId==='string'&&
-        reviewSpanSourceId(spanId)===sourceId&&validSpanMap?.has(spanId)))].slice(0,MAX_REVIEW_SPANS_PER_SOURCE);
-      // The review contract asks clause source decisions for only a cited
-      // source ID and its exact supporting span IDs — no status. Mirror the
-      // claim-level convention below: a missing status asserts support only
-      // when at least one supplied span survives validation. Defaulting it
-      // to 'partial' demoted every prompt-conformant clause, and the
-      // claim-clause gate then discarded the whole claim's acceptance.
-      let status=hasRecognizedStatus(sourceDecision?.status)?normalizeStatus(sourceDecision.status):
-        spanIds.length?'answered':'partial';
-      if(status==='answered'&&!spanIds.length){status='partial';warnings.push('clause-supported-without-valid-span');}
-      sources.push({sourceId,status,spanIds});
-    }
-    let status=normalizeStatus(item.status);
-    if(status==='answered'&&!sources.some(source=>source.status==='answered'&&source.spanIds.length)){
-      status='partial';
-      warnings.push('clause-supported-without-source-evidence');
-    }
-    if(status!=='answered'&&issueCode==='none')warnings.push('unsupported-clause-without-issue-code');
-    decisions.push({text,status,issueCode,sources,
-      ...(range?{start:range.start,end:range.end}:{})});
-  }
-  if(raw.length>6)warnings.push('clause-count-truncated');
-  return {decisions,warnings:[...new Set(warnings)]};
 }
 function selectReviewSpansBySource(spanIdsBySource,citedIds,sources,reviewSpanMaps,
  limit=MAX_REVIEW_SPANS_PER_CLAIM){
@@ -3050,130 +2407,17 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
   // fully-supporting source groups. Recorded per claim so validation
   // can verdict the salvaged set on its own (checkpoint check A1).
   const assemblySalvage=[];
-  // Batch 27 (B27-1/B27-4): this normalization's own clause findings,
-  // recorded per claim×source pair from the same clauseReview the
-  // demotion below consumes, and the subject-extraction blind-spot
-  // count. The rescue packet (B27-4) reads the clause findings from
-  // here — the first normalization's records — instead of recomputing
-  // them with divergent inputs.
-  const clauseFindings=[];
+  // The subject-extraction blind-spot count: claim×source pairs
+  // where the reviewer's extraction could not see the claim's
+  // subject, surfaced on the merged review contract as a measurable
+  // trace number. (The clause-findings, gate-restoration, framing,
+  // demotion-suppression, apparatus-check and context-support
+  // census arrays that used to be declared alongside were deleted
+  // in the 2026-11-15 audit fix: their producing gates were
+  // removed in Stage A/B.2 and the assembly-guard deletion, and
+  // the arrays had had no push sites since — permanently-empty
+  // telemetry that read as "never fired" for the wrong reason.)
   let subjectExtractionBlindSpots=0;
-  // Batch 30 (B30-4): the pairs this pass restored through the two-key
-  // path (antecedent / voice-anchor), recorded as the demotions are
-  // neutralized below and surfaced on the merged review contract.
-  const gateRestorations=[];
-  // Batch 34 (B34-1 layer 1): framing claims this pass rescued from
-  // the part-level context purge (see the judgment after the claim
-  // loop). Each entry carries the retained answer object: the
-  // assembly antecedent guard (layer 2) restores from this pool when
-  // a later stage drops a rescued framing claim a shipped paragraph
-  // needs as its antecedent anchor.
-  const framingRescues=[];
-  // Batch 34 (B34-1 layer 1): framing-class candidates the wall
-  // refused, with the failed wall tests — the fallback census, so
-  // validation can audit what the wall held back and why.
-  const framingFallbacks=[];
-  // Batch 31 (B31-2): the demotions this pass suppressed at the gate
-  // itself via the antecedent / voice test, recorded as they are
-  // suppressed below and surfaced alongside gateRestorations, so
-  // validation can census demotions that stood against demotions
-  // suppressed and audit each direction.
-  const gateDemotionsSuppressed=[];
-  // Batch 34 (B34-3): pairs the boundary subject check demoted —
-  // the in-span subject-swap census, surfaced on the contract like
-  // the other gate records.
-  const apparatusFramingChecks=[];
-  // Batch 33 (B33-8): parts whose context-support kills rested on
-  // an empty packet view (see the guard in the uncited-claim
-  // branch), surfaced on the contract so validation can census
-  // unmeasured refusals apart from measured ones.
-  const contextSupportUnmeasuredParts=[];
-  // Batch 33 (B33-4): the per-part packet name inventory for the
-  // same-family check — every "Firstname Surname" pair named in the
-  // part's packet spans and span heads, grouped by surname. A
-  // surname is SHARED in the packet when at least two distinct
-  // first names pair with it: the packet itself then attests two
-  // people the shared title+surname form ("Miss Bennet") could
-  // denote. Titles are not first names, so "Mr. Bennet" / "Mrs.
-  // Bennet" cannot manufacture a sibling pair on their own.
-  const NAME_INVENTORY_TITLES=new Set(['mr','mrs','miss','ms','dr',
-    'sir','lady','lord','captain','colonel','major','general',
-    'professor','reverend','st']);
-  const packetNameInventoryByPart=new Map();
-  const packetNameInventory=partId=>{
-    if(packetNameInventoryByPart.has(partId))
-      return packetNameInventoryByPart.get(partId);
-    const texts=[];
-    const partMap=reviewSpanMaps.get(partId);
-    if(partMap)for(const sourceMap of partMap.values())
-      for(const span of sourceMap.values()){
-        texts.push(String(span?.text||''));
-        if(span?.head)texts.push(String(span.head));
-      }
-    const bySurname=new Map();
-    for(const text of texts)
-      for(const match of text.matchAll(
-        /\b([\p{Lu}][\p{Ll}]{2,})\s+([\p{Lu}][\p{Ll}]{2,})\b/gu)){
-        const key=match[2].toLocaleLowerCase();
-        if(!bySurname.has(key))bySurname.set(key,
-          {surname:match[2],pairFirsts:new Set()});
-        bySurname.get(key).pairFirsts.add(match[1]);
-      }
-    const shared=new Map();
-    for(const [key,entry] of bySurname){
-      const firsts=new Set([...entry.pairFirsts]
-        .filter(first=>!NAME_INVENTORY_TITLES.has(first.toLocaleLowerCase())));
-      if(firsts.size>=2)shared.set(key,{surname:entry.surname,firsts});
-    }
-    const inventory={texts,shared};
-    packetNameInventoryByPart.set(partId,inventory);
-    return inventory;
-  };
-  // Batch 33 (B33-5 (b)): the companion-span test. A span in the
-  // same source's packet that the reviewer did NOT bind to this
-  // claim STATES the claim's proposition — clause-level content
-  // coverage at the gate's own 0.65 lexical bar — and anchors the
-  // claim's subject: the span (or its head) names one of the
-  // attributed names as a narration subject, or an attributed name
-  // is the source work's own author voice. The reviewer's per-span
-  // findings stand as recorded; this test only asks whether the
-  // packet as a whole states what the bound span was found not to
-  // state (the reviewer's own boundaries concede the shape: "the
-  // specific claim is better supported by other spans in the
-  // source"). The conjunction is the safety: coverage without an
-  // anchor, or an anchor without coverage, releases nothing — the
-  // round-table shape fails it (the Kurtz-naming span does not
-  // state the table proposition) and the trait shape fails it (no
-  // span names the credited person, who is not the work's author).
-  const companionSpanStatesClaim=(partId,sourceId,claimText,names,
-    excludedSpanIds)=>{
-
-    const sourceMap=reviewSpanMaps.get(partId)?.get(sourceId);
-    if(!sourceMap)return false;
-    const attributed=[...new Set((names||[]).map(name=>
-      String(name||'').trim()).filter(Boolean))];
-    if(!attributed.length)return false;
-    const source=sources.find(item=>String(item?.id||'')===String(sourceId));
-    const authorAnchored=attributed.some(name=>
-      speakerIsWorkAuthor(name,source));
-    for(const span of sourceMap.values()){
-      if(excludedSpanIds.has(String(span?.spanId||'')))continue;
-      const coverage=clauseContentCoverage(claimText,[span]);
-      if(!coverage.packetSpanIds.includes(String(span?.spanId||'')))continue;
-      if(authorAnchored)return true;
-      // The anchor reads narration the way the antecedent test
-      // does: quoted speech is stripped first, so a name that
-      // appears only inside quotation (the trait shape's letter
-      // and log entry) anchors nothing.
-      if(attributed.some(name=>
-        headSentenceUnits(span?.text).some(unit=>
-          spanNamesSubjectInNarration(stripQuotedSpeechRegions(unit),name))||
-        headSentenceUnits(span?.head).some(unit=>
-          spanNamesSubjectInNarration(stripQuotedSpeechRegions(unit),name))))
-        return true;
-    }
-    return false;
-  };
   const claimEvidenceById=new Map((Array.isArray(reviewClaims)?reviewClaims:[]).map(claim=>[
     String(claim?.claimId||''),new Map((Array.isArray(claim?.sourceEvidence)?claim.sourceEvidence:[])
       .map(item=>[String(item?.sourceId||''),Array.isArray(item?.spanIds)?item.spanIds:[]]))
@@ -3200,7 +2444,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
       suppliedParts.set(part.id,reviewerPart);
     }
     if(!reviewerPart)issues.push('missing-part-decision');
-    const acceptedAnswers=[],evidence=[],precedingAnswers=[...answerContext];
+    const acceptedAnswers=[],evidence=[];
     for(const answer of answerPart?.answers||[]){
       const decision=suppliedClaims.get(answer.claimId);
       const citedIds=new Set(answer.sourceIds);
@@ -3245,7 +2489,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
           const retainedAnswer={...answer,sourceIds:[],
             renderedText:answer.renderedText||answer.text};
           acceptedAnswers.push(retainedAnswer);
-          precedingAnswers.push(retainedAnswer);
+
         }else{
           supportIssues.push({partId:part.id,claimId:answer.claimId,
             reason:'part-level-context-not-supported'});
@@ -3526,7 +2770,7 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
             answer.text+retainedCitation;
         }
         acceptedAnswers.push(retainedAnswer);
-        evidence.push(...claimEvidence);precedingAnswers.push(retainedAnswer);
+        evidence.push(...claimEvidence);
       }
       if(validSupportedText)reviewDecisions.push({partId:part.id,claimId:answer.claimId,
         originalClaimStatus:decision.status,supportedTextApplied:claimStatus==='answered',
@@ -3709,20 +2953,15 @@ function normalizeReview(review,plan,answerParts,sources,reviewSpanMaps,question
     }
   }
   return {parts,issues:[...new Set(issues)],warnings,supportIssues,recovered,reviewDecisions,partDecisions,
-    clauseFindings,subjectExtractionBlindSpots,gateRestorations,gateDemotionsSuppressed,
+    subjectExtractionBlindSpots,
     ...(assemblySalvage.length?{assemblySalvage}:{}),
     ...(salvageDroppedClaimIds.length?{salvageDroppedClaimIds}:{}),
-    ...(framingRescues.length?{framingRescues}:{}),
-    ...(framingFallbacks.length?{framingFallbacks}:{}),
-    ...(apparatusFramingChecks.length?{apparatusFramingChecks}:{}),
-    ...(spanRegionClassifications.length?{spanRegionClassifications}:{}),
-    ...(contextSupportUnmeasuredParts.length?{contextSupportUnmeasured:contextSupportUnmeasuredParts}:{})};
+    ...(spanRegionClassifications.length?{spanRegionClassifications}:{})};
 }
 
 // Batch 30 (B30-1): the split-review threshold and half-merge live at
 // module level — batch 24 defined them inside the review block, but
-// the split-on-timeout fallback for answer-re-review (below) and the
-// review stage now share both.
+// the split-on-timeout fallback and the review stage now share both.
 
 const VALIDATION_REASON_CODES=new Set([
   'invalid-citation-format','unknown-source-id',
@@ -4430,50 +3669,6 @@ export function removeClaimsFromPart(item,claimIds){
 // already shipping under another ID, no rejection-overlap), and
 // otherwise the part is capped at partial and the loss recorded.
 const VETO_CENSUS_SUPPRESSION_OUTCOMES=new Set(['suppressed','demoted','vetoed']);
-// Batch 34 (B34-8 (ii)): the veto census records layer votes, not
-// outcomes — a "suppressed" entry could still ship cited (phase 2:
-// Conrad P1-C5, Kierkegaard P1-C6; phase 3: love P1-C6), so the
-// census could not be used as a gate-economy measure. Each entry
-// gains the claim's final disposition, computed at final assembly
-// from the shipped set and the shipped text: a suppression vote on
-// a claim that ships is 'suppressed-and-shipped'; on a claim that
-// does not, 'suppressed-and-dropped'; a restoration vote whose
-// claim ships is 'stood'. A restoration whose claim was dropped
-// downstream also reads 'suppressed-and-dropped' — the claim's end
-// state, not the vote's; the vote itself stays visible in
-// `outcome`, so no information is lost. Entries are annotated IN
-// PLACE: the trace mirrors hold the same entry objects, so the
-// disposition lands in every mirror at once. A claim counts as
-// shipped by ID, or by substance when its text appears in the
-// answer under another ID (the renumbering shape B34-6 guards).
-export function finalizeVetoCensus(census,{parts,answerText,reviewDecisions}={}){
-  const shippedIds=new Set();
-  const claimTextById=new Map();
-  for(const item of parts||[]){
-    if(item.answerStatus==='unanswered'||!item.answers?.length)continue;
-    for(const answer of item.answers){
-      if(answer.claimId)shippedIds.add(answer.claimId);
-      if(answer.claimId&&(answer.renderedText||answer.text))
-        claimTextById.set(item.part.id+'|'+answer.claimId,
-          answer.renderedText||answer.text);
-    }
-  }
-  for(const decision of reviewDecisions||[]){
-    if(decision.claimId&&decision.claimText&&
-      !claimTextById.has(decision.partId+'|'+decision.claimId))
-      claimTextById.set(decision.partId+'|'+decision.claimId,decision.claimText);
-  }
-  const haystack=normalizedProseSurface(answerText||'');
-  for(const entry of census||[]){
-    const text=claimTextById.get(entry.partId+'|'+entry.claimId);
-    const shipped=shippedIds.has(entry.claimId)||
-      (text?claimTextAppears(text,haystack):false);
-    entry.finalDisposition=VETO_CENSUS_SUPPRESSION_OUTCOMES.has(entry.outcome)
-      ?(shipped?'suppressed-and-shipped':'suppressed-and-dropped')
-      :(shipped?'stood':'suppressed-and-dropped');
-  }
-  return census;
-}
 export function reconcileAssemblyLoss({parts,reviewDecisions,
   validatedAnswers,rejectionArchive,trace}){
   const losses=[];
@@ -4490,15 +3685,13 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
   const failedSiblingIds=new Set((reviewDecisions||[])
     .filter(entry=>entry.sourceId&&entry.accepted!==true)
     .map(entry=>entry.partId+'|'+entry.claimId));
-  // The assembly antecedent guard's defensive removals and the
-  // scaffolding repair's omissions both drop accepted claims
-  // without any other record the census below can read; both are
-  // consulted here so neither is mistaken for an unexplained loss
-  // and resurrected by the restore below.
-  const guardRemovedIds=new Set(
-    ((trace?.assemblyAntecedentGuard?.removed)||[])
-      .flatMap(entry=> (entry.claimIds||[])
-        .map(claimId=>entry.partId+'|'+claimId)));
+  // The scaffolding repair's omissions drop accepted claims
+  // without any other record the census below can read; they are
+  // consulted here so they are not mistaken for an unexplained
+  // loss and resurrected by the restore below. (The assembly
+  // antecedent guard that used to be consulted alongside was
+  // deleted in the 2026-11-15 audit fix — it had no production
+  // caller and its trace field was never written.)
   const scaffoldingOmittedIds=new Set(
     ((trace?.reviewScaffolding?.repairRound?.omitted)||[])
       .map(entry=>entry.partId+'|'+entry.claimId));
@@ -4558,7 +3751,6 @@ export function reconcileAssemblyLoss({parts,reviewDecisions,
         reason='source-required-containment';
       else if(containmentIds.has(key))reason='rejection-containment';
       else if(inheritedIds.has(key))reason='context-claim-inherits-demotion';
-      else if(guardRemovedIds.has(key))reason='assembly-antecedent-guard-removed';
       else if(scaffoldingOmittedIds.has(key))reason='scaffolding-omit';
       else if(failedSiblingIds.has(key))reason='claim-source-partially-supported';
       else if(decision.validationReason==='claim-narrowing-failed-evidence-validation')
@@ -4671,10 +3863,9 @@ function timingUnionMs(events){
 }
 
 function buildTimingSummary(stageTimings,buildWallMs){
-  const composition=stageTimings.filter(item=>
-    ['compose','expand','answer-repair','scaffolding-repair'].includes(item.stage));
+  const composition=stageTimings.filter(item=>item.stage==='compose');
   const review=stageTimings.filter(item=>
-    item.stage.startsWith('review')||item.stage==='answer-re-review');
+    item.stage.startsWith('review'));
   const sumProviderWait=items=>Math.round(items.reduce((sum,item)=>sum+
     (Number.isFinite(item.providerWaitMs)?item.providerWaitMs:0),0));
   return {
@@ -4736,9 +3927,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // Call sites pass kind where the stage name alone is ambiguous
     // (split halves, retries, delta re-reviews); the stage defaults
     // below cover the rest honestly.
-    const callKind=kind||
-      (stage==='review-repair'||stage==='answer-repair'||stage==='scaffolding-repair'?'repair':
-       stage==='review-rescue'?'rescue':'initial');
+    const callKind=kind||'initial';
     const callClaimCount=Number.isInteger(claimCount)?claimCount:
       Array.isArray(payload?.claims)?payload.claims.length:
       Array.isArray(payload?.decisions)?payload.decisions.length:null;
@@ -4787,12 +3976,8 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       transportCall.claimCount=callClaimCount;
       trace.inferenceCalls.push(transportCall);
     };
-    const payloadMetrics=stage.startsWith('review')||stage==='answer-re-review'?
+    const payloadMetrics=stage.startsWith('review')?
       reviewPayloadMetrics(payload,serializedPayload,system):null;
-    // Batch 5 (L2): 'answer-re-review' produces review-shaped output with
-    // the review token budget, but 'answer-re-review'.startsWith('review')
-    // is false, so it silently got the 45 s compose-class timeout — a
-    // latent deadline-failure source. It gets the review timeout too.
     // Batch 34 (B34-5): review-shaped stages use the flat 60000 ms
     // deadline (B33-9's packet scaling retired — see the note at the
     // former reviewDeadlineMsForPacket site).
@@ -4808,21 +3993,20 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // leaves this raise — a split half judges half the claims, so it
     // returns to the flat 60000 ms; the split IS the timeout case's
     // retry, replacing the 120 s same-size replay for that case.
-    const timeoutMs=stage.startsWith('review')||stage==='answer-re-review'?
+    const timeoutMs=stage.startsWith('review')?
       (kind==='retry'?120000:60000):45000;
     // Batch 5 (L6): structured stages are deterministic extraction and
     // judgment tasks, so they run at temperature 0; only the creative
-    // stages (compose, expand) omit the parameter and keep the provider
-    // default, preserving their call shape exactly.
-    const temperature=stage==='compose'||stage==='expand'?undefined:0;
+    // stage (compose) omits the parameter and keeps the provider
+    // default, preserving its call shape exactly.
+    const temperature=stage==='compose'?undefined:0;
     const timeoutError=Object.assign(new Error('Inference deadline exceeded'),{
       stage,code:'inference-deadline-exceeded',startedAt:start,timeoutMs
     });
     // Longer answers produce more sentence-level review records. Scale the
     // existing review call's output allowance to that record count; this does
     // not add a call or limit the answer draft's length.
-    const reviewRecordCount=stage==='review-repair'||stage==='review-rescue'?
-      (Array.isArray(payload?.decisions)?payload.decisions.length:0):
+    const reviewRecordCount=
       (Array.isArray(payload?.claims)?payload.claims.length:0)+
         (Array.isArray(payload?.parts)?payload.parts.reduce((count,part)=>count+
           (Array.isArray(part?.requirements)?part.requirements.length:0),0):0);
@@ -4836,11 +4020,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     // A review record costs roughly 220 output tokens with source role and
     // support-boundary findings plus any clause decisions. Keep the review
     // allowance proportional to the record count so large reviews can finish.
-    const outputTokenBudget=stage==='review'||stage==='answer-re-review'?
+    const outputTokenBudget=stage==='review'?
       Math.min(6800,1200+reviewRecordCount*220):
-      stage==='review-repair'||stage==='review-rescue'?Math.min(3000,900+reviewRecordCount*160):
-      stage==='answer-repair'?2600:
-      stage==='compose'?Math.min(3600,Math.max(1800,900+600*composePartCount)):1800;
+      Math.min(3600,Math.max(1800,900+600*composePartCount));
     const modelRequest={messages,chat_template_kwargs:{enable_thinking:false},
       ...(temperature!==undefined?{temperature}:{}),max_completion_tokens:outputTokenBudget};
     const transport=options.inferenceTransport==='streaming'?'streaming':'default';
@@ -4895,7 +4077,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       pushCallRecord();
       if(transportCall&&error&&typeof error==='object')
         error.inferenceTransportDiagnostic=transportCall;
-      if(payloadMetrics||stage==='answer-repair'){
+      if(payloadMetrics){
         const failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
           error.code:'review-request-failed';
         trace.stages.push({stage,elapsedMs:Date.now()-start,status:'failed',failureCode,
@@ -4920,7 +4102,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       finishTiming(null,'failed','answer-output-truncated');
       throw new ModelFormatError(stage,'The answer draft was truncated before it was complete.','answer-output-truncated');
     }
-    if(stage.startsWith('review')||stage==='answer-re-review'||stage==='answer-repair'){
+    if(stage.startsWith('review')){
       const parseStartedAt=performance.now();
       try{
         if(['length','max_tokens'].includes(response?.choices?.[0]?.finish_reason)){
@@ -4928,12 +4110,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // unread, although its leading claim verdicts are complete.
           // The review parser (which salvages truncated payloads) gets
           // the first attempt; only a payload with nothing recoverable
-          // takes the truncated failure. Answer-repair stages keep
-          // their existing behavior — salvage is review-only.
+          // takes the truncated failure.
           let salvaged=null;
-          if(stage.startsWith('review')||stage==='answer-re-review'){
-            try{salvaged=parser(response,stage);}catch{salvaged=null;}
-          }
+          try{salvaged=parser(response,stage);}catch{salvaged=null;}
           if(salvaged){finishTiming(parseStartedAt,'completed');return salvaged;}
           throw new ModelFormatError(stage,'Reviewer output was truncated before a complete decision object was returned.','review-output-truncated');
         }
@@ -4943,7 +4122,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       }catch(error){
         stageTrace.status='failed';
         stageTrace.failureCode=typeof error?.code==='string'&&/^[a-z0-9-]{1,64}$/i.test(error.code)?
-          error.code:stage==='answer-repair'?'answer-repair-response-invalid':'review-response-invalid';
+          error.code:'review-response-invalid';
         finishTiming(parseStartedAt,'failed',stageTrace.failureCode);
         throw error;
       }
@@ -5549,11 +4728,9 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
       };
       const mergeSingles=()=>{
         const merged={parts:[],issues:[],warnings:[],supportIssues:[],recovered:[],
-          reviewDecisions:[],partDecisions:[],clauseFindings:[],
-          subjectExtractionBlindSpots:0,gateRestorations:[],gateDemotionsSuppressed:[],
-          framingRescues:[],framingFallbacks:[],
-          apparatusFramingChecks:[],spanRegionClassifications:[],
-          contextSupportUnmeasured:[],vetoCensus:[],assemblySalvage:[]};
+          reviewDecisions:[],partDecisions:[],
+          subjectExtractionBlindSpots:0,
+          spanRegionClassifications:[],assemblySalvage:[]};
         for(const part of plan.parts){
           if(issueExcludedPartIds.has(part.id))continue;
           const single=singlesByPart.get(part.id);
@@ -5590,20 +4767,14 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           merged.recovered.push(...single.recovered);
           merged.reviewDecisions.push(...single.reviewDecisions);
           merged.partDecisions.push(...single.partDecisions);
-          // Batch 27 (B27-4/B27-1): carry the normalization's own
-          // clause findings and blind-spot count into the merged
-          // review the rescue packet and the trace read.
-          merged.clauseFindings.push(...(single.clauseFindings||[]));
-          merged.gateRestorations.push(...(single.gateRestorations||[]));
-          merged.gateDemotionsSuppressed.push(...(single.gateDemotionsSuppressed||[]));
-          // Batch 34 (B34-1 layer 1): the framing census and the
-          // antecedent guard's restore pool ride the same merge.
-          merged.framingRescues.push(...(single.framingRescues||[]));
-          merged.framingFallbacks.push(...(single.framingFallbacks||[]));
-          merged.apparatusFramingChecks.push(...(single.apparatusFramingChecks||[]));
+          // Carry the normalization's blind-spot count, region
+          // census and salvage records into the merged review the
+          // rescue packet and the trace read. (The clause-findings,
+          // gate, framing and veto census merges that used to ride
+          // along were deleted in the 2026-11-15 audit fix — the
+          // singles have not produced those fields since their
+          // gates were removed.)
           merged.spanRegionClassifications.push(...(single.spanRegionClassifications||[]));
-          merged.contextSupportUnmeasured.push(...(single.contextSupportUnmeasured||[]));
-          merged.vetoCensus.push(...(single.vetoCensus||[]));
           merged.assemblySalvage.push(...(single.assemblySalvage||[]));
           merged.subjectExtractionBlindSpots+=single.subjectExtractionBlindSpots||0;
         }
@@ -5727,17 +4898,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           // measurable trace number, not an anecdote.
           ...(review.subjectExtractionBlindSpots?
             {subjectExtractionBlindSpots:review.subjectExtractionBlindSpots}:{}),
-          // Batch 34 (B34-3): the in-span subject-swap demotions.
-          // Batch 34 (B34-7): the apparatus-only framing demotions.
-          ...(review.apparatusFramingChecks?.length?
-            {apparatusFramingChecks:review.apparatusFramingChecks}:{}),
           // Batch 35 (B35-4): the per-span region census — the
           // firing ledger that makes B34-7 observable in every
           // production trace, gate trip or not.
           ...(review.spanRegionClassifications?.length?
             {spanRegionClassifications:review.spanRegionClassifications}:{}),
-          ...(review.contextSupportUnmeasured?.length?
-            {contextSupportUnmeasured:review.contextSupportUnmeasured}:{}),
           // Assembly-loss tranche (item 1): the salvaged-claim set,
           // recorded so the validation audit can verdict it as its
           // own support line (checkpoint check A1).
@@ -6037,8 +5202,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     if(review&&!reviewFailure){
       const accepted=new Set();
       for(const item of parts){
-        const decisions=item.reReviewDecisions?.length?
-          item.reReviewDecisions:(review.reviewDecisions||[]);
+        const decisions=review.reviewDecisions||[];
         for(const decision of decisions)
           if(decision.partId===item.part.id&&decision.accepted===true&&
             decision.sourceId)
@@ -6590,24 +5754,19 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     }
     // Batch 9 (B9-5): the traceability invariant, checked after every
     // attachment mechanism (inheritance, second look, gate adoptions)
-    // has run. Gate-adopted parts are judged against their re-review's
-    // decisions — recorded on the part at adoption (trace.reReviewDecisions
-    // below) — because their claim IDs were reassigned at revalidation
-    // and the pre-repair contract's decisions describe a different draft;
-    // every other part is judged against the review contract. A shipped
-    // cited claim no mechanism covers is named in
-    // trace.untracedCitedClaims, its part is capped at partial, and the
-    // answer may not claim verified status (the B8-5 machinery).
+    // has run. Every part is judged against the review contract's
+    // decisions. (An earlier design recorded a gate-adopted part's
+    // re-review decisions on the part itself; no mechanism ever
+    // wrote that field, and the dead channel was removed in the
+    // 2026-11-15 audit fix.) A shipped cited claim no mechanism
+    // covers is named in trace.untracedCitedClaims, its part is
+    // capped at partial, and the answer may not claim verified
+    // status (the B8-5 machinery).
     if(review&&!reviewFailure){
-      const reReviewDecisions=parts.flatMap(item=>(item.reReviewDecisions||[]));
-      if(reReviewDecisions.length)trace.reReviewDecisions=reReviewDecisions;
       const keyOf=(partId,claimId)=>partId+'|'+claimId;
       const accepted=new Set();
       for(const item of parts){
-        // An adopted part carries its re-review's decisions on the part
-        // itself; that presence — not the adopted-ID set — is the signal.
-        const decisions=item.reReviewDecisions?.length?
-          item.reReviewDecisions:(review.reviewDecisions||[]);
+        const decisions=review.reviewDecisions||[];
         for(const decision of decisions)
           if(decision.partId===item.part.id&&decision.accepted===true&&decision.sourceId)
             accepted.add(keyOf(item.part.id,decision.claimId));
@@ -7653,8 +6812,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         // Context claims never qualify: their decisions are
         // source-less by design (the general-knowledge allowance),
         // so the allowance is preserved by the same test.
-        for(const record of [...(review?.reviewDecisions||[]),
-          ...(item.reReviewDecisions||[])])
+        for(const record of review?.reviewDecisions||[])
           if(record&&record.partId===item.part.id&&
              record.accepted===true&&record.sourceId)
             requiredIds.add(record.claimId);
@@ -8292,11 +7450,6 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
     if(hasReviewCoverageGaps)downgradeReasons.push('hasReviewCoverageGaps');
     if(hasUntracedCitedClaims)downgradeReasons.push('hasUntracedCitedClaims');
     if(downgradeReasons.length)trace.final={...(trace.final||{}),downgradeReasons};
-    const stageFailure=(!answer&&!failure&&!reviewFailure&&
-      trace.answerRepair?.attempted===true&&trace.answerRepair?.applied!==true&&
-      trace.answerRepair?.reason&&
-      trace.answerRepair.reason!=='answer-repair-no-material-change')?
-      {code:trace.answerRepair.reason,stage:'answer-repair'}:null;
     const noText=!answer;
     return {outcome:answer?((salvage||unreviewed||unvalidatedPartsDropped||hasReviewCoverageGaps||hasUntracedCitedClaims||Boolean(reviewFallbackByPart))?'unverified-source-draft':used.size?'verified-source-draft':'general-context-answer'):
         failure?'generation-failed':'insufficient-evidence',
@@ -8314,12 +7467,13 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         used.size||reviewedLibraryClaims?'claim-review':'general-context-review',
       ...(failure?{failureCode:failure.code,failureStage:failure.stage}:{}),
       ...(reviewFailure?{failureCode:reviewFailure.code,failureStage:reviewFailure.stage}:{}),
-      // Batch 28 (B28-3): the downgrade reasons and the causing
-      // stage failure ride on the result itself (see above); both
-      // are conditional spreads, so a result with no downgrade and
-      // no stage failure keeps its exact previous shape.
+      // Batch 28 (B28-3): the downgrade reasons ride on the result
+      // itself (see above) as a conditional spread, so a result
+      // with no downgrade keeps its exact previous shape. (The
+      // answer-repair stage failure that used to ride alongside
+      // was deleted in the 2026-11-15 audit fix — trace.answerRepair
+      // has not been written since the repair stage was removed.)
       ...(downgradeReasons.length?{downgradeReasons}:{}),
-      ...(stageFailure?{failureCode:stageFailure.code,failureStage:stageFailure.stage}:{}),
       // Batch 10 (B10-4): always present in v2 build results — the
       // batch-9 lesson was a depthRepair field that existed at both
       // ends (gateway spread, harness normalization) but was never

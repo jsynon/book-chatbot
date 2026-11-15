@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {composeEvidenceAnswer,linkEvidenceToParts,derivePartContract,COMPOSER_PROMPT,EXPANSION_PROMPT,REVIEW_PROMPT,parseReviewJson,parseAnswerRepairJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimPersonSubjects,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,normalizeClaimClauseDecisions,claimPossessiveOnlySubjects} from './evidence-answer.mjs';
+import {composeEvidenceAnswer,linkEvidenceToParts,derivePartContract,COMPOSER_PROMPT,REVIEW_PROMPT,parseReviewJson,normalizeAnswerMarkdown,sanitizeInternalAnswerIds,unwrapBoldWrappedParagraphs,findUntracedCitedClaims,stripUntracedCitedClaims,stripUntracedCitedClaimsToFixpoint,removeClaimsFromPart,hasAssemblyEndingViolation,speakerIsWorkAuthor,personNamesMatch,namedSpeakerAttribution,claimPersonSubjects,claimTextAppears,attachScaffoldingToPart,isListLeadInAnswer,introducesDuplicatedParagraph,composerPassageWindows,claimPossessiveOnlySubjects} from './evidence-answer.mjs';
 import {auditFinalAnswer,normalizePlan,sourceProvenance,removeUnsupportedQuoteMarks} from './reader-contract.mjs';
 import {buildReviewSpans,rankReviewSpans,selectReviewPacketSpans,selectRequirementReviewSpans,isHeadingOnlySpan} from './review-spans.mjs';
-import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims,applyAssemblyAntecedentGuard,reconcileAssemblyLoss,classifySpanRegion,finalizeVetoCensus,subjectNamesEquivalent,BATCH35_FIRING_FIELDS} from './evidence-answer.mjs';
+import {splitCitedSentenceUnits,reconcileFinalPartCoverage,findTextAbsentShippedClaims,reconcileAssemblyLoss,classifySpanRegion,subjectNamesEquivalent,BATCH35_FIRING_FIELDS} from './evidence-answer.mjs';
 test('batch 34 (B34-5) retired B33-9 scaling: an oversized review packet gets the flat 60000 deadline',async()=>{
  // The packet below carries ~96,000 span characters (~16,000 packet
  // words): under B33-9's retired scaling its initial review call
@@ -100,17 +100,6 @@ test('Batch 21 preserves the named paraphrased support span alongside requiremen
   'requirement-matching passages remain available alongside the supporting span');
 });
 
-test('Batch 21 clause offsets that split words remain unresolved and partial',()=>{
- const claim='Hume explains that custom shapes expectation.';
- const splitAt=claim.indexOf('custom')+2;
- const result=normalizeClaimClauseDecisions([{start:splitAt,end:claim.indexOf(' expectation')+5,
-  text:claim.slice(splitAt,claim.indexOf(' expectation')+5),status:'answered',issueCode:'none',sources:[]}],
-  claim,new Set(['S1']),new Map());
- assert.equal(result.decisions.length,1);
- assert.equal(result.decisions[0].status,'partial');
- assert.equal(result.decisions[0].unresolved,true);
- assert.ok(result.warnings.includes('clause-range-not-word-boundary'));
-});
 
 
 
@@ -1752,10 +1741,6 @@ test('a rejected nominated direct-answer claim keeps the part partial despite an
 
 
 
-test('answer repair quote recovery leaves unrelated malformed JSON fail-closed',()=>{
- assert.throws(()=>parseAnswerRepairJson({response:'{"parts":[{"partId":"P1",}],}'}),
-  /valid JSON/);
-});
 
 
 test('an overinclusive direct-answer set can retain a supported answer claim when the reviewer still judges the part complete',async()=>{
@@ -1913,8 +1898,6 @@ test('the answer contract allows useful general context while keeping cited clai
  assert.match(COMPOSER_PROMPT,/Write focused connected prose/);
  assert.match(COMPOSER_PROMPT,/do not repeat the full explanation of each view/);
  assert.match(COMPOSER_PROMPT,/Avoid repeating the same point across parts/);
- assert.match(EXPANSION_PROMPT,/broader knowledge/);
- assert.doesNotMatch(EXPANSION_PROMPT,/rely on outside knowledge|only where the supplied verified passage windows/);
  assert.match(REVIEW_PROMPT,/Claims with an empty sourceIds array are uncited; do not assume from that alone that they are general context/);
  assert.match(REVIEW_PROMPT,/Require a source ID and exact span only when a claim attributes a position to a supplied work/);
  assert.match(REVIEW_PROMPT,/Merely mentioning a work or person in independent background does not require a citation/);
@@ -6645,64 +6628,6 @@ test('batch 28 B28-3: a strict-minority drop names unvalidatedPartsDropped on th
 
 
 
-// ---------------------------------------------------------------------------
-// Batch 29 (B29-1): clause identity is the returned TEXT; offsets are
-// advisory. Unit coverage for the normalizer, then pilot coverage.
-// ---------------------------------------------------------------------------
-const b29ClauseMaps=new Map([['S1',new Map([['S1-Q1',{}]])]]);
-const b29Claim='Hume links necessity to custom, treats constant conjunction as its basis, and holds that the mind is determined to infer one object from another.';
-test('batch 29 B29-1 (i): correct clause text resolves despite deliberately wrong offsets',()=>{
- const result=normalizeClaimClauseDecisions([
-  {text:'Hume links necessity to custom',start:400,end:460,status:'answered',
-   issueCode:'none',sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]},
-  {text:'treats constant conjunction as its basis',start:0,end:5,status:'answered',
-   issueCode:'none',sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}],
-  b29Claim,new Set(['S1']),b29ClauseMaps);
- assert.equal(result.decisions.length,2);
- assert.equal(result.decisions[0].status,'answered');
- assert.equal(result.decisions[0].unresolved,undefined,
-  'no verdict depends on the model counting UTF-16 offsets');
- assert.deepEqual([result.decisions[0].start,result.decisions[0].end],[0,30],
-  'the range is derived from the located text, not the advisory offsets');
- assert.equal(result.decisions[1].status,'answered');
- assert.ok(!result.warnings.includes('clause-range-invalid'));
-});
-test('batch 29 B29-1 (ii): correct text with correct offsets behaves as before',()=>{
- const clauseText='treats constant conjunction as its basis';
- const start=b29Claim.indexOf(clauseText);
- const result=normalizeClaimClauseDecisions([
-  {text:clauseText,start,end:start+clauseText.length,
-   status:'answered',issueCode:'none',
-   sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}],
-  b29Claim,new Set(['S1']),b29ClauseMaps);
- assert.equal(result.decisions[0].status,'answered');
- assert.deepEqual([result.decisions[0].start,result.decisions[0].end],
-  [start,start+clauseText.length]);
-});
-test('batch 29 B29-1: repeated clause text resolves to the occurrence nearest the advisory offsets',()=>{
- const claim='He holds that custom produces necessity, and that custom produces necessity in every inference.';
- const first=claim.indexOf('custom produces necessity');
- const second=claim.indexOf('custom produces necessity',first+1);
- assert.ok(first>=0&&second>first,'the fixture clause text occurs twice');
- const result=normalizeClaimClauseDecisions([
-  {text:'custom produces necessity',start:second,end:second+5,status:'answered',
-   issueCode:'none',sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}],
-  claim,new Set(['S1']),b29ClauseMaps);
- assert.equal(result.decisions[0].status,'answered');
- assert.equal(result.decisions[0].start,second,
-  'the advisory offsets pick the nearest occurrence (the absorbed #414 function)');
-});
-test('batch 29 B29-1 (iv): no clause text with invalid offsets keeps the textless behavior',()=>{
- const result=normalizeClaimClauseDecisions([
-  {start:500,end:600,status:'answered',issueCode:'none',
-   sources:[{sourceId:'S1',status:'answered',spanIds:['S1-Q1']}]}],
-  b29Claim,new Set(['S1']),b29ClauseMaps);
- assert.equal(result.decisions.length,1);
- assert.equal(result.decisions[0].text,'');
- assert.equal(result.decisions[0].status,'partial');
- assert.equal(result.decisions[0].unresolved,true);
- assert.ok(result.warnings.includes('clause-range-invalid'));
-});
 
 // ---------------------------------------------------------------------------
 // Batch 29 (B29-2): clearance alignment — present-but-non-clearing clause
@@ -8332,51 +8257,6 @@ test('batch 34 B34-2 (ii): a source-required claim shipping uncited inside a cit
  assert.deepEqual(result.trace.assemblyDisclosureDropped,[]);
 });
 
-test('batch 34 B34-1 layer 2 unit: a rescued framing claim from an earlier draft position is restored before its orphan; a later one is not pulled forward',()=>{
- const parts=[{part:{id:'P3'},status:'partial',answerStatus:'partial',
-  evidence:[],
-  answers:[
-   {claimId:'P3-C1',text:'Marlow shapes the narrative through the dream-sensation of his voyage.',
-    renderedText:'Marlow shapes the narrative through the dream-sensation of his voyage.',
-    sourceIds:['S3'],paragraphIndex:0},
-   {claimId:'P3-C3',text:'He shapes the narrative by intentionally distorting his own psyche.',
-    renderedText:'He shapes the narrative by intentionally distorting his own psyche.',
-    sourceIds:['S6'],paragraphIndex:1}]}];
- const decisions=[{partId:'P3',claimId:'P3-C3',sourceId:'S6',
-  attributedSubject:'Underground Man'}];
- const framing={claimId:'P3-C2',
-  text:'The Underground Man\u2019s unreliability is internal and volitional.',
-  renderedText:'The Underground Man\u2019s unreliability is internal and volitional.',
-  sourceIds:[],paragraphIndex:0};
- const actions=applyAssemblyAntecedentGuard(parts,{reviewDecisions:decisions,
-  restorable:[{partId:'P3',claimId:'P3-C2',answer:framing}]});
- assert.deepEqual(actions.restored,[{partId:'P3',claimId:'P3-C2',
-  forClaimId:'P3-C3'}]);
- assert.deepEqual(parts[0].answers.map(answer=>answer.claimId),
-  ['P3-C1','P3-C2','P3-C3'],
-  'the framing claim is restored directly before the orphan, in its own part');
- assert.equal(parts[0].answers[1].paragraphIndex,1,
-  'the restored claim joins the orphan\u2019s paragraph');
- // Position discipline: the same framing claim numbered AFTER the
- // orphan (a closing synthesis) is never pulled forward — the
- // orphan falls to the deterministic rewrite instead.
- const parts2=[{part:{id:'P3'},status:'partial',answerStatus:'partial',
-  evidence:[],
-  answers:[
-   {claimId:'P3-C1',text:'Marlow shapes the narrative through the dream-sensation of his voyage.',
-    renderedText:'Marlow shapes the narrative through the dream-sensation of his voyage.',
-    sourceIds:['S3'],paragraphIndex:0},
-   {claimId:'P3-C3',text:'He shapes the narrative by intentionally distorting his own psyche.',
-    renderedText:'He shapes the narrative by intentionally distorting his own psyche.',
-    sourceIds:['S6'],paragraphIndex:1}]}];
- const actions2=applyAssemblyAntecedentGuard(parts2,{reviewDecisions:decisions,
-  restorable:[{partId:'P3',claimId:'P3-C9',answer:{...framing,claimId:'P3-C9'}}]});
- assert.deepEqual(actions2.restored,[]);
- assert.deepEqual(actions2.rewritten,[{partId:'P3',claimId:'P3-C3',
-  subject:'Underground Man'}]);
- assert.match(parts2[0].answers[1].text,/^Underground Man shapes the narrative/);
-});
-
 const b34GatsbySource={id:'S1',bookId:'301',
  title:'The Great Gatsby — F. Scott Fitzgerald',page:112,
  url:'https://example.test/gatsby#page=112',
@@ -8719,42 +8599,6 @@ test('batch 34 B34-7 classifySpanRegion: production page records classify appara
 
 
 
-test('batch 34 B34-8 finalizeVetoCensus: every disposition from the shipped set and the shipped text',()=>{
- // The census entries below cover all four (vote, shipped) cells
- // plus the renumbering shape: P1-C2's substance ships as P1-C9,
- // so its demotion did not take effect even though its own ID
- // never ships.
- const fleetText='The building of a great fleet of warships gave the empire command of every sea and harbor along the coast.';
- const parts=[{part:{id:'P1'},answerStatus:'answered',
-  answers:[{claimId:'P1-C1',text:'The opening of new sea routes diverted the trade of the region.',renderedText:'The opening of new sea routes diverted the trade of the region. [S1]'},
-   {claimId:'P1-C3',text:'The plague thinned the towns year after year.',renderedText:'The plague thinned the towns year after year. [S1]'},
-   {claimId:'P1-C9',text:fleetText,renderedText:fleetText+' [S1]'}]},
-  {part:{id:'P2'},answerStatus:'unanswered',answers:[]}];
- const answerText=parts[0].answers.map(answer=>answer.renderedText).join(' ');
- const reviewDecisions=[
-  {partId:'P1',claimId:'P1-C1',claimText:'The opening of new sea routes diverted the trade of the region.'},
-  {partId:'P1',claimId:'P1-C2',claimText:fleetText},
-  {partId:'P1',claimId:'P1-C3',claimText:'The plague thinned the towns year after year.'},
-  {partId:'P1',claimId:'P1-C4',claimText:'The province could no longer defend itself against its enemies.'}];
- const census=[
-  {partId:'P1',claimId:'P1-C1',sourceId:'S1',layer:'gate',ground:'bullet-label',outcome:'suppressed',kind:'bullet-label'},
-  {partId:'P1',claimId:'P1-C2',sourceId:'S1',layer:'gate',ground:'framing-claim-apparatus-only',outcome:'demoted',kind:'apparatus-framing'},
-  {partId:'P1',claimId:'P1-C3',sourceId:'S1',layer:'gate',ground:'source-subject-attribution-mismatch',outcome:'restored',kind:'boundary-subject'},
-  {partId:'P1',claimId:'P1-C4',sourceId:'S1',layer:'other',ground:'claim-clause-not-supported',outcome:'vetoed'},
-  {partId:'P1',claimId:'P1-C5',sourceId:'S1',layer:'gate',ground:'source-subject-attribution-mismatch',outcome:'restored',kind:'boundary-subject'}];
- const returned=finalizeVetoCensus(census,{parts,answerText,reviewDecisions});
- assert.equal(returned,census,'entries are annotated in place, so the trace mirrors see the disposition');
- assert.equal(census[0].finalDisposition,'suppressed-and-shipped',
-  'a suppression vote on a claim that ships is recorded as shipped');
- assert.equal(census[1].finalDisposition,'suppressed-and-shipped',
-  'the substance ships under another ID, so the demotion did not take effect');
- assert.equal(census[2].finalDisposition,'stood',
-  'a restoration whose claim ships stood');
- assert.equal(census[3].finalDisposition,'suppressed-and-dropped',
-  'a veto on a claim that never ships is recorded as dropped');
- assert.equal(census[4].finalDisposition,'suppressed-and-dropped',
-  'a restoration whose claim never ships ends dropped');
-});
 
 
 test('batch 35 B35-1: subjectNamesEquivalent — containment and spelling variants match, distinct surnames do not',()=>{
