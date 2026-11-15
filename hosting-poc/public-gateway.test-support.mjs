@@ -1,7 +1,7 @@
 import {gzipSync} from 'node:zlib';
 import assert from 'node:assert/strict';
-import gateway,{handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,prepareCandidatePages,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,planSearchGapQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights} from './public-gateway.mjs';
-export {gzipSync,gateway,handleRequest,validRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,prepareCandidatePages,parseReview,composeVerifiedAnswer,removeConflictingSpeakerAttributions,removeUnqualifiedCorrectedClaims,removeUncitedAuthorClaims,removeUnsupportedCrossWorkComparisonClaims,appendUncitedSourceGroupDisclosure,applyExplicitWorkScope,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,planSearchGapQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights};
+import gateway,{handleRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,prepareCandidatePages,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,planSearchGapQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights} from './public-gateway.mjs';
+export {gzipSync,gateway,handleRequest,trustedSources,trustedPacketSources,verifiedFingerprintSources,prepareCandidatePages,sourceExcerpt,turnstileRejection,inferenceFailureDiagnostics,answerPipelineFailureDiagnostics,workerVersionDiagnostics,PILOT_BOOKS,PILOT_BOOK_IDS,planSearchQueries,planSearchGapQueries,stripWebCaptureFooters,selectPublicEvidenceHighlights};
 
 export const HOST='https://antilogicalism-companion-public.example.workers.dev';
 export const PDF='LegitimatePdfIdentifier0123456789';
@@ -26,11 +26,6 @@ export function fetcher(url,init={}){
  const map={'manifest.json.gz':manifest,'book-152.json.gz':pages};
  if(!map[file])return Promise.resolve(new Response('missing',{status:404}));
  return Promise.resolve(new Response(gzipSync(JSON.stringify(map[file])),{status:200}));
-}
-export function request(data=payload,origin='https://jsynon.github.io',headers={}){
- return new Request(HOST+'/api/answer',{method:'POST',
-  headers:{Origin:origin,'CF-Connecting-IP':'198.51.100.42',
-    'Content-Type':'application/json',...headers},body:JSON.stringify(data)});
 }
 export function env(overrides={}){
  let calls=0;
@@ -95,16 +90,38 @@ export async function fingerprintTestFixture({libraryVersion=48}={}) {
 
 export const pilotBaseEnv={
  PUBLIC_ENABLED:'false',PUBLIC_PILOT_ENABLED:'true',
- // Keep legacy-route regression fixtures explicit; v2-by-default behavior is
- // exercised in evidence-answer.test.mjs without this setting.
- READER_PIPELINE:'legacy',
- // Existing route fixtures assert the buffered rollback path; the streaming
- // default is covered explicitly with this variable unset.
+ // Audit fix (2026-11-15): the legacy pipeline is deleted; the pilot
+ // route always runs the evidence-v2 build. (READER_PIPELINE no longer
+ // exists.) Route fixtures assert the buffered rollback path; the
+ // streaming default is covered explicitly with this variable unset.
  READER_INFERENCE_TRANSPORT:'default',
  TURNSTILE_SITE_KEY:'0x4AAAAAA-test-public-pilot',
  TURNSTILE_SECRET:'a-long-private-turnstile-test-secret',
  AI_RATE_LIMITER:{limit:async()=>({success:true})},
  GLOBAL_RATE_LIMITER:{limit:async()=>({success:true})},
+};
+// Default pilot-route model: a v2-shaped success stub (compose draft +
+// approving review built from the call payload), replacing the legacy
+// two-call fixture now that the legacy pipeline is deleted.
+export const v2DefaultModel=async(_model,input)=>{
+ const system=input.messages?.[0]?.content||'';
+ const payload=JSON.parse(input.messages[1].content);
+ if(system.startsWith('Review the complete answer parts and claims')){
+  return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+   parts:payload.parts.map(part=>({partId:part.partId,status:'answered'})),
+   claims:payload.claims.map(claim=>{
+    const sources=claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[payload.parts.find(part=>part.partId===claim.partId)
+      .evidence.find(item=>item.id===sourceId).spanIds[0]]}));
+    return {claimId:claim.claimId,status:'answered',sources,
+     clauses:[{text:claim.text,status:'answered',issueCode:'none',sources}]};
+   })
+  })}}],usage:{neurons:1,prompt_tokens:10,completion_tokens:10}};
+ }
+ const sourceIds=payload.evidence.map(source=>source.id);
+ return {choices:[{finish_reason:'stop',message:{content:
+  'PART P1\nThe passage distinguishes an immediate dispute from fear caused by growing power ['+sourceIds.join(', ')+'].'}}],
+  usage:{neurons:1,prompt_tokens:10,completion_tokens:10}};
 };
 export async function pilotScenario({config={},model,selector,turnstileValid=true}={}) {
  const fixture=await fingerprintTestFixture();
@@ -131,7 +148,7 @@ export async function pilotScenario({config={},model,selector,turnstileValid=tru
          candidateId,support:'direct',excerpt:selection.candidates.find(candidate=>candidate.id===candidateId).excerpt.slice(0,200)}))}))})}}],
        usage:{neurons:1,prompt_tokens:10,completion_tokens:10}};
    }
-   return (model||fixture.run)(...args);
+   return (model||v2DefaultModel)(...args);
  }};
  const environment=env({...pilotBaseEnv, ...config,
    AI:ai,
