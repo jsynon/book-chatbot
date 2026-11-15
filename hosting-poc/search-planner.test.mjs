@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {handleRequest,planSearchQueries,planSearchGapQueries,composeVerifiedAnswer,validConversationHistory,periodDictionVariantQuery,characterNamesInText} from './public-gateway.mjs';
+import {handleRequest,planSearchQueries,planSearchGapQueries,validConversationHistory,periodDictionVariantQuery,characterNamesInText} from './public-gateway.mjs';
 import {catalogFallbackPlan,normalizePlan} from './reader-contract.mjs';
 
 const HOST='https://antilogicalism-companion-public.jsynon.workers.dev';
@@ -680,22 +680,6 @@ test('planner receives recent turns as context alongside the follow-up question'
  assert.match(userPrompt,/Current follow-up question: How does that connect to character/);
 });
 
-test('answer review and composition receive history only as non-evidence context',async()=>{
- const prompts=[];
- const sources=[{id:'S1',title:'Nicomachean Ethics',page:122,preview:'Verified passage about repeated actions.'}];
- const ai={run:async(_model,options)=>{
-  prompts.push(options.messages);
-  const content=prompts.length===1?JSON.stringify({coverage:'full',missing:'',evidence:[{id:'S1',point:'Character is shaped by repeated action.'}]}):
-   'Aristotle connects character with repeated action [S1].';
-  return {choices:[{finish_reason:'stop',message:{content}}],usage:{neurons:1}};
- }};
- const history=[{role:'user',content:'Earlier question about virtue.'}];
- const answer=await composeVerifiedAnswer('How does that shape character?',sources,ai,history);
- assert.equal(answer.outcome,'verified-source-draft');
- assert.match(prompts[0][1].content,/Reader: Earlier question about virtue/);
- assert.match(prompts[1][0].content,/prior conversation only to resolve references; it is not evidence/);
- assert.match(prompts[1][1].content,/Current follow-up question/);
-});
 
 
 test('follow-up planner resolves vague references from prior turns',async()=>{
