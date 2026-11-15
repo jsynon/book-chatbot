@@ -10,7 +10,7 @@
  * identity; they do not prove that a claim follows from the source.
  */
 import {composeEvidenceAnswer} from './evidence-answer.mjs';
-import {MAX_SELECTOR_CANDIDATES,MAX_SELECTOR_SOURCES,applyDirectRepresentationSwaps,enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectionExclusionLedger} from './evidence-selector.mjs';
+import {MAX_SELECTOR_CANDIDATES,MAX_SELECTOR_SOURCES,enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectionExclusionLedger} from './evidence-selector.mjs';
 import {normalizePlan,citationIds,catalogIdentity} from './reader-contract.mjs';
 import {normalizedEvidenceQuote,verifiedEvidenceQuote} from './review-evidence.mjs';
 import {isHeadingLine} from './review-spans.mjs';
@@ -4640,23 +4640,6 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             selectionRecovery.selectedCandidateIds,diversityRows,
             {partIds:plan.parts.map(part=>part.id)});
           const selectedIds=diversity.selectedCandidateIds;
-          // Repair tranche: direct-representation swap — the P-B
-          // shape, gated on the repaired signal (replay: addressable
-          // parts 19/242 vs the broken signal's 11/242 on the same
-          // corpus, with the named exhibits classified correctly).
-          // The pure swap lives in evidence-selector.mjs; every swap
-          // is traced on the selection stage.
-          const rowByCandidateId=new Map(selectionCandidates.map(source=>
-            [candidateIdByPoolRow.get(source),source]));
-          const representation=applyDirectRepresentationSwaps(
-            selectedIds,decisionParts,{
-              bookIdOf:id=>rowByCandidateId.get(id)?.bookId||'',
-              compareOrder:(a,b)=>compareSelectionOrder(
-                orderKeyByCandidateId.get(a),orderKeyByCandidateId.get(b))});
-          const sliceRepresentationSwaps=representation.swaps;
-          if(sliceRepresentationSwaps.length)
-            selectedIds.splice(0,selectedIds.length,
-              ...representation.selectedCandidateIds);
           if(!selectedIds.length){
             // The deterministic path abstains only when the pool
             // itself yields no candidates. The composer can still
@@ -4766,7 +4749,6 @@ export async function handleRequest(request,env,fetcher=(url,opts)=>globalThis.f
             ...(recoveredPartLinks.length?{recoveredPartLinks}:{}),
             ...(skippedPartRecoveries.length?{skippedPartRecoveries}:{}),
             ...(adoptions.length?{adoptions}:{}),
-            ...(sliceRepresentationSwaps.length?{sliceRepresentationSwaps}:{}),
             // Stage B.5 (item 1): every pooled candidate that missed
             // the packet is named here with the stage that left it
             // out — the ledger the S3 census reads.

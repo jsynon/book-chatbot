@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {applyDirectRepresentationSwaps,enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectEvidenceCandidates,selectionExclusionLedger} from './evidence-selector.mjs';
+import {enforcePartPacketFloor,enforceSubmittedBookDiversity,facetAnchorReservations,orderFallbackCandidates,orderPacketForPacking,recoverUncoveredPartCandidates,selectEvidenceCandidates,selectionExclusionLedger} from './evidence-selector.mjs';
+import * as selectorModule from './evidence-selector.mjs';
 
 test('selector fallback gives distinct works a page before taking second pages',()=>{
  const candidates=[
@@ -709,44 +710,9 @@ test('stage B.5 ledger: an earlier stage\'s reason wins over a later stage\'s',(
   'a fully packed pool ledgers nothing');
 });
 
-test('direct-representation swap: a starved part exchanges its weakest context row for its direct pool row',()=>{
- const parts=[
-  {partId:'P1',evidence:[{candidateId:'C1',support:'direct'},{candidateId:'C2',support:'context'}]},
-  {partId:'P2',evidence:[{candidateId:'C2',support:'context'},{candidateId:'C3',support:'context'},
-   {candidateId:'C9',support:'direct'}]}];
- const order=(a,b)=>Number(a.slice(1))-Number(b.slice(1));
- const result=applyDirectRepresentationSwaps(['C1','C2','C3'],parts,
-  {bookIdOf:()=>'7',compareOrder:order});
- assert.deepEqual(result.swaps,[{partId:'P2',incoming:'C9',evicted:'C3'}]);
- assert.deepEqual(result.selectedCandidateIds,['C1','C2','C9']);
-});
-
-test('direct-representation swap: never uncovers another part or a book',()=>{
- const order=(a,b)=>Number(a.slice(1))-Number(b.slice(1));
- // C3 is P2's only evictable row but also P3's only packet row.
- const parts=[
-  {partId:'P2',evidence:[{candidateId:'C3',support:'context'},{candidateId:'C9',support:'direct'}]},
-  {partId:'P3',evidence:[{candidateId:'C3',support:'context'}]}];
- const blocked=applyDirectRepresentationSwaps(['C3'],parts,
-  {bookIdOf:()=>'7',compareOrder:order});
- assert.deepEqual(blocked.swaps,[]);
- // The evicted row is the packet's only page of book 9 and the
- // incoming row is book 7: the book would vanish from the packet.
- const parts2=[
-  {partId:'P2',evidence:[{candidateId:'C3',support:'context'},{candidateId:'C9',support:'direct'}]}];
- const bookBlocked=applyDirectRepresentationSwaps(['C3','C4'],parts2,
-  {bookIdOf:id=>id==='C3'?'9':'7',compareOrder:order});
- assert.deepEqual(bookBlocked.swaps,[]);
- const sameBook=applyDirectRepresentationSwaps(['C3','C4'],parts2,
-  {bookIdOf:()=>'9',compareOrder:order});
- assert.deepEqual(sameBook.swaps,[{partId:'P2',incoming:'C9',evicted:'C3'}]);
-});
-
-test('direct-representation swap: at most two swaps per case',()=>{
- const order=(a,b)=>Number(a.slice(1))-Number(b.slice(1));
- const parts=[1,2,3].map(i=>({partId:'P'+i,evidence:[
-  {candidateId:'C'+i,support:'context'},{candidateId:'D'+i,support:'direct'}]}));
- const result=applyDirectRepresentationSwaps(['C1','C2','C3'],parts,
-  {bookIdOf:()=>'7',compareOrder:order});
- assert.equal(result.swaps.length,2);
+test('direct-representation swaps stay retired',()=>{
+ // The swap consequence was removed after its validation (14
+ // firings, no measured benefit, one documented harm). The repaired
+ // signal still classifies; nothing may reintroduce the swap.
+ assert.equal(selectorModule.applyDirectRepresentationSwaps,undefined);
 });
