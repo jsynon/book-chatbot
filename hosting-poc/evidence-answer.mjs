@@ -3896,7 +3896,11 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
   // authenticated traces; this is the point where candidate recall becomes
   // the evidence budget available to the answer model.
   if(options.trace&&options.selectionTrace)trace.stages.push(options.selectionTrace);
-  const usage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
+  // Audit fix W4b: the exported wrapper passes ONE shared usage
+  // accumulator across the whole-build retry, so the per-build call
+  // limit is a per-REQUEST ceiling (previously each attempt received a
+  // fresh budget, doubling the ceiling to two full builds).
+  const usage=options.sharedUsage||{calls:0,neurons:0,inputTokens:0,outputTokens:0};
   const started=Date.now();
   const timingStarted=performance.now();
   // The call budget scales with the plan now that review and re-review run
@@ -7506,8 +7510,12 @@ const ANSWER_RETRY_TRANSIENT_CODES=new Set([
 export async function composeEvidenceAnswer(question,sources,ai,history=[],options={}){
   let firstCode=null,firstAttemptTrace=null;
   const retryStartedAt=performance.now();
+  // One call budget per request, shared by the first build and the
+  // whole-build retry (audit fix W4b).
+  const sharedUsage={calls:0,neurons:0,inputTokens:0,outputTokens:0};
+  const buildOptions={...options,sharedUsage};
   try{
-    const result=await composeEvidenceAnswerBuild(question,sources,ai,history,options);
+    const result=await composeEvidenceAnswerBuild(question,sources,ai,history,buildOptions);
     if(result?.outcome!=='generation-failed')return result;
     // 'answer-pipeline-failed' is the build's catch-all label for a
     // thrown error carrying no code of its own. At the compose stage
@@ -7546,7 +7554,7 @@ export async function composeEvidenceAnswer(question,sources,ai,history=[],optio
     firstCode=error.code;
     firstAttemptTrace=error.trace||null;
   }
-  const retried=await composeEvidenceAnswerBuild(question,sources,ai,history,options);
+  const retried=await composeEvidenceAnswerBuild(question,sources,ai,history,buildOptions);
   if(retried?.trace){
     const answerRetry={code:firstCode,
       outcome:retried.outcome==='generation-failed'?'failed-again':'recovered'};

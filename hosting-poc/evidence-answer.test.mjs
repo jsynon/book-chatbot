@@ -5536,6 +5536,23 @@ test('a transient answer-stage failure is retried once and recovers (B8-7)',asyn
   'two failed compose attempts in the first build, compose + review in the retry');
 });
 
+test('the whole-build retry shares one call budget (audit fix W4b)',async()=>{
+ // Same recovery shape as B8-7: the first build spends two calls on
+ // failed compose attempts, the retry spends two more. The returned
+ // usage must count all four — before W4b each build carried a fresh
+ // accumulator, the retry's usage reported only its own two calls,
+ // and the per-build call limit silently doubled per request.
+ const ai=makeAI([new Error('Provider returned 502'),new Error('Provider returned 502'),
+  answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
+  {plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.usage.calls,4,
+  'usage accumulates across the whole-build retry: one budget per request');
+ assert.equal(ai.calls.length,4);
+});
+
 test('transport diagnostics retain both whole-build attempts after a transient retry',async()=>{
  const ai=makeAI([new Error('Provider unavailable'),new Error('Provider unavailable'),
   new Error('Provider unavailable'),new Error('Provider unavailable')]);
