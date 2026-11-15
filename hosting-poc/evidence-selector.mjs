@@ -751,75 +751,9 @@ export function selectionExclusionLedger({candidateIds=[],packedIds=[],mergedIds
   return excluded;
 }
 
-// Repair tranche: direct-representation swaps. A part holding no
-// 'direct' row in the packet while a direct pool row exists swaps
-// that row in for its weakest context row — only when every other
-// part the evicted row serves keeps at least one packet row without
-// it, and its book stays represented in the packet (or the incoming
-// row is the same book), so the packet floor, book diversity, and
-// anchor decisions are not silently undone. At most `limit` swaps.
-// Pure and deterministic: ordering is the caller's comparison over
-// candidate IDs.
-export function applyDirectRepresentationSwaps(selectedCandidateIds,parts,{
-  bookIdOf=()=>'',compareOrder=()=>0,limit=2}={}){
-  const selected=[...(Array.isArray(selectedCandidateIds)?
-    selectedCandidateIds:[])];
-  const selectedSet=new Set(selected);
-  const partsByCandidate=new Map();
-  for(const part of Array.isArray(parts)?parts:[])
-    for(const entry of part?.evidence||[]){
-      if(!entry?.candidateId)continue;
-      if(!partsByCandidate.has(entry.candidateId))
-        partsByCandidate.set(entry.candidateId,new Set());
-      partsByCandidate.get(entry.candidateId).add(part.partId);
-    }
-  const bookCounts=new Map();
-  for(const id of selected){
-    const bookId=String(bookIdOf(id)||'');
-    bookCounts.set(bookId,(bookCounts.get(bookId)||0)+1);
-  }
-  const packetRowsByPart=new Map();
-  for(const id of selected)
-    for(const partId of partsByCandidate.get(id)||[])
-      packetRowsByPart.set(partId,(packetRowsByPart.get(partId)||0)+1);
-  const swaps=[];
-  for(const part of Array.isArray(parts)?parts:[]){
-    if(swaps.length>=limit)break;
-    const evidence=Array.isArray(part?.evidence)?part.evidence:[];
-    if(evidence.some(entry=>entry.support==='direct'&&
-        selectedSet.has(entry.candidateId)))continue;
-    const incoming=evidence
-      .filter(entry=>entry.support==='direct'&&
-        !selectedSet.has(entry.candidateId))
-      .sort((a,b)=>compareOrder(a.candidateId,b.candidateId))[0];
-    if(!incoming)continue;
-    const incomingBook=String(bookIdOf(incoming.candidateId)||'');
-    const evictable=evidence
-      .filter(entry=>entry.support==='context'&&
-        selectedSet.has(entry.candidateId)&&
-        [...(partsByCandidate.get(entry.candidateId)||[])]
-          .every(partId=>partId===part.partId||
-            (packetRowsByPart.get(partId)||0)>1))
-      .filter(entry=>{
-        const bookId=String(bookIdOf(entry.candidateId)||'');
-        return bookId===incomingBook||(bookCounts.get(bookId)||0)>1;
-      })
-      .sort((a,b)=>compareOrder(b.candidateId,a.candidateId))[0];
-    if(!evictable)continue;
-    const at=selected.indexOf(evictable.candidateId);
-    if(at<0)continue;
-    selected[at]=incoming.candidateId;
-    selectedSet.delete(evictable.candidateId);
-    selectedSet.add(incoming.candidateId);
-    const evictedBook=String(bookIdOf(evictable.candidateId)||'');
-    bookCounts.set(evictedBook,(bookCounts.get(evictedBook)||1)-1);
-    bookCounts.set(incomingBook,(bookCounts.get(incomingBook)||0)+1);
-    for(const partId of partsByCandidate.get(evictable.candidateId)||[])
-      packetRowsByPart.set(partId,(packetRowsByPart.get(partId)||1)-1);
-    for(const partId of partsByCandidate.get(incoming.candidateId)||[])
-      packetRowsByPart.set(partId,(packetRowsByPart.get(partId)||0)+1);
-    swaps.push({partId:part.partId,incoming:incoming.candidateId,
-      evicted:evictable.candidateId});
-  }
-  return {selectedCandidateIds:selected,swaps};
-}
+// Direct-representation swaps (repair tranche) were removed after
+// their validation: 14 firings run-wide, no measured benefit, and
+// one documented harm — a swap evicted the Darcy letter's
+// continuation page (P&P p.120) for an aboutness page. The repaired
+// linkage signal in public-gateway.mjs stays; only the swap
+// consequence is retired.
