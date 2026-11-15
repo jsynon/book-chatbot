@@ -1,10 +1,12 @@
-// Batch 29 (B29-4): the pilot catalog, relocated verbatim from
-// public-gateway.mjs — a pure move: the gateway imports and
-// re-exports it, so every consumer (including the test-support
-// module) sees the identical frozen object.
-// v1.12 full public-catalog coverage; each answer page must still match an
-// owner-published v48 or v49 fingerprint before it reaches the model.
+// The pilot catalog, generated from the live library-data v49
+// manifest by scripts/refresh-pilot-books.mjs — do not hand-edit.
+// Regenerate after any library-data republication; --check exits 1
+// on drift. The gateway imports and re-exports this frozen object,
+// so every consumer sees the identical catalog.
+// Each answer page must still match an owner-published v48 or v49
+// fingerprint before it reaches the model.
 export const PILOT_BOOKS = Object.freeze({
+  "1": "Unrecognised Facts about Modern Psychiatric Practice",
   "2": "Fragments — Anaxagoras",
   "3": "Summa Contra Gentiles — Thomas Aquinas",
   "4": "On the Soul (De Anima) — Aristotle",
@@ -331,7 +333,7 @@ export const PILOT_BOOKS = Object.freeze({
   "329": "Letter to the Trallians — Ignatius of Antioch",
   "330": "Lord of the Flies — William Golding",
   "331": "The Autobiography of Malcolm X — Malcolm X and Alex Haley",
-  "332": "Martin Luther — Title and author unverified",
+  "332": "The Life and Times of Martin Luther — W. Carlos Martyn",
   "333": "The Complete Mystical Works of Meister Eckhart — Meister Eckhart",
   "334": "To Kill a Mockingbird — Harper Lee",
   "335": "New King James Version Bible — Various authors",
@@ -624,6 +626,7 @@ export const PILOT_BOOKS = Object.freeze({
   "625": "Letters of Marcus Tullius Cicero — Marcus Tullius Cicero",
   "626": "Pliny's Natural History — Pliny the Elder",
   "627": "The Natural History of Pliny, Volume II — Pliny the Elder",
+  "628": "The Natural History of Pliny, Volume III — Pliny the Elder",
   "629": "The Natural History of Pliny, Volume IV — Pliny the Elder",
   "630": "The Natural History of Pliny, Volume V — Pliny the Elder",
   "631": "The Natural History of Pliny, Volume VI — Pliny the Elder",
@@ -648,5 +651,5 @@ export const PILOT_BOOKS = Object.freeze({
   "651": "Being and Some Philosophers — Étienne Gilson",
   "652": "First Outline of a System of the Philosophy of Nature — F. W. J. Schelling",
   "653": "A History of Philosophy, Volume I: Greece and Rome — Frederick Copleston",
-  "654": "A History of Philosophy, Volume II: Medieval Philosophy — Frederick Copleston",
+  "654": "A History of Philosophy, Volume II: Medieval Philosophy — Frederick Copleston"
 });
