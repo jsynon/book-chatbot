@@ -5726,6 +5726,38 @@ test('bold unwrap strips a whole-paragraph wrap and spares labels, titles, and s
  assert.deepEqual(unwrapBoldWrappedParagraphs(shortOrphan),{text:shortOrphan,count:0});
 });
 
+test('bold unwrap opens a wrap that carries bold labels inside it (B9-8 evasion, 2026-11-15)',()=>{
+ // The 2026-11-15 live shape: the wrapped opening paragraph itself
+ // contains bold label pairs, so the old clean-pair rule refused it.
+ // Pairwise, the outer wrap parses as a long span, a plain label, and
+ // a second long span; both long spans lose their markers and the
+ // label text is carried through untouched.
+ const labelled='**Faith Against Christendom Kierkegaard argues that institutional religion fails the test of faith because it replaces suffering with social respectability and comfortable belonging [S5]. The established church, he argues, has made Christianity into a matter of custom and citizenship rather than discipleship [S5]. **Social Honor:** True belief seeks honor from God rather than from men, and receiving honor from one another makes belief impossible, since the believer must stand alone before God in opposition to the crowd [S5]. The honor of men is precisely what the confession of faith must renounce [S5].**';
+ const opened=unwrapBoldWrappedParagraphs(labelled);
+ assert.equal(opened.count,1,'only the outer wrap pair is removed');
+ assert.ok(opened.text.startsWith('Faith Against Christendom Kierkegaard argues'));
+ assert.ok(opened.text.includes('**Social Honor:**'),'internal label pairs survive exactly as written');
+ assert.ok(!opened.text.endsWith('**'),'the wrap\u2019s closing marker does not survive');
+ // The pairwise-artifact form: one outer wrap whose labels sit
+ // between the pairs as plain text.
+ const artifact='**Faith Against Christendom Kierkegaard argues that institutional religion fails the test of faith because it replaces suffering with social respectability and comfortable belonging in the congregation of the respectable [S5].**Social Honor:**True belief seeks honor from God rather than from men, and receiving honor from one another makes belief impossible for the person who will not stand alone before God. The honor of men is precisely what the confession of faith must renounce in every generation [S5].**';
+ const artifactResult=unwrapBoldWrappedParagraphs(artifact);
+ assert.equal(artifactResult.count,1);
+ assert.ok(artifactResult.text.includes('**Social Honor:**'));
+ assert.ok(!artifactResult.text.startsWith('**')&&!artifactResult.text.endsWith('**'));
+ // A short bold span inside a wrapped paragraph keeps its markers:
+ // only the outer wrap is removed.
+ const withShortSpan='**Faith as Passion The experience of faith requires a specific kind of spiritual intensity that reason cannot produce or mediate for the learner, who must receive the condition itself from the god in the Moment of encounter [S2]. The **knight of faith** then returns to finitude.**';
+ const shortKept=unwrapBoldWrappedParagraphs(withShortSpan);
+ assert.equal(shortKept.count,1);
+ assert.ok(shortKept.text.includes('**knight of faith**'),'short emphasis spans keep their markers');
+ assert.ok(shortKept.text.endsWith('returns to finitude.'),'the wrap\u2019s closing marker does not survive');
+ // A paragraph that opens with a short span is left entirely alone,
+ // however long its prose runs.
+ const labelFirst='**Non-Rationality:** The leap is not a conclusion of reason but a movement of the whole person toward what reason cannot settle, a transition from the infinite back into the finite that no mediation can perform on the individual\u2019s behalf or explain after the fact.';
+ assert.deepEqual(unwrapBoldWrappedParagraphs(labelFirst),{text:labelFirst,count:0});
+});
+
 test('composer prompt keeps titles on their own line and paragraphs out of bold (batch 9 B9-8)',()=>{
  assert.match(COMPOSER_PROMPT,/Keep each section title on its own line, and never wrap a paragraph in bold/);
  assert.match(COMPOSER_PROMPT,/bold is for a short label or lead-in phrase only/);

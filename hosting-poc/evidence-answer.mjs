@@ -1670,25 +1670,84 @@ export function sanitizeInternalAnswerIds(value){
 // untouched: a standalone bold title carries two markers and is the
 // client's heading case, and a "**Label:** …" lead-in has its second
 // marker mid-paragraph, so neither qualifies.
+//
+// Evasion fix (2026-11-15): the clean-pair rule refused any paragraph
+// whose wrap contained further bold markers, and the defect recurred
+// live in exactly that shape — a wrapped opening paragraph whose text
+// carries bold label pairs ("**Social Honor:** …") inside the wrap.
+// Two readings are now tried, in order, for a paragraph that opens
+// with a bold marker. Outer pair first: when the paragraph also ends
+// with the marker, the marker count is even, the full inner text is
+// long, and every bold span inside that inner text is short (labels,
+// emphasis), the first and last markers are the wrap and only they
+// are removed — internal pairs survive exactly as written. Otherwise
+// a span scan: the paragraph is walked pairwise from its opening
+// marker and every long span loses its markers, with plain text
+// between spans carried through (the pairwise-artifact form of the
+// same wrap, where the labels sit between the pairs as plain text).
+// A paragraph that opens with a short span is left alone either way.
 export function unwrapBoldWrappedParagraphs(value){
   let count=0;
   const longText=text=>{
     const sentences=(text.match(/[.!?](?=\s|$)/gu)||[]).length;
     return text.length>200||sentences>=2;
   };
+  const spansOf=(text,marker)=>{
+    const spans=[];let at=0;
+    while(true){
+      const open=text.indexOf(marker,at);
+      if(open<0)break;
+      const close=text.indexOf(marker,open+marker.length);
+      if(close<0)break;
+      spans.push(text.slice(open+marker.length,close));
+      at=close+marker.length;
+    }
+    return spans;
+  };
+  const unwrapLongSpans=trimmed=>{
+    const opener=trimmed.startsWith('**')?'**':trimmed.startsWith('__')?'__':null;
+    if(!opener)return null;
+    if(trimmed.endsWith(opener)&&
+      (trimmed.split(opener).length-1)%2===0){
+      const inner=trimmed.slice(opener.length,-opener.length);
+      if(inner&&longText(inner)&&
+        spansOf(inner,opener).every(span=>!longText(span))){
+        count++;
+        return inner;
+      }
+    }
+    let result='';let rest=trimmed;let unwrapped=0;
+    while(rest.startsWith(opener)){
+      const close=rest.indexOf(opener,opener.length);
+      if(close<0)break;
+      const inner=rest.slice(opener.length,close);
+      if(!longText(inner))break;
+      result+=inner;rest=rest.slice(close+opener.length);unwrapped++;
+      const next=rest.indexOf(opener);
+      if(next<0){result+=rest;rest='';break;}
+      result+=rest.slice(0,next);rest=rest.slice(next);
+    }
+    if(!unwrapped)return null;
+    count+=unwrapped;
+    let opened=result+rest;
+    // Pairing can strand the wrap's final marker at the paragraph end
+    // (an internal pair consumed what the scan paired as the closer).
+    // An odd marker count with a trailing marker is that artifact:
+    // drop it. A balanced trailing span has an even count and stays.
+    if(opened.endsWith(opener)&&
+      (opened.split(opener).length-1)%2===1){
+      opened=opened.slice(0,-opener.length);count++;
+    }
+    return opened;
+  };
   const paragraphs=String(value||'').split(/\n\s*\n/u).map(paragraph=>{
     const trimmed=paragraph.trim();
+    const scanned=unwrapLongSpans(trimmed);
+    if(scanned!==null)return scanned;
     const opener=trimmed.startsWith('**')?'**':trimmed.startsWith('__')?'__':null;
     if(opener){
-      const occurrences=trimmed.split(opener).length-1;
-      if(occurrences===2&&trimmed.endsWith(opener)){
-        const inner=trimmed.slice(opener.length,-opener.length);
-        if(inner&&!inner.includes(opener)&&longText(inner)){
-          count++;return inner;
-        }
-        return paragraph;
-      }
-      if(occurrences===1&&longText(trimmed.slice(opener.length))){
+      if((trimmed.split(opener).length-1)===1&&
+        longText(trimmed.slice(opener.length))){
         count++;return trimmed.slice(opener.length);
       }
       return paragraph;
