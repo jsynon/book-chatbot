@@ -701,7 +701,7 @@ test('source-grouped review makes each cited source decision explicit and keeps 
   [{partId:'P1',claimId:'P1-C1',keptSourceIds:['S1'],droppedSourceIds:['S2'],coverage:0.25}]);
  assert.equal(ai.calls.length,2,'partial-gate salvage is deterministic and adds no repair round trip');
 });
-test('compatible duplicate same-source review entries merge spans while conflicting entries fail closed',async()=>{
+test('compatible duplicate same-source review entries merge spans while conflicting entries exclude only the pair',async()=>{
  const run=async(second)=>{
   const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
    (_model,{messages})=>{
@@ -721,8 +721,30 @@ test('compatible duplicate same-source review entries merge spans while conflict
   item.code==='duplicate-claim-source-merged'&&item.sourceId==='S1'));
  assert.ok(!compatible.trace.reviewContract.issues.includes('duplicate-claim-source'));
  const conflicting=await run(spanId=>({sourceId:'S1',status:'partial',spanIds:[]}));
- assert.notEqual(conflicting.coverage,'full');
- assert.ok(conflicting.trace.reviewContract.issues.includes('duplicate-claim-source'));
+ // Retrieval tranche (item 3a): the first decision stands and the
+ // contradictory row excludes only its own pair — the part's review
+ // no longer fails over one duplicated entry.
+ assert.equal(conflicting.coverage,'full');
+ assert.ok(!conflicting.trace.reviewContract.issues.includes('duplicate-claim-source'));
+ assert.ok(conflicting.trace.reviewContract.warnings.some(item=>
+  item.code==='duplicate-claim-source-excluded'&&item.sourceId==='S1'));
+});
+
+test('a contract-incomplete review gets one re-review before the part is withheld (retrieval tranche)',async()=>{
+ const reviewWithPartStatus=partStatus=>(_model,{messages})=>{
+  const payload=parsePayload(messages),claim=payload.claims[0],spanId=claim.sourceEvidence[0].spanIds[0];
+  return {response:JSON.stringify({parts:[{partId:'P1',status:partStatus}],claims:[{
+   claimId:claim.claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',spanIds:[spanId]}]}]})};
+ };
+ const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  reviewWithPartStatus('verified'),reviewWithPartStatus('answered')]);
+ const result=await composeEvidenceAnswer('How does Hume explain necessity?',[{...hume,candidatePartIds:['P1']}],
+  ai,[],{plan:onePartPlan,catalog,trace:true});
+ assert.equal(ai.calls.length,3,'compose, the defective review, and exactly one re-review');
+ assert.deepEqual(result.trace.reviewContractRetry,
+  [{partId:'P1',reason:'review-contract-incomplete',applied:true}]);
+ assert.equal(result.coverage,'full');
+ assert.ok(result.trace.reviewContract.valid);
 });
 test('a supported source in the same planned group keeps a claim when an alternate citation is weak',async()=>{
  const title='The Consolation of Philosophy — Boethius';
@@ -2409,11 +2431,17 @@ test('flat reviewer input keeps per-part claims linked once and duplicate claims
   return {response:'{"parts":[{"partId":"'+partId+'","status":"answered"}]'+
    ',"claims":['+JSON.stringify(decision)+'],"claims":[]}'};
  };
- const ai=makeAI([draft,duplicateKeyReviewer,duplicateKeyReviewer,duplicateKeyReviewer]);
+ const ai=makeAI([draft,duplicateKeyReviewer,duplicateKeyReviewer,duplicateKeyReviewer,
+  duplicateKeyReviewer,duplicateKeyReviewer,duplicateKeyReviewer]);
  const result=await composeEvidenceAnswer(hypotheticalQuestion,hypotheticalSources,ai,[],{
   plan:hypotheticalPlan,catalog:hypotheticalCatalog,trace:true
  });
- assert.equal(ai.calls.length,4);
+ // Retrieval tranche (item 3b): each contract-incomplete part earns
+ // one re-review; the duplicated payload drops the decision again, so
+ // the fallback outcome below is unchanged at three more calls.
+ assert.equal(ai.calls.length,7);
+ assert.deepEqual(result.trace.reviewContractRetry.map(entry=>[entry.partId,entry.applied]),
+  [['P1',true],['P2',true],['P3',true]]);
  // Stage B.4: the review contract still fails closed (below), but the
  // answer no longer suppresses with it — the two position claims pass
  // the deterministic fallback filter and ship labeled, while the
@@ -2556,6 +2584,36 @@ test('a collective byline source stays a lead and never hard-scopes a part (B.3)
  assert.equal(plato.collectiveSources,undefined);
  assert.equal(plato.parts[0].sourceBookIds.length,22,
   'the widest genuine author byline in the catalog still scopes');
+});
+
+test('a various-authors source under the count limit is still collective (retrieval tranche)',()=>{
+ // The planner's recurring science/suffering shape: one 'Various
+ // authors' source carrying 16 anthology volumes — under the B.3 count
+ // limit, so the count rule alone let it hard-scope every part.
+ const catalog={};
+ for(let i=1;i<=10;i++)catalog[String(280+i)]='The Ante-Nicene Fathers, Volume '+i+' — Various authors';
+ catalog['335']='New King James Version Bible — Various authors';
+ for(let i=1;i<=5;i++)catalog[String(460+i)]='Sacred Books of the East, Volume '+i+
+  ' — Various authors (edited by F. Max Müller)';
+ catalog['163']='Leviathan — Thomas Hobbes';
+ const variousIds=Object.keys(catalog).filter(id=>id!=='163');
+ assert.equal(variousIds.length,16);
+ const question='How do authors in the library differ over how certain scientific knowledge can be?';
+ const plan=normalizePlan({intent:'explain',sources:[
+  {label:'Various authors',role:'primary',bookIds:variousIds}],
+  parts:['How do authors differ over how certain scientific knowledge can be?'],
+  queries:['certainty of scientific knowledge epistemological status']},question,catalog);
+ assert.deepEqual(plan.collectiveSources,[{label:'Various authors',bookCount:16}],
+  'a source bylined entirely to the collective byline is collective at any count');
+ assert.equal(plan.parts[0].sourceBookIds,null,
+  'the part stays unscoped so its facets search the whole library');
+ const mixed=normalizePlan({intent:'explain',sources:[
+  {label:'Various authors',role:'primary',bookIds:variousIds},
+  {label:'Thomas Hobbes',role:'primary',bookIds:['163']}],
+  parts:['What does Thomas Hobbes argue about power?'],queries:['Hobbes power']},
+  'What do various authors and Thomas Hobbes argue about knowledge and power?',catalog);
+ assert.deepEqual(mixed.parts[0].sourceBookIds,['163'],
+  'a genuine author source keeps its scope alongside the under-limit collective lead');
 });
 
 test('three-author comparison keeps source coverage and synthesis while dropping a repeated wrapper',()=>{
@@ -3442,14 +3500,19 @@ test('a claim citing more sources than the span budget stays incomplete',async()
 
 test('reviewer contract errors suppress a one-part draft when review is incomplete',async()=>{
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
+  {response:JSON.stringify({parts:[],claims:[]})},
   {response:JSON.stringify({parts:[],claims:[]})}]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
-  {plan:onePartPlan,catalog});
+  {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.outcome,'generation-failed');
  assert.equal(result.coverage,'none');
  assert.equal(result.reviewStatus,'review-contract-incomplete');
  assert.equal(result.answer,'I could not complete a reliable answer this time. Please try again.');
- assert.equal(ai.calls.length,2);
+ // Retrieval tranche (item 3b): the completed-but-empty review earns
+ // one re-review, which is also empty, before suppression stands.
+ assert.deepEqual(result.trace.reviewContractRetry,
+  [{partId:'P1',reason:'review-contract-incomplete',applied:true}]);
+ assert.equal(ai.calls.length,3);
 });
 
 test('malformed reviewer JSON fails closed and suppresses the one-part draft',async()=>{
@@ -4072,7 +4135,7 @@ test('a repeated top-level parts key suppresses the sole unvalidated part after 
  const duplicate='{"parts":[{"partId":"P1","status":"answered"}],"claims":[],'+
   '"status":"answered","parts":[{"partId":"P2","status":"answered"}]}';
  const ai=makeAI([answer('PART P1\nHume links necessity to custom and regular conjunction. [S1]'),
-  {response:duplicate}]);
+  {response:duplicate},{response:duplicate}]);
  const result=await composeEvidenceAnswer('How does Hume explain causal necessity?',[hume],ai,[],
   {plan:onePartPlan,catalog,trace:true});
  assert.equal(result.outcome,'generation-failed');
@@ -4081,7 +4144,11 @@ test('a repeated top-level parts key suppresses the sole unvalidated part after 
  assert.equal(result.answer,'I could not complete a reliable answer this time. Please try again.');
  assert.ok(result.trace.reviewContract.issues.includes('unknown-part'));
  assert.ok(result.trace.reviewContract.issues.includes('missing-part-decision'));
- assert.equal(ai.calls.length,2);
+ // Retrieval tranche (item 3b): the dropped decision earns one
+ // re-review; the same duplicated payload drops it again.
+ assert.deepEqual(result.trace.reviewContractRetry,
+  [{partId:'P1',reason:'review-contract-incomplete',applied:true}]);
+ assert.equal(ai.calls.length,3);
 });
 
 test('flat reviewer decisions retain exact provenance and source-encoded spans',async()=>{
@@ -10501,6 +10568,47 @@ test('a review chunk that hits its deadline retries as two half-size split calls
  assert.ok(reviewCalls.every(call=>call.timeoutMs===60000),
   'split halves run at the flat 60 s deadline, not the 120 s retry raise');
  assert.deepEqual(reviewCalls.map(call=>call.claimCount),[5,4,3,2]);
+});
+
+test('the reserved final review round re-chunks at two claims per call (retrieval tranche)',async()=>{
+ const sentences=['Custom guides human life.','Habit shapes inference.',
+  'Repeated experience forms expectations.','One event follows another regularly.',
+  'The mind learns from repeated conjunctions.','Custom directs ordinary expectations.',
+  'Experience produces familiar associations.','Inference follows established habits.',
+  'Repeated cases shape anticipation.'];
+ const sourceText=sentences.join('\n\n');
+ const source={...hume,id:'S1',text:sourceText,preview:sourceText};
+ const timeout=()=>Object.assign(new Error('Inference deadline exceeded'),
+  {stage:'review',code:'inference-deadline-exceeded'});
+ const scopes=[];
+ // Every call scoped to three or more claims dies at its deadline;
+ // calls of two or fewer succeed. The initial chunks (5 and 4) and
+ // the five-claim chunk's split half (3) all die, so only the
+ // reserved round's two-claim chunks can land the review.
+ const flakyReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const ids=payload.reviewClaimIds||payload.claims.map(claim=>claim.claimId);
+  scopes.push(ids.length);
+  if(ids.length>=3)throw timeout();
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:['P1-C1']}],claims:ids.map(claimId=>{
+    const claim=payload.claims.find(item=>item.claimId===claimId);
+    return {claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:[claim.sourceEvidence[0].spanIds[0]]}]};})})};
+ };
+ const ai=makeAI([answer('PART P1\n'+sentences.map(s=>s+' [S1]').join('\n\n')),
+  ...Array(11).fill(flakyReview)]);
+ const result=await composeEvidenceAnswer('What guides human life?',[source],ai,[],{
+  plan:onePartPlan,catalog,trace:true,transportDiagnostics:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.coverage,'full');
+ assert.deepEqual(scopes.slice(0,2),[5,4],'the initial review chunks at five claims');
+ assert.deepEqual(scopes.slice(-5),[2,2,2,2,1],
+  'the reserved round re-chunks the whole part at two claims per call');
+ assert.ok(result.trace.reviewRetrySplit.some(entry=>entry.outcome==='failed'),
+  'the five-claim chunk split failed before the reserved round ran');
+ assert.equal(result.trace.reviewRetry.parts[0].outcome,'recovered',
+  'the reserved round recovered the part');
 });
 
 test('a truncated compact-format review still salvages its complete claim prefix (latency tranche)',async()=>{
