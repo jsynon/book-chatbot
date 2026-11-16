@@ -5780,6 +5780,62 @@ test('bold unwrap removes a lone marker stranded mid-paragraph (live-open orphan
  assert.deepEqual(unwrapBoldWrappedParagraphs(shortLine),{text:shortLine,count:0});
 });
 
+test('bold unwrap removes an orphan glued onto a line inside a multi-section block (completion, 2026-11-15)',()=>{
+ // The follow-up run's recurrence shape: the orphan title sits on
+ // a line glued to the previous section by a single newline,
+ // inside a block that also holds paired titles — the paragraph
+ // rules count markers across the whole block and never fire.
+ const glued='Faith is a paradox that thought cannot mediate, and the individual stands higher than the universal in the absolute relation to the absolute [S1].\n**Faith as Paradox** The leap moves beyond speculative philosophy and the comfort of human understanding in every generation of believers who take the paradox seriously [S1].\nThe Knight of Faith vs. The Tragic Hero** Johannes de Silentio further illustrates the nature of faith by contrasting the knight of faith with the tragic hero, who renounces the universal for a higher ethical purpose while the knight makes the double movement of resignation and belief [S6].';
+ const cleaned=unwrapBoldWrappedParagraphs(glued);
+ assert.equal(cleaned.count,1,'only the lone marker is removed');
+ assert.equal(cleaned.text,glued.replace('Hero**','Hero'));
+ assert.ok(cleaned.text.includes('**Faith as Paradox**'),'paired titles survive');
+ // The Austen shape: a short title line with a single sentence of
+ // body — under the paragraph rules' length gate, caught by the
+ // line rule, which has none.
+ const shortTitle='Marriage for Economic Security vs. Romantic Affection** Austen uses the contrast between different characters to highlight the conflict between pragmatism and love.';
+ const shortCleaned=unwrapBoldWrappedParagraphs(shortTitle);
+ assert.equal(shortCleaned.count,1);
+ assert.equal(shortCleaned.text,shortTitle.replace('Affection**','Affection'));
+ // A divider paragraph carries no text and is left alone.
+ const divider='Some closing prose that runs long enough to matter here in this paragraph.\n\n***\n\nTrailing prose follows the divider in its own separate paragraph of text.';
+ assert.deepEqual(unwrapBoldWrappedParagraphs(divider),{text:divider,count:0});
+});
+
+test('a part composed as one long block is re-broken at claim boundaries (completion, 2026-11-15)',async()=>{
+ // Joshua's live shape: the composer wrote the whole part as a
+ // single flowing paragraph (~2,400 chars in production). Assembly
+ // re-breaks it at claim boundaries; no wording changes.
+ const sentences=Array.from({length:10},(_,i)=>
+  `Hume observation ${i+1} links necessity to custom and regular conjunction in the experience of constant succession among resembling instances of cause and effect. [S1]`);
+ const sourceText=sentences.map(s=>s.replace(' [S1]','')).join(' ');
+ const source={...hume,id:'S1',text:sourceText,preview:sourceText};
+ const ai=makeAI([answer('PART P1\n'+sentences.join(' ')),
+  review([['P1','answered']]),review([['P1','answered']]),
+  review([['P1','answered']]),review([['P1','answered']])]);
+ const result=await composeEvidenceAnswer('What guides human life?',[source],ai,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ // The shipped answer separates paragraphs with single newlines
+ // (sanitizeInternalAnswerIds flattens the render's blank lines);
+ // each re-broken paragraph is its own line.
+ const lines=result.answer.split('\n').filter(Boolean);
+ assert.ok(lines.length>=3,
+  `the wall of text is broken into paragraphs (got ${lines.length})`);
+ assert.ok(lines.every(line=>line.length<=800),
+  'no shipped line is a wall of text');
+ for(const s of sentences)
+  assert.ok(result.answer.includes(s.replace(' [S1]','')),
+   'every composed sentence survives verbatim');
+ // A short part keeps its single paragraph.
+ const shortAi=makeAI([answer('PART P1\nCustom guides human life. [S1]'),
+  review([['P1','answered']])]);
+ const short=await composeEvidenceAnswer('What guides human life?',[hume],shortAi,[],{
+  plan:onePartPlan,catalog,trace:true});
+ assert.equal(short.answer.split('\n').filter(Boolean).length,1,
+  'a short part is not re-broken');
+});
+
 test('composer prompt keeps titles on their own line and paragraphs out of bold (batch 9 B9-8)',()=>{
  assert.match(COMPOSER_PROMPT,/Keep each section title on its own line, and never wrap a paragraph in bold/);
  assert.match(COMPOSER_PROMPT,/bold is for a short label or lead-in phrase only/);
@@ -9622,8 +9678,8 @@ test('stage B.1 B4 scoping: an assembly loss that touches no requirement is labe
   'the partial-gated claim still does not ship');
  assert.equal(result.trace.assemblyLossSummary.total,1);
  assert.match(result.answer,
-  /A supporting point in this part of the question could not be included: /,
-  'the label scopes to the lost point when coverage is complete');
+  /A supporting point in this part of the question could not be included\./,
+  'the label scopes to the lost point when coverage is complete (completion 2026-11-15: no subject — the question is not repeated back and withheld claim text never prints)');
  assert.doesNotMatch(result.answer,/could only be partially answered/);
  const labelRecord=(result.trace.final.disclosureLabels||[])
   .find(entry=>entry.partId==='P1');
@@ -9672,12 +9728,20 @@ test('assembly-loss label scopes by shipped claims when the part has no requirem
  assert.equal(result.outcome,'verified-source-draft');
  assert.equal(result.trace.assemblyLossSummary.total,1);
  assert.match(result.answer,
-  /A supporting point in this part of the question could not be included: /,
+  /A supporting point in this part of the question could not be included\./,
   'a requirement-less part scopes the label to the lost point when its direct answer shipped');
  assert.doesNotMatch(result.answer,/could only be partially answered/);
  const labelRecord=(result.trace.final.disclosureLabels||[])
   .find(entry=>entry.partId==='P1');
  assert.equal(labelRecord?.scope,'claim');
+ // Completion (2026-11-15): the label carries no subject — the
+ // question is not repeated back as a non-sequitur, and the lost
+ // claim's withheld text never prints (the B4 invariant below).
+ assert.equal(labelRecord?.text,
+  'A supporting point in this part of the question could not be included.');
+ assert.doesNotMatch(result.answer,
+  /could not be included: How do the categories/,
+  'the question is never the label subject');
  // Counter-case: the lost claim IS one of the review's direct
  // answers — the part-level wording stands.
  const directLostReview=(_model,{messages})=>{

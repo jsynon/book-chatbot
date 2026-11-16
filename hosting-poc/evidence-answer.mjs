@@ -1550,7 +1550,30 @@ function renderAnswerParagraphs(answers){
     values.push(answer.renderedText||answer.text+' ['+[...new Set(answer.sourceIds)].join(', ')+']');
     paragraphs.set(key,values);
   }
-  return normalizeAnswerMarkdown([...paragraphs.values()].map(values=>values.join(' ')).join('\n\n'));
+  // Completion (2026-11-15): a part the composer wrote as one long
+  // block ships as a wall of text — Joshua's live Kierkegaard answer
+  // ran ~2,400 characters with no paragraph break, because every
+  // claim shared one draft paragraph. A single rendered paragraph
+  // past the long threshold is re-broken at claim boundaries into
+  // paragraphs of at most the target length; wording, order, and
+  // citations are untouched, a lone claim is never split, and parts
+  // that already carry paragraph structure render exactly as
+  // composed.
+  const rendered=[];
+  for(const values of paragraphs.values()){
+    if(values.length<2||values.join(' ').length<=1200){
+      rendered.push(values.join(' '));continue;
+    }
+    let current=[],currentLength=0;
+    for(const value of values){
+      if(current.length&&currentLength+value.length>700){
+        rendered.push(current.join(' '));current=[];currentLength=0;
+      }
+      current.push(value);currentLength+=value.length+1;
+    }
+    if(current.length)rendered.push(current.join(' '));
+  }
+  return normalizeAnswerMarkdown(rendered.join('\n\n'));
 }
 
 // Repair only unambiguous inline Markdown structures left by composition.
@@ -1740,6 +1763,27 @@ export function unwrapBoldWrappedParagraphs(value){
     }
     return opened;
   };
+  // Completion (2026-11-15): the paragraph rules below cannot see
+  // an orphan inside a multi-section block — the follow-up run's
+  // three recurrences all sat on a line glued to the previous
+  // section by a single newline, in blocks holding many paired
+  // markers. A line carrying exactly ONE marker holds the boundary
+  // of a pair whose other half never shipped, wherever the marker
+  // sits on that line; it is removed line by line after the
+  // paragraph rules have run. Two restraints keep the batch-9
+  // contract: short lines are untouched (a stray label fragment is
+  // a different shape, pinned by the B9-8 test), and lines made
+  // only of marker characters (a rule, a divider) carry no text.
+  const stripLineOrphans=text=>text.split('\n').map(line=>{
+    if(line.trim().length<80||!/[A-Za-z0-9]/u.test(line))return line;
+    for(const marker of ['**','__']){
+      if((line.split(marker).length-1)!==1)continue;
+      const at=line.indexOf(marker);
+      count++;
+      return line.slice(0,at)+line.slice(at+marker.length);
+    }
+    return line;
+  }).join('\n');
   const paragraphs=String(value||'').split(/\n\s*\n/u).map(paragraph=>{
     const trimmed=paragraph.trim();
     const scanned=unwrapLongSpans(trimmed);
@@ -1773,7 +1817,7 @@ export function unwrapBoldWrappedParagraphs(value){
     }
     return paragraph;
   });
-  return {text:paragraphs.join('\n\n'),count};
+  return {text:stripLineOrphans(paragraphs.join('\n\n')),count};
 }
 
 function normalizeStatus(value){
@@ -7094,6 +7138,18 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             assemblyLossRequirementTextsByPartId.set(partId,texts);
         }
       }
+      // Completion (2026-11-15): a claim-scoped loss on a part with
+      // no requirement record named the whole QUESTION as its
+      // subject — Joshua's live answer closed with "...could not
+      // be included: What did Kierkegaard have to say about
+      // faith?", the question repeated back as if it were the lost
+      // point. The subject cannot name the lost point either: a
+      // lost claim's text is content the pipeline withheld, and
+      // the suite pins that withheld content never prints (the
+      // B32-5 demotion, the B34-6 containment drop, the B4
+      // partial-gated claim). So a claim-scoped label with no
+      // requirement text carries NO subject — the sentence simply
+      // ends (see labelSubjectFor).
       const labeledParts=included.filter(item=>labelByPartId.has(item.part.id));
       // Batch 33 (B33-3): absent-part disclosure. The B11-5/B32-7
       // label covers parts that ship UNCITED; it does not cover parts
@@ -7125,7 +7181,7 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
         // remains the subject when the part records no requirements
         // or no requirement qualifies (a claim-level gap on a
         // direct-answer claim serving no requirement).
-        const labelSubjectFor=(item,{absent=false,kind=''}={})=>{
+        const labelSubjectFor=(item,{absent=false,kind='',claimScoped=false}={})=>{
           // Stage B (B3): an assembly-loss label names the
           // requirement(s) its lost claims were answering when the
           // reconciliation recorded them as removed.
@@ -7133,6 +7189,14 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             const texts=assemblyLossRequirementTextsByPartId
               .get(item.part.id);
             if(texts?.length)return texts.join('; ');
+            // Completion (2026-11-15): a CLAIM-SCOPED label with
+            // no requirement text on record carries no subject at
+            // all — naming the question repeats it back as a
+            // non-sequitur, and naming the lost claim would print
+            // withheld content. The caller ends the sentence when
+            // the subject is empty. Part-level labels keep the
+            // question subject, unchanged.
+            if(claimScoped)return '';
           }
           const requirements=item.part.requirements||[];
           if(!requirements.length)return item.part.question;
@@ -7246,16 +7310,19 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
               ((requirementsAnswered&&!lostServedRequirement&&
                !(assemblyLossRequirementTextsByPartId.get(item.part.id)?.length))||
                openQuestionScopedLoss);
+            const labelSubject=labelSubjectFor(item,{kind:labelKind,
+              claimScoped:claimScopedLoss});
             const text=(labelKind==='assembly-loss'?
               (claimScopedLoss?
-                'A supporting point in this part of the question could not be included: ':
-                'This part of the question could only be partially answered: '):
+                (labelSubject?
+                  'A supporting point in this part of the question could not be included: '+labelSubject:
+                  'A supporting point in this part of the question could not be included.'):
+                'This part of the question could only be partially answered: '+labelSubject):
               labelKind==='unreviewed-fallback'?
-                'This part is presented without a completed source review; only passages that could be verified mechanically are shown: ':
+                'This part is presented without a completed source review; only passages that could be verified mechanically are shown: '+labelSubject:
               labelKind==='general-context'?
-                'This part of the question is answered from general knowledge; no library passages could be verified for it: ':
-                'Retrieved passages could not be verified as supporting this part of the question: ')+
-              labelSubjectFor(item,{kind:labelKind});
+                'This part of the question is answered from general knowledge; no library passages could be verified for it: '+labelSubject:
+                'Retrieved passages could not be verified as supporting this part of the question: '+labelSubject);
             disclosureLabels.push({partId:item.part.id,
               kind:labelKindByPartId.get(item.part.id)||'uncited-part',text,
               ...(labelKind==='assembly-loss'?
