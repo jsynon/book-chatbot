@@ -5762,6 +5762,24 @@ test('bold unwrap opens a wrap that carries bold labels inside it (B9-8 evasion,
  assert.deepEqual(unwrapBoldWrappedParagraphs(labelFirst),{text:labelFirst,count:0});
 });
 
+test('bold unwrap removes a lone marker stranded mid-paragraph (live-open orphan, 2026-11-15)',()=>{
+ // The live-open Kierkegaard shape: a section title whose OPENING
+ // marker was lost, leaving its closer glued between the title and
+ // the body. The paragraph neither starts nor ends with the marker,
+ // so neither orphan rule reached it. One marker can never form a
+ // pair; on a long paragraph it is removed where it sits.
+ const stranded='The Knight of Faith vs. The Tragic Hero** A central image in the account of faith is the contrast between the knight of faith and the tragic hero, where the tragic hero renounces the universal for a higher ethical purpose while the knight of faith makes the double movement of resignation and belief [S4].';
+ const cleaned=unwrapBoldWrappedParagraphs(stranded);
+ assert.equal(cleaned.count,1);
+ assert.equal(cleaned.text,stranded.replace('Hero**','Hero'));
+ // A proper pair mid-paragraph is untouched.
+ const paired='The account turns on **the double movement** of resignation and belief, a movement the tragic hero cannot make, since his renunciation remains inside the ethical and never reaches the absurd by virtue of which the knight receives everything back again in finitude.';
+ assert.deepEqual(unwrapBoldWrappedParagraphs(paired),{text:paired,count:0});
+ // A short line with a lone marker is left alone.
+ const shortLine='The Tragic Hero**';
+ assert.deepEqual(unwrapBoldWrappedParagraphs(shortLine),{text:shortLine,count:0});
+});
+
 test('composer prompt keeps titles on their own line and paragraphs out of bold (batch 9 B9-8)',()=>{
  assert.match(COMPOSER_PROMPT,/Keep each section title on its own line, and never wrap a paragraph in bold/);
  assert.match(COMPOSER_PROMPT,/bold is for a short label or lead-in phrase only/);
@@ -9614,6 +9632,82 @@ test('stage B.1 B4 scoping: an assembly loss that touches no requirement is labe
   'the disclosure record carries the label scope');
 });
 
+test('assembly-loss label scopes by shipped claims when the part has no requirement record (live-open follow-up)',async()=>{
+ // The live-open shape: an open question whose plan part records
+ // NO formal requirements. The B4 scoping keys on the requirement
+ // record, so it could never fire here, and one dropped supporting
+ // claim branded the whole part "only partially answered" while
+ // the case's coverage said full. The scoping now falls back to
+ // what shipped: the review's direct-answer claims are all in the
+ // part and the lost claim is a minority.
+ const plan={version:'reader-evidence-v2',intent:'explain',
+  sources:[{label:'Immanuel Kant',role:'primary',bookIds:['40']}],
+  parts:[{id:'P1',question:'How do the categories structure experience?',
+   sourceBookIds:['40'],searchQueries:['Kant categories experience'],
+   candidateSourceIds:['S2']}],
+  queries:['Kant categories experience']};
+ const draft='PART P1\nCausality is a pure conception of the understanding and a category of relation. [S2]\n'+
+  'The categories structure experience by unifying the manifold of intuition. [S2]\n'+
+  'The categories guarantee the synthetic unity of every possible perception. [S2]';
+ const reviewResponder=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const spanFor=claim=>claim.sourceEvidence[0].spanIds[0];
+  const claims=payload.claims.map(claim=>{
+   const partial=claim.text.includes('synthetic unity of every possible perception');
+   return {claimId:claim.claimId,status:partial?'partial':'answered',
+    ...(partial?{supportedText:'The categories guarantee unity. [S9] Every perception is synthetically unified.'}:{}),
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[spanFor(claim)]}))};
+  });
+  const parts=payload.parts.map(part=>({partId:part.partId,status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:[payload.claims[0].claimId,payload.claims[1].claimId],
+   retainedContextClaimIds:[]}));
+  return {response:JSON.stringify({parts,claims})};
+ };
+ const ai=makeAI([answer(draft),reviewResponder,answer(draft),reviewResponder],
+  {decorateReview:false});
+ const result=await composeEvidenceAnswer(
+  'How do the categories structure experience?',[kant],ai,[],{plan,catalog,trace:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(result.trace.assemblyLossSummary.total,1);
+ assert.match(result.answer,
+  /A supporting point in this part of the question could not be included: /,
+  'a requirement-less part scopes the label to the lost point when its direct answer shipped');
+ assert.doesNotMatch(result.answer,/could only be partially answered/);
+ const labelRecord=(result.trace.final.disclosureLabels||[])
+  .find(entry=>entry.partId==='P1');
+ assert.equal(labelRecord?.scope,'claim');
+ // Counter-case: the lost claim IS one of the review's direct
+ // answers — the part-level wording stands.
+ const directLostReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const spanFor=claim=>claim.sourceEvidence[0].spanIds[0];
+  const claims=payload.claims.map(claim=>{
+   const partial=claim.text.includes('synthetic unity of every possible perception');
+   return {claimId:claim.claimId,status:partial?'partial':'answered',
+    ...(partial?{supportedText:'The categories guarantee unity. [S9] Every perception is synthetically unified.'}:{}),
+    sources:claim.sourceIds.map(sourceId=>({sourceId,status:'answered',
+     spanIds:[spanFor(claim)]}))};
+  });
+  const parts=payload.parts.map(part=>({partId:part.partId,status:'answered',
+   answerStatus:'answered',
+   directAnswerClaimIds:[payload.claims[2].claimId],
+   retainedContextClaimIds:[]}));
+  return {response:JSON.stringify({parts,claims})};
+ };
+ const ai2=makeAI([answer(draft),directLostReview,answer(draft),directLostReview],
+  {decorateReview:false});
+ const counter=await composeEvidenceAnswer(
+  'How do the categories structure experience?',[kant],ai2,[],{plan,catalog,trace:true});
+ assert.equal(counter.trace.assemblyLossSummary.total,1);
+ assert.match(counter.answer,/could only be partially answered/,
+  'losing a direct-answer claim keeps the part-level wording');
+ const counterLabel=(counter.trace.final.disclosureLabels||[])
+  .find(entry=>entry.partId==='P1');
+ assert.equal(counterLabel?.scope,'part');
+});
+
 test('stage B B2: a contents-page citation does not count as substantive support for containment',async()=>{
  // The phase-2 Hobbes shape in miniature: the part's only cited
  // source is a table-of-contents page. The reviewer accepts the
@@ -10500,6 +10594,83 @@ test('a review chunk that hits its deadline retries as two half-size split calls
  assert.ok(reviewCalls.every(call=>call.timeoutMs===60000),
   'split halves run at the flat 60 s deadline, not the 120 s retry raise');
  assert.deepEqual(reviewCalls.map(call=>call.claimCount),[5,4,3,2]);
+});
+
+test('a review chunk stalled as cancel-unconfirmed also split-retries (live-open follow-up)',async()=>{
+ // The live-open Aurelius shape: under the streaming transport the
+ // stalled chunk's error code is 'inference-cancel-unconfirmed', and
+ // the split check that named only 'inference-deadline-exceeded'
+ // never matched — the whole part fell to the compact retry.
+ const sentences=['Custom guides human life.','Habit shapes inference.',
+  'Repeated experience forms expectations.','One event follows another regularly.',
+  'The mind learns from repeated conjunctions.','Custom directs ordinary expectations.',
+  'Experience produces familiar associations.','Inference follows established habits.',
+  'Repeated cases shape anticipation.'];
+ const sourceText=sentences.join('\n\n');
+ const source={...hume,id:'S1',text:sourceText,preview:sourceText};
+ const cancelled=()=>Object.assign(new Error('Inference cancelled'),
+  {stage:'review',code:'inference-cancel-unconfirmed'});
+ const scopedReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const ids=payload.reviewClaimIds||payload.claims.map(claim=>claim.claimId);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:['P1-C1']}],claims:ids.map(claimId=>{
+    const claim=payload.claims.find(item=>item.claimId===claimId);
+    return {claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:[claim.sourceEvidence[0].spanIds[0]]}]};})})};
+ };
+ const ai=makeAI([answer('PART P1\n'+sentences.map(s=>s+' [S1]').join('\n\n')),
+  cancelled(),scopedReview,scopedReview,scopedReview]);
+ const result=await composeEvidenceAnswer('What guides human life?',[source],ai,[],{
+  plan:onePartPlan,catalog,trace:true,transportDiagnostics:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.deepEqual(result.trace.reviewRetrySplit,[{partId:'P1',
+  claimIds:['P1-C1','P1-C2','P1-C3','P1-C4','P1-C5'],
+  halves:[['P1-C1','P1-C2','P1-C3'],['P1-C4','P1-C5']],outcome:'recovered'}],
+  'a cancel-unconfirmed stall splits exactly like a deadline stall');
+ assert.equal(result.trace.reviewRetry,undefined,
+  'a recovered split needs no part-level retry entry');
+});
+
+test('a stalled single-claim chunk is salvaged alone, keeping sibling verdicts (live-open follow-up)',async()=>{
+ // Six claims chunk as [5, 1]: the lone-claim chunk stalls and
+ // cannot split, so without salvage the whole part's verdicts would
+ // fall to the part-level retry. The salvage call re-judges only
+ // that one claim; the five-claim chunk's verdicts stand.
+ const sentences=['Custom guides human life.','Habit shapes inference.',
+  'Repeated experience forms expectations.','One event follows another regularly.',
+  'The mind learns from repeated conjunctions.','Custom directs ordinary expectations.'];
+ const sourceText=sentences.join('\n\n');
+ const source={...hume,id:'S1',text:sourceText,preview:sourceText};
+ const cancelled=()=>Object.assign(new Error('Inference cancelled'),
+  {stage:'review',code:'inference-cancel-unconfirmed'});
+ const scopedReview=(_model,{messages})=>{
+  const payload=parsePayload(messages);
+  const ids=payload.reviewClaimIds||payload.claims.map(claim=>claim.claimId);
+  return {response:JSON.stringify({parts:[{partId:'P1',status:'answered',
+   directAnswerClaimIds:['P1-C1']}],claims:ids.map(claimId=>{
+    const claim=payload.claims.find(item=>item.claimId===claimId);
+    return {claimId,status:'answered',sources:[{sourceId:'S1',status:'answered',
+     spanIds:[claim.sourceEvidence[0].spanIds[0]]}]};})})};
+ };
+ const ai=makeAI([answer('PART P1\n'+sentences.map(s=>s+' [S1]').join('\n\n')),
+  scopedReview,cancelled(),scopedReview]);
+ const result=await composeEvidenceAnswer('What guides human life?',[source],ai,[],{
+  plan:onePartPlan,catalog,trace:true,transportDiagnostics:true});
+ assert.equal(result.outcome,'verified-source-draft');
+ assert.equal(ai.calls.length,4,
+  'compose, the two chunk calls, and one salvage call');
+ assert.deepEqual(result.trace.reviewChunkSalvage,[{partId:'P1',
+  claimIds:['P1-C6'],outcome:'recovered'}]);
+ assert.equal(result.trace.reviewRetrySplit,undefined,
+  'a one-claim chunk never reaches the split');
+ assert.equal(result.trace.reviewRetry,undefined,
+  'a recovered salvage needs no part-level retry entry');
+ const reviewCalls=result.trace.inferenceCalls.filter(call=>call.stage==='review');
+ assert.deepEqual(reviewCalls.map(call=>call.kind),
+  ['initial','initial','salvage']);
+ assert.ok(result.answer.includes('Custom directs ordinary expectations'),
+  'the salvaged claim ships');
 });
 
 test('the reserved final review round re-chunks at two claims per call (retrieval tranche)',async()=>{
