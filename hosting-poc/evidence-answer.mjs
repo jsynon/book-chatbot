@@ -1757,6 +1757,20 @@ export function unwrapBoldWrappedParagraphs(value){
       longText(trimmed.slice(0,-closer.length))){
       count++;return trimmed.slice(0,-closer.length);
     }
+    // A single marker stranded mid-paragraph is the boundary of a pair
+    // whose other half never shipped — the live-open Kierkegaard case
+    // (2026-11-15): a section title whose OPENING marker was lost,
+    // leaving its closer glued between the title and the body text.
+    // One marker can never form a pair, so on a long paragraph it is
+    // removed wherever it sits; paired markers are untouched.
+    for(const marker of ['**','__']){
+      if((trimmed.split(marker).length-1)===1&&longText(trimmed)){
+        const at=trimmed.indexOf(marker);
+        if(at>0&&at<trimmed.length-marker.length){
+          count++;return trimmed.slice(0,at)+trimmed.slice(at+marker.length);
+        }
+      }
+    }
     return paragraph;
   });
   return {text:paragraphs.join('\n\n'),count};
@@ -4576,7 +4590,16 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
             // deadline, concurrent — the timeout case's retry,
             // replacing the same-packet 120 s replay. A one-claim
             // chunk cannot split and propagates its deadline.
-            if(reviewFailureCode(chunkError)!=='inference-deadline-exceeded'||
+            // Live-open follow-up (2026-11-15): under the streaming
+            // transport a deadline stall surfaces as
+            // 'inference-cancel-unconfirmed', not
+            // 'inference-deadline-exceeded' — the live-open Aurelius
+            // trace shows the stalled chunk with timeoutFired set and
+            // reviewRetrySplit null, because this check never matched.
+            // Both codes are the stall family and split-eligible.
+            const chunkFailureCode=reviewFailureCode(chunkError);
+            if((chunkFailureCode!=='inference-deadline-exceeded'&&
+                chunkFailureCode!=='inference-cancel-unconfirmed')||
                claimIds.length<2)throw chunkError;
             const half=Math.ceil(claimIds.length/2);
             const halves=[claimIds.slice(0,half),claimIds.slice(half)];
@@ -4624,6 +4647,45 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
           if(chunks.length<=1)return callReviewChunk(packet,null,kind);
           const settled=await Promise.allSettled(chunks.map(ids=>
             callReviewChunk(packet,ids,kind)));
+          // Chunk salvage (live-open follow-up, 2026-11-15): a
+          // SINGLE-claim chunk that failed with a stall-family code
+          // after its siblings succeeded is retried once on its own
+          // and merged with the settled reviews. A lone claim is the
+          // one chunk shape the timeout-split cannot help (it cannot
+          // split), and without this the whole part's verdicts are
+          // discarded to the part-level retry to re-judge every
+          // healthy chunk for one claim. Multi-claim chunks keep
+          // the split as their chunk-level recovery, and a failed
+          // split falls through to the part-level paths as before —
+          // re-sending the same multi-claim chunk whole is the least
+          // promising shape once smaller pieces have died, and the
+          // reserved retry rounds size their allowance at three
+          // calls per chunk (the call plus its split halves), which
+          // an unreserved salvage call would spend outside. Salvage
+          // therefore also runs on the initial attempt only.
+          // Output-problem failures keep the existing path: they
+          // throw to the part-level compact-packet retry designed
+          // for them.
+          const stallCodes=new Set(['inference-deadline-exceeded',
+            'inference-cancel-unconfirmed']);
+          for(let index=0;kind==='initial'&&index<settled.length;index++){
+            if(settled[index].status!=='rejected'||chunks[index].length!==1||
+               !stallCodes.has(reviewFailureCode(settled[index].reason)))continue;
+            const ids=chunks[index];
+            const salvageEntry={partId,claimIds:[...ids],outcome:'attempted'};
+            (trace.reviewChunkSalvage??=[]).push(salvageEntry);
+            try{
+              const response=await run('review',REVIEW_PROMPT,
+                {...scopeReviewPayload(packet.reviewPayload,ids),
+                 reviewClaimIds:ids},
+                parseReviewJson,{partId,kind:'salvage',claimCount:ids.length});
+              settled[index]={status:'fulfilled',value:response};
+              salvageEntry.outcome='recovered';
+            }catch(salvageError){
+              salvageEntry.outcome='failed';
+              settled[index]={status:'rejected',reason:salvageError};
+            }
+          }
           const failed=settled.find(entry=>entry.status==='rejected');
           if(failed)throw failed.reason;
           return mergeChunkReviews(chunks,settled.map(entry=>entry.value));
@@ -7152,9 +7214,38 @@ async function composeEvidenceAnswerBuild(question,sources,ai,history=[],options
                   return a&&citationIds(a.renderedText||'').length;}));
             const lostServedRequirement=coverageEntries.some(entry=>
               (entry.answerClaimIds||[]).some(id=>lostClaimIds.includes(id)));
+            // Live-open follow-up (2026-11-15): the B4 scoping above
+            // cannot fire for a part with NO requirement record —
+            // the open-question shape, where the planner records no
+            // formal requirements — so a single dropped supporting
+            // claim branded the whole part "only partially answered"
+            // while the case's own coverage record said full (the
+            // live-open Nietzsche, Hume, and Aurelius answers). For
+            // such a part the scoping is judged by what shipped:
+            // every direct-answer claim the review named is in the
+            // shipped part, the part's answer status stands
+            // 'answered', and the lost claims are a minority of the
+            // part's claims. A lost direct-answer claim, or a loss
+            // of half or more of the part, keeps the part-level
+            // wording.
+            const noRequirementRecord=(item.part.requirements||[]).length===0&&
+              coverageEntries.length===0;
+            const partDecision=(trace.reviewContract?.partDecisions||[])
+              .find(decision=>decision.partId===item.part.id);
+            const directAnswerIds=partDecision?.directAnswerClaimIds||[];
+            const shippedClaimIds=new Set((item.answers||[])
+              .map(answer=>answer.claimId));
+            const directAnswerShipped=directAnswerIds.length>0&&
+              directAnswerIds.every(id=>shippedClaimIds.has(id));
+            const partClaimTotal=shippedClaimIds.size+lostClaimIds.length;
+            const openQuestionScopedLoss=labelKind==='assembly-loss'&&
+              noRequirementRecord&&item.answerStatus==='answered'&&
+              directAnswerShipped&&partClaimTotal>0&&
+              lostClaimIds.length*2<partClaimTotal;
             const claimScopedLoss=labelKind==='assembly-loss'&&
-              requirementsAnswered&&!lostServedRequirement&&
-              !(assemblyLossRequirementTextsByPartId.get(item.part.id)?.length);
+              ((requirementsAnswered&&!lostServedRequirement&&
+               !(assemblyLossRequirementTextsByPartId.get(item.part.id)?.length))||
+               openQuestionScopedLoss);
             const text=(labelKind==='assembly-loss'?
               (claimScopedLoss?
                 'A supporting point in this part of the question could not be included: ':
